@@ -1,4 +1,5 @@
 """Exercise full-screen tool details through the production TUI event loop."""
+from loopback_http import LoopbackHTTPServer
 import http.server
 import json
 from pathlib import Path
@@ -46,7 +47,7 @@ class PacedMarkdownModel(Model):
 
 
 def check_mutable_markdown_preview(driver):
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -190,7 +191,7 @@ def collect_retained_history(terminal, draft, final_marker='FINAL_PREVIEW'):
 
 
 def check_details_follow(driver):
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -573,7 +574,7 @@ def main():
     check_tool_spacing(driver)
     check_agent_spacing(driver)
     check_plan_and_notice_spacing(driver)
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     check_final_spacing(driver, server.server_port)

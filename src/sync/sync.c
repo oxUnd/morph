@@ -4,7 +4,6 @@
 #include "nb/buf.h"
 #include "nb/cleanup.h"
 #include "errors.h"
-#include "nb/cleanup.h"
 #include "nb/file.h"
 #include "nb/log.h"
 #include "content_hash.h"
@@ -346,28 +345,30 @@ static int scan_dir(nb_vec *pairs, const char *root, const char *rel_dir, int re
 	int file_status_3 = NB_OK;
 
 	char full[PATH_MAX];
-	DIR *dir;
-	struct dirent *ent;
+	nb_dir *dir NB_CLEANUP(nb_dir_cleanup) = NULL;
+	nb_err directory_error = {0};
+	nb_dir_entry entry;
+	const nb_dir_entry *ent = &entry;
 	int rc;
 
 	rc = sync_path_join(full, sizeof(full), root, rel_dir);
 	if (rc != 0)
 		return rc;
-	dir = opendir(full);
-	if (!dir && errno == ENOENT)
+	dir = nb_dir_open(full, &directory_error);
+	if (!dir && directory_error.code == NB_ERR_NOT_FOUND)
 		return 0;
 	if (!dir)
-		return nb_status_from_errno(errno, NULL);
-	while ((ent = readdir(dir)) != NULL) {
+		return directory_error.code;
+	while (nb_dir_next(dir, &entry) != NULL) {
 		char child_rel[PATH_MAX];
 		char child_full[PATH_MAX];
 		struct stat st;
-		if (strcmp(ent->d_name, ".") == 0 ||
-		    strcmp(ent->d_name, "..") == 0)
+		if (strcmp(ent->name, ".") == 0 ||
+		    strcmp(ent->name, "..") == 0)
 			continue;
 		if (rel_dir[0]) {
 			rc = ((file_status_3 =
-				       nb_path_concat(&file_value_3, rel_dir, ent->d_name)) != NB_OK
+				       nb_path_concat(&file_value_3, rel_dir, ent->name)) != NB_OK
 				      ? file_status_3
 			      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3),
 								child_rel, sizeof(child_rel))) ==
@@ -375,7 +376,7 @@ static int scan_dir(nb_vec *pairs, const char *root, const char *rel_dir, int re
 				      ? NB_ERR_NAME_TOO_LONG
 				      : file_status_3);
 		} else {
-			rc = nb_str_copy_to(nb_str_from_cstr(ent->d_name), child_rel,
+			rc = nb_str_copy_to(nb_str_from_cstr(ent->name), child_rel,
 					    sizeof(child_rel));
 			if (rc == NB_ERR_RANGE)
 				rc = NB_ERR_NAME_TOO_LONG;
@@ -400,8 +401,7 @@ static int scan_dir(nb_vec *pairs, const char *root, const char *rel_dir, int re
 				break;
 		}
 	}
-	closedir(dir);
-	return rc;
+	return rc != NB_OK ? rc : nb_dir_status(dir);
 }
 
 static int scan_remote_backend_dir(nb_vec *pairs, const struct morph_sync_config *cfg,
@@ -1428,6 +1428,12 @@ static int sync_once_locked(const struct morph_sync_config *cfg,
 	return rc;
 }
 
+static void sync_file_lock_cleanup(nb_file_lock **lock)
+{
+	nb_file_lock_release(*lock);
+	*lock = NULL;
+}
+
 int morph_sync_once(const struct morph_sync_config *cfg,
 		    struct morph_sync_status *status)
 {
@@ -1438,7 +1444,7 @@ int morph_sync_once(const struct morph_sync_config *cfg,
 
 	char path[PATH_MAX];
 	int rc;
-	int lock_fd;
+	nb_file_lock *lock NB_CLEANUP(sync_file_lock_cleanup) = NULL;
 
 	if (status)
 		memset(status, 0, sizeof(*status));
@@ -1465,19 +1471,11 @@ int morph_sync_once(const struct morph_sync_config *cfg,
 			      : file_status_5);
 	if (rc != 0)
 		return rc;
-	lock_fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-	if (lock_fd < 0)
-		return nb_status_from_errno(errno, NULL);
-	do {
-		rc = flock(lock_fd, LOCK_EX);
-	} while (rc < 0 && errno == EINTR);
-	if (rc < 0)
-		rc = nb_status_from_errno(errno, NULL);
-	else {
-		rc = sync_once_locked(cfg, status);
-		(void)flock(lock_fd, LOCK_UN);
-	}
-	close(lock_fd);
+	rc = nb_file_lock_acquire(path, true, true, &lock, NULL);
+	if (rc != NB_OK)
+		return rc;
+	rc = sync_once_locked(cfg, status);
+	sync_file_lock_cleanup(&lock);
 	if (status && rc != 0 && !status->error_code) {
 		status->error_code = rc;
 		(void)nb_str_copy_to(

@@ -4,7 +4,6 @@
 #include "runtime/usage.h"
 #include "credits.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/utf8.h"
 #include "nb/log.h"

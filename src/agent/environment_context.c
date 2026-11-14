@@ -241,8 +241,10 @@ static char *full_path(struct environment_collector *collector, const char *path
 	char cwd[PATH_MAX];
 
 	if (path && *path) {
-		if (!realpath(path, cwd))
+		nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
+		if (nb_path_canonical(&canonical, path, NULL) != NB_OK)
 			return NULL;
+		return copy_value(collector, nb_buf_cstr(&canonical));
 	} else if (!getcwd(cwd, sizeof(cwd))) {
 		return NULL;
 	}

@@ -714,8 +714,9 @@ int ext_run(const char *args_json, char **result_json)
 	(void)args_json;
 	if (!result_json)
 		return NB_ERR_INVAL;
+	/* Preserve the standalone extension wire code across the native migration. */
 	*result_json = strdup("{\"ok\":false,\"code\":-95,"
 			      "\"error\":\"file_write requires embedded "
 			      "tool_context registration\"}");
-	return NB_ERR_UNSUPPORTED;
+	return *result_json ? NB_ERR_UNSUPPORTED : NB_ERR_NOMEM;
 }

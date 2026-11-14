@@ -3,7 +3,6 @@
 #include "agent/tool_runtime.h"
 #include "nb/vec.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "cJSON.h"
 #include "errors.h"
 #include "nb/utf8.h"

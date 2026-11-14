@@ -3,7 +3,6 @@
 #include "runtime/hooks_internal.h"
 
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/log.h"
@@ -393,10 +392,10 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 	cJSON *root;
 	int rc;
 	const char *parse_end = NULL;
-	char canonical[PATH_MAX];
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
 
-	if (realpath(path, canonical))
-		path = canonical;
+	if (nb_path_canonical(&canonical, path, NULL) == NB_OK)
+		path = nb_buf_cstr(&canonical);
 	struct hook_entry *existing;
 	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
 			     (existing = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));

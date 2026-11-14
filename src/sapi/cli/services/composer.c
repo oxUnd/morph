@@ -3,7 +3,6 @@
 #include "sapi/cli/models/composer.h"
 #include "nb/buf.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/file.h"
 #include <ctype.h>
@@ -16,6 +15,7 @@ int cli_composer_service_add_image(struct cli_composer_model *composer, const ch
 				   const char **label)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_1 = NB_OK;
 
 	char *expanded;
 	char *absolute;
@@ -25,15 +25,17 @@ int cli_composer_service_add_image(struct cli_composer_model *composer, const ch
 
 	if (!composer || !path || !label)
 		return NB_ERR_INVAL;
-	expanded = (nb_path_expand(&file_value_1, path, NULL) == NB_OK
+	expanded = ((expand_status_1 = nb_path_expand(&file_value_1, path, NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_1))
 			    : NULL);
 	if (!expanded)
-		return NB_ERR_NOMEM;
-	absolute = realpath(expanded, NULL);
+		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
+	rc = nb_path_canonical(&canonical, expanded, NULL);
+	absolute = rc == NB_OK ? strdup(nb_buf_cstr(&canonical)) : NULL;
 	free(expanded);
 	if (!absolute)
-		return nb_status_from_errno(errno, NULL);
+		return rc != NB_OK ? rc : NB_ERR_NOMEM;
 	rc = cli_media_image_probe_info(absolute, &width, &height);
 	if (rc != 0) {
 		free(absolute);

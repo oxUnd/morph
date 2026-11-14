@@ -5,7 +5,6 @@
 #include "nb/buf.h"
 #include "nb/cleanup.h"
 #include "nb/file.h"
-#include "nb/cleanup.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -1317,7 +1316,8 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val, int argc
 	if (rc < 0) {
 		free(resolved_output);
 		JS_FreeCString(ctx, output);
-		return JS_ThrowInternalError(ctx, "failed to write frame: %s", strerror(-rc));
+		return JS_ThrowInternalError(ctx, "failed to write frame: %s",
+			nb_status_str((nb_status)rc));
 	}
 	out = JS_NewObject(ctx);
 	JS_SetPropertyStr(ctx, out, "output", JS_NewString(ctx, output));

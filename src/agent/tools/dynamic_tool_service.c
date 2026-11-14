@@ -661,10 +661,7 @@ static int dynamic_tool_delete_path_allowed(const struct dynamic_tools_context *
 
 	char expected[PATH_MAX];
 	char session_root[PATH_MAX];
-	char *resolved_dir = NULL;
-	char *resolved_expected = NULL;
 	int rc;
-	int allowed;
 
 	if (!ctx || !ctx->cfg || !name || !dir)
 		return 0;
@@ -699,22 +696,12 @@ static int dynamic_tool_delete_path_allowed(const struct dynamic_tools_context *
 	}
 	if (rc < 0)
 		return 0;
-	resolved_dir =
-		(nb_path_expand(&file_value_7, dir, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_7, nb_buf_cstr(&file_value_7), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_7))
-			 : NULL);
-	resolved_expected =
-		(nb_path_expand(&file_value_8, expected, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_8, nb_buf_cstr(&file_value_8), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_8))
-			 : NULL);
-	allowed = resolved_dir && resolved_expected && strcmp(resolved_dir, resolved_expected) == 0;
-	free(resolved_dir);
-	free(resolved_expected);
-	return allowed;
+	if (nb_path_expand(&file_value_7, dir, NULL) != NB_OK ||
+	    nb_path_canonical_missing(&file_value_7, nb_buf_cstr(&file_value_7), NULL) != NB_OK ||
+	    nb_path_expand(&file_value_8, expected, NULL) != NB_OK ||
+	    nb_path_canonical_missing(&file_value_8, nb_buf_cstr(&file_value_8), NULL) != NB_OK)
+		return 0;
+	return strcmp(nb_buf_cstr(&file_value_7), nb_buf_cstr(&file_value_8)) == 0;
 }
 
 static int service_promote(const char *args_json, struct tool_result *result, void *user_data)

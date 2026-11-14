@@ -3,8 +3,6 @@
 #include "nb/vec.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/random.h"
@@ -353,11 +351,13 @@ static int checkpoint_relative(const char *root, const char *path, char **out)
 			if (path[length] && path[length] != '/')
 				continue;
 			char *prefix NB_CLEANUP(nb_charp_cleanup) = strndup(path, length);
-			char *resolved NB_CLEANUP(nb_charp_cleanup) =
-				prefix ? realpath(prefix, NULL) : NULL;
+			nb_buf resolved NB_CLEANUP(nb_buf_destroy) = {0};
 			if (!prefix)
 				return NB_ERR_NOMEM;
-			if (resolved && !strcmp(resolved, root)) {
+			int canonical_status = nb_path_canonical(&resolved, prefix, NULL);
+			if (canonical_status == NB_ERR_NOMEM)
+				return canonical_status;
+			if (canonical_status == NB_OK && !strcmp(nb_buf_cstr(&resolved), root)) {
 				relative = path + length;
 				break;
 			}
@@ -619,9 +619,13 @@ int checkpoint_store_create(struct db *db, int64_t session_id, const char *workd
 	if (session_id <= 0 || !workdir || !*workdir || !id)
 		return NB_ERR_INVAL;
 	*id = 0;
-	root = realpath(workdir, NULL);
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
+	int canonical_status = nb_path_canonical(&canonical, workdir, NULL);
+	if (canonical_status != NB_OK)
+		return canonical_status;
+	root = strdup(nb_buf_cstr(&canonical));
 	if (!root)
-		return nb_status_from_errno(errno, NULL);
+		return NB_ERR_NOMEM;
 	struct stat info;
 	if (stat(root, &info) != 0)
 		return nb_status_from_errno(errno, NULL);

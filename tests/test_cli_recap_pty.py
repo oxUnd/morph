@@ -1,5 +1,6 @@
 """Exercise /recap, focus reports, editable drafts, and stale responses in a real PTY."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import sqlite3
@@ -42,7 +43,7 @@ class RecapModel(Model):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), RecapModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), RecapModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     releases = []

@@ -7,7 +7,6 @@
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "config/edit.h"
 #include "agent/tools/exec_jobs.h"
 
@@ -89,9 +88,16 @@ static int permission_children_active(struct runtime *runtime)
 	return active;
 }
 
+static void permission_file_lock_cleanup(nb_file_lock **lock)
+{
+	nb_file_lock_release(*lock);
+	*lock = NULL;
+}
+
 static int permission_save_policy(struct runtime *runtime, const struct permission_policy *policy)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int read_status_1 = NB_OK;
 	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	nb_buf patch NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -100,7 +106,7 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 	char *after = NULL;
 	struct config_validation_error validation = {0};
 	const char *path = runtime->context.config_path;
-	int fd = -1;
+	nb_file_lock *lock NB_CLEANUP(permission_file_lock_cleanup) = NULL;
 	int rc;
 
 	if (!*path)
@@ -109,15 +115,11 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 	      nb_buf_reserve(&lock_path, strlen(path) + 6) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = (nb_buf_printf(&lock_path, "%s.lock", path) ? 0 : NB_ERR_NOMEM);
+	if (rc == NB_OK)
+		rc = nb_file_lock_acquire(nb_buf_cstr(&lock_path), true, false, &lock, NULL);
 	if (rc == 0) {
-		fd = open(nb_buf_cstr(&lock_path), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-		if (fd < 0)
-			rc = nb_status_from_errno(errno, NULL);
-		else if (flock(fd, LOCK_EX | LOCK_NB) != 0)
-			rc = nb_status_from_errno(errno, NULL);
-	}
-	if (rc == 0) {
-		before = (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+		before = ((read_status_1 = nb_file_read_all(path, &file_value_1, 0,
+			NULL)) == NB_OK &&
 					  (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
 									1)) != NULL
 				  ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
@@ -125,7 +127,7 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 				     nb_charp_steal(&file_copy_1))
 				  : NULL);
 		if (!before)
-			rc = errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
+			rc = read_status_1 != NB_OK ? read_status_1 : NB_ERR_NOMEM;
 	}
 	if (rc == 0)
 		rc = (nb_buf_init(&patch), nb_buf_reserve(&patch, 128) ? 0 : NB_ERR_NOMEM);
@@ -146,8 +148,6 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 		rc = nb_file_write_all_atomic(
 			path, after, strlen(after),
 			&(nb_file_write_options){.new_file_mode = 0600, .sync_dir = true}, NULL);
-	if (fd >= 0)
-		close(fd);
 	free(after);
 	free(before);
 	nb_buf_cleanup(&patch);

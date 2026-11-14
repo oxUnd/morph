@@ -2,8 +2,6 @@
 #include "nb/vec.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "nb/random.h"
 #include "nb/encoding.h"
 #include "nb/log.h"

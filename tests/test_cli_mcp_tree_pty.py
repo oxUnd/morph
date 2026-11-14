@@ -1,5 +1,6 @@
 """MCP command trees in the retained feed, including capability lists."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import sys
@@ -150,7 +151,7 @@ def run_case(binary, model, width, color, production):
 def main():
     driver = Path(sys.argv[1]).resolve()
     production = Path(sys.argv[2]).resolve()
-    model = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    model = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     model.daemon_threads = True
     threading.Thread(target=model.serve_forever, daemon=True).start()
     try:

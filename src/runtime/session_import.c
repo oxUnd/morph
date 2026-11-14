@@ -4,14 +4,12 @@
 #include "nb/cleanup.h"
 #include "runtime/sync.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/random.h"
 #include "nb/encoding.h"
 #include "nb/utf8.h"
 #include "blake3.h"
-#include "nb/encoding.h"
 
 #include <errno.h>
 #include <stdlib.h>

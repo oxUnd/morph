@@ -3,6 +3,7 @@
 #include "cJSON.h"
 #include "errors.h"
 #include "nb/cleanup.h"
+#include "nb/random.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -86,16 +87,23 @@ int canvas_list_json(struct session_store *s, const char *session_id, char **out
 	return 0;
 }
 
-static void mk_node_id(char out[40])
+static int mk_node_id(char out[40])
 {
-	int64_t t = fcgi_store_now();
-	snprintf(out, 40, "n_%llx_%x", (long long)t, (unsigned)(rand() & 0xffffff));
+	nb_buf random NB_CLEANUP(nb_buf_destroy) = {0};
+	int rc = nb_random_hex(&random, 12, NULL);
+	if (rc != NB_OK)
+		return rc;
+	int written = snprintf(out, 40, "n_%llx_%s",
+		(long long)fcgi_store_now(), nb_buf_cstr(&random));
+	return written > 0 && written < 40 ? NB_OK : NB_ERR_RANGE;
 }
 
 int canvas_add_node(struct session_store *s, const char *session_id, const char *node_json,
 		    char out_node_id[40])
 {
-	mk_node_id(out_node_id);
+	int id_rc = mk_node_id(out_node_id);
+	if (id_rc != NB_OK)
+		return id_rc;
 	const char *sql =
 		"INSERT INTO "
 		"fcgi_canvas_nodes(id,session_id,kind,x,y,w,h,meta,created_at,updated_at) "

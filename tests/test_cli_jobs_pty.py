@@ -1,4 +1,5 @@
 """Background command lifecycle through the real CLI, model, and terminal."""
+from loopback_http import LoopbackHTTPServer
 import http.server
 import json
 from pathlib import Path
@@ -202,7 +203,7 @@ def main():
     artifacts = Path(sys.argv[2]) if len(sys.argv) > 2 else None
     if artifacts:
         artifacts.mkdir(parents=True, exist_ok=True)
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     releases = []

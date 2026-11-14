@@ -2,7 +2,6 @@
 #include "nb/cleanup.h"
 
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "nb/utf8.h"
 
 #include <ctype.h>

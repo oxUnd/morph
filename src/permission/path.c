@@ -34,9 +34,10 @@ int permission_path_resolve_existing_directory(const char *path, int create, cha
 
 	if (!path || !*path || !resolved || !size)
 		return NB_ERR_INVAL;
-	expanded = (nb_path_expand(&file_value_2, path, NULL) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_2))
-			    : NULL);
+	rc = nb_path_expand(&file_value_2, path, NULL);
+	if (rc != NB_OK)
+		return rc;
+	expanded = strdup(nb_buf_cstr(&file_value_2));
 	if (!expanded)
 		return NB_ERR_NOMEM;
 	if (!nb_path_is_absolute(expanded)) {
@@ -73,30 +74,24 @@ int tool_context_resolve_directory_access(const char *path, unsigned int access,
 	if (!path || !*path || !access || (access & ~(unsigned int)TOOL_PATH_ACCESS_ALL) ||
 	    !resolved || !resolved_size)
 		return NB_ERR_INVAL;
-	char *expanded = (nb_path_expand(&file_value_3, path, NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_3))
-				  : NULL);
+	int rc = nb_path_expand(&file_value_3, path, NULL);
+	if (rc != NB_OK)
+		return rc;
+	char *expanded NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&file_value_3));
 
 	if (!expanded)
 		return NB_ERR_NOMEM;
 	if (!nb_path_is_absolute(expanded) || strlen(expanded) >= PATH_MAX) {
-		int rc = strlen(expanded) >= PATH_MAX ? NB_ERR_NAME_TOO_LONG : NB_ERR_INVAL;
+		rc = strlen(expanded) >= PATH_MAX ? NB_ERR_NAME_TOO_LONG : NB_ERR_INVAL;
 
-		free(expanded);
 		return rc;
 	}
-	char *canonical =
-		(nb_path_expand(&file_value_4, expanded, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_4, nb_buf_cstr(&file_value_4), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_4))
-			 : NULL);
-
-	free(expanded);
-	if (!canonical)
-		return NB_ERR_NOMEM;
+	rc = nb_path_canonical_missing(&file_value_4, expanded, NULL);
+	if (rc != NB_OK)
+		return rc;
+	const char *canonical = nb_buf_cstr(&file_value_4);
 	struct stat st;
-	int rc = 0;
+	rc = 0;
 
 	if (stat(canonical, &st) != 0) {
 		if (errno != ENOENT || !(access & TOOL_PATH_ACCESS_WRITE))
@@ -108,6 +103,5 @@ int tool_context_resolve_directory_access(const char *path, unsigned int access,
 		rc = (NB_ERR_NAME_TOO_LONG);
 	if (rc == 0)
 		memcpy(resolved, canonical, strlen(canonical) + 1);
-	free(canonical);
 	return rc;
 }

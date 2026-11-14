@@ -1,5 +1,6 @@
 """Shared application loop: background output, modal ownership, and recovery."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import os
 from pathlib import Path
 import signal
@@ -27,7 +28,7 @@ def until(terminal, predicate, seconds=8):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     terminal = None

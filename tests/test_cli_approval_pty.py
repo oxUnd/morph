@@ -1,4 +1,5 @@
 """Approval cards and selectable decisions through the real CLI and local model."""
+from loopback_http import LoopbackHTTPServer
 import http.server
 import json
 from pathlib import Path
@@ -30,7 +31,7 @@ def closed_card(terminal):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     releases = []

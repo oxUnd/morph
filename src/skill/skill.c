@@ -4,7 +4,6 @@
 #include "nb/log.h"
 #include "nb/file.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/utf8.h"
 #include <errno.h>
@@ -125,22 +124,15 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 	initial = reg->count;
 
 	if (workdir && *workdir) {
-		char *project = (nb_path_concat(&file_value_1, workdir, ".agents/skills") == NB_OK
-					 ? strdup(nb_buf_cstr(&file_value_1))
-					 : NULL);
-
-		if (!project)
-			return NB_ERR_NOMEM;
-		char *resolved = (nb_path_expand(&file_value_2, project, NULL) == NB_OK &&
-						  nb_path_canonical_missing(
-							  &file_value_2, nb_buf_cstr(&file_value_2),
-							  NULL) == NB_OK
-					  ? strdup(nb_buf_cstr(&file_value_2))
-					  : NULL);
-
-		rc = resolved ? skill_discover(reg, resolved) : NB_ERR_NOMEM;
-		free(resolved);
-		free(project);
+		rc = nb_path_concat(&file_value_1, workdir, ".agents/skills");
+		if (rc == NB_OK)
+			rc = nb_path_expand(&file_value_2, nb_buf_cstr(&file_value_1), NULL);
+		if (rc == NB_OK)
+			rc = nb_path_canonical_missing(&file_value_2, nb_buf_cstr(&file_value_2),
+				NULL);
+		if (rc != NB_OK)
+			return rc;
+		rc = skill_discover(reg, nb_buf_cstr(&file_value_2));
 		if (rc < 0)
 			return rc;
 	}
@@ -166,6 +158,7 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 int skill_discover(struct skill_registry *reg, const char *dir_path)
 {
 	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_4 = NB_OK;
 	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
 	int file_status_5 = NB_OK;
 	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
@@ -174,11 +167,11 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 	if (!reg || !dir_path)
 		return NB_ERR_INVAL;
 
-	char *expanded = (nb_path_expand(&file_value_4, dir_path, NULL) == NB_OK
+	char *expanded = ((expand_status_4 = nb_path_expand(&file_value_4, dir_path, NULL)) == NB_OK
 				  ? strdup(nb_buf_cstr(&file_value_4))
 				  : NULL);
 	if (!expanded)
-		return NB_ERR_NOMEM;
+		return expand_status_4 != NB_OK ? expand_status_4 : NB_ERR_NOMEM;
 
 	struct stat st;
 	if (stat(expanded, &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -186,21 +179,23 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 		return 0;
 	}
 
-	DIR *dir = opendir(expanded);
+	nb_err directory_error = {0};
+	nb_dir *dir NB_CLEANUP(nb_dir_cleanup) = nb_dir_open(expanded, &directory_error);
 	if (!dir) {
-		int err = errno;
+		int err = directory_error.code;
 		free(expanded);
-		return nb_status_from_errno(err, NULL);
+		return err;
 	}
 
 	int discovered = 0;
-	struct dirent *ent;
-	while ((ent = readdir(dir)) != NULL) {
-		if (ent->d_name[0] == '.')
+	nb_dir_entry entry;
+	const nb_dir_entry *ent = &entry;
+	while (nb_dir_next(dir, &entry) != NULL) {
+		if (ent->name[0] == '.')
 			continue;
 
 		char subdir[SKILL_PATH_MAX];
-		if (((file_status_5 = nb_path_concat(&file_value_5, expanded, ent->d_name)) != NB_OK
+		if (((file_status_5 = nb_path_concat(&file_value_5, expanded, ent->name)) != NB_OK
 			     ? file_status_5
 		     : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), subdir,
 						       sizeof(subdir))) == NB_ERR_RANGE
@@ -239,22 +234,22 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 		if (fm.description[0] == '\0') {
 			nb_log_write(reg ? reg->logger : NULL, NB_LOG_WARN,
 				     "skill_discover: skipping %s, missing description",
-				     fm.name[0] ? fm.name : ent->d_name);
+				     fm.name[0] ? fm.name : ent->name);
 			continue;
 		}
 
 		if (fm.name[0] == '\0') {
-			if (strlen(ent->d_name) >= sizeof(fm.name) ||
-			    nb_utf8_validate(nb_str_from_cstr(ent->d_name), NULL) ||
-			    nb_utf8_count(nb_str_from_cstr(ent->d_name)) > SKILL_NAME_MAX_CHARS) {
+			if (strlen(ent->name) >= sizeof(fm.name) ||
+			    nb_utf8_validate(nb_str_from_cstr(ent->name), NULL) ||
+			    nb_utf8_count(nb_str_from_cstr(ent->name)) > SKILL_NAME_MAX_CHARS) {
 				nb_log_write(reg->logger, NB_LOG_WARN,
 					     "skill_discover: skill directory name is too long");
 				continue;
 			}
-			memcpy(fm.name, ent->d_name, strlen(ent->d_name) + 1);
+			memcpy(fm.name, ent->name, strlen(ent->name) + 1);
 			nb_log_write(reg ? reg->logger : NULL, NB_LOG_DEBUG,
 				     "skill_discover: using dir name as skill name: %s",
-				     ent->d_name);
+				     ent->name);
 		}
 
 		if (skill_borrow(reg, fm.name)) {
@@ -271,7 +266,6 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 		memcpy(e.skill_md_path, skill_md_path, strlen(skill_md_path) + 1);
 		rc = skill_registry_add_copy(reg, &e);
 		if (rc != 0) {
-			closedir(dir);
 			free(expanded);
 			return rc;
 		}
@@ -280,9 +274,9 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			     fm.name);
 	}
 
-	closedir(dir);
 	free(expanded);
-	return discovered;
+	int directory_status = nb_dir_status(dir);
+	return directory_status != NB_OK ? directory_status : discovered;
 }
 
 int skill_activate(struct skill_entry *skill)

@@ -138,6 +138,7 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 					 char source[PATH_MAX])
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_1 = NB_OK;
 
 	char *expanded = NULL;
 	char *slash;
@@ -147,12 +148,12 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 		if (expanded_database) {
 			base = expanded_database;
 		} else {
-			expanded = (nb_path_expand(&file_value_1, runtime->options.db_path, NULL) ==
-						    NB_OK
+			expanded = ((expand_status_1 = nb_path_expand(
+				&file_value_1, runtime->options.db_path, NULL)) == NB_OK
 					    ? strdup(nb_buf_cstr(&file_value_1))
 					    : NULL);
 			if (!expanded)
-				return NB_ERR_NOMEM;
+				return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
 			base = expanded;
 		}
 	}
@@ -176,8 +177,11 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 static int runtime_load_config(struct runtime *runtime, struct config_file_error *error)
 {
 	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_2 = NB_OK;
 	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_3 = NB_OK;
 	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_4 = NB_OK;
 
 	struct runtime_context *ctx = &runtime->context;
 	char *expanded = NULL;
@@ -187,11 +191,12 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	config_set_defaults(runtime ? runtime->options.logger : NULL, &ctx->config);
 	if (runtime->options.config_path && runtime->options.config_path[0]) {
 		expanded =
-			(nb_path_expand(&file_value_2, runtime->options.config_path, NULL) == NB_OK
+			((expand_status_2 = nb_path_expand(&file_value_2,
+				runtime->options.config_path, NULL)) == NB_OK
 				 ? strdup(nb_buf_cstr(&file_value_2))
 				 : NULL);
 		if (!expanded)
-			return NB_ERR_NOMEM;
+			return expand_status_2 != NB_OK ? expand_status_2 : NB_ERR_NOMEM;
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
 				expanded,
@@ -216,13 +221,13 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	if (runtime->options.output_dir_override &&
 	    runtime->options.output_dir_override[0]) {
 		expanded_output =
-			(nb_path_expand(&file_value_3, runtime->options.output_dir_override,
-					NULL) == NB_OK
+			((expand_status_3 = nb_path_expand(&file_value_3,
+				runtime->options.output_dir_override, NULL)) == NB_OK
 				 ? strdup(nb_buf_cstr(&file_value_3))
 				 : NULL);
 		if (!expanded_output) {
 			free(expanded);
-			return NB_ERR_NOMEM;
+			return expand_status_3 != NB_OK ? expand_status_3 : NB_ERR_NOMEM;
 		}
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
@@ -234,13 +239,13 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 		ctx->config.general.output_dir[
 			sizeof(ctx->config.general.output_dir) - 1] = '\0';
 	} else if (ctx->config.general.output_dir[0] == '~') {
-		expanded_output = (nb_path_expand(&file_value_4, ctx->config.general.output_dir,
-						  NULL) == NB_OK
+		expanded_output = ((expand_status_4 = nb_path_expand(&file_value_4,
+			ctx->config.general.output_dir, NULL)) == NB_OK
 					   ? strdup(nb_buf_cstr(&file_value_4))
 					   : NULL);
 		if (!expanded_output) {
 			free(expanded);
-			return NB_ERR_NOMEM;
+			return expand_status_4 != NB_OK ? expand_status_4 : NB_ERR_NOMEM;
 		}
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
@@ -271,6 +276,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 static int runtime_open_database(struct runtime *runtime)
 {
 	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_5 = NB_OK;
 	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct runtime_context *ctx = &runtime->context;
@@ -281,11 +287,12 @@ static int runtime_open_database(struct runtime *runtime)
 
 	if (!runtime->options.db_path || !runtime->options.db_path[0])
 		return NB_ERR_INVAL;
-	expanded = (nb_path_expand(&file_value_5, runtime->options.db_path, NULL) == NB_OK
+	expanded = ((expand_status_5 = nb_path_expand(&file_value_5, runtime->options.db_path,
+		NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_5))
 			    : NULL);
 	if (!expanded)
-		return NB_ERR_NOMEM;
+		return expand_status_5 != NB_OK ? expand_status_5 : NB_ERR_NOMEM;
 	rc = runtime_sync_source_directory(runtime, expanded, source);
 	if (rc == 0)
 		rc = morph_sync_recover_db_replacements(runtime ? runtime->options.logger : NULL,

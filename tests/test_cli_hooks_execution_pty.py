@@ -1,5 +1,6 @@
 """Hook progress, warning output, and cancellation through the production TUI."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import shlex
@@ -15,7 +16,7 @@ import pyte
 
 
 def check_stop_continuation(driver):
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     terminal = None
@@ -94,7 +95,7 @@ print(json.dumps({'decision': 'block', 'reason': 'HOOK_CONTINUE_SENTINEL'}
 def main():
     driver = Path(sys.argv[1]).resolve()
     check_stop_continuation(driver)
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     terminal = None

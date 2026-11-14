@@ -20,13 +20,15 @@ static int capture_command(JSContext *ctx, const char *command, nb_buf *output, 
 			   int *status, int *signal_number)
 {
 	struct runner_state *state = JS_GetRuntimeOpaque(JS_GetRuntime(ctx));
-	int timeout_ms = 0;
+	int timeout_ms = -1;
 	size_t capture_limit = runner_capture_limit(ctx);
-	if (state && state->deadline > 0) {
-		time_t remaining = state->deadline - time(NULL);
+	if (state && state->deadline_ns > 0) {
+		int64_t remaining = nb_time_remaining_ns(state->deadline_ns);
 		if (remaining <= 0)
 			return NB_ERR_TIMEOUT;
-		timeout_ms = remaining > INT_MAX / 1000 ? INT_MAX : (int)remaining * 1000;
+		int64_t milliseconds = remaining / INT64_C(1000000) +
+			(remaining % INT64_C(1000000) != 0);
+		timeout_ms = milliseconds > INT_MAX ? INT_MAX : (int)milliseconds;
 	}
 	const char *argv[] = {"/bin/sh", "-c", command, NULL};
 	nb_process_options options = {

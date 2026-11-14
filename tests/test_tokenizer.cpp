@@ -6,6 +6,7 @@
 #include "nb/file.h"
 #include "encoding_fixture.h"
 #include "nb/utf8.h"
+#include "nb/encoding.h"
 #include "nb/cleanup.h"
 #include <chrono>
 #include <climits>
@@ -28,6 +29,58 @@ protected:
 		tokenizer_destroy(tok);
 	}
 };
+
+struct BpeVocabularyDirectory {
+	nb_buf path{};
+	~BpeVocabularyDirectory()
+	{
+		if (!nb_buf_empty(&path))
+			(void)nb_file_remove_all(nb_buf_cstr(&path), 0, nullptr);
+		nb_buf_destroy(&path);
+	}
+};
+
+TEST(BpeCountTest, NativeVocabularyDecoderRejectsMalformedPaddingWithoutChangingValidTokens)
+{
+	BpeVocabularyDirectory directory;
+	ASSERT_EQ(nb_file_temp_dir(&directory.path, nullptr, "morph-bpe-base64-", nullptr), NB_OK);
+	std::string path = std::string(nb_buf_cstr(&directory.path)) + "/cl100k_base.tiktoken";
+	for (const auto &encoded : {"YWI=", "YWI=garbage", "YWJ=", "YWI", "YWI==="}) {
+		SCOPED_TRACE(encoded);
+		std::string text = std::string(encoded) + " 0\n";
+		ASSERT_EQ(nb_file_write_all(path.c_str(), text.data(), text.size(), nullptr),
+			NB_OK);
+		std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
+			bpe_encoder_create(nullptr, BPE_CL100K_BASE, nb_buf_cstr(&directory.path)),
+			bpe_encoder_destroy);
+		ASSERT_NE(encoder, nullptr);
+		EXPECT_EQ(bpe_count_tokens(encoder.get(), "ab"), !strcmp(encoded, "YWI=") ? 1 : 2);
+	}
+}
+
+TEST(BpeCountTest, VocabularyGrowsBeyondTheFormerFixedTableAndMissingKeysTerminate)
+{
+	BpeVocabularyDirectory directory;
+	ASSERT_EQ(nb_file_temp_dir(&directory.path, nullptr, "morph-bpe-growth-", nullptr), NB_OK);
+	nb_buf vocabulary NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf encoded NB_CLEANUP(nb_buf_destroy) = {};
+	for (uint32_t token = 0; token < 524289u; token++) {
+		nb_buf_clear(&encoded);
+		ASSERT_EQ(nb_base64_encode(&token, sizeof(token), NB_B64_STD, true,
+			&encoded, nullptr), NB_OK);
+		ASSERT_TRUE(nb_buf_printf(&vocabulary, "%s %u\n", nb_buf_cstr(&encoded), token));
+	}
+	ASSERT_TRUE(nb_buf_append_cstr(&vocabulary, "YWI= 0\n"));
+	std::string path = std::string(nb_buf_cstr(&directory.path)) + "/cl100k_base.tiktoken";
+	ASSERT_EQ(nb_file_write_all(path.c_str(), nb_buf_cstr(&vocabulary),
+		nb_buf_len(&vocabulary), nullptr), NB_OK);
+	std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
+		bpe_encoder_create(nullptr, BPE_CL100K_BASE, nb_buf_cstr(&directory.path)),
+		bpe_encoder_destroy);
+	ASSERT_NE(encoder, nullptr);
+	EXPECT_EQ(bpe_count_tokens(encoder.get(), "ab"), 1);
+	EXPECT_EQ(bpe_count_tokens(encoder.get(), "zz"), 2);
+}
 
 TEST_F(TokenizerTest, CreateDestroy) {
 	EXPECT_NE(tok, nullptr);

@@ -119,7 +119,7 @@ static int cli_history_assistant(struct cli_application *ctx, const struct model
 int cli_history_render_session(struct cli_application *ctx, struct model_history_item *items,
 			       const struct message *messages)
 {
-	nb_map *results = nb_map_new_with_cap(32);
+	nb_map *results NB_CLEANUP(nb_map_cleanup) = nb_map_new_with_cap(32);
 	const char *turn = NULL;
 	int rc = results ? 0 : NB_ERR_NOMEM;
 
@@ -159,6 +159,5 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 			cli_history_answer(ctx, message->content);
 	}
 	cli_transcript_finish(ctx);
-	nb_map_free(results);
 	return rc;
 }

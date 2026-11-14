@@ -23,7 +23,6 @@
 #include "sapi/cli/presentation/output.h"
 #include "nb/vec.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 
 #include <ctype.h>
 #include <limits.h>

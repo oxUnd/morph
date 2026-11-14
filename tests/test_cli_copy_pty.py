@@ -1,6 +1,7 @@
 """Copy exact answers through the production command and clipboard adapters."""
 import base64
 import http.server
+from loopback_http import LoopbackHTTPServer
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,10 @@ import pyte
 
 
 def frame(terminal, label):
+    deadline = time.monotonic() + 5
+    while not any(row.rstrip() == '/copy' for row in terminal.screen.display):
+        assert time.monotonic() < deadline, terminal.raw[-5000:]
+        terminal.pump(.03)
     screen = terminal.snapshot(label)
     rows = terminal.screen.display
     composers = [index for index, row in enumerate(rows)
@@ -35,9 +40,20 @@ def frame(terminal, label):
     return screen
 
 
+def resume(terminal, session):
+    before = len(terminal.raw)
+    terminal.send('/resume ' + session + '\r')
+    deadline = time.monotonic() + 8
+    marker = 'HISTORY_LAST_QUESTION' if session == '1234abcd' else 'LEGACY_ANSWER'
+    while marker not in terminal.raw[before:]:
+        assert time.monotonic() < deadline, terminal.raw[-5000:]
+        terminal.pump(.03)
+    terminal.snapshot('restored session ' + session)
+
+
 def main():
     binary = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     answer = '# Final answer\n\n中文🙂  \n\n```sh\necho "$HOME"  \n```\n'
@@ -78,7 +94,7 @@ def main():
                                    "AND kind='assistant_message' AND active=1", (answer, native))
                         db.execute("UPDATE messages SET content=? WHERE session_id=? "
                                    "AND role='assistant' AND turn_id='recent-turn'", (answer, native))
-                    terminal.send('/resume 1234abcd\r')
+                    resume(terminal, '1234abcd')
                     terminal.send('/copy\r')
                     screen = frame(terminal, f'{columns}: resumed answer copied as Markdown')
                     assert 'copied last answer to clipboard' in screen, screen
@@ -92,7 +108,7 @@ def main():
                     terminal.send('/copy\r')
                     assert 'no assistant answer' in frame(terminal, f'{columns}: session isolation')
                     assert copied.read_bytes() == answer.encode()
-                    terminal.send('/resume 8765fedc\r')
+                    resume(terminal, '8765fedc')
                     terminal.send('/copy\r')
                     frame(terminal, f'{columns}: legacy session copy')
                     assert copied.read_bytes() == b'**LEGACY_ANSWER**'

@@ -1,5 +1,6 @@
 """History/context inspector through the production Readline loop and local SSE."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 import os
 from pathlib import Path
@@ -58,7 +59,7 @@ def seed(database):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory(prefix='morph-history-pty-') as temp:

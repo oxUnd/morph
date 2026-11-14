@@ -9,7 +9,6 @@
 #include "session_history.h"
 #include "nb/buf.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "cJSON.h"
 
@@ -130,15 +129,16 @@ static int checkpoint_preview_locked(struct runtime *runtime, int64_t session_id
 {
 	cJSON *info NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	const cJSON *workspace;
-	char root[PATH_MAX];
+	nb_buf root NB_CLEANUP(nb_buf_destroy) = {0};
 	int rc = checkpoint_store_info_copy(&runtime->context.database, session_id, id, &info);
 
 	if (rc != 0)
 		return rc;
-	if (!realpath(runtime->context.workdir, root))
-		return nb_status_from_errno(errno, NULL);
+	rc = nb_path_canonical(&root, runtime->context.workdir, NULL);
+	if (rc != NB_OK)
+		return rc;
 	workspace = cJSON_GetObjectItemCaseSensitive(info, "workspace_root");
-	if (!cJSON_IsString(workspace) || strcmp(root, workspace->valuestring) != 0)
+	if (!cJSON_IsString(workspace) || strcmp(nb_buf_cstr(&root), workspace->valuestring) != 0)
 		return NB_ERR_CROSS_DEVICE;
 	return checkpoint_store_preview_copy(&runtime->context.database, session_id, id, out);
 }

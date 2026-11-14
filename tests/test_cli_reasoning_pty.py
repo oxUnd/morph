@@ -1,5 +1,6 @@
 """Collapse reasoning in the feed and retain its live text in the details view."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import sys
@@ -69,7 +70,7 @@ class ReasoningModel(Model):
 
 
 def main():
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), ReasoningModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), ReasoningModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

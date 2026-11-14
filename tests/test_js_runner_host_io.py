@@ -1,6 +1,7 @@
 """Exercise the real runner's bounded host I/O and failure contracts."""
 
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 import os
 from pathlib import Path
@@ -45,9 +46,52 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 class RunnerHostIoTest(unittest.TestCase):
+    def test_write_errors_use_native_status_descriptions(self):
+        with tempfile.TemporaryDirectory(prefix="morph-runner-status-") as directory:
+            root = str(Path(directory).resolve())
+            result, response = self.run_script(
+                "function run(args) { try { morph.fs.writeFile(args.path, 'x'); } "
+                "catch (error) { return String(error); } }",
+                {"path": root}, MORPH_DYNAMIC_CAPS="fs_write",
+                MORPH_DYNAMIC_ALLOWED_WRITE=root, MORPH_DYNAMIC_OUTPUT_DIR=root,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("I/O error", response["result"])
+        self.assertNotIn("No such process", response["result"])
+
+    def test_file_reads_own_large_binary_and_text_after_overwrite(self):
+        with tempfile.TemporaryDirectory(prefix="morph-runner-read-") as directory:
+            directory = str(Path(directory).resolve())
+            path = Path(directory) / "payload"
+            payload = ("A\x00🙂中" * 65536).encode("utf-8")
+            path.write_bytes(payload)
+            (Path(directory) / "empty").write_bytes(b"")
+            result, response = self.run_script(
+                "function run(args) {"
+                " const binary = new Uint8Array(morph.fs.readFile(args.path));"
+                " const text = morph.fs.readText(args.path);"
+                " morph.fs.writeText(args.path, 'replaced');"
+                " const empty = morph.fs.readText(args.empty);"
+                " return { length: binary.length, first: binary[0], nul: binary[1],"
+                " last: binary[binary.length - 1], text, empty }; }",
+                {"path": str(path), "empty": str(Path(directory) / "empty")},
+                MORPH_DYNAMIC_CAPS="fs_read,fs_write",
+                MORPH_DYNAMIC_ALLOWED_READ=directory,
+                MORPH_DYNAMIC_ALLOWED_WRITE=directory,
+                MORPH_DYNAMIC_OUTPUT_DIR=directory,
+            )
+            self.assertEqual(result.returncode, 0, (result.stderr, response))
+            self.assertEqual(response["result"]["length"], len(payload))
+            self.assertEqual(response["result"]["first"], payload[0])
+            self.assertEqual(response["result"]["nul"], 0)
+            self.assertEqual(response["result"]["last"], payload[-1])
+            self.assertEqual(response["result"]["text"], payload.decode("utf-8"))
+            self.assertEqual(response["result"]["empty"], "")
+            self.assertEqual(path.read_text(), "replaced")
+
     @classmethod
     def setUpClass(cls):
-        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.base = f"http://127.0.0.1:{cls.server.server_port}"

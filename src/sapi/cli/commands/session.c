@@ -167,6 +167,7 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 static int cli_session_history_export_items(struct model_history_item *items, const char *path)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_1 = NB_OK;
 
 	cJSON *array = cJSON_CreateArray();
 	char *expanded;
@@ -204,12 +205,12 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 	cJSON_Delete(array);
 	if (!json)
 		return NB_ERR_NOMEM;
-	expanded = (nb_path_expand(&file_value_1, path, NULL) == NB_OK
+	expanded = ((expand_status_1 = nb_path_expand(&file_value_1, path, NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_1))
 			    : NULL);
 	if (!expanded) {
 		free(json);
-		return NB_ERR_NOMEM;
+		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
 	}
 	rc = nb_file_write_all(expanded, json, strlen(json), NULL);
 	free(expanded);

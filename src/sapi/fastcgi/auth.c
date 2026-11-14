@@ -4,6 +4,8 @@
 #include "sapi/fastcgi/storage/tokens.h"
 
 #include "nb/thread.h"
+#include "nb/map.h"
+#include "nb/queue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +16,8 @@
 #include "nb/file.h"
 
 /* ---- in-memory token cache (hash table) ---- */
-#define TOKEN_CACHE_SIZE 256
 #define TOKEN_CACHE_MAX 4096
+#define TOKEN_EVICTION_BUCKETS 256
 
 struct token_entry {
 	char token[64];
@@ -23,98 +25,88 @@ struct token_entry {
 	char username[64];
 	char role[24];
 	int64_t expires_at;
-	struct token_entry *next;
+	nb_queue eviction;
 };
 
 struct fcgi_auth {
 	char trust_header[64];
-	struct token_entry *tokens[TOKEN_CACHE_SIZE];
-	size_t token_count;
+	nb_map *tokens;
+	nb_queue eviction[TOKEN_EVICTION_BUCKETS];
 	nb_mutex *lock;
 };
 
-static unsigned token_hash(const char *s)
+/* Keep the historical eviction order; lookup and ownership belong to nb_map. */
+static unsigned token_eviction_bucket(const char *token)
 {
-	unsigned h = 5381;
-	while (*s)
-		h = h * 33 + (unsigned char)*s++;
-	return h;
+	unsigned hash = 5381;
+	while (*token)
+		hash = hash * 33u + (unsigned char)*token++;
+	return hash % TOKEN_EVICTION_BUCKETS;
+}
+
+static void token_entry_cleanup(struct token_entry **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
+static void token_entry_destroy(void *value, void *context)
+{
+	(void)context;
+	struct token_entry *entry = value;
+	token_entry_cleanup(&entry);
 }
 
 static struct token_entry *cache_get(struct fcgi_auth *ctx, const char *tok)
 {
-	if (!ctx)
-		return NULL;
-	unsigned idx = token_hash(tok) % TOKEN_CACHE_SIZE;
-	struct token_entry *e;
-	for (e = ctx->tokens[idx]; e; e = e->next)
-		if (strcmp(e->token, tok) == 0)
-			return e;
-	return NULL;
-}
-
-static void cache_put(struct fcgi_auth *ctx, const char *token, const char *user_id,
-		      const char *username, const char *role, int64_t expires_at)
-{
-	if (!ctx)
-		return;
-	unsigned idx = token_hash(token) % TOKEN_CACHE_SIZE;
-	struct token_entry *e;
-
-	for (e = ctx->tokens[idx]; e; e = e->next) {
-		if (strcmp(e->token, token) == 0) {
-			snprintf(e->user_id, sizeof(e->user_id), "%s", user_id);
-			snprintf(e->username, sizeof(e->username), "%s", username);
-			snprintf(e->role, sizeof(e->role), "%s", role);
-			e->expires_at = expires_at;
-			return;
-		}
-	}
-
-	if (ctx->token_count >= TOKEN_CACHE_MAX) {
-		size_t victim;
-
-		for (victim = 0; victim < TOKEN_CACHE_SIZE; victim++)
-			if (ctx->tokens[victim])
-				break;
-		if (victim < TOKEN_CACHE_SIZE) {
-			e = ctx->tokens[victim];
-			ctx->tokens[victim] = e->next;
-			ctx->token_count--;
-			free(e);
-		}
-	}
-
-	e = calloc(1, sizeof(*e));
-	if (!e)
-		return;
-	snprintf(e->token, sizeof(e->token), "%s", token);
-	snprintf(e->user_id, sizeof(e->user_id), "%s", user_id);
-	snprintf(e->username, sizeof(e->username), "%s", username);
-	snprintf(e->role, sizeof(e->role), "%s", role);
-	e->expires_at = expires_at;
-	e->next = ctx->tokens[idx];
-	ctx->tokens[idx] = e;
-	ctx->token_count++;
+	return ctx ? nb_map_get_cstr(ctx->tokens, tok) : NULL;
 }
 
 static void cache_del(struct fcgi_auth *ctx, const char *tok)
 {
 	if (!ctx)
 		return;
-	unsigned idx = token_hash(tok) % TOKEN_CACHE_SIZE;
-	struct token_entry **pp = &ctx->tokens[idx];
-	while (*pp) {
-		if (strcmp((*pp)->token, tok) == 0) {
-			struct token_entry *del = *pp;
-			*pp = del->next;
-			if (ctx->token_count > 0)
-				ctx->token_count--;
-			free(del);
+	struct token_entry *entry NB_CLEANUP(token_entry_cleanup) =
+		nb_map_del_cstr(ctx->tokens, tok);
+	if (entry)
+		nb_queue_remove(&entry->eviction);
+}
+
+static void cache_put(struct fcgi_auth *ctx, const char *token, const char *user_id,
+		      const char *username, const char *role, int64_t expires_at)
+{
+	struct token_entry *entry = NULL;
+	if (!ctx || strlen(token) >= sizeof(entry->token))
+		return;
+	entry = cache_get(ctx, token);
+	if (!entry) {
+		struct token_entry *created NB_CLEANUP(token_entry_cleanup) =
+			calloc(1, sizeof(*created));
+		if (!created)
 			return;
+		if (nb_map_size(ctx->tokens) >= TOKEN_CACHE_MAX) {
+			for (size_t bucket = 0; bucket < TOKEN_EVICTION_BUCKETS; bucket++) {
+				if (nb_queue_empty(&ctx->eviction[bucket]))
+					continue;
+				struct token_entry *victim = NB_QUEUE_DATA(
+					nb_queue_head(&ctx->eviction[bucket]), struct token_entry,
+						eviction);
+				cache_del(ctx, victim->token);
+				break;
+			}
 		}
-		pp = &(*pp)->next;
+		if (!nb_map_put_cstr(ctx->tokens, token, created, NULL))
+			return;
+		entry = created;
+		created = NULL;
+		nb_queue_insert_head(&ctx->eviction[token_eviction_bucket(token)],
+			&entry->eviction);
 	}
+	snprintf(entry->token, sizeof(entry->token), "%s", token);
+	snprintf(entry->user_id, sizeof(entry->user_id), "%s", user_id);
+	snprintf(entry->username, sizeof(entry->username), "%s", username);
+	snprintf(entry->role, sizeof(entry->role), "%s", role);
+	entry->expires_at = expires_at;
 }
 
 /* ---- public API ---- */
@@ -129,6 +121,15 @@ struct fcgi_auth *auth_create(const char *trust_header)
 		free(ctx);
 		return NULL;
 	}
+	ctx->tokens = nb_map_new_with_cap(256);
+	if (!ctx->tokens) {
+		nb_mutex_free(ctx->lock);
+		free(ctx);
+		return NULL;
+	}
+	nb_map_set_value_dtor(ctx->tokens, token_entry_destroy, NULL);
+	for (size_t bucket = 0; bucket < TOKEN_EVICTION_BUCKETS; bucket++)
+		nb_queue_init(&ctx->eviction[bucket]);
 	if (trust_header)
 		snprintf(ctx->trust_header, sizeof(ctx->trust_header), "%s", trust_header);
 	return ctx;
@@ -138,16 +139,7 @@ void auth_destroy(struct fcgi_auth *ctx)
 {
 	if (!ctx)
 		return;
-	for (size_t i = 0; i < TOKEN_CACHE_SIZE; i++) {
-		struct token_entry *entry = ctx->tokens[i];
-
-		while (entry) {
-			struct token_entry *next = entry->next;
-
-			free(entry);
-			entry = next;
-		}
-	}
+	nb_map_free(ctx->tokens);
 	(nb_mutex_free(ctx->lock), ctx->lock = NULL);
 	free(ctx);
 }

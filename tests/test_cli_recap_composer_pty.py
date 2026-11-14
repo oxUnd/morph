@@ -1,4 +1,5 @@
 """An idle composer must survive background recap output and focus changes."""
+from loopback_http import LoopbackHTTPServer
 import argparse
 import http.server
 import json
@@ -259,7 +260,7 @@ def main():
     parser.add_argument('--cycles', type=int, default=1)
     parser.add_argument('--artifacts', type=Path, default=Path('/tmp/morph-recap-composer-artifacts'))
     arguments = parser.parse_args()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0),
+    server = LoopbackHTTPServer(('127.0.0.1', 0),
                                             LiveRecapModel if arguments.live else RecapModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()

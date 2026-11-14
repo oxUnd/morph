@@ -5,8 +5,6 @@
 #include "nb/vec.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/cleanup.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -250,7 +248,7 @@ static int fetch_interrupted(void *opaque)
 {
 	const struct runner_state *state = opaque;
 
-	return state && state->deadline > 0 && time(NULL) >= state->deadline;
+	return state && state->deadline_ns > 0 && nb_time_remaining_ns(state->deadline_ns) == 0;
 }
 
 static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)

@@ -1,5 +1,6 @@
 """Real composer, commands, streaming steering and persisted preference QA."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import sqlite3
@@ -112,7 +113,7 @@ def system_prompt(body):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     releases = []

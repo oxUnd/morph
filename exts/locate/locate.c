@@ -645,7 +645,7 @@ int main(int argc, char **argv)
 		if (rc == 0)
 			resp = build_result(id, lat, lon, acc, alt, timestamp);
 		else
-			resp = build_error(id, strerror(-rc));
+			resp = build_error(id, nb_status_str((nb_status)rc));
 
 		if (resp) {
 			printf("%s\n", resp);
@@ -656,7 +656,7 @@ int main(int argc, char **argv)
 		if (rc == 0) {
 			print_plain_result(lat, lon, acc, alt, timestamp);
 		} else {
-			fprintf(stderr, "Error: %s\n", strerror(-rc));
+			fprintf(stderr, "Error: %s\n", nb_status_str((nb_status)rc));
 #if defined(__APPLE__)
 			if (rc == NB_ERR_NOT_PERMITTED || rc == NB_ERR_TIMEOUT)
 				fprintf(stderr,

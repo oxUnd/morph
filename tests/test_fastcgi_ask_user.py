@@ -1,5 +1,6 @@
 """Exercise optional questions against the real FastCGI server and a local model."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 import os
 from pathlib import Path
@@ -101,7 +102,7 @@ def wait_event(database, session, kind, after=0):
 
 def main():
     binary = Path(sys.argv[1]).resolve()
-    model = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    model = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     model.daemon_threads = True
     threading.Thread(target=model.serve_forever, daemon=True).start()
     releases = []

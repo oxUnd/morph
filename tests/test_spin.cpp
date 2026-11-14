@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string>
 
 TEST(SpinInit, InitDestroy)
 {
@@ -31,6 +32,30 @@ TEST(SpinInit, NullContext)
 {
 	EXPECT_NO_FATAL_FAILURE(spin_init(NULL, NULL));
 	EXPECT_NO_FATAL_FAILURE(spin_destroy(NULL));
+}
+
+TEST(SpinRender, DurationUsesMonotonicTimeWithoutChangingPublicWallClockFields)
+{
+	char *text = nullptr;
+	size_t length = 0;
+	FILE *output = open_memstream(&text, &length);
+	ASSERT_NE(output, nullptr);
+	struct spin_context ctx{};
+	ASSERT_EQ(spin_init(&ctx, output), NB_OK);
+	ctx.running = 1;
+	ctx.state = SPIN_STATE_EXECUTING;
+	ctx.started_ns = nb_time_monotonic_ns() - INT64_C(65000000000);
+	ctx.start_time = time(nullptr) + 86400;
+	ctx.last_update = ctx.start_time;
+	spin_render(&ctx);
+	ASSERT_EQ(fflush(output), 0);
+	ASSERT_NE(text, nullptr);
+	EXPECT_NE(std::string(text).find("1m 5s"), std::string::npos);
+	EXPECT_EQ(ctx.last_update, ctx.start_time);
+	ctx.running = 0;
+	spin_destroy(&ctx);
+	fclose(output);
+	free(text);
 }
 
 TEST(SpinLifecycle, StartStop)

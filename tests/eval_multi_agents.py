@@ -9,6 +9,7 @@ import argparse
 import collections
 import contextlib
 import http.server
+from loopback_http import LoopbackHTTPServer
 import hashlib
 import json
 import os
@@ -598,7 +599,7 @@ def run_trial(driver, runner, model, mode, dependency, output_dir, scripted, tim
     config = directory / 'config.toml'
     server = None
     if scripted:
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), ScriptedModel)
+        server = LoopbackHTTPServer(('127.0.0.1', 0), ScriptedModel)
         server.daemon_threads = True
         server.eval_state = {'mode': mode, 'dependency': dependency}
         threading.Thread(target=server.serve_forever, daemon=True).start()

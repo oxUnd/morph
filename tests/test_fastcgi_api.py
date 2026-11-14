@@ -1,5 +1,6 @@
 """Verify session pagination/history, JSON escaping, request ids, and limits."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 import os
 from pathlib import Path
@@ -86,7 +87,7 @@ def wait_for_install(endpoint, process, stderr):
 
 def main():
     binary = Path(sys.argv[1]).resolve()
-    model = http.server.ThreadingHTTPServer(('127.0.0.1', 0), harness.Model)
+    model = LoopbackHTTPServer(('127.0.0.1', 0), harness.Model)
     model.daemon_threads = True
     threading.Thread(target=model.serve_forever, daemon=True).start()
     process = None

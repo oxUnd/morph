@@ -419,6 +419,7 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 {
 	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_3 = NB_OK;
 
 	struct config *config;
 	struct tool_context *tctx;
@@ -488,12 +489,13 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		}
 	}
 	if (config->skill.dir[0]) {
-		char *dir = (nb_path_expand(&file_value_3, config->skill.dir, NULL) == NB_OK
+		char *dir = ((expand_status_3 = nb_path_expand(&file_value_3, config->skill.dir,
+			NULL)) == NB_OK
 				     ? strdup(nb_buf_cstr(&file_value_3))
 				     : NULL);
 
 		if (!dir)
-			return NB_ERR_NOMEM;
+			return expand_status_3 != NB_OK ? expand_status_3 : NB_ERR_NOMEM;
 		rc = nb_file_mkdir(dir, true, NULL);
 		if (rc == 0)
 			rc = tool_context_add_builtin_path(tctx, TOOL_PATH_READ, dir);

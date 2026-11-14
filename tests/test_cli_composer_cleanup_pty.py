@@ -1,5 +1,6 @@
 """Accepted lines must not paint another editable prompt into terminal history."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import re
@@ -132,7 +133,7 @@ def restored_composer_snapshot(terminal, label):
 
 def main():
     binary = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), ComposerModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), ComposerModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

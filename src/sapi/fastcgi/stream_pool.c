@@ -5,12 +5,13 @@
 
 #include <errno.h>
 #include "nb/thread.h"
+#include "nb/queue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct stream_job {
-	struct stream_job *next;
+	nb_queue link;
 	FCGX_Request *req;
 	request_t r;
 	fcgi_stream_fn fn;
@@ -21,8 +22,7 @@ struct fcgi_stream_pool {
 	nb_cond *changed;
 	nb_thread **threads;
 	int thread_count;
-	struct stream_job *head;
-	struct stream_job *tail;
+	nb_queue pending;
 	int queued;
 	int queue_max;
 	int active;
@@ -31,13 +31,12 @@ struct fcgi_stream_pool {
 
 static struct stream_job *stream_job_pop(struct fcgi_stream_pool *pool)
 {
-	struct stream_job *job = pool->head;
+	struct stream_job *job = nb_queue_empty(&pool->pending) ? NULL :
+		NB_QUEUE_DATA(nb_queue_head(&pool->pending), struct stream_job, link);
 
 	if (!job)
 		return NULL;
-	pool->head = job->next;
-	if (!pool->head)
-		pool->tail = NULL;
+	nb_queue_remove(&job->link);
 	pool->queued--;
 	return job;
 }
@@ -65,9 +64,9 @@ static void *stream_worker_main(void *arg)
 		int stopping;
 
 		nb_mutex_lock(pool->lock);
-		while (!pool->head && !pool->stopping)
+		while (nb_queue_empty(&pool->pending) && !pool->stopping)
 			nb_cond_wait(pool->changed, pool->lock);
-		if (!pool->head && pool->stopping) {
+		if (nb_queue_empty(&pool->pending) && pool->stopping) {
 			nb_mutex_unlock(pool->lock);
 			break;
 		}
@@ -125,6 +124,7 @@ struct fcgi_stream_pool *fcgi_stream_pool_create(int threads, int queue_max, str
 		free(pool);
 		return NULL;
 	}
+	nb_queue_init(&pool->pending);
 	pool->thread_count = threads;
 	pool->queue_max = queue_max;
 	for (; started < threads; started++) {
@@ -171,11 +171,7 @@ int fcgi_stream_pool_submit_take(struct fcgi_stream_pool *pool, request_t **owne
 		free(job);
 		return NB_ERR_AGAIN;
 	}
-	if (pool->tail)
-		pool->tail->next = job;
-	else
-		pool->head = job;
-	pool->tail = job;
+	nb_queue_insert_tail(&pool->pending, &job->link);
 	pool->queued++;
 	r->fcgx = NULL;
 	r->method = NULL;

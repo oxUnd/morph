@@ -15,15 +15,16 @@
 #include <errno.h>
 #include <string.h>
 
-static void model_lock_cleanup(int *fd)
+static void model_lock_cleanup(nb_file_lock **lock)
 {
-	if (*fd >= 0)
-		close(*fd);
+	nb_file_lock_release(*lock);
+	*lock = NULL;
 }
 
 static int model_save_mode(struct runtime *runtime, int ultra)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int read_status_1 = NB_OK;
 	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *path = runtime->context.config_path;
@@ -36,14 +37,12 @@ static int model_save_mode(struct runtime *runtime, int ultra)
 		rc = (nb_buf_printf(&lock_path, "%s.lock", path) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
-	int fd NB_CLEANUP(model_lock_cleanup) =
-		open(nb_buf_cstr(&lock_path), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-	if (fd < 0)
-		return nb_status_from_errno(errno, NULL);
-	if (flock(fd, LOCK_EX | LOCK_NB) != 0)
-		return nb_status_from_errno(errno, NULL);
+	nb_file_lock *lock NB_CLEANUP(model_lock_cleanup) = NULL;
+	rc = nb_file_lock_acquire(nb_buf_cstr(&lock_path), true, false, &lock, NULL);
+	if (rc != NB_OK)
+		return rc;
 	char *before NB_CLEANUP(nb_charp_cleanup) =
-		(nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+		((read_status_1 = nb_file_read_all(path, &file_value_1, 0, NULL)) == NB_OK &&
 				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
 					 NULL
 			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
@@ -52,7 +51,7 @@ static int model_save_mode(struct runtime *runtime, int ultra)
 			 : NULL);
 	char *after NB_CLEANUP(nb_charp_cleanup) = NULL;
 	if (!before)
-		return errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
+		return read_status_1 != NB_OK ? read_status_1 : NB_ERR_NOMEM;
 	rc = config_text_merge_copy(before,
 				    ultra ? "[agents]\nmulti_agent_mode = \"proactive\"\n"
 					  : "[agents]\nmulti_agent_mode = \"explicit\"\n",

@@ -1,5 +1,6 @@
 """Verify per-session turn queueing, ordering, and queue-full rejection."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 import os
 from pathlib import Path
@@ -77,7 +78,7 @@ def turn_events(database, session, kind):
 
 def main():
     binary = Path(sys.argv[1]).resolve()
-    model = http.server.ThreadingHTTPServer(('127.0.0.1', 0), harness.Model)
+    model = LoopbackHTTPServer(('127.0.0.1', 0), harness.Model)
     model.daemon_threads = True
     threading.Thread(target=model.serve_forever, daemon=True).start()
     releases = []

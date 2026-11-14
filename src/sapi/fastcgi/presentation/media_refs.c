@@ -13,10 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "nb/file.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
 #include <sys/stat.h>
 
 static const char *bridge_output_dir(struct fcgi_turn_job *j)
@@ -96,7 +93,8 @@ struct fcgi_turn_artifact *fcgi_media_artifact_borrow(struct fcgi_turn_job *j, c
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char rel[512];
-	char real[PATH_MAX];
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
+	const char *real;
 	char *expanded;
 	struct stat st;
 	const char *filename;
@@ -114,11 +112,12 @@ struct fcgi_turn_artifact *fcgi_media_artifact_borrow(struct fcgi_turn_job *j, c
 		free(expanded);
 		return NULL;
 	}
-	if (!realpath(expanded, real)) {
+	if (nb_path_canonical(&canonical, expanded, NULL) != NB_OK) {
 		free(expanded);
 		return NULL;
 	}
 	free(expanded);
+	real = nb_buf_cstr(&canonical);
 	if (!relative_under_root(bridge_output_dir(j), real, rel))
 		return NULL;
 	for (int i = 0; i < j->artifacts_count; i++) {

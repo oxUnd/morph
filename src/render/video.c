@@ -6,7 +6,6 @@
 #include "nb/str.h"
 #include "nb/encoding.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/log.h"
 #include <ctype.h>

@@ -124,10 +124,21 @@ static void spin_render_shimmer(struct spin_context *ctx, size_t budget)
 	fflush(ctx->output);
 }
 
-static void format_elapsed(char *buf, size_t len, time_t start)
+static void format_elapsed(char *buf, size_t len, struct spin_context *ctx)
 {
 	if (!buf || len == 0) return;
-	long elapsed = (long)(time(NULL) - start);
+	int64_t now = nb_time_monotonic_ns();
+	if (!ctx->started_ns) {
+		/* Support callers that initialize a render-only context directly. */
+		time_t wall = time(NULL);
+		int64_t available = now > 0 ? now / INT64_C(1000000000) : 0;
+		uint64_t elapsed = wall > ctx->start_time
+			? (uint64_t)wall - (uint64_t)ctx->start_time : 0;
+		int64_t seconds = elapsed > (uint64_t)available ? available : (int64_t)elapsed;
+		ctx->started_ns = now - seconds * INT64_C(1000000000);
+	}
+	long elapsed = now > ctx->started_ns
+		? (long)((now - ctx->started_ns) / INT64_C(1000000000)) : 0;
 	if (elapsed < 60) {
 		snprintf(buf, len, "%lds", elapsed);
 	} else if (elapsed < 3600) {
@@ -163,7 +174,7 @@ void spin_render(struct spin_context *ctx)
 	const char *prefix = state_prefix(ctx->state);
 
 	char elapsed[32];
-	format_elapsed(elapsed, sizeof(elapsed), ctx->start_time);
+	format_elapsed(elapsed, sizeof(elapsed), ctx);
 
 	size_t term_w = get_term_width();
 	/* Reserve the rightmost cell so we never trip terminal autowrap. */
@@ -283,7 +294,7 @@ static void *spin_thread_func(void *arg)
 			spin_render(ctx);
 		}
 		nb_mutex_unlock(ctx->mutex);
-		usleep((useconds_t)(ctx->interval_ms * 1000));
+		nb_time_sleep_ms((uint32_t)ctx->interval_ms);
 	}
 
 	return NULL;
@@ -331,6 +342,7 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 	ctx->active = 1;
 	ctx->frame = 0;
 	ctx->start_time = time(NULL);
+	ctx->started_ns = nb_time_monotonic_ns();
 	ctx->last_update = ctx->start_time;
 	ctx->last_render_width = 0;
 	ctx->submessage[0] = '\0';
@@ -417,7 +429,7 @@ void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char
 	fprintf(ctx->output, "\r\033[K");
 
 	char elapsed[32];
-	format_elapsed(elapsed, sizeof(elapsed), ctx->start_time);
+	format_elapsed(elapsed, sizeof(elapsed), ctx);
 	const char *prefix = state_prefix(final_state);
 
 	/* Match spin_render's hard budget so the final line never wraps

@@ -3,7 +3,6 @@
 #include "nb/cleanup.h"
 #include "js_values.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "nb/file.h"
 #include <ctype.h>
 #include <errno.h>

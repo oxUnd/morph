@@ -21,6 +21,7 @@
 int cli_media_attach_image(struct cli_application *ctx, const char *path)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_1 = NB_OK;
 
 	char *expanded;
 	const struct config *config;
@@ -30,11 +31,11 @@ int cli_media_attach_image(struct cli_application *ctx, const char *path)
 
 	if (!ctx || !path || !path[0])
 		return NB_ERR_INVAL;
-	expanded = (nb_path_expand(&file_value_1, path, NULL) == NB_OK
+	expanded = ((expand_status_1 = nb_path_expand(&file_value_1, path, NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_1))
 			    : NULL);
 	if (!expanded)
-		return NB_ERR_NOMEM;
+		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
 	if (!nb_file_exists(expanded)) {
 		CMD_ERROR(ctx, "file not found: %s", expanded);
 		free(expanded);
@@ -97,6 +98,7 @@ static int cli_media_play_video(struct cli_application *ctx, const char *path)
 int cli_media_handle_path(struct cli_application *ctx, const char *input, int *handled)
 {
 	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_2 = NB_OK;
 
 	char *copy;
 	char *expanded;
@@ -118,12 +120,12 @@ int cli_media_handle_path(struct cli_application *ctx, const char *input, int *h
 		free(copy);
 		return 0;
 	}
-	expanded = (nb_path_expand(&file_value_2, argv[0], NULL) == NB_OK
+	expanded = ((expand_status_2 = nb_path_expand(&file_value_2, argv[0], NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_2))
 			    : NULL);
 	free(copy);
 	if (!expanded)
-		return NB_ERR_NOMEM;
+		return expand_status_2 != NB_OK ? expand_status_2 : NB_ERR_NOMEM;
 	if (!nb_file_exists(expanded)) {
 		free(expanded);
 		return 0;

@@ -338,6 +338,14 @@ static void test_patch(int *failures)
 int main(void)
 {
 	int failures = 0;
+	char *legacy_result NB_CLEANUP(nb_charp_cleanup) = NULL;
+	extern int ext_run(const char *args_json, char **result_json);
+	expect_true(&failures, ext_run("{}", &legacy_result) == NB_ERR_UNSUPPORTED,
+		    "standalone extension returns native unsupported status");
+	cJSON *legacy NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(legacy_result);
+	expect_true(&failures, legacy &&
+		cJSON_GetNumberValue(cJSON_GetObjectItem(legacy, "code")) == -95,
+		"standalone extension preserves the historical wire error code");
 
 	(void)system("rm -rf /tmp/morph_fw_work /tmp/morph_fw_out "
 		     "/tmp/morph_fw_denied.txt");

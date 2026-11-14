@@ -1,5 +1,6 @@
 """Retained alternate-screen chat: resize, draft, tools, scroll and modal return."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import base64
 import json
 import re
@@ -255,7 +256,7 @@ def run_case(binary, server, width, color, production=False):
 
 
 def main():
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

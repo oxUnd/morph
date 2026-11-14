@@ -6,10 +6,8 @@
 #include "nb/cleanup.h"
 #include "nb/encoding.h"
 #include "media/image.h"
-#include "nb/cleanup.h"
 #include "media/image.h"
 #include "nb/random.h"
-#include "nb/encoding.h"
 #include "stb_image_resize2.h"
 #include <errno.h>
 #include <limits.h>

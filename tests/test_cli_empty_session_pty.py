@@ -1,5 +1,6 @@
 """Start the production CLI with no sessions and exercise its idle polling."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import sqlite3
@@ -71,7 +72,7 @@ def assert_quiet(terminal, database):
 
 def main():
     binary = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), StartupModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), StartupModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

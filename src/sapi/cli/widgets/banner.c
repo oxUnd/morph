@@ -8,7 +8,6 @@
 #include "nb/encoding.h"
 #include "nb/buf.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "runtime/resources.h"
 #include "nb/file.h"
 #include "nb/utf8.h"

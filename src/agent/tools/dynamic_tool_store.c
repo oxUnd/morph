@@ -19,22 +19,6 @@ static uint64_t fnv1a64(const char *data, size_t len);
 static const char *origin_name(enum tool_origin origin);
 static int next_checkpoint_id(const char *tool_dir, char *id, size_t id_size);
 
-static int read_definition_text(const char *path, char **text)
-{
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
-
-	errno = 0;
-	*text = (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
-				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				   nb_buf_len(&file_value_1) + 1),
-			    nb_charp_steal(&file_copy_1))
-			 : NULL);
-	return *text ? 0 : nb_status_from_errno(errno, NULL);
-}
-
 void dynamic_tool_store_definition_cleanup(struct dynamic_tool_definition *definition)
 {
 	if (!definition)
@@ -49,18 +33,17 @@ static int definition_load_source(struct dynamic_tool_definition *definition,
 				  const char *source_path)
 {
 	const cJSON *field = cJSON_GetObjectItem(definition->document, "source");
-	char *legacy = NULL;
+	nb_buf legacy NB_CLEANUP(nb_buf_destroy) = {0};
 	int rc;
 
 	if (field) {
 		definition->source = cJSON_GetStringValue(field);
 		return definition->source ? 0 : NB_ERR_FORMAT;
 	}
-	rc = read_definition_text(source_path, &legacy);
+	rc = nb_file_read_all(source_path, &legacy, 0, NULL);
 	if (rc != 0)
 		return rc;
-	field = cJSON_AddStringToObject(definition->document, "source", legacy);
-	free(legacy);
+	field = cJSON_AddStringToObject(definition->document, "source", nb_buf_cstr(&legacy));
 	if (!field)
 		return NB_ERR_NOMEM;
 	definition->source = cJSON_GetStringValue(field);
@@ -82,17 +65,17 @@ int dynamic_tool_store_load_definition(const char *meta_path, const char *source
 {
 	const cJSON *input;
 	const cJSON *output;
-	char *text = NULL;
+	nb_buf text NB_CLEANUP(nb_buf_destroy) = {0};
 	int rc;
 
 	if (!meta_path || !source_path || !definition)
 		return NB_ERR_INVAL;
 	memset(definition, 0, sizeof(*definition));
-	rc = read_definition_text(meta_path, &text);
+	rc = nb_file_read_all(meta_path, &text, 0, NULL);
 	if (rc != 0)
 		return rc;
-	definition->document = cJSON_ParseWithOpts(text, NULL, 1);
-	free(text);
+	definition->document = cJSON_ParseWithOpts(nb_buf_cstr(&text), NULL, 1);
+	nb_buf_destroy(&text);
 	if (!definition->document)
 		return NB_ERR_PARSE;
 	if (!cJSON_IsObject(definition->document)) {
@@ -449,10 +432,8 @@ int dynamic_tool_store_read_checkpoint_meta(const char *checkpoint_dir, struct t
 	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
 	int file_status_9 = NB_OK;
 	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_10 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char path[PATH_MAX];
-	char *json;
 	cJSON *root;
 	cJSON *item;
 	int rc;
@@ -469,17 +450,11 @@ int dynamic_tool_store_read_checkpoint_meta(const char *checkpoint_dir, struct t
 		      : file_status_9);
 	if (rc < 0)
 		return rc;
-	json = (nb_file_read_all(path, &file_value_10, 0, NULL) == NB_OK &&
-				(file_copy_10 = (char *)malloc(nb_buf_len(&file_value_10) + 1)) !=
-					NULL
-			? (memcpy(file_copy_10, nb_buf_cstr(&file_value_10),
-				  nb_buf_len(&file_value_10) + 1),
-			   nb_charp_steal(&file_copy_10))
-			: NULL);
-	if (!json)
-		return NB_ERR_NOT_FOUND;
-	root = cJSON_Parse(json);
-	free(json);
+	rc = nb_file_read_all(path, &file_value_10, 0, NULL);
+	if (rc != NB_OK)
+		return rc;
+	root = cJSON_Parse(nb_buf_cstr(&file_value_10));
+	nb_buf_destroy(&file_value_10);
 	if (!root)
 		return NB_ERR_INVAL;
 	item = cJSON_GetObjectItem(root, "id");
@@ -769,51 +744,14 @@ int dynamic_tool_store_restore_tool_checkpoint(const char *tool_dir, const char 
 
 int dynamic_tool_store_remove_tree(const char *path)
 {
-	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_14 = NB_OK;
-
 	struct stat st;
-	DIR *dir;
-	struct dirent *ent;
 
 	if (!path || !*path)
 		return NB_ERR_INVAL;
+	/* Preserve the public missing-root error; native removal itself is idempotent. */
 	if (lstat(path, &st) != 0)
 		return nb_status_from_errno(errno, NULL);
-	if (!S_ISDIR(st.st_mode)) {
-		if (unlink(path) != 0)
-			return nb_status_from_errno(errno, NULL);
-		return 0;
-	}
-	dir = opendir(path);
-	if (!dir)
-		return nb_status_from_errno(errno, NULL);
-	while ((ent = readdir(dir)) != NULL) {
-		char child[PATH_MAX];
-		int rc;
-
-		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-			continue;
-		rc = ((file_status_14 = nb_path_concat(&file_value_14, path, ent->d_name)) != NB_OK
-			      ? file_status_14
-		      : (file_status_14 = nb_str_copy_to(nb_buf_str(&file_value_14), child,
-							 sizeof(child))) == NB_ERR_RANGE
-			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_14);
-		if (rc < 0) {
-			closedir(dir);
-			return rc;
-		}
-		rc = dynamic_tool_store_remove_tree(child);
-		if (rc < 0) {
-			closedir(dir);
-			return rc;
-		}
-	}
-	closedir(dir);
-	if (rmdir(path) != 0)
-		return nb_status_from_errno(errno, NULL);
-	return 0;
+	return nb_file_remove_all(path, 0, NULL);
 }
 
 char *dynamic_tool_store_optional_text_create(const char *path)

@@ -8,7 +8,6 @@
 #include "sapi/cli/presentation/mcp_tree.h"
 #include "nb/vec.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 

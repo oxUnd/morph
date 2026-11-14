@@ -18,9 +18,7 @@
 #include <limits.h>
 #include <spawn.h>
 #include "nb/vec.h"
-#include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "nb/time.h"
 
 extern char **environ;

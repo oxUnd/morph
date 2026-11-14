@@ -126,7 +126,7 @@ static int history_legacy_entries(struct runtime_context *ctx, cJSON *entries)
 int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out)
 {
 	struct model_history_item *items = NULL;
-	nb_map *covered = NULL;
+	nb_map *covered NB_CLEANUP(nb_map_cleanup) = NULL;
 	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	cJSON *entries = NULL;
 	int count = 0;
@@ -189,7 +189,6 @@ int runtime_session_history_inspect_copy(struct runtime *runtime, cJSON **out)
 	     !cJSON_AddStringToObject(root, "model", ctx->llm ? ctx->llm->model_id : "")))
 		rc = NB_ERR_NOMEM;
 	model_history_free_list(items);
-	nb_map_free(covered);
 	nb_mutex_unlock(ctx->execution_lock);
 	if (rc != 0)
 		return rc;

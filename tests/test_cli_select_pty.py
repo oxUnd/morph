@@ -1,5 +1,6 @@
 """Exercise ask_user selection and custom answers in the production CLI."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import sys
@@ -69,7 +70,7 @@ def run_plain(terminal, releases):
 
 
 def main():
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     terminal = None

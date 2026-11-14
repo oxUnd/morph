@@ -2,8 +2,8 @@
 #include "nb/buf.h"
 #include "nb/cleanup.h"
 #include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/cleanup.h"
+#include "nb/map.h"
+#include "nb/encoding.h"
 #include "runtime/resources.h"
 #include "errors.h"
 #include "nb/file.h"
@@ -17,139 +17,26 @@
 #include <string.h>
 #include <sys/types.h>
 
-/* ------------------------------------------------------------------ */
-/*  Hash table: FNV-1a open addressing for byte-sequence → rank       */
-/* ------------------------------------------------------------------ */
-
-#define HT_LOAD_FACTOR 70
-#define RANK_EMPTY    (-1)
-#define RANK_DELETED  (-2)
-
-struct ht_entry {
-	uint32_t key_off;
-	uint16_t key_len;
-	int32_t rank;
-};
+/* Binary token keys are copied by nbase; rank zero uses a non-NULL value. */
+#define RANK_EMPTY (-1)
 
 struct bpe_encoder {
-	struct ht_entry *ht;
-	uint32_t ht_cap;
-	uint32_t ht_mask;
-	uint32_t ht_count;
-	nb_buf key_pool;
+	nb_map *ranks;
 	enum bpe_encoding encoding;
 };
 
-static uint32_t fnv1a(const unsigned char *data, size_t len)
+static void bpe_encoder_owner_cleanup(struct bpe_encoder **owner)
 {
-	uint32_t h = 2166136261u;
-	for (size_t i = 0; i < len; i++) {
-		h ^= data[i];
-		h *= 16777619u;
-	}
-	return h;
-}
-
-static uint32_t ht_next_cap(uint32_t min_slots)
-{
-	uint32_t cap = 64;
-	while (cap < min_slots)
-		cap *= 2;
-	return cap;
-}
-
-static void ht_insert(struct bpe_encoder *enc, uint32_t key_off,
-		      uint16_t key_len, int32_t rank)
-{
-	const unsigned char *key = (unsigned char *)enc->key_pool.ptr + key_off;
-	uint32_t idx = fnv1a(key, key_len) & enc->ht_mask;
-	for (;;) {
-		struct ht_entry *e = &enc->ht[idx];
-		if (e->rank == RANK_EMPTY || e->rank == RANK_DELETED) {
-			e->key_off = key_off;
-			e->key_len = key_len;
-			e->rank = rank;
-			enc->ht_count++;
-			return;
-		}
-		if (e->key_len == key_len &&
-		    memcmp((unsigned char *)enc->key_pool.ptr + e->key_off, key, key_len) == 0) {
-			e->rank = rank;
-			return;
-		}
-		idx = (idx + 1) & enc->ht_mask;
-	}
+	bpe_encoder_destroy(*owner);
+	*owner = NULL;
 }
 
 static int32_t ht_lookup(const struct bpe_encoder *enc,
 			 const unsigned char *key, uint16_t key_len)
 {
-	uint32_t idx = fnv1a(key, key_len) & enc->ht_mask;
-	for (;;) {
-		const struct ht_entry *e = &enc->ht[idx];
-		if (e->rank == RANK_EMPTY)
-			return RANK_EMPTY;
-		if (e->rank != RANK_DELETED && e->key_len == key_len &&
-		    memcmp((unsigned char *)enc->key_pool.ptr + e->key_off, key, key_len) == 0)
-			return e->rank;
-		idx = (idx + 1) & enc->ht_mask;
-	}
-}
-
-/* ------------------------------------------------------------------ */
-/*  Base64 decoder                                                     */
-/* ------------------------------------------------------------------ */
-
-static const int8_t b64_table[256] = {
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
-	52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
-	-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
-	15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
-	-1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
-	41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-};
-
-static int b64_decode(const char *src, size_t src_len,
-		      unsigned char *dst, size_t dst_capacity, size_t *out_len)
-{
-	size_t si = 0, di = 0;
-	while (si < src_len) {
-		int8_t a = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
-		int8_t b = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
-		if (a < 0 || b < 0)
-			return NB_ERR_INVAL;
-		if (di == dst_capacity)
-			return NB_ERR_TOO_BIG;
-		dst[di++] = (unsigned char)((a << 2) | (b >> 4));
-		if (si < src_len && src[si] == '=')
-			break;
-		int8_t c = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
-		if (c < 0)
-			return NB_ERR_INVAL;
-		if (di == dst_capacity)
-			return NB_ERR_TOO_BIG;
-		dst[di++] = (unsigned char)(((b & 0x0F) << 4) | (c >> 2));
-		if (si < src_len && src[si] == '=')
-			break;
-		int8_t d = (si < src_len) ? b64_table[(unsigned char)src[si++]] : -1;
-		if (d < 0)
-			return NB_ERR_INVAL;
-		if (di == dst_capacity)
-			return NB_ERR_TOO_BIG;
-		dst[di++] = (unsigned char)(((c & 0x03) << 6) | d);
-	}
-	*out_len = di;
-	return 0;
+	void *value = nb_map_get(enc->ranks,
+				nb_str_from_parts((const char *)key, key_len));
+	return value ? (int32_t)((uintptr_t)value - 1u) : RANK_EMPTY;
 }
 
 /* ------------------------------------------------------------------ */
@@ -176,7 +63,7 @@ static int load_vocab(struct nb_log *logger, struct bpe_encoder *enc, const char
 	char *line NB_CLEANUP(nb_charp_cleanup) = NULL;
 	nb_buf decoded NB_CLEANUP(nb_buf_cleanup) = {0};
 	size_t line_capacity = 0;
-	int count = 0;
+	size_t count = 0;
 	for (;;) {
 		errno = 0;
 		ssize_t read_count = getline(&line, &line_capacity, fp);
@@ -210,36 +97,30 @@ static int load_vocab(struct nb_log *logger, struct bpe_encoder *enc, const char
 				     (unsigned)UINT16_MAX, path);
 			return NB_ERR_TOO_BIG;
 		}
-		size_t decoded_capacity = ((b64_len + 3u) / 4u) * 3u;
-		int rc = (nb_buf_reserve(&decoded, decoded_capacity) ? 0 : NB_ERR_NOMEM);
-		if (rc < 0)
-			return rc;
-		size_t decoded_len = 0;
-		rc = b64_decode(b64, b64_len, (unsigned char *)decoded.ptr, decoded_capacity,
-				&decoded_len);
-		if (rc == NB_ERR_TOO_BIG)
-			return rc;
-		if (rc < 0)
+		/* Retain the vocabulary's padded, whitespace-free base64 format. */
+		if (b64_len % 4u || strpbrk(b64, "\t\r\n"))
 			continue;
-		if (decoded_len > UINT16_MAX)
+		nb_buf_clear(&decoded);
+		int rc = nb_base64_decode(nb_str_from_parts(b64, b64_len),
+					  NB_B64_STD, &decoded, NULL);
+		if (rc == NB_ERR_NOMEM || rc == NB_ERR_RANGE)
+			return rc;
+		if (rc != NB_OK)
+			continue;
+		if (nb_buf_len(&decoded) > UINT16_MAX)
 			return NB_ERR_TOO_BIG;
 
+		errno = 0;
 		long rank_val = strtol(rank_str, NULL, 10);
-		if (rank_val < 0)
+		if (errno == ERANGE || rank_val < 0 || rank_val > INT32_MAX)
 			continue;
-
-		if (enc->key_pool.len > UINT32_MAX - decoded_len)
-			return NB_ERR_RANGE;
-		rc = (nb_buf_append(&enc->key_pool, decoded.ptr, decoded_len) ? 0 : NB_ERR_NOMEM);
-		if (rc < 0)
-			return rc;
-
-		ht_insert(enc, (uint32_t)(enc->key_pool.len - decoded_len),
-			  (uint16_t)decoded_len, (int32_t)rank_val);
+		void *rank = (void *)(uintptr_t)((uint32_t)rank_val + 1u);
+		if (!nb_map_put(enc->ranks, nb_buf_str(&decoded), rank, NULL))
+			return NB_ERR_NOMEM;
 		count++;
 	}
 
-	nb_log_write(logger, NB_LOG_INFO, "bpe: loaded %d tokens from %s", count, path);
+	nb_log_write(logger, NB_LOG_INFO, "bpe: loaded %zu tokens from %s", count, path);
 	return 0;
 }
 
@@ -1191,42 +1072,25 @@ struct bpe_encoder *bpe_encoder_create(struct nb_log *logger, enum bpe_encoding 
 		return NULL;
 	}
 
-	struct bpe_encoder *enc = calloc(1, sizeof(*enc));
+	struct bpe_encoder *enc NB_CLEANUP(bpe_encoder_owner_cleanup) = calloc(1, sizeof(*enc));
 	if (!enc) return NULL;
 
 	enc->encoding = encoding;
-	enc->ht_cap = ht_next_cap(200000 / HT_LOAD_FACTOR * 100);
-	enc->ht_mask = enc->ht_cap - 1;
-	enc->ht = malloc(sizeof(struct ht_entry) * enc->ht_cap);
-	if (!enc->ht) {
-		free(enc);
+	enc->ranks = nb_map_new_with_cap(200000);
+	if (!enc->ranks)
 		return NULL;
-	}
-	for (uint32_t i = 0; i < enc->ht_cap; i++)
-		enc->ht[i].rank = RANK_EMPTY;
-
-	if ((nb_buf_init(&enc->key_pool),
-	     nb_buf_reserve(&enc->key_pool, 1024 * 1024) ? 0 : NB_ERR_NOMEM) < 0) {
-		free(enc->ht);
-		free(enc);
-		return NULL;
-	}
 	int rc = load_vocab(logger, enc, found_path);
-	if (rc < 0) {
-		free(enc->ht);
-		nb_buf_cleanup(&enc->key_pool);
-		free(enc);
+	if (rc < 0)
 		return NULL;
-	}
-
-	return enc;
+	struct bpe_encoder *created = enc;
+	enc = NULL;
+	return created;
 }
 
 void bpe_encoder_destroy(struct bpe_encoder *enc)
 {
 	if (!enc) return;
-	free(enc->ht);
-	nb_buf_cleanup(&enc->key_pool);
+	nb_map_free(enc->ranks);
 	free(enc);
 }
 

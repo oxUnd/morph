@@ -11,7 +11,6 @@
 #include <string.h>
 
 #include "nb/hash.h"
-#include "nb/encoding.h"
 #include "nb/cleanup.h"
 #define PWD_SALT_BYTES 16
 #define PWD_HASH_BYTES 32

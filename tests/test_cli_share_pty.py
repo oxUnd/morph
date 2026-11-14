@@ -1,4 +1,5 @@
 """Export a real completed CLI turn without a chat bubble or composer damage."""
+from loopback_http import LoopbackHTTPServer
 from pathlib import Path
 import json
 import shutil
@@ -31,7 +32,7 @@ def check_composer(terminal):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     release = None

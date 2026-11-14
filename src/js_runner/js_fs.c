@@ -4,7 +4,6 @@
 #include "nb/buf.h"
 #include "nb/cleanup.h"
 #include "nb/file.h"
-#include "nb/cleanup.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -17,12 +16,10 @@
 static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *path;
 	char *resolved;
-	char *data;
-	size_t len;
+	int rc;
 
 	(void)this_val;
 	if (argc < 1)
@@ -34,18 +31,12 @@ static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val, int argc, 
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
-	data = (nb_file_read_all(resolved, &file_value_1, 0, NULL) == NB_OK &&
-				(file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					NULL
-			? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				  nb_buf_len(&file_value_1) + 1),
-			   *(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
-			: NULL);
+	rc = nb_file_read_all(resolved, &file_value_1, 0, NULL);
 	free(resolved);
-	if (!data)
+	if (rc != NB_OK)
 		return JS_ThrowInternalError(ctx, "failed to read file");
-	JSValue out = JS_NewStringLen(ctx, data, len);
-	free(data);
+	JSValue out = JS_NewStringLen(ctx, nb_buf_cstr(&file_value_1),
+			       nb_buf_len(&file_value_1));
 	return out;
 }
 
@@ -87,12 +78,10 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val, int 
 static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
 	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *path;
 	char *resolved;
-	char *data;
-	size_t len;
+	int rc;
 	JSValue out;
 
 	(void)this_val;
@@ -105,18 +94,12 @@ static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val, int argc, 
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
-	data = (nb_file_read_all(resolved, &file_value_2, 0, NULL) == NB_OK &&
-				(file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					NULL
-			? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				  nb_buf_len(&file_value_2) + 1),
-			   *(&len) = nb_buf_len(&file_value_2), nb_charp_steal(&file_copy_2))
-			: NULL);
+	rc = nb_file_read_all(resolved, &file_value_2, 0, NULL);
 	free(resolved);
-	if (!data)
+	if (rc != NB_OK)
 		return JS_ThrowInternalError(ctx, "failed to read file");
-	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)data, len);
-	free(data);
+	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)nb_buf_cstr(&file_value_2),
+			    nb_buf_len(&file_value_2));
 	return out;
 }
 
@@ -146,7 +129,7 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val, int 
 		free(resolved);
 		if (rc < 0)
 			return JS_ThrowInternalError(ctx, "failed to write file: %s",
-						     strerror(-rc));
+						     nb_status_str((nb_status)rc));
 		return JS_UNDEFINED;
 	}
 	if (rc != NB_ERR_UNSUPPORTED) {
@@ -162,7 +145,8 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val, int 
 	free(resolved);
 	JS_FreeCString(ctx, text);
 	if (rc < 0)
-		return JS_ThrowInternalError(ctx, "failed to write file: %s", strerror(-rc));
+		return JS_ThrowInternalError(ctx, "failed to write file: %s",
+			nb_status_str((nb_status)rc));
 	return JS_UNDEFINED;
 }
 

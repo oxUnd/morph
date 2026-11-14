@@ -1,4 +1,5 @@
 #include "agent/memory.h"
+#include "nb/queue.h"
 #include "nb/cleanup.h"
 #include "agent/memory_internal.h"
 #include "agent/history_internal.h"
@@ -7,7 +8,6 @@
 #include "cJSON.h"
 #include "persistence/memory_job_store.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/log.h"
 #include "cJSON.h"
@@ -50,15 +50,14 @@ struct memory_job {
 	struct react_step *steps;
 	int success;
 	struct memory_options opts;
-	struct memory_job *next;
+	nb_queue link;
 };
 
 struct memory_worker {
 	struct nb_log *logger;
 	nb_mutex *lock;
 	nb_cond *cv;
-	struct memory_job *head;
-	struct memory_job *tail;
+	nb_queue pending;
 	nb_thread *thread;
 	int running;
 	int stop;
@@ -80,6 +79,7 @@ struct memory_worker *memory_worker_create(struct nb_log *logger)
 		free(worker);
 		return NULL;
 	}
+	nb_queue_init(&worker->pending);
 	worker->logger = logger;
 	return worker;
 }
@@ -284,16 +284,14 @@ static void *memory_async_worker(void *arg)
 		struct memory_job *job = NULL;
 
 		nb_mutex_lock(worker->lock);
-		while (!worker->stop && !worker->head)
+		while (!worker->stop && nb_queue_empty(&worker->pending))
 			nb_cond_wait(worker->cv, worker->lock);
-		if (worker->stop && !worker->head) {
+		if (worker->stop && nb_queue_empty(&worker->pending)) {
 			nb_mutex_unlock(worker->lock);
 			break;
 		}
-		job = worker->head;
-		worker->head = job->next;
-		if (!worker->head)
-			worker->tail = NULL;
+		job = NB_QUEUE_DATA(nb_queue_head(&worker->pending), struct memory_job, link);
+		nb_queue_remove(&job->link);
 		worker->active = 1;
 		nb_mutex_unlock(worker->lock);
 
@@ -407,11 +405,7 @@ int memory_save_turn_async(struct db *db, int64_t session_id, const char *user_i
 	}
 
 	nb_mutex_lock(worker->lock);
-	if (worker->tail)
-		worker->tail->next = job;
-	else
-		worker->head = job;
-	worker->tail = job;
+	nb_queue_insert_tail(&worker->pending, &job->link);
 	nb_cond_signal(worker->cv);
 	nb_mutex_unlock(worker->lock);
 	return 0;
@@ -449,7 +443,7 @@ int memory_async_pending(struct memory_worker *worker)
 	if (!worker)
 		return 0;
 	nb_mutex_lock(worker->lock);
-	pending = worker->running && (worker->active || worker->head != NULL);
+	pending = worker->running && (worker->active || !nb_queue_empty(&worker->pending));
 	nb_mutex_unlock(worker->lock);
 	return pending;
 }
@@ -609,8 +603,10 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 		{
 			int exists = 0;
 
-			for (struct memory_job *queued = worker->head; queued;
-			     queued = queued->next) {
+			for (nb_queue *link = worker->pending.next; link != &worker->pending;
+			     link = link->next) {
+				struct memory_job *queued = NB_QUEUE_DATA(link, struct memory_job,
+					link);
 				if (queued->opts.background_job_id == id &&
 				    !strcmp(queued->db_path, db->path)) {
 					exists = 1;
@@ -620,11 +616,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 			if (exists) {
 				memory_job_free(job);
 			} else {
-				if (worker->tail)
-					worker->tail->next = job;
-				else
-					worker->head = job;
-				worker->tail = job;
+				nb_queue_insert_tail(&worker->pending, &job->link);
 				nb_cond_signal(worker->cv);
 			}
 		}

@@ -1,4 +1,5 @@
 """Completion must preserve the bottom composer and its editable draft."""
+from loopback_http import LoopbackHTTPServer
 from pathlib import Path
 import re
 import sys
@@ -81,7 +82,7 @@ def scenario(driver, server, height, width, wrapped):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

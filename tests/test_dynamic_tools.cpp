@@ -16,6 +16,34 @@ extern "C" {
 #include <string>
 #include <unistd.h>
 
+TEST(DynamicToolStoreTest, NativeRemovalKeepsMissingErrorsAndDoesNotFollowLinks)
+{
+	nb_buf directory NB_CLEANUP(nb_buf_destroy) = {};
+	ASSERT_EQ(nb_file_temp_dir(&directory, nullptr, "morph-tool-remove-", nullptr), NB_OK);
+	std::string base = nb_buf_cstr(&directory);
+	std::string removed = base + "/removed";
+	std::string sibling = base + "/sibling";
+	ASSERT_EQ(nb_file_mkdir(removed.c_str(), true, nullptr), NB_OK);
+	ASSERT_EQ(nb_file_mkdir(sibling.c_str(), true, nullptr), NB_OK);
+	std::string retained_file = sibling + "/retained.txt";
+	ASSERT_EQ(nb_file_write_all(retained_file.c_str(), "retained", 8, nullptr), NB_OK);
+	ASSERT_EQ(symlink(sibling.c_str(), (removed + "/external").c_str()), 0);
+	EXPECT_EQ(dynamic_tool_store_remove_tree(removed.c_str()), NB_OK);
+	EXPECT_TRUE(nb_file_exists(retained_file.c_str()));
+	EXPECT_EQ(dynamic_tool_store_remove_tree(removed.c_str()), NB_ERR_NOT_FOUND);
+	EXPECT_EQ(dynamic_tool_store_remove_tree(""), NB_ERR_INVAL);
+	EXPECT_EQ(nb_file_remove_all(base.c_str(), 0, nullptr), NB_OK);
+}
+
+TEST(DynamicToolStoreTest, HistoricalCheckpointHashRemainsByteCompatible)
+{
+	char hash[32] = {0};
+	dynamic_tool_store_hash_text("abc", 3, hash);
+	EXPECT_STREQ(hash, "e16801510db89efd");
+	dynamic_tool_store_hash_text("", 0, hash);
+	EXPECT_STREQ(hash, "14650fb0739d0383");
+}
+
 static std::string json_escape(const std::string &s)
 {
 	std::string out;

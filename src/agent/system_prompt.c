@@ -3,7 +3,6 @@
 #include "nb/err.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "nb/file.h"
 #include "nb/log.h"
 #include "nb/utf8.h"
@@ -100,14 +99,15 @@ static int prompt_append_source(struct nb_log *logger, nb_buf *buf, const char *
 				int is_directory)
 {
 	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_2 = NB_OK;
 
-	char *path = (nb_path_expand(&file_value_2, source, NULL) == NB_OK
+	char *path = ((expand_status_2 = nb_path_expand(&file_value_2, source, NULL)) == NB_OK
 			      ? strdup(nb_buf_cstr(&file_value_2))
 			      : NULL);
 	int rc;
 
 	if (!path)
-		return NB_ERR_NOMEM;
+		return expand_status_2 != NB_OK ? expand_status_2 : NB_ERR_NOMEM;
 	rc = is_directory ? prompt_append_directory(logger, buf, path)
 			  : prompt_append_file(buf, path);
 	if (rc != 0)

@@ -4,7 +4,6 @@
 #include "nb/process.h"
 #include "sandbox.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/random.h"
 #include "nb/encoding.h"

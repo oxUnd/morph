@@ -139,6 +139,12 @@ set_target_properties(morph-tests PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
 add_dependencies(morph-tests morph-data)
+if(TARGET morph-fastcgi)
+	target_sources(morph-tests PRIVATE test_fastcgi_auth.cpp
+		${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/auth.c)
+	target_include_directories(morph-tests PRIVATE
+		$<TARGET_PROPERTY:morph-fastcgi,INCLUDE_DIRECTORIES>)
+endif()
 
 target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src
@@ -222,6 +228,8 @@ if(Python3_Interpreter_FOUND)
 	endif()
 	add_test(NAME source_control_flow_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_source_control_flow.py)
+	add_test(NAME nbase_usage_conventions
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_nbase_usage.py)
 	add_test(NAME js_runner_host_io_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_js_runner_host_io.py
 			$<TARGET_FILE:morph-js-runner>)

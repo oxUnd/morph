@@ -1,3 +1,5 @@
+CMAKE ?= cmake
+BUILD_DIR ?= build
 CC      ?= clang
 CFLAGS  ?= -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 CPPFLAGS += -I../../vendor/nothing/include
@@ -26,14 +28,18 @@ all: $(TARGET)
 	@echo "Built $(APP_BUNDLE)"
 
 $(TARGET): locate.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ locate.c $(LIBS)
+	$(CMAKE) -S . -B $(BUILD_DIR)
+	$(CMAKE) --build $(BUILD_DIR) --target locate
+	cp $(BUILD_DIR)/locate $@
 
 else
 	# Linux: compile plain C, link sd-bus for GeoClue2 D-Bus
 	LIBS = -lsystemd -lm
 
 $(TARGET): locate.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ locate.c $(LIBS)
+	$(CMAKE) -S . -B $(BUILD_DIR)
+	$(CMAKE) --build $(BUILD_DIR) --target locate
+	cp $(BUILD_DIR)/locate $@
 
 endif
 

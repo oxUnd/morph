@@ -1,13 +1,13 @@
 # nothing / nbase 全量替换评估与计划
 
 - 日期：2026-11-14。
-- 状态：原生 API 迁移、D01–D09 收敛、旧库删除及实测范围技术验收已完成；nbase 主库许可仍待明确。
+- 状态：原生 API 迁移、旧库删除及再审 A01–A06、M01–M08 已逐项处理；有意保留的兼容与安全边界、最终验证见第 13 节。nbase 主库许可仍待明确。
 - morph 基线：`df7ca5a4cb4cc9d79713d4de17eff6c576f465f2`。
 - nbase 基线：`cd7efa88aa5c3bbd3825d45d3527e45d7566b716`，版本 `0.1.0`。
 - 上游：[oxund/nothing](https://codeberg.org/oxund/nothing)。仓库名为 nothing，
   实际库名、API 前缀和 CMake target 分别是 nbase、`nb_`、`nbase::nbase`。
 - 第 1–6 节保留迁移前的评估依据与原始路径，部分旧文件已删除；
-  现状、替换结果和实际验证边界以第 7、9、10 节为准。
+  第 7、9、10 节保留原交付记录；第 12 节保留问题发现记录，最终修复与验收以第 13 节为准。
 
 ## 1. 评估目标与结论
 
@@ -398,7 +398,8 @@ P1 的文件/进程扩展可以按后续逻辑族分别落地，但某族的缺�
 标为完成。跨模块共有头/类型迁移应按可构建的闭环提交，不能只改库内部。
 P2/P3 期间可以存在尚未迁完的旧代码，但最终不保留永久双栈或兼容层。
 
-实施已覆盖全部逻辑族；完成状态与验证边界按第 10 节记录，许可问题独立保留。
+实施已覆盖全部逻辑族的主要路径；第 12 节再审发现的遗漏仍须闭环，
+不能将第 10 节历史验证通过等同于全部调用点收敛，许可问题独立保留。
 
 ## 8. 全量完成的验收标准
 
@@ -441,8 +442,9 @@ P2/P3 期间可以存在尚未迁完的旧代码，但最终不保留永久双�
 
 ## 10. 实施结果与验证记录（2026-11-14，分支 `feat/nothing-migration`）
 
-本节记录最终实现与实际取得的证据。完整首轮的失败和修复重跑分别保留，
+本节保留上一轮交付实现与当时实际取得的证据。完整首轮的失败和修复重跑分别保留，
 未实测的平台不标为通过。当前源码不再使用旧 util 类型、兼容别名或基础库 facade。
+这不表示所有重复机制都已删除；第 12 节的再审结果修正了该完成判断。
 
 原生库改动已独立提交并推送为
 [`ef0ddba471bd82857f1cc74b9db795446b15e74d`](https://codeberg.org/oxund/nothing/commit/ef0ddba471bd82857f1cc74b9db795446b15e74d)，
@@ -648,3 +650,334 @@ allocator 所见的**请求存活字节**，realloc 按成功前后的净容量�
 同一整进程的 `/usr/bin/time -l` 实测最大 RSS 为 11,272,192 字节，墙钟 0.53 秒；
 该 RSS 包含全部五个场景、fixture 准备和动态库，不能归给某一行。基准没有部署前
 同等工作负载的测量，因此不声明本次迁移产生了相对提速或 RSS 改善。
+
+## 12. nbase 使用完整性再审（2026-11-14，修复前历史记录）
+
+本轮是审计，不包含以下业务实现的修复。结论是：nbase 已成为主要基础库，
+但“全量替换、逻辑重复彻底收敛、错误语义全部同步”尚未成立。
+保留此前验证记录，但撤回据此推导的全量完成判断。
+
+### 审计范围与证据边界
+
+按 nbase 公共能力核对容器、所有权、错误、编码/哈希、Unicode、时间、
+文件/目录/锁、进程、线程/取消、队列、配置和构建依赖。
+词法清单覆盖 `src/` 的 720 个、`exts/` 的 10 个、`tests/` 的 113 个
+C-family 文件，共 843 个，包含头文件与 `.inc`，排除 vendor 和生成构建树。
+`examples/` 当前没有对应后缀文件。注释和字符串在符号清单中被屏蔽；
+非活动平台分支保留。词法命中可能包含声明，必须再读上下文，不能直接当成缺陷数。
+错误文本和 JSON 数字另行检查，避免被上述屏蔽规则漏掉。
+
+清单与探针位于 `/tmp/morph-nbase-audit-inventory.json`、
+`/tmp/morph-nbase-audit-probes.json`；临时文件不属于永久交付保证，
+以下位置、触发条件与结论保留在仓库中。
+
+| 生产代码检索项（src + exts） | 结果 | 判定 |
+| --- | ---: | --- |
+| realloc / asprintf / vasprintf | 0 | 未发现旧动态扩容入口 |
+| pthread / thrd 调用 | 0 | 线程/锁主体已迁移；原子操作另论 |
+| clock_gettime / gettimeofday / timespec_get | 0 | 时钟读取主体已迁移；墙钟误用于间隔另论 |
+| fork / posix_spawn / waitpid 等 | 0 | 通用子进程入口已迁移 |
+| mkstemp / mkdtemp 等及 tmpfile | 1 | hook 的匿名 stdin 文件是 tmpfile，见合理保留项 |
+| realpath | 25，分布 12 个文件 | 普通解析仍有替换遗漏；不能全归入安全专用系统调用 |
+| opendir / readdir / closedir | 18，分布 5 个文件 | 包含普通枚举与 fd-relative 安全遍历两类 |
+| rand 等旧随机接口 | 1 | FastCGI canvas 节点 ID 遗漏 |
+| nb_buf_move / nb_vec_move | 10 / 5 | 已逐处核对交换后的旧 owner 清理；未发现把 swap 当成清空源 |
+| nb_buf_detach / nb_free / 全局 allocator 修改 | 0 | 未发现业务代码将 detached nbase storage 交给 malloc owner |
+
+### 已确认的行为问题
+
+**A01：nbase 状态码仍被当作负 errno 展示。**
+
+- `src/js_runner/js_fs.c:149,165`：`nb_file_write_all` 返回后使用 `strerror(-rc)`。
+- `src/js_runner/js_canvas.c:963`、`src/js_runner/js_image.c:1320`：
+  图像写入 helper 返回 `NB_ERR_*`，上层仍使用同一旧展示方法。
+- `exts/locate/locate.c:648,659`：定位返回值已改为原生状态，展示仍反查 errno。
+- 实测真实 runner：在允许写入的临时根中执行 `morph.fs.writeFile(directory, "x")`，
+  返回 `InternalError: failed to write file: No such process`。
+  原因是文件写入失败返回 `NB_ERR_IO=-3`，被解释为 errno 3。
+- 应使用 `nb_status_str` 或应用错误表；需要保留 OS 细节时在调用处接收 `nb_err`。
+
+**A02：迁移后的返回码被丢弃，再从 errno 或 NULL 猜测错误。**
+
+- `src/permission/path.c:89–99`：canonical-missing 的全部失败都转为 `NB_ERR_NOMEM`。
+  实测 `existing-parent/missing/../target`：原生返回 `NB_ERR_INVAL=-1`，
+  `tool_context_resolve_directory_access` 返回 `NB_ERR_NOMEM=-2`。
+- 同类路径展开问题见 `permission/path.c:37–41` 与 `:77–82`；
+  `nb_path_expand` 在 HOME 不可用时也可能返回 NOT_FOUND，并非只有 NOMEM。
+- 文件读取后反查 errno 的实例：`agent/tools/dynamic_tool_store.c:28–35`、
+  `config/schema.c:1048–1056`、`runtime/model.c:46–55`、
+  `runtime/permissions_service.c:120–128`、`agent/tools/config_write.c:351–362`、
+  `sapi/cli/pages/setup/wizard.c:355–363`、`agent/patch.c:1269–1282` 等。
+  nbase 的参数、容量、内存和大小限制失败没有“errno 必须同步”的契约。
+- `skill/skill_parse.c:335–346` 将全部读取/复制失败归为 NOT_FOUND。
+- 应保留每一步的返回码，分开处理 nbase 读取与 malloc 边界复制失败；
+  不能继续通过三元表达式合并后从 errno 恢复原始原因。
+
+**A03：BPE 自建哈希表满表后没有失败出口。**
+
+- `src/agent/bpe.c:53–97`：insert/lookup 都是无探测次数上限的循环，
+  `ht_count` 没有用于阻止满表；`:1198` 为两套词表固定配置 524,288 个槽。
+- 通过公共 `bpe_encoder_create` 加载 524,289 个互异的合法四字节 token，
+  子进程 5 秒后仍未返回，由探针终止。结合源码，最后一次插入已不存在空槽。
+- 满表后的不存在键查询也没有停止条件。发行词表当前未触发该边界；
+  这不消除自定义词表的风险。
+- 若保留专用表，至少需要负载约束、扩容或有界探测与明确错误。
+  若改用 `nb_map`，必须保持二进制键长度和 rank 语义，并测量真实词表成本。
+
+**A04：BPE 仍保留旧 Base64 解码器，接受集合与 nbase 不同。**
+
+- `src/agent/bpe.c:104–153` 的 `b64_table` / `b64_decode` 属于通用编解码机制，
+  不能由“BPE 是领域算法”解释保留。
+- 实测词表 `YQ==garbage 0` 被加载并将 `a` 识别为一个 token；
+  同一输入由 `nb_base64_decode` 返回 `NB_ERR_PARSE=-10`。
+- 旧实现遇到 `=` 直接停止，不验证后续内容和未使用位。
+  替换时要明确词表的 padding/空白规则，保留合法发行词表的输出一致性。
+
+**A05：JS deadline 与 spinner elapsed 仍使用墙钟。**
+
+- `js_runner/runner_api.h:10`、`main.c:268,563`、`js_fetch.c:253`、
+  `js_process.c:26` 使用 `time(NULL)` 创建/比较相对超时。
+- `tui/terminal/activity.c:130,333` 用墙钟差表示耗时。
+- 系统校时会改变预算或产生负耗时；这是源码可确认的时间线错误，
+  本轮没有修改机器时间作动态验证。应改为 nbase 单调 deadline/remaining。
+- 持久记录、任务调度日历和本地日期显示仍应使用墙钟，不列作遗漏。
+
+**A06：旧原生错误数字仍混在扩展返回体里。**
+
+- `exts/file-write/file_write.c:717–720` 的返回体写死 `code=-95`，
+  同一次调用的 C 返回值却是 `NB_ERR_UNSUPPORTED=-12`。
+- 需明确这是需要保留的版本化 wire 契约，还是迁移遗漏，再统一处理；
+  不能把 JSON-RPC 的 -326xx/-320xx 协议错误码一并替换。
+
+### 明确的机制收敛遗漏
+
+| 编号 | 位置 | 还保留的机制与收敛要求 |
+| --- | --- | --- |
+| M01 | `agent/tools/dynamic_tool_store.c:771–817` | 自写递归删除；改用 `nb_file_remove_all` 时保留缺失路径报错及链接语义，并补深度边界 |
+| M02 | `skill/skill.c:189–283`、`sync/sync.c:342–405` | 普通目录枚举；可用 `nb_dir`，保留过滤/递归策略。这两处未区分 readdir 错误与正常结束，不能将不完整扫描当成功 |
+| M03 | 下方完整 realpath 分布 | 普通规范化仍直接使用 libc；安全策略保留在业务层，解析机制改为 nbase，并保留所需状态码 |
+| M04 | `sapi/fastcgi/auth.c:17–116` | token 缓存自建 bucket、hash、链表查找/删除；可用 `nb_map`，容量、失效和淘汰策略仍由 auth 决定 |
+| M05 | `agent/memory_jobs.c:44–65,283–301,411,624` | memory worker 自管 FIFO head/tail/next；可改为稳定地址的 `nb_queue` |
+| M06 | `sapi/fastcgi/stream_pool.c:12–44,174–179`、`agent_bridge.c:199–219` | stream FIFO 和 turn ticket 自管链表；后者删除尾节点还重新扫描。队列机制可用 `nb_queue`，取消/公平性/锁策略保留 |
+| M07 | `sapi/fastcgi/storage/canvas.c:88–93` | 节点 ID 仍使用 time + rand；改用 `nb_random_hex`，不引入全局 srand 状态 |
+| M08 | `runtime/model.c:40–44`、`runtime/permissions_service.c:113–117`、`sync/sync.c:1468–1480` | 普通跨进程文件锁仍自写 open/flock/close，nbase 已有对应 owner；保留阻塞、EINTR、冲突状态约定 |
+
+25 处 realpath 的完整分布（行号为本轮未修复的源码）：
+
+- `agent/agent_control.c:2042`；`agent/environment_context.c:244`。
+- `agent/tools/exec_tool.c:476,479,507,619`。
+- `permission/context.c:944,986,1000,1071,1120`。
+- `persistence/checkpoint_store.c:357,622`；`runtime/checkpoint.c:138`。
+- `runtime/hooks.c:398`；`runtime/resources.c:113`。
+- `sandbox/tool_paths.c:271,344,374`。
+- `sapi/cli/commands/skills_manage.c:275,395,434,898`。
+- `sapi/cli/services/composer.c:33`。
+- `sapi/fastcgi/presentation/media_refs.c:117`。
+
+其中 checkpoint 的字符串规范化也应逐点评估；这不授权将其后续 fd-relative
+冲突检查或 no-follow 恢复替换成字符串路径操作。
+
+### 不应机械替换的保留项与整理项
+
+- `agent/tools/exec_tool.c:60–85` 通过 fdopendir/openat/fstatat/unlinkat
+  清理受约束 scratch；`agent/tools/file_list.c` 通过 dirfd/fstatat 读取条目，
+  且显式检查 readdir errno。这些不能直接用只接受路径的 nb_dir 改写而弱化约束。
+- checkpoint 的 fd-relative 恢复、sandbox 平台隔离、SQLite online backup、
+  BLAKE3 内容协议、PBKDF2 格式与迭代策略、文本编辑与 BPE 合并算法继续保留。
+- `runtime/hooks_executor.c:277` 的 tmpfile 是匿名、可 seek 的 stdin owner；
+  没有证据要求为了符号归零而改为具名临时文件。其进程启动已走 nbase。
+- `sapi/cli/services/management.c:79` 的锁要求 O_NOFOLLOW；
+  当前 `nb_file_lock_acquire` 没有该选项，不能直接替换。config_write 的锁也要
+  一并核对安全约束，而非把所有 flock 命中都归为普通锁。
+- `agent/tools/dynamic_tool_store.c:311` 的历史 FNV64 offset basis 是
+  1469598103934665603，`nb_hash_bytes` 使用标准的 14695981039346656037。
+  直接替换会改变 checkpoint hash；需要版本/兼容方案，不能静默改值。
+- `tui/terminal/text.c:9` 只判断流式未完成字符的预计长度，真正验证与解码
+  使用 nb_utf8_read。它不是另一套完整 UTF-8 decoder；可考虑将缺失的前缀机制
+  补进原生接口，但不能因名字含 utf8 就认定解码算法未迁移。
+- C11/GCC 原子操作仍存在。部分 int 标志可统一 nb_atomic，
+  unsigned refcount、64 位无符号指标和具体 memory_order 不能直接强转替换。
+  当前未发现项目另建全局 allocator 或默认 logger。
+- `runtime/jobs_service.c:146`、`mcp/mcp_client.c:272`、
+  `sapi/cli/presentation/history.c:122` 等局部 nbase owner 仍靠手工成对释放，
+  未完全遵循必须使用 NB_CLEANUP 的约定；本轮不据此断言已发生泄漏。
+- 97 个 C 文件有重复 nb include，共 116 条多余 include；
+  大量 file_value_N/file_status_N 和无意义的 `(move(...), 0)` 也仍可整理。
+  它们影响维护性，不与行为缺陷混计。
+
+### 本轮验证
+
+- `cmake --build build -j 8` 完成。重新运行相关 CTest 集合 120/120 通过，9.18 s，
+  含 BPE、所有权、Unicode/native media、控制流和 CLI layout。
+  先前外层沙箱中的 4 个失败（子进程 126 / 本地 bind 失败）解除限制后 4/4 通过，
+  随后整个 120 集合再跑通过，没有削弱断言。
+- `build-asan` 的 `morph-tests` 目标重新构建成功；
+  ASan/UBSan 定向 48/48 通过，3.92 s，使用 `detect_leaks=0`、
+  `UBSAN_OPTIONS=halt_on_error=1`。这不是严格 LSan 或完整 ASan 测试轮。
+- ASan 全目标构建首次因缓存的 Pango 1.58.0 路径已失效而失败，
+  不将该次构建写成通过；清除该 pkg-config 缓存后重新配置识别 Pango 1.58.2，
+  全目标重建成功，重建日志未出现 warning/error。没有修改项目源代码绕过依赖。
+  该配置修复不扩大上述 48 项测试的覆盖范围。
+- 公共 BPE API 探针、原生 Base64 对照、真实 JS runner 和权限路径探针
+  复现 A01–A04 的上述边界。临时探针在独立子进程运行；
+  BPE 满表探针有外层 timeout，不会留下无限运行的作业。
+- 本轮没有重新执行 Linux、Windows、完整 CTest、Valgrind 或全量退出泄漏扫描，
+  不从第 10 节历史证据推定当前再审发现已被验证或修复。
+
+重新验收需逐项关闭 A01–A06、M01–M08，或为有意保留的差异记录明确契约与证据；
+补充错误码传播、畸形词表、满表、拒绝不改文件和失败 owner 的回归。
+现有控制流/布局测试通过只能证明对应约定，不能充当 nbase 完整性检查。
+
+## 13. 再审项修复与兼容性验收（2026-11-14）
+
+第 12 节保留发现问题时的源码位置和复现，不再作为未修复清单。
+本节记录逐项处理方式。实现收敛以保持正常输入、权限和历史数据契约为约束；
+不以删除所有 libc 调用或静默改变旧数据格式作为完成标准。
+
+### A01–A06
+
+| 项目 | 修复与原行为边界 | 回归证据 |
+| --- | --- | --- |
+| A01 错误展示 | JS 文件、canvas/frame 和 locate 使用 nbase 状态描述；不再将原生负数解释成 errno。locate 增加独立 CMake，Makefile 经该入口链接固定 nbase | 真实 runner 向目录写入返回 I/O error；locate 独立严格构建成功 |
+| A02 错误传播 | 读取失败、native path 失败和 malloc 副本失败分别保留状态；同时修复许可根、runtime 配置、skill、CLI 路径等同类展开/规范化分支。错误返回不依赖残留 errno | 非法 missing/../target 返回 INVAL 并保留原输出；允许的新建目录仍正常解析；既有 Full/Ask/Auto/Read Only、拒绝无写入回归保留 |
+| A03 BPE 容量 | 删除固定开放寻址表，直接使用二进制键 nb_map，rank 0 仍有非空表示；保留词元长度上限、重复键更新和编码选择；越界 rank 不进入索引 | 524,289 个互异 token 后继续加载、查询存在及缺失键均返回；原有长 token、Unicode、合并次序和精确计数回归保留 |
+| A04 Base64 | 删除 BPE 查表与位移解码，调用 nb_base64_decode。保留原词表的 padded、无空白格式；无效行继续跳过，不改变正常发行词表 | 合法 YWI= 合并 ab；padding 后垃圾、非零尾位、缺失/多余 padding 不产生 token |
+| A05 时间 | JS VM/fetch/exec 共享单调 deadline；exec 传递剩余毫秒并向上取整，无 deadline 时显式无限等待。spinner 新增单调持续时间，原 start_time/last_update 仍为 wall-clock 秒；直接构造 render-only context 的旧调用有一次性兼容初始化 | 真实 runner deadline/非零退出/信号用例保留；未来 wall-clock 元数据不改变 65 秒的单调显示；原 spinner/PTY 断言保留 |
+| A06 wire 兼容 | 有意保留 standalone file-write 的历史 JSON code=-95，C 返回值仍为原生 UNSUPPORTED；明确注释两者属于不同边界，副本分配失败返回 NOMEM | C 扩展回归同时检查 JSON -95 与 C NB_ERR_UNSUPPORTED；JSON-RPC -32xxx 协议码不变 |
+
+### M01–M08
+
+| 项目 | 完成方式 | 保留的领域语义 |
+| --- | --- | --- |
+| M01 递归删除 | dynamic store 调用 nb_file_remove_all；初始 lstat 保留 missing-root 错误 | 空路径拒绝、缺失根 NOT_FOUND；链接作为叶子删除，外部兄弟文件保留；保持旧 API 无深度上限 |
+| M02 普通目录枚举 | skill/sync 使用 nb_dir owner、next 和最终 status，失败不伪装成完整扫描 | 过滤、次序、递归、内容策略留在原模块；file-list 与 scratch 的 fd-relative/no-follow 遍历继续保留 |
+| M03 规范化 | src 原有 25 处 realpath 全部改为原生 nb_path_canonical，保留输出长度与既有 fallback 处理 | checkpoint 仍仅解析 workspace 前缀，之后的 no-follow fd walk 不变；包含/授权决策不移进基础库 |
+| M04 token 缓存 | nb_map 拥有条目，nb_queue 维护淘汰关系，typed cleanup 处理未提交 owner | 4096 容量、同 key 原地更新、过期、撤销和历史 bucket/head 淘汰顺序全部保留；旧 hash 只用于兼容淘汰策略，不再实现 lookup/storage |
+| M05 memory worker | head/tail/next 改为 nb_queue，锁内提交和取出 | FIFO、resume 去重、stop 后排空、数据库线程归属和 join 顺序不变 |
+| M06 stream/ticket | FastCGI stream FIFO 与 turn-ticket 改为 nb_queue | 队列容量、同会话串行、首个可运行 ticket、公平性、取消、等待位置和关闭时回收不变 |
+| M07 node ID | nb_random_hex 取代 rand，随机失败先返回错误 | 仍为 n_<时间>_<hex> 格式且小于 40 字节，外部 ID 保持不透明 |
+| M08 普通锁 | runtime model/policy 和 sync 采用 nb_file_lock owner 与 typed cleanup | 阻塞/非阻塞、EINTR、私有 0600 锁文件、锁文件保留和释放位置不变；management/config-write 的 O_NOFOLLOW 约束继续保留 |
+
+### 所有权、整理与防回退
+
+- BPE constructor、cache 新建/删除条目、局部 map 和新目录/文件锁 owner
+  使用 typed NB_CLEANUP；成功提交后才清空 caller owner。
+- 清除 97 个 C 文件中的 116 条多余 nb include；复查 src 没有重复 native include。
+- 历史动态工具 hash 的非标准 FNV seed 有意保留，增加 abc/空内容的精确 golden
+  回归，避免改成 nb_hash_bytes 后破坏旧 checkpoint 识别。
+- 增加 nbase_usage_conventions：约束生产代码不要恢复 raw realloc、realpath、
+  pthread、spawn、旧随机接口或 strerror(-status)，并保留两处有理由的 fd-relative
+  目录操作例外；既有控制流和 CLI layout/status 审计继续运行。
+- 普通墙钟记录、历史 hash、PBKDF2、BLAKE3、SQLite online backup、
+  no-follow 安全遍历、终端流式前缀识别与有语义的取消等待继续保留。
+  这些是兼容/领域边界，不是重新引入共享 util facade。
+
+### 验证环境与首败处理
+
+macOS 当前环境补齐 libfcgi，普通和 ASan 构建都实际包含 FastCGI，
+不再只编译测试中少量 FastCGI 源码。locate 与 TUI 样例使用独立构建入口。
+Python 测试使用临时 venv（pexpect 4.9.0、pyte 0.8.2、wcwidth 0.2.13），
+配置 Python3_EXECUTABLE 后重新生成测试；不将缺少依赖造成的跳过记成通过。
+
+首轮普通 2611 项的 7 个失败分别来自外部代理改写 loopback 请求、
+Allow/Deny 权限夹具复用固定路径和缺少 PTY 依赖。HTTP/MCP 断言未改，
+运行时设置 NO_PROXY/no_proxy=127.0.0.1,localhost,::1；权限夹具按 PID 隔离。
+补齐依赖后发现本机反向 DNS 查询 127.0.0.1 需要 35.003 s，导致若干 Python
+mock server 在执行原断言前已消耗超时。共享 loopback_http.py 只去掉该无关 DNS
+查询，socket bind、线程行为、HTTP 应答和所有功能超时/PTY 断言不变，
+相同初始化实测降为约 0.000042 s；未通过增加超时或降低断言掩盖问题。
+
+随后普通 2614 项一轮完整运行 0 失败，432.98 s；6 项条件跳过保留。
+最后所有权清理收尾后，ASan/UBSan 核心 2561 项为 2555 项通过、6 项条件跳过、
+0 失败，165.14 s；定向 261 项全部通过，15.82 s。未出现 sanitizer 报告。
+普通全量收尾轮发现 copy PTY 在并发负载下未等历史恢复就发送下一条命令；
+夹具改为等待本次恢复的历史标记及完整发布帧，原复制字节、布局与回退断言不变。
+120/80/60 列独立复跑全部通过；最终普通全量 2614 项为 2608 项通过、
+6 项既有条件跳过、0 失败，411.89 s（CTest 退出码 0）。
+不将中止的旧夹具轮记成通过。
+六项跳过分别涉及现有 live MCP、主机自动化、文件名编码和进程平台条件；
+它们不是本轮已执行通过项。
+
+普通及 ASan/FastCGI 全目标重建均无 warning/error；locate 独立构建通过，
+三个 TUI 样例独立构建与真实 PTY 的选择、焦点、粘贴、Unicode、弹窗、缩放和退出清理通过。
+nbase 使用约定、控制流约定、CLI 布局约定与 git diff --check 通过。
+
+可复现的最终命令（venv 路径按本机实际位置设置）：
+
+```sh
+cmake -S . -B build -DBUILD_FASTCGI=ON -DPython3_EXECUTABLE=/tmp/morph-nbase-qa-venv/bin/python
+cmake --build build -j 8
+NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 \
+  ctest --test-dir build -j 4 --output-on-failure
+
+cmake -S . -B build-asan -DENABLE_ASAN=ON -DBUILD_FASTCGI=ON \
+  -DPython3_EXECUTABLE=/tmp/morph-nbase-qa-venv/bin/python
+cmake --build build-asan -j 8
+ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 \
+  NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 \
+  ctest --test-dir build-asan -j 4 \
+  -E 'integration|_pty|cli_snapshot|multi_agent_task_evaluation|multi_agent_evaluation_regressions' \
+  --output-on-failure
+```
+
+ASan/UBSan 的执行范围和退出 leak 扫描分开记账；detect_leaks=0 不代表严格 LSan。
+本轮没有新增 Linux/Windows/Valgrind 运行记录，也没有改变上游许可边界。
+
+
+## 14. 内存专项复查与优化（2026-11-14）
+
+本轮检查动态工具 definition/checkpoint、runner 脚本和文件读取、HTTP/MCP 缓冲、
+worker/stream 队列的分配及释放路径。确认并处理的是冗余完整副本与生命周期过长；
+本节不声称已穷尽所有业务负载的内存问题。
+
+### 已实施
+
+- dynamic_tool_store：definition JSON、legacy source、checkpoint JSON 直接从
+  nb_buf 借用给 cJSON，不再先 malloc/memcpy 完整文件。cJSON 自己持有所需字符串；
+  definition/checkpoint 解析完成立即销毁输入缓冲，legacy source 在 helper 返回时释放。
+  严格 definition 解析、旧格式兼容、错误码和历史 hash 不变。
+- dynamic_tool_runner：allowlist 路径拼接、规范化和 append 直接借用缓冲区，
+  每条普通路径省去 candidate/resolved 两个临时字符串分配。最终返回字符串仍为
+  普通 malloc owner；没有将 nb_buf_detach 内存交给 free。
+- dynamic_tool_service：删除路径授权直接比较两个仍然存活的规范化缓冲，
+  省去两份 strdup；展开、missing canonical 和完全相等判断不变。
+- js_fs：readText/readFile 直接交给 JS_NewStringLen/JS_NewArrayBufferCopy，
+  每次读取省去 N+1 字节 malloc 和一次完整复制。JS 结果继续独立拥有内容，
+  不把临时 nb_buf 暴露为悬空或共享的 ArrayBuffer。
+- runner check/run：JS_Eval 直接借用文件缓冲；返回后立即释放原始源码。
+  每次省去一份源码复制，并避免输入缓冲在等待请求和整个异步执行期间存活。
+
+### 峰值 RSS 对照
+
+同一 macOS arm64 环境、相同 Release 编译参数和依赖，独立短生命周期 runner
+读取同一个 16 MiB ASCII 文件，结果只返回长度，避免将输出序列化计入负载。
+对照二进制的 js_fs.c 使用 git HEAD 版本，包含旧读取中间副本，
+其余对象与优化后二进制相同；本负载只调用读取 API，不涉及写入错误展示差异。
+该文件独立编译链接到临时目录，没有替换工作区文件。
+每种组合运行三次，使用 /usr/bin/time -l 的 maximum resident set size：
+
+| 读取接口 | 原中间副本：RSS 中位数（字节） | 优化后：RSS 中位数（字节） | 降幅 |
+| --- | ---: | ---: | ---: |
+| readFile | 70,942,720 | 54,149,120 | 16.02 MiB / 23.67% |
+| readText | 70,975,488 | 54,099,968 | 16.09 MiB / 23.78% |
+
+原始三次值分别为 readFile 前 [70942720, 70975488, 70942720]、
+后 [54149120, 54149120, 54181888]；readText 前
+[70893568, 70975488, 70991872]、后 [54067200, 54116352, 54099968]。
+RSS 包括动态库和 JS 堆；这不是整应用或其他负载的统一降幅，
+也没有把动态工具路径上的理论分配减少伪装成已测的 RSS 收益。
+
+### 回归与保留项
+
+新增真实 runner 回归读取大块包含 NUL/Unicode 的数据、覆写磁盘文件后验证
+原文本/二进制仍完整，并验证空文件；保留现有权限、路径、临时 buffer、
+异步执行、元数据未知字段、legacy source、更新/删除/回滚和镜像一致性回归。
+普通与 ASan/FastCGI 全目标构建均通过且无 warning/error；定向普通 53/53 通过。
+ASan/UBSan 同范围 53/53 通过，16.48 s；其中真实 runner 集成含 20 个用例。
+普通同范围耗时 7.99 s。detect_leaks=0，不据此声称全量泄漏扫描通过。
+本轮没有重新运行上一节的 2614 项全量，不能将其作为本轮修改后的验证结果。
+
+HTTP session reset 保留响应容量，MCP 分片缓冲也会复用容量；所属 session/client
+析构会释放它们。这属于高水位容量保留，不等同于已证实泄漏。
+继续优化可考虑经真实长会话测量后，为异常大响应设置闲时回收阈值；
+本轮未盲目在每次 reset 强制 shrink，以免增加高频分配及复制。

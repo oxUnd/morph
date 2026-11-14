@@ -5,7 +5,6 @@
 #include "persistence/memory_snapshot.h"
 #include "persistence/memory_search.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/utf8.h"
 

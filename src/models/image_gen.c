@@ -10,7 +10,6 @@
 #include "nb/cleanup.h"
 #include "cJSON.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "http/client.h"
 #include "cJSON.h"
@@ -368,6 +367,7 @@ static int image_materialize(const struct http_control *control,
 			     struct image_result *result)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_1 = NB_OK;
 
 	nb_buf decoded NB_CLEANUP(nb_buf_destroy) = {0};
 	char *out_dir NB_CLEANUP(nb_charp_cleanup) = NULL;
@@ -378,13 +378,12 @@ static int image_materialize(const struct http_control *control,
 
 	if (!payload || !payload->data || !result)
 		return NB_ERR_INVAL;
-	out_dir = (nb_path_expand(&file_value_1,
-				  output_dir && output_dir[0] ? output_dir : "~/.morph/output",
-				  NULL) == NB_OK
+	out_dir = ((expand_status_1 = nb_path_expand(&file_value_1, output_dir &&
+		output_dir[0] ? output_dir : "~/.morph/output", NULL)) == NB_OK
 			   ? strdup(nb_buf_cstr(&file_value_1))
 			   : NULL);
 	if (!out_dir)
-		return NB_ERR_NOMEM;
+		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
 	rc = nb_file_mkdir(out_dir, true, NULL);
 	if (rc != 0)
 		return rc;

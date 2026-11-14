@@ -2,7 +2,8 @@
 """Exercise management commands against isolated configs and local Git repos."""
 
 import concurrent.futures
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from loopback_http import LoopbackHTTPServer as ThreadingHTTPServer
 import json
 import os
 from pathlib import Path

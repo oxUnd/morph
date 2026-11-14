@@ -8,7 +8,6 @@
 #include "cJSON.h"
 #include "nb/file.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -263,9 +262,9 @@ static int interrupt_handler(JSRuntime *rt, void *opaque)
 	struct runner_state *state = opaque;
 
 	(void)rt;
-	if (!state || state->deadline <= 0)
+	if (!state || state->deadline_ns <= 0)
 		return 0;
-	return time(NULL) >= state->deadline;
+	return nb_time_remaining_ns(state->deadline_ns) == 0;
 }
 
 static void print_json_string(FILE *out, const char *s)
@@ -344,26 +343,17 @@ static void print_exception(JSContext *ctx, int id)
 static int check_script(JSContext *ctx, const char *path)
 {
 	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
-	char *source;
-	size_t len;
 	JSValue val;
 	JSValue global = JS_UNDEFINED;
 	JSValue fn = JS_UNDEFINED;
 	int rc = 0;
 
-	source = (nb_file_read_all(path, &file_value_3, 0, NULL) == NB_OK &&
-				  (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					  NULL
-			  ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				    nb_buf_len(&file_value_3) + 1),
-			     *(&len) = nb_buf_len(&file_value_3), nb_charp_steal(&file_copy_3))
-			  : NULL);
-	if (!source)
+	if (nb_file_read_all(path, &file_value_3, 0, NULL) != NB_OK)
 		return NB_ERR_NOT_FOUND;
-	val = JS_Eval(ctx, source, len, path, JS_EVAL_TYPE_GLOBAL);
-	free(source);
+	val = JS_Eval(ctx, nb_buf_cstr(&file_value_3), nb_buf_len(&file_value_3), path,
+		      JS_EVAL_TYPE_GLOBAL);
+	nb_buf_destroy(&file_value_3);
 	if (JS_IsException(val)) {
 		print_exception(ctx, 1);
 		return NB_ERR_INVAL;
@@ -410,11 +400,8 @@ static void runner_script_values_cleanup(struct runner_script_values *values)
 static int run_script(JSContext *ctx, const char *path)
 {
 	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
-	char *source = NULL;
 	char *line NB_CLEANUP(nb_charp_cleanup) = NULL;
-	size_t source_len;
 	size_t line_cap = 0;
 	int id = 1;
 	int rc = 0;
@@ -431,19 +418,11 @@ static int run_script(JSContext *ctx, const char *path)
 		.request = JS_UNDEFINED,
 	};
 
-	source = (nb_file_read_all(path, &file_value_4, 0, NULL) == NB_OK &&
-				  (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
-					  NULL
-			  ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-				    nb_buf_len(&file_value_4) + 1),
-			     *(&source_len) = nb_buf_len(&file_value_4),
-			     nb_charp_steal(&file_copy_4))
-			  : NULL);
-	if (!source)
+	if (nb_file_read_all(path, &file_value_4, 0, NULL) != NB_OK)
 		return NB_ERR_NOT_FOUND;
-	val = JS_Eval(ctx, source, source_len, path, JS_EVAL_TYPE_GLOBAL);
-	free(source);
-	source = NULL;
+	val = JS_Eval(ctx, nb_buf_cstr(&file_value_4), nb_buf_len(&file_value_4), path,
+		      JS_EVAL_TYPE_GLOBAL);
+	nb_buf_destroy(&file_value_4);
 	if (JS_IsException(val)) {
 		print_exception(ctx, id);
 		return NB_ERR_INVAL;
@@ -560,7 +539,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (timeout > 0)
-		state.deadline = time(NULL) + timeout;
+		state.deadline_ns =
+			nb_time_deadline_after_ns((int64_t)timeout * INT64_C(1000000000));
 	rt = JS_NewRuntime();
 	if (!rt) {
 		fprintf(stderr, "failed to create QuickJS runtime\n");

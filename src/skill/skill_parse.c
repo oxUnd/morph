@@ -2,7 +2,6 @@
 #include "nb/log.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/utf8.h"
@@ -324,29 +323,16 @@ int skill_parse(struct nb_log *logger, const char *data, size_t len, struct skil
 int skill_parse_file(struct nb_log *logger, const char *path, struct skill_frontmatter *fm,
 		     char **body_out)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf content NB_CLEANUP(nb_buf_destroy) = {0};
 
 	if (!path || !fm)
 		return NB_ERR_INVAL;
-
-	size_t len = 0;
-	char *data =
-		(nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
-				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				   nb_buf_len(&file_value_1) + 1),
-			    *(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
-			 : NULL);
-	if (!data) {
+	int rc = nb_file_read_all(path, &content, 0, NULL);
+	if (rc != NB_OK) {
 		nb_log_write(logger, NB_LOG_ERROR, "skill_parse_file: failed to read %s", path);
-		return NB_ERR_NOT_FOUND;
+		return rc;
 	}
-
-	int rc = skill_parse(logger, data, len, fm, body_out);
-	free(data);
-	return rc;
+	return skill_parse(logger, nb_buf_cstr(&content), nb_buf_len(&content), fm, body_out);
 }
 
 int skill_parse_frontmatter(struct nb_log *logger, const char *path, struct skill_frontmatter *fm)

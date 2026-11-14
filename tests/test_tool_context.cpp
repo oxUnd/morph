@@ -25,6 +25,24 @@ protected:
 	void TearDown() override {}
 };
 
+TEST_F(ToolContextTest, DirectoryResolutionPreservesNativeErrorsAndRejectedOutput)
+{
+	nb_buf directory NB_CLEANUP(nb_buf_destroy) = {};
+	ASSERT_EQ(nb_file_temp_dir(&directory, nullptr, "morph-path-status-", nullptr), NB_OK);
+	std::string ambiguous = std::string(nb_buf_cstr(&directory)) + "/missing/../target";
+	char output[PATH_MAX] = "unchanged";
+	EXPECT_EQ(tool_context_resolve_directory_access(ambiguous.c_str(), TOOL_PATH_ACCESS_WRITE,
+		output, sizeof(output)), NB_ERR_INVAL);
+	EXPECT_STREQ(output, "unchanged");
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {};
+	ASSERT_EQ(nb_path_canonical(&canonical, nb_buf_cstr(&directory), nullptr), NB_OK);
+	std::string valid = std::string(nb_buf_cstr(&canonical)) + "/new/child";
+	EXPECT_EQ(tool_context_resolve_directory_access(valid.c_str(), TOOL_PATH_ACCESS_WRITE,
+		output, sizeof(output)), NB_OK);
+	EXPECT_STREQ(output, valid.c_str());
+	EXPECT_EQ(nb_file_remove_all(nb_buf_cstr(&directory), 0, nullptr), NB_OK);
+}
+
 class ScopedEnvVar {
 public:
 	explicit ScopedEnvVar(const char *name)
@@ -525,8 +543,11 @@ TEST_F(ToolContextTest, AuthorizeReadSymlinkEscapeDenied) {
 TEST_F(ToolContextTest, AuthorizeReadApprovalAllow) {
 	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
 
-	const char *work = "/tmp/morph_tctx_work";
-	const char *secret = "/tmp/morph_tctx_secret.txt";
+	std::string prefix = "/tmp/morph-tctx-approval-" + std::to_string(getpid());
+	std::string work_path = prefix + "-work";
+	std::string secret_path = prefix + "-secret";
+	const char *work = work_path.c_str();
+	const char *secret = secret_path.c_str();
 	nb_file_mkdir(work, true, NULL);
 	nb_file_write_all(secret, "secret", 6, NULL);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tctx_out");
@@ -552,8 +573,11 @@ TEST_F(ToolContextTest, AuthorizeReadApprovalAllow) {
 }
 
 TEST_F(ToolContextTest, AuthorizeReadApprovalDeny) {
-	const char *work = "/tmp/morph_tctx_work";
-	const char *secret = "/tmp/morph_tctx_secret.txt";
+	std::string prefix = "/tmp/morph-tctx-approval-" + std::to_string(getpid());
+	std::string work_path = prefix + "-work";
+	std::string secret_path = prefix + "-secret";
+	const char *work = work_path.c_str();
+	const char *secret = secret_path.c_str();
 	nb_file_mkdir(work, true, NULL);
 	nb_file_write_all(secret, "secret", 6, NULL);
 	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tctx_out");

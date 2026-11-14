@@ -7,6 +7,7 @@
 #include "runtime/runtime.h"
 #include "errors.h"
 #include "nb/cleanup.h"
+#include "nb/queue.h"
 #include "nb/file.h"
 #include "nb/log.h"
 
@@ -38,7 +39,7 @@ struct bridge_runtime_slot {
 
 struct fcgi_turn_ticket {
 	struct fcgi_bridge *pool;
-	struct fcgi_turn_ticket *next;
+	nb_queue link;
 	char session_id[FCGI_RUNTIME_SESSION_ID_MAX];
 	int64_t deadline_ns;
 	int queued;
@@ -47,8 +48,7 @@ struct fcgi_turn_ticket {
 struct fcgi_bridge {
 	struct nb_log *logger;
 	struct bridge_runtime_slot *slots;
-	struct fcgi_turn_ticket *turn_head;
-	struct fcgi_turn_ticket *turn_tail;
+	nb_queue turns;
 	int slot_count;
 	int min_workers;
 	int max_workers;
@@ -188,34 +188,21 @@ static int bridge_session_busy(struct fcgi_bridge *pool, const char *session_id)
 static struct fcgi_turn_ticket *bridge_first_runnable_ticket(
 	struct fcgi_bridge *pool)
 {
-	for (struct fcgi_turn_ticket *ticket = pool->turn_head; ticket;
-	     ticket = ticket->next)
+	for (nb_queue *link = pool->turns.next; link != &pool->turns; link = link->next) {
+		struct fcgi_turn_ticket *ticket = NB_QUEUE_DATA(link, struct fcgi_turn_ticket,
+			link);
 		if (!bridge_session_busy(pool, ticket->session_id))
 			return ticket;
+	}
 	return NULL;
 }
 
 static void bridge_ticket_unlink(struct fcgi_bridge *pool,
 				 struct fcgi_turn_ticket *ticket)
 {
-	struct fcgi_turn_ticket **link = &pool->turn_head;
-
-	while (*link && *link != ticket)
-		link = &(*link)->next;
-	if (!*link)
-		return;
-	*link = ticket->next;
-	if (pool->turn_tail == ticket)
-		pool->turn_tail = NULL;
-	if (!pool->turn_head)
-		pool->turn_tail = NULL;
-	else if (!pool->turn_tail) {
-		struct fcgi_turn_ticket *tail = pool->turn_head;
-
-		while (tail->next)
-			tail = tail->next;
-		pool->turn_tail = tail;
-	}
+	(void)pool;
+	if (ticket->link.next)
+		nb_queue_remove(&ticket->link);
 }
 
 static void *bridge_reaper_main(void *user_data)
@@ -293,6 +280,7 @@ static int bridge_pool_configure(struct fcgi_bridge *pool, const char *db_path,
 static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_1 = NB_OK;
 
 	const char *config_path;
 	const char *output_dir;
@@ -321,11 +309,12 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	}
 	output_dir = getenv("MORPH_FCGI_OUTPUT_DIR");
 	if (output_dir && output_dir[0]) {
-		expanded_output = (nb_path_expand(&file_value_1, output_dir, NULL) == NB_OK
+		expanded_output = ((expand_status_1 = nb_path_expand(&file_value_1, output_dir,
+			NULL)) == NB_OK
 					   ? strdup(nb_buf_cstr(&file_value_1))
 					   : NULL);
 		if (!expanded_output)
-			return NB_ERR_NOMEM;
+			return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
 		rc = nb_file_mkdir(expanded_output, true, NULL);
 		if (rc != 0) {
 			free(expanded_output);
@@ -451,11 +440,7 @@ int fcgi_bridge_turn_enqueue(struct fcgi_bridge *pool, const char *session_id,
 								INT64_C(1000000000));
 		ticket->queued = 1;
 		ticket->pool = pool;
-		if (pool->turn_tail)
-			pool->turn_tail->next = ticket;
-		else
-			pool->turn_head = ticket;
-		pool->turn_tail = ticket;
+		nb_queue_insert_tail(&pool->turns, &ticket->link);
 		pool->waiting_turns++;
 		pool->outstanding_tickets++;
 		if (position)
@@ -724,6 +709,7 @@ int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
 	pool = calloc(1, sizeof(*pool));
 	if (!pool)
 		return NB_ERR_NOMEM;
+	nb_queue_init(&pool->turns);
 	error = ((pool->lock = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (error) {
 		free(pool);

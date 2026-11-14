@@ -4,9 +4,7 @@
 #include "nb/cleanup.h"
 #include "cJSON.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "nb/vec.h"
-#include "nb/cleanup.h"
 #include "nb/log.h"
 #include "errors.h"
 #include "nb/str.h"
@@ -269,14 +267,12 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 	cJSON *page = NULL;
 	char *params = NULL;
 	char *result = NULL;
-	nb_map *cursors = nb_map_new_with_cap(16);
+	nb_map *cursors NB_CLEANUP(nb_map_cleanup) = nb_map_new_with_cap(16);
 	int rc = cursors ? 0 : NB_ERR_NOMEM;
 
 	*out = NULL;
 	if (rc != 0 || !items) {
 		cJSON_Delete(items);
-		if (rc == 0)
-			nb_map_free(cursors);
 		return rc != 0 ? rc : NB_ERR_NOMEM;
 	}
 	for (;;) {
@@ -340,7 +336,6 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 	free(result);
 	cJSON_free(params);
 	cJSON_Delete(page);
-	nb_map_free(cursors);
 	if (rc != 0) {
 		cJSON_Delete(items);
 		nb_log_write(client ? client->config.logger : NULL, NB_LOG_WARN,

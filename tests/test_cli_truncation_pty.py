@@ -1,5 +1,6 @@
 """Show truncation warnings without losing partial output or the editable composer."""
 import http.server
+from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import sys
@@ -47,7 +48,7 @@ class TruncationModel(Model):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), TruncationModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), TruncationModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

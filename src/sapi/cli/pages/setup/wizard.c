@@ -339,6 +339,7 @@ static int cli_wizard_load_existing(const char *path, struct cli_setup_state *st
 				    char **original)
 {
 	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	int read_status_1 = NB_OK;
 	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	nb_err parse_error = {0};
@@ -352,7 +353,7 @@ static int cli_wizard_load_existing(const char *path, struct cli_setup_state *st
 	if (st.st_size > 1024 * 1024)
 		return NB_ERR_TOO_BIG;
 	size_t len;
-	*original = (nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
+	*original = ((read_status_1 = nb_file_read_all(path, &file_value_1, 0, NULL)) == NB_OK &&
 				     (file_copy_1 =
 					      (char *)malloc(nb_buf_len(&file_value_1) + 1)) != NULL
 			     ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
@@ -360,7 +361,7 @@ static int cli_wizard_load_existing(const char *path, struct cli_setup_state *st
 				*(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
 			     : NULL);
 	if (!*original)
-		return nb_status_from_errno(errno, NULL);
+		return read_status_1 != NB_OK ? read_status_1 : NB_ERR_NOMEM;
 	if (memchr(*original, '\0', len) ||
 	    nb_utf8_validate(nb_str_from_parts(*original, len), NULL))
 		return NB_ERR_ENCODING;
@@ -757,13 +758,15 @@ int cli_setup_command(struct cli_application *ctx, int argc, char **argv, const 
 int cli_setup_if_missing(struct cli_application *ctx, const char *path, int interactive)
 {
 	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_12 = NB_OK;
 
 	char *expanded =
-		(nb_path_expand(&file_value_12, path ? path : "~/.morph/config.toml", NULL) == NB_OK
+		((expand_status_12 = nb_path_expand(&file_value_12,
+			path ? path : "~/.morph/config.toml", NULL)) == NB_OK
 			 ? strdup(nb_buf_cstr(&file_value_12))
 			 : NULL);
 	if (!expanded)
-		return NB_ERR_NOMEM;
+		return expand_status_12 != NB_OK ? expand_status_12 : NB_ERR_NOMEM;
 	struct stat st;
 	if (lstat(expanded, &st) == 0) {
 		free(expanded);

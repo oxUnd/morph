@@ -11,7 +11,6 @@
 #include "nb/file.h"
 #include "errors.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "media/image.h"
 #include "cJSON.h"
 #include "stb_image.h"

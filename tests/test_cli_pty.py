@@ -3,6 +3,7 @@
 Run: python3 -m pip install pexpect pyte
      python3 tests/test_cli_pty.py build/bin/morph-cli-pty-driver
 """
+from loopback_http import LoopbackHTTPServer
 import http.server
 import json
 import os
@@ -189,7 +190,7 @@ retry_count = 0
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory(prefix='morph-pty-') as temp:

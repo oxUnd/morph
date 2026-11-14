@@ -2,7 +2,6 @@
 #include "nb/vec.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/log.h"
@@ -265,10 +264,11 @@ static int append_unique(nb_vec *paths, const char *path)
 static int copy_paths(nb_vec *dst, char **src, int count)
 {
 	for (int i = 0; i < count; i++) {
-		char resolved[PATH_MAX];
+		nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
 		if (!src || !src[i])
 			continue;
-		const char *path = realpath(src[i], resolved) ? resolved : src[i];
+		const char *path = nb_path_canonical(&canonical, src[i], NULL) == NB_OK
+			? nb_buf_cstr(&canonical) : src[i];
 		int rc = append_unique(dst, path);
 		if (rc != 0)
 			return rc;
@@ -335,17 +335,19 @@ static int prepare_path(const char *path, enum path_kind kind)
 static int append_tool_path(struct nb_log *logger, const struct tool_path *entry, const char *path,
 			    const char *home, nb_vec *reads, nb_vec *writes, nb_vec *deletes)
 {
-	char resolved[PATH_MAX];
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
 	int rc;
 
 	if (!path || path[0] != '/' || strlen(path) >= PATH_MAX || strstr(path, "/..") ||
 	    nb_path_is_within(home, path, true))
 		return 0;
-	if (prepare_path(path, entry->kind) != 0 || !realpath(path, resolved)) {
+	if (prepare_path(path, entry->kind) != 0 ||
+	    nb_path_canonical(&canonical, path, NULL) != NB_OK) {
 		nb_log_write(logger, NB_LOG_DEBUG, "sandbox: skipping unavailable %s path",
 			     entry->tool);
 		return 0;
 	}
+	const char *resolved = nb_buf_cstr(&canonical);
 	if (nb_path_is_within(home, resolved, true))
 		return 0;
 	nb_log_write(logger, NB_LOG_DEBUG, "sandbox: tool path %s: %s", entry->tool, resolved);
@@ -361,7 +363,8 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 {
 	struct sandbox_path_set paths NB_CLEANUP(sandbox_path_set_cleanup) = {0};
 	const char *home_env = getenv("HOME");
-	char home[PATH_MAX];
+	nb_buf canonical_home NB_CLEANUP(nb_buf_destroy) = {0};
+	const char *home;
 	size_t extra = sizeof(tool_paths) / sizeof(tool_paths[0]);
 	int rc;
 
@@ -371,7 +374,10 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg)
 	rc = sandbox_prepare_temporary_paths(cfg, NULL);
 	if (rc != NB_OK)
 		return rc;
-	if (!home_env || !realpath(home_env, home) || strcmp(home, "/") == 0)
+	if (!home_env || nb_path_canonical(&canonical_home, home_env, NULL) != NB_OK)
+		return 0;
+	home = nb_buf_cstr(&canonical_home);
+	if (!strcmp(home, "/"))
 		return 0;
 	for (size_t i = 0; i < sizeof(tool_paths) / sizeof(tool_paths[0]); i++) {
 		const struct tool_path *entry = &tool_paths[i];

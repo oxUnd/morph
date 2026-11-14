@@ -156,13 +156,12 @@ int mcp_protocol_cache_tool_copy(struct mcp_client *client, const char *name, co
 	if (!client->protocol || !client->protocol->per_request ||
 	    client->config.transport != MCP_TRANSPORT_STREAMABLE_HTTP)
 		return 0;
-	nb_map *seen = nb_map_new_with_cap(8);
+	nb_map *seen NB_CLEANUP(nb_map_cleanup) = nb_map_new_with_cap(8);
 	int rc = seen ? 0 : NB_ERR_NOMEM;
 
 	if (rc != 0)
 		return rc;
 	rc = validate_schema(schema, 1, 0, seen);
-	nb_map_free(seen);
 	if (rc != 0)
 		return rc;
 	cJSON *copy = cJSON_Duplicate(schema, 1);

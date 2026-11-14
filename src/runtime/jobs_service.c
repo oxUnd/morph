@@ -143,7 +143,7 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 	}
 	if (rc)
 		return rc;
-	nb_map *live = nb_map_new_with_cap(16);
+	nb_map *live NB_CLEANUP(nb_map_cleanup) = nb_map_new_with_cap(16);
 	if (!live) {
 		cJSON_Delete(jobs);
 		return NB_ERR_NOMEM;
@@ -188,7 +188,6 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 	}
 	sqlite3_finalize(stmt);
 	nb_mutex_unlock(runtime->jobs_lock);
-	nb_map_free(live);
 	if (!rc && sql_rc != SQLITE_DONE)
 		rc = MORPH_ERR_DB;
 	if (rc) {

@@ -97,7 +97,7 @@ static int find_under_root(char *dst, size_t dst_size,
 	int file_status_2 = NB_OK;
 
 	char path[PATH_MAX];
-	char resolved[PATH_MAX];
+	nb_buf resolved NB_CLEANUP(nb_buf_destroy) = {0};
 	int rc;
 
 	if (!root || !root[0])
@@ -110,11 +110,11 @@ static int find_under_root(char *dst, size_t dst_size,
 		      : file_status_2);
 	if (rc != 0)
 		return rc;
-	if (!realpath(path, resolved))
+	if (nb_path_canonical(&resolved, path, NULL) != NB_OK)
 		return NB_ERR_NOT_FOUND;
-	if (!nb_path_is_within(resolved, root, true))
+	if (!nb_path_is_within(nb_buf_cstr(&resolved), root, true))
 		return NB_ERR_PERMISSION;
-	rc = copy_path(dst, dst_size, resolved);
+	rc = copy_path(dst, dst_size, nb_buf_cstr(&resolved));
 	if (rc != 0)
 		return rc;
 	return 0;

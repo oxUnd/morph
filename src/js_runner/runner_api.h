@@ -2,12 +2,12 @@
 #define RUNNER_API_H
 
 #include "quickjs.h"
-#include <time.h>
+#include "nb/time.h"
 
 #define RUNNER_DEFAULT_MAX_CAPTURE (1024u * 1024u)
 
 struct runner_state {
-	time_t deadline;
+	int64_t deadline_ns;
 	size_t max_capture_bytes;
 	JSClassID sharp_class_id;
 	JSClassID canvas_class_id;

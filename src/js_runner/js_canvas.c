@@ -4,7 +4,6 @@
 #include "js_values.h"
 #include "js_image.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "nb/file.h"
 #include <ctype.h>
 #include <errno.h>
@@ -960,7 +959,8 @@ static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val, int argc, J
 	rc = js_canvas_write_surface(canvas->surface, resolved);
 	free(resolved);
 	if (rc < 0)
-		return JS_ThrowInternalError(ctx, "failed to write canvas: %s", strerror(-rc));
+		return JS_ThrowInternalError(ctx, "failed to write canvas: %s",
+			nb_status_str((nb_status)rc));
 	return JS_UNDEFINED;
 }
 

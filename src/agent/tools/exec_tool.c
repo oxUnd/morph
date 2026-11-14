@@ -15,7 +15,6 @@
 #include "nb/buf.h"
 #include "nb/cleanup.h"
 #include "errors.h"
-#include "nb/cleanup.h"
 #include "cJSON.h"
 #include "nb/random.h"
 #include "cJSON.h"
@@ -436,6 +435,7 @@ static void exec_resolve_worktree_git_dir(const char *workdir, char *out,
 	char git_path[PATH_MAX];
 	char line[PATH_MAX];
 	char candidate[PATH_MAX];
+	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
 	char resolved[PATH_MAX];
 	const char *gitdir;
 	struct stat st;
@@ -473,10 +473,13 @@ static void exec_resolve_worktree_git_dir(const char *workdir, char *out,
 			candidate[--length] = '\0';
 	}
 	if (candidate[0] == '/') {
-		if (!realpath(candidate, resolved))
+		if (nb_path_canonical(&canonical, candidate, NULL) != NB_OK ||
+		    nb_str_copy_to(nb_buf_str(&canonical), resolved, sizeof(resolved)) != NB_OK)
 			return;
 	} else if (snprintf(git_path, sizeof(git_path), "%s/%s", workdir,
-			    candidate) <= 0 || !realpath(git_path, resolved)) {
+			    candidate) <= 0 || nb_path_canonical(&canonical, git_path,
+				NULL) != NB_OK ||
+		   nb_str_copy_to(nb_buf_str(&canonical), resolved, sizeof(resolved)) != NB_OK) {
 		return;
 	}
 	if (snprintf(git_path, sizeof(git_path), "%s/commondir",
@@ -485,7 +488,7 @@ static void exec_resolve_worktree_git_dir(const char *workdir, char *out,
 		if (file) {
 			char common[PATH_MAX];
 			char common_path[PATH_MAX];
-			char common_resolved[PATH_MAX];
+			nb_buf common_resolved NB_CLEANUP(nb_buf_destroy) = {0};
 			size_t length;
 
 			if (fgets(common, sizeof(common), file)) {
@@ -504,9 +507,9 @@ static void exec_resolve_worktree_git_dir(const char *workdir, char *out,
 					common_path[0] = '\0';
 				}
 				if (common_path[0] &&
-				    realpath(common_path, common_resolved))
+				    nb_path_canonical(&common_resolved, common_path, NULL) == NB_OK)
 					snprintf(resolved, sizeof(resolved),
-						 "%s", common_resolved);
+						 "%s", nb_buf_cstr(&common_resolved));
 			}
 			fclose(file);
 		}
@@ -616,7 +619,10 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	const char *workspace = runtime->tool_context
 					? tool_context_workdir_borrow(runtime->tool_context)
 					: workdir;
-	if (workspace && realpath(workspace, resolved_workdir)) {
+	nb_buf canonical_workspace NB_CLEANUP(nb_buf_destroy) = {0};
+	if (workspace && nb_path_canonical(&canonical_workspace, workspace, NULL) == NB_OK &&
+	    nb_str_copy_to(nb_buf_str(&canonical_workspace), resolved_workdir,
+			   sizeof(resolved_workdir)) == NB_OK) {
 		read_paths[read_path_count++] = resolved_workdir;
 		if (!readonly) {
 			write_paths[write_path_count++] = resolved_workdir;

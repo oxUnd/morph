@@ -3,7 +3,6 @@
 #include "db/database.h"
 #include "nb/vec.h"
 #include "nb/cleanup.h"
-#include "nb/cleanup.h"
 #include "cJSON.h"
 #include "nb/utf8.h"
 #include "nb/log.h"

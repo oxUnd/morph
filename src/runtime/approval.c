@@ -4,7 +4,6 @@
 #include "runtime/runtime_internal.h"
 #include "agent/tokenizer.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "cJSON.h"
 #include <errno.h>

@@ -9,7 +9,6 @@
 #include "nb/cleanup.h"
 #include "runtime/resources.h"
 #include "errors.h"
-#include "nb/cleanup.h"
 #include "nb/file.h"
 #include "nb/str.h"
 #include "nb/log.h"
@@ -42,6 +41,7 @@ static char *join_caps(char caps[][DYNAMIC_TOOL_CAP_LEN_MAX], int count);
 static char *join_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int count);
 static char *join_path_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int count,
 			     const char *root);
+
 static int effective_caps(struct dynamic_tool *dt,
 			  char out[DYNAMIC_TOOL_CAP_MAX][DYNAMIC_TOOL_CAP_LEN_MAX], int *out_count);
 static int set_child_env(struct dynamic_tool *dt);
@@ -139,17 +139,14 @@ static char *join_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int cou
 static char *join_path_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], int count,
 			     const char *root)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-
-	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf candidate_path NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf resolved NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf buf NB_CLEANUP(nb_buf_destroy) = {0};
 	int first = 1;
 
-	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, 128) ? 0 : NB_ERR_NOMEM) != 0)
+	if (!nb_buf_reserve(&buf, 128))
 		return NULL;
 	for (int i = 0; i < count; i++) {
-		char *candidate;
-		char *resolved;
 		int rc;
 
 		if (!values[i][0])
@@ -157,36 +154,22 @@ static char *join_path_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX], in
 		if (strcmp(values[i], "*") == 0) {
 			rc = append_list(&buf, values[i], &first);
 		} else {
-			candidate = nb_path_is_absolute(values[i])
-					    ? strdup(values[i])
-					    : (nb_path_join(&file_value_1, root, values[i]) == NB_OK
-						       ? strdup(nb_buf_cstr(&file_value_1))
-						       : NULL);
-			if (!candidate) {
-				nb_buf_cleanup(&buf);
-				return NULL;
+			const char *candidate = values[i];
+
+			if (!nb_path_is_absolute(candidate)) {
+				if (nb_path_join(&candidate_path, root, candidate) != NB_OK)
+					return NULL;
+				candidate = nb_buf_cstr(&candidate_path);
 			}
-			resolved =
-				(nb_path_expand(&file_value_2, candidate, NULL) == NB_OK &&
-						 nb_path_canonical_missing(
-							 &file_value_2, nb_buf_cstr(&file_value_2),
-							 NULL) == NB_OK
-					 ? strdup(nb_buf_cstr(&file_value_2))
-					 : NULL);
-			free(candidate);
-			if (!resolved) {
-				nb_buf_cleanup(&buf);
+			if (nb_path_expand(&resolved, candidate, NULL) != NB_OK ||
+			    nb_path_canonical_missing(&resolved, nb_buf_cstr(&resolved), NULL) != NB_OK)
 				return NULL;
-			}
-			rc = append_list(&buf, resolved, &first);
-			free(resolved);
+			rc = append_list(&buf, nb_buf_cstr(&resolved), &first);
 		}
-		if (rc != 0) {
-			nb_buf_cleanup(&buf);
+		if (rc != 0)
 			return NULL;
-		}
 	}
-	return (nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL);
+	return nb_buf_ok(&buf) ? strdup(nb_buf_cstr(&buf)) : NULL;
 }
 
 static int effective_caps(struct dynamic_tool *dt,

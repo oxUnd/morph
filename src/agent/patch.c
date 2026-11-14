@@ -1,7 +1,6 @@
 #include "patch.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
-#include "nb/cleanup.h"
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/utf8.h"
@@ -1263,10 +1262,11 @@ static int patch_render_delete_preview(nb_buf *out, const char *path, const char
 				       char *error, size_t error_size)
 {
 	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	int read_status_2 = NB_OK;
 	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char *content =
-		(nb_file_read_all(resolved, &file_value_2, 0, NULL) == NB_OK &&
+		((read_status_2 = nb_file_read_all(resolved, &file_value_2, 0, NULL)) == NB_OK &&
 				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
 					 NULL
 			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
@@ -1278,7 +1278,8 @@ static int patch_render_delete_preview(nb_buf *out, const char *path, const char
 	int rc;
 
 	if (!content)
-		return patch_error(error, error_size, nb_status_from_errno(errno, NULL),
+		return patch_error(error, error_size,
+			read_status_2 != NB_OK ? read_status_2 : NB_ERR_NOMEM,
 				   "failed to read file to delete %s", resolved);
 	rc = patch_content_lines(content, &lines);
 	free(content);
@@ -1298,6 +1299,7 @@ static int patch_render_hunk_preview(nb_buf *out, const char *root, struct patch
 				     char *error, size_t error_size)
 {
 	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	int read_status_3 = NB_OK;
 	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char source_path[PATH_MAX];
@@ -1314,7 +1316,8 @@ static int patch_render_hunk_preview(nb_buf *out, const char *root, struct patch
 	if (hunk->action == PATCH_ACTION_DELETE)
 		return patch_render_delete_preview(out, hunk->path, source_path,
 			error, error_size);
-	original = (nb_file_read_all(source_path, &file_value_3, 0, NULL) == NB_OK &&
+	original = ((read_status_3 = nb_file_read_all(source_path, &file_value_3, 0,
+		NULL)) == NB_OK &&
 				    (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
 					    NULL
 			    ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
@@ -1322,7 +1325,8 @@ static int patch_render_hunk_preview(nb_buf *out, const char *root, struct patch
 			       nb_charp_steal(&file_copy_3))
 			    : NULL);
 	if (!original)
-		return patch_error(error, error_size, nb_status_from_errno(errno, NULL),
+		return patch_error(error, error_size,
+			read_status_3 != NB_OK ? read_status_3 : NB_ERR_NOMEM,
 				   "failed to read file to update %s", source_path);
 	rc = patch_content_lines(original, &source);
 	free(original);
@@ -1342,6 +1346,7 @@ int patch_preview(const char *workdir, const char *input, nb_buf *out, char *err
 		  size_t error_size)
 {
 	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_4 = NB_OK;
 
 	nb_vec hunks;
 	struct patch_hunk *hunk;
@@ -1359,13 +1364,14 @@ int patch_preview(const char *workdir, const char *input, nb_buf *out, char *err
 				   "patch exceeds the 64 KiB limit");
 	if (nb_utf8_validate(nb_str_from_cstr(input), NULL) != NB_UTF8_OK)
 		return patch_error(error, error_size, NB_ERR_INVAL, "patch is not valid UTF-8");
-	root = (nb_path_expand(&file_value_4, workdir, NULL) == NB_OK &&
-				nb_path_canonical_missing(&file_value_4, nb_buf_cstr(&file_value_4),
-							  NULL) == NB_OK
+	root = ((expand_status_4 = nb_path_expand(&file_value_4, workdir, NULL)) == NB_OK &&
+				(expand_status_4 = nb_path_canonical_missing(&file_value_4,
+					nb_buf_cstr(&file_value_4),
+							  NULL)) == NB_OK
 			? strdup(nb_buf_cstr(&file_value_4))
 			: NULL);
 	if (!root)
-		return NB_ERR_NOMEM;
+		return expand_status_4 != NB_OK ? expand_status_4 : NB_ERR_NOMEM;
 	copy = strdup(input);
 	if (!copy) {
 		free(root);
@@ -1445,6 +1451,7 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			    size_t error_size, const struct patch_write_policy *policy)
 {
 	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	int read_status_5 = NB_OK;
 	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char source_path[PATH_MAX];
@@ -1490,7 +1497,8 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 		if (!source_exists)
 			return patch_error(error, error_size, NB_ERR_NOT_FOUND,
 					   "failed to read file to update %s", source_path);
-		original = (nb_file_read_all(source_path, &file_value_5, 0, NULL) == NB_OK &&
+		original = ((read_status_5 = nb_file_read_all(source_path, &file_value_5, 0,
+			NULL)) == NB_OK &&
 					    (file_copy_5 = (char *)malloc(
 						     nb_buf_len(&file_value_5) + 1)) != NULL
 				    ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
@@ -1498,7 +1506,8 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 				       nb_charp_steal(&file_copy_5))
 				    : NULL);
 		if (!original)
-			return patch_error(error, error_size, nb_status_from_errno(errno, NULL),
+			return patch_error(error, error_size,
+				read_status_5 != NB_OK ? read_status_5 : NB_ERR_NOMEM,
 					   "failed to read file to update %s", source_path);
 		rc = patch_build_updated_content(original, hunk, &updated, error,
 			error_size);
@@ -1611,6 +1620,7 @@ int patch_apply_authorized_with_policy(const char *workdir, const char *input,
 		const struct patch_write_policy *policy)
 {
 	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	int expand_status_6 = NB_OK;
 
 	struct patch_result candidate NB_CLEANUP(patch_result_cleanup) = {0};
 	nb_vec hunks;
@@ -1630,13 +1640,14 @@ int patch_apply_authorized_with_policy(const char *workdir, const char *input,
 				   "patch exceeds the 64 KiB limit");
 	if (nb_utf8_validate(nb_str_from_cstr(input), NULL) != NB_UTF8_OK)
 		return patch_error(error, error_size, NB_ERR_INVAL, "patch is not valid UTF-8");
-	root = (nb_path_expand(&file_value_6, workdir, NULL) == NB_OK &&
-				nb_path_canonical_missing(&file_value_6, nb_buf_cstr(&file_value_6),
-							  NULL) == NB_OK
+	root = ((expand_status_6 = nb_path_expand(&file_value_6, workdir, NULL)) == NB_OK &&
+				(expand_status_6 = nb_path_canonical_missing(&file_value_6,
+					nb_buf_cstr(&file_value_6),
+							  NULL)) == NB_OK
 			? strdup(nb_buf_cstr(&file_value_6))
 			: NULL);
 	if (!root)
-		return NB_ERR_NOMEM;
+		return expand_status_6 != NB_OK ? expand_status_6 : NB_ERR_NOMEM;
 	copy = strdup(input);
 	if (!copy) {
 		free(root);

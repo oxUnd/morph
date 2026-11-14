@@ -12,7 +12,6 @@
 #include "sapi/cli/application_internal.h"
 #include "nb/random.h"
 #include "nb/encoding.h"
-#include "nb/encoding.h"
 #include "sapi/cli/widgets/feed.h"
 
 #include <fcntl.h>

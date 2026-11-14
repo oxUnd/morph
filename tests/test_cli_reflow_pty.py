@@ -56,6 +56,7 @@ if __name__ == '__main__' and '--native-worker' in sys.argv:
 
 import argparse
 import http.server
+from loopback_http import LoopbackHTTPServer
 import os
 import queue
 import select
@@ -397,7 +398,7 @@ def main():
     if not arguments.kitty:
         print('Native terminal reflow requires an installed Kitty; skipping.')
         return 77
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), ReflowModel)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), ReflowModel)
     server.turn_requests = queue.Queue()
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()

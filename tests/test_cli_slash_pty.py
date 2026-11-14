@@ -1,4 +1,5 @@
 """Local commands must not become chat bubbles or stale composer backgrounds."""
+from loopback_http import LoopbackHTTPServer
 from pathlib import Path
 import sys
 import tempfile
@@ -73,7 +74,7 @@ def command_heading(terminal, command):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     release = None

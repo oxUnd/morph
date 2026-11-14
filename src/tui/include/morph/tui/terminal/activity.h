@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <stdio.h>
+#include "nb/time.h"
 #include <time.h>
 #include "nb/thread.h"
 #include <signal.h>
@@ -42,6 +43,8 @@ struct spin_context {
 	int frame;
 	time_t start_time;
 	time_t last_update;
+	/* Duration clock; wall-clock fields above retain their public units. */
+	int64_t started_ns;
 	size_t last_render_width;
 	nb_thread *thread;
 	nb_mutex *mutex;

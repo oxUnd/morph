@@ -2039,9 +2039,13 @@ int agent_control_shell_scope_copy(struct agent_control *control, const char *id
 		rc = (nb_vec_init(&scope.paths, sizeof(*scope.write_paths)),
 		      nb_vec_reserve(&scope.paths, 8) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
-		scope.scratch = realpath(nb_buf_cstr(&directory), NULL);
-		if (!scope.scratch)
-			rc = nb_status_from_errno(errno, NULL);
+		nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
+		rc = nb_path_canonical(&canonical, nb_buf_cstr(&directory), NULL);
+		if (rc == NB_OK) {
+			scope.scratch = strdup(nb_buf_cstr(&canonical));
+			if (!scope.scratch)
+				rc = NB_ERR_NOMEM;
+		}
 	}
 	if (rc == 0 && !nb_path_is_within(scope.scratch, scratch_base, true))
 		rc = NB_ERR_PERMISSION;

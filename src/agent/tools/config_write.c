@@ -6,7 +6,6 @@
 #include "agent/tool_context.h"
 #include "agent/patch.h"
 #include "nb/file.h"
-#include "nb/file.h"
 #include "errors.h"
 #include "config/config.h"
 #include "cJSON.h"
@@ -263,6 +262,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 {
 	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
 	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	int read_status_7 = NB_OK;
 	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
 	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
 	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
@@ -348,7 +348,8 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		}
 		existed = 1;
 		mode = target_stat.st_mode & 0777;
-		old_content = (nb_file_read_all(target_expanded, &file_value_7, 0, NULL) == NB_OK &&
+		old_content = ((read_status_7 = nb_file_read_all(target_expanded, &file_value_7, 0,
+			NULL)) == NB_OK &&
 					       (file_copy_7 = (char *)malloc(
 							nb_buf_len(&file_value_7) + 1)) != NULL
 				       ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
@@ -356,7 +357,7 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 					  nb_charp_steal(&file_copy_7))
 				       : NULL);
 		if (!old_content) {
-			rc = nb_status_from_errno(errno, NULL);
+			rc = read_status_7 != NB_OK ? read_status_7 : NB_ERR_NOMEM;
 			return rc;
 		}
 	} else if (errno != ENOENT) {
