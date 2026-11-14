@@ -117,6 +117,8 @@ struct model_error_info {
 	long retry_after_seconds;
 	int output_started;
 	int retryable;
+	/* A partial transport response may be continued by the agent. */
+	int recoverable;
 };
 
 struct model {

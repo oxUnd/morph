@@ -43,6 +43,9 @@ max_tokens       = 16384
 # Setup gives text requests 600 seconds without imposing a total stream deadline.
 timeout_seconds  = 600
 # Retries after the initial request for transient HTTP errors (0-10). Default: 3.
+# Empty streams missing a completion marker are retried too. During an agent turn,
+# interrupted partial output has a separate continuation budget of this size.
+# Uncommitted tool calls are discarded; 0 disables both forms of recovery.
 retry_count      = 3
 # Optional provider-specific fields merged into the JSON request body.
 # Must be a JSON object and cannot replace fields managed by morph, including

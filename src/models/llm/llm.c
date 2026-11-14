@@ -201,6 +201,9 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 			     status == NB_ERR_CONNECTION_REFUSED || llm_retryable_status(status));
 	if (status == NB_ERR_CANCELLED || status == NB_ERR_INTERRUPTED)
 		info->retryable = 0;
+	info->recoverable = started &&
+		(status == MORPH_ERR_NETWORK || status == NB_ERR_TIMEOUT ||
+		 status == NB_ERR_CONNECTION_RESET || status == NB_ERR_CONNECTION_REFUSED);
 	cJSON_Delete(json);
 }
 
@@ -250,6 +253,7 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 			&self->http, url, body, body_len, "application/json", headers, 1, timeout,
 			llm_http_cb, &hctx, &metadata);
 		int http_status = status;
+		int missing_terminal = 0;
 		sse_parser_free(&parser);
 
 		char *detail NB_CLEANUP(nb_charp_cleanup) = NULL;
@@ -257,6 +261,7 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 			detail = llm_extract_error(hctx.error_buf.ptr);
 		if (status >= 0 && status < 400 && requires_terminal_event) {
 			if (!ctx.terminal_received) {
+				missing_terminal = 1;
 				ctx.terminal_error = NB_ERR_PROTOCOL;
 				int rc = llm_stream_string_copy(
 					&ctx.terminal_detail,
@@ -277,7 +282,9 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 			self->error_info.kind = ctx.terminal_error == MORPH_ERR_API
 				? MODEL_ERROR_API : MODEL_ERROR_INCOMPLETE;
 			self->error_info.http_status = http_status > 0 ? http_status : 0;
-			self->error_info.retryable = 0;
+			int interrupted_stream = missing_terminal && status == NB_ERR_PROTOCOL;
+			self->error_info.retryable = interrupted_stream && !llm_stream_started(&ctx);
+			self->error_info.recoverable = interrupted_stream && llm_stream_started(&ctx);
 		}
 		if (self->error_info.kind == MODEL_ERROR_CONTEXT) {
 			if (error_detail)
@@ -302,6 +309,15 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 				return wait_rc;
 			continue;
 		}
+		if (status < 0 || status >= 400)
+			nb_log_write(self->http.logger, NB_LOG_WARN,
+				     "%s: request stopped, status=%d, output_started=%d, "
+				     "retries=%d/%d, reason=%s", operation, status,
+				     self->error_info.output_started, attempt, retries,
+				     self->error_info.retryable ? "retry budget exhausted" :
+				     self->error_info.recoverable
+					     ? "partial output requires recovery"
+					     : "non-retryable error");
 
 		if (error_detail)
 			*error_detail = nb_charp_steal(&detail);

@@ -3531,6 +3531,7 @@ struct mock_server {
 	int transient_error_status;
 	int transient_failures;
 	int transient_sse_body;
+	int transient_partial_file;
 	int request_count;
 	char request_method[16];
 	char last_request[8192];
@@ -3614,6 +3615,8 @@ static void *mock_http_server_thread(void *arg)
 			"\r\nConnection: close\r\n";
 		if (!streaming)
 			header += "Content-Length: " + std::to_string(strlen(data)) + "\r\n";
+		else if (transient && srv->transient_partial_file)
+			header += "Content-Length: 100000\r\n";
 		if (!transient && srv->extra_response_headers)
 			header += srv->extra_response_headers;
 		header += "\r\n";
@@ -3641,6 +3644,7 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 	int saved_transient_status = srv->transient_error_status;
 	int saved_transient_failures = srv->transient_failures;
 	int saved_transient_sse_body = srv->transient_sse_body;
+	int saved_partial_file = srv->transient_partial_file;
 	memset(srv, 0, sizeof(*srv));
 	srv->response_body = saved_body;
 	srv->extra_response_headers = saved_extra_headers;
@@ -3649,6 +3653,7 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 	srv->transient_error_status = saved_transient_status;
 	srv->transient_failures = saved_transient_failures;
 	srv->transient_sse_body = saved_transient_sse_body;
+	srv->transient_partial_file = saved_partial_file;
 	srv->server_fd = -1;
 	srv->server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (srv->server_fd < 0)
@@ -8609,6 +8614,7 @@ TEST_F(MockServerTest, ResponsesRequireTerminalStatusAndPreserveIncompleteText)
 			&response, nullptr, nullptr), test.status);
 		EXPECT_STREQ(response.content, "Partial reply");
 		EXPECT_STREQ(response.usage.finish_reason, test.finish);
+		EXPECT_EQ(model->error_info.recoverable, test.event[0] ? 0 : 1);
 		if (test.detail)
 			EXPECT_NE(strstr(model->last_error, test.detail), nullptr);
 		model_destroy(model);
@@ -8806,4 +8812,100 @@ TEST_F(MockServerTest, ChatSendsTheFullLongCredential)
 	EXPECT_NE(strstr(srv.last_request, header.c_str()), nullptr);
 	EXPECT_STREQ(nb_buf_cstr(&answer), "ok");
 	model_destroy(model);
+}
+
+TEST_F(MockServerTest, LlmRetriesEmptyStreamWithoutTerminalEvent)
+{
+	srv.transient_failures = 1;
+	srv.transient_sse_body = 1;
+	srv.transient_error_status = 200;
+	srv.transient_error_body = "{}";
+	srv.response_status = 200;
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	auto *model = model_llm_create(nullptr, "test", "mock", base, "test-key");
+	ASSERT_NE(model, nullptr);
+	model->retry_count = 1;
+	struct chat_message message{};
+	message.role = const_cast<char *>("user");
+	message.content = const_cast<char *>("finish");
+	struct chat_response response NB_CLEANUP(chat_response_free) = {};
+	EXPECT_EQ(model->chat_with_tools(model, nullptr, &message, 1, nullptr, 0,
+		&response, nullptr, nullptr), 200);
+	EXPECT_EQ(srv.request_count, 2);
+	EXPECT_STREQ(response.content, "recovered");
+	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_NONE);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, ReactRecoversInterruptedStreamsWithoutExecutingPartialTools)
+{
+	for (int variant : {0, 1, 2, 3, 4, 5, 6, 7}) {
+		SCOPED_TRACE(variant);
+		srv = {};
+		srv.transient_failures = variant == 3 ? 10 : 1;
+		srv.transient_sse_body = 1;
+		srv.transient_partial_file = variant != 0;
+		srv.transient_error_status = 200;
+		srv.transient_error_body =
+			"{\"choices\":[{\"delta\":{\"content\":\"Partial reply\","
+			"\"tool_calls\":[{\"index\":0,\"id\":\"cut\",\"function\":{"
+			"\"name\":\"test_tool\",\"arguments\":\"{}\"}}]}}]}";
+		if (variant == 4)
+			srv.transient_error_body =
+				"{\"choices\":[{\"delta\":{\"reasoning_content\":\"Still thinking\"}}]}";
+		if (variant == 5)
+			srv.transient_error_body =
+				"{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,"
+				"\"id\":\"cut\",\"function\":{\"name\":\"test_tool\","
+				"\"arguments\":\"{}\"}}]}}]}";
+		srv.response_status = 200;
+		srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"Recovered reply\"}}]}";
+		START_MOCK_OR_SKIP(&srv);
+		char base[256];
+		snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+		auto *model = model_llm_create(nullptr, "test", "mock", base, "test-key");
+		ASSERT_NE(model, nullptr);
+		model->retry_count = variant == 2 ? 0 : 1;
+		struct tool_registry tools = {};
+		tool_registry_init(nullptr, &tools);
+		int executions = 0;
+		ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
+			"Count executions", "{}", call_count_tool_fn, &executions, nullptr), 0);
+		auto *ctx = react_context_create(&tools, nullptr, nullptr, nullptr);
+		ASSERT_NE(ctx, nullptr);
+		ctx->llm_model = model;
+		ctx->system_prompt_replace = 1;
+		ctx->system_prompt = strdup("");
+		ctx->workdir = strdup("/tmp");
+		if (variant == 7)
+			ctx->max_iterations = 1;
+		auto cancel_on_output = [](const struct react_output_event *event, void *user) {
+			if (event->status == REACT_OUTPUT_DELTA)
+				react_cancel(static_cast<struct react_context *>(user));
+			return 0;
+		};
+		int rc = react_run(ctx, "finish the task",
+			variant == 6 ? +cancel_on_output : nullptr, ctx);
+		if (variant < 2 || variant == 4 || variant == 5) {
+			EXPECT_EQ(rc, 0);
+			EXPECT_STREQ(ctx->final_answer, "Recovered reply");
+			EXPECT_NE(strstr(srv.last_request, "No tool calls from that interrupted"), nullptr);
+			EXPECT_EQ(strstr(srv.last_request, "\"tool_call_id\":\"cut\""), nullptr);
+			EXPECT_EQ(strstr(srv.last_request, "\"id\":\"cut\""), nullptr);
+		} else {
+			EXPECT_LT(rc, 0);
+			EXPECT_EQ(ctx->outcome, variant == 6 ? REACT_OUTCOME_CANCELLED :
+				REACT_OUTCOME_LLM_ERROR);
+		}
+		EXPECT_EQ(srv.request_count, variant == 2 || variant >= 6 ? 1 : 2);
+		EXPECT_EQ(executions, 0);
+		react_context_destroy(ctx);
+		model_destroy(model);
+		tool_registry_cleanup(&tools);
+		mock_server_stop(&srv);
+	}
 }

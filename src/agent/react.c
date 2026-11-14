@@ -728,6 +728,7 @@ void react_reset(struct react_context *ctx)
 	free(ctx->llm_error_detail);
 	ctx->llm_error_detail = NULL;
 	ctx->llm_output_started = 0;
+	ctx->llm_stream_recoverable = 0;
 	free(ctx->final_answer);
 	ctx->final_answer = NULL;
 	free(ctx->final_reasoning_content);
@@ -1419,6 +1420,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 
 	ctx->llm_error_detail = NULL;
 	ctx->llm_output_started = 0;
+	ctx->llm_stream_recoverable = 0;
 	struct react_request_messages request NB_CLEANUP(react_request_messages_cleanup) = {0};
 	status = react_request_messages_create(ctx, llm, system_prompt, messages, msg_count,
 					       &request);
@@ -1585,6 +1587,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 		llm->budget_sink->callback(&fallback, llm->budget_sink->user_data);
 	}
 	ctx->llm_output_started = llm->error_info.output_started;
+	ctx->llm_stream_recoverable = llm->error_info.recoverable;
 	if (status < 0 && llm->last_error[0]) {
 		ctx->llm_error_detail = strdup(llm->last_error);
 		if (!ctx->llm_error_detail)
@@ -1665,6 +1668,72 @@ static int react_handle_output_limit(struct react_context *ctx,
 	nb_log_write(ctx->logger, NB_LOG_WARN, "%s", message);
 	react_set_error_detail_copy(ctx, message);
 	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, MORPH_ERR_LLM, "output_token_limit");
+	return 1;
+}
+
+static int react_recover_stream(struct react_context *ctx, const struct chat_response *response,
+				int status, nb_vec *messages, int *recoveries,
+				react_output_cb cb, void *user_data)
+{
+	struct model *model = ctx->llm_model;
+	int limit = model->retry_count > 10 ? 10 : model->retry_count;
+	if (!ctx->llm_output_started || !ctx->llm_stream_recoverable ||
+	    (status != MORPH_ERR_NETWORK && status != NB_ERR_TIMEOUT &&
+	     status != NB_ERR_PROTOCOL && status != NB_ERR_CONNECTION_RESET &&
+	     status != NB_ERR_CONNECTION_REFUSED))
+		return 0;
+	if (*recoveries >= limit) {
+		nb_log_write(ctx->logger, NB_LOG_WARN,
+			     "react: stream recovery stopped, status=%d, recoveries=%d/%d",
+			     status, *recoveries, limit > 0 ? limit : 0);
+		return 0;
+	}
+	int delay = 1 << (*recoveries > 3 ? 3 : *recoveries);
+	nb_log_write(ctx->logger, NB_LOG_WARN,
+		     "react: interrupted model stream, status=%d, recovery %d/%d in %ds; "
+		     "discarding %d uncommitted tool calls", status, *recoveries + 1, limit,
+		     delay, response->tool_call_count);
+	struct http_control control = model->http;
+	control.cancel_token = &ctx->cancel_token;
+	control.cancel_flag = &ctx->cancelled;
+	control.interrupt_check = ctx->prompt_pending_fn;
+	control.interrupt_user_data = ctx->action_drain_user_data;
+	int rc = http_wait_cancelable(&control, (unsigned int)delay * 1000);
+	if (rc != 0)
+		return rc;
+	struct chat_message *slots = nb_vec_push_n(messages, 2);
+	if (!slots)
+		return NB_ERR_NOMEM;
+	memset(slots, 0, 2 * sizeof(*slots));
+	slots[0].role = strdup("assistant");
+	slots[0].content = strdup(response->content ? response->content : "");
+	slots[0].reasoning_content = response->reasoning_content
+		? strdup(response->reasoning_content) : NULL;
+	slots[1].role = strdup("user");
+	slots[1].content = strdup(
+		"The previous model response was interrupted by a transport failure. "
+		"Its text may be incomplete. No tool calls from that interrupted response "
+		"were executed. Continue the original task using the preserved results; "
+		"reissue any needed tool calls with complete arguments. Do not repeat "
+		"already completed work or claim that interrupted calls succeeded.");
+	if (!slots[0].role || !slots[0].content || !slots[1].role || !slots[1].content ||
+	    (response->reasoning_content && !slots[0].reasoning_content))
+		return NB_ERR_NOMEM;
+	if (response->content && *response->content) {
+		struct react_step *partial = react_step_create(REACT_STEP_CONTENT,
+			response->content, NULL, NULL, NULL);
+		if (!partial)
+			return NB_ERR_NOMEM;
+		add_step(ctx, partial);
+		react_output_emit(cb, user_data, &(struct react_output_event){
+			.type = REACT_STEP_CONTENT, .status = REACT_OUTPUT_COMPLETED,
+			.text = response->content,
+		});
+		react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT,
+			"react.content.end", "end", "interrupted output retained",
+			response->content);
+	}
+	(*recoveries)++;
 	return 1;
 }
 
@@ -3289,6 +3358,7 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 	}
 
 	nb_vec tool_descriptors NB_CLEANUP(react_tool_descriptors_cleanup) = {0};
+	int stream_recoveries = 0;
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		char *system_prompt NB_CLEANUP(nb_charp_cleanup) = NULL;
@@ -3487,6 +3557,18 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 
 			continue;
 		}
+		int recovery = iteration + 1 < ctx->max_iterations
+			? react_recover_stream(ctx, &response, status, &messages,
+					       &stream_recoveries, cb, user_data) : 0;
+		if (recovery > 0)
+			continue;
+		if (recovery == NB_ERR_CANCELLED && !nb_atomic_int_load(&ctx->cancelled) &&
+		    ctx->prompt_pending_fn && ctx->prompt_pending_fn(ctx->action_drain_user_data))
+			continue;
+		if (recovery < 0)
+			status = recovery;
+		if (react_handle_llm_cancelled(ctx, &response))
+			break;
 		if (react_handle_llm_error(ctx, &response, status, cb, user_data)) {
 
 			break;

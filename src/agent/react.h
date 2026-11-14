@@ -150,6 +150,7 @@ struct react_context {
 	/* Owned copy of the last model-request diagnostic. */
 	char *llm_error_detail;
 	int llm_output_started;
+	int llm_stream_recoverable;
 	char *tool_fail_name;
 	char *tool_fail_args;
 	int tool_fail_count;
