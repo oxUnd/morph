@@ -4,6 +4,12 @@ Morph saves a checkpoint before each primary user turn, before adding that
 prompt to history or compacting the conversation. Checkpoints belong to a
 session and persist when that session is resumed.
 
+When the database schema gains columns, checkpoint snapshot tables are extended
+before their next use, preserving existing snapshots and applying the new column
+defaults to older rows. Snapshots are saved and restored by column name. The
+nbase error-code migration also converts older compaction-attempt snapshots while
+keeping their original codes in `legacy_error_code`.
+
 Run `/rewind` while the session is idle to choose a turn and what to restore:
 
 - **Code and conversation:** restore captured files and return the conversation

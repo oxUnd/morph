@@ -145,6 +145,107 @@ TEST_F(CheckpointStoreTest, DirtyPreimageAndModeSurviveDatabaseReopen)
 	EXPECT_EQ(info.st_mode & 0777, 0600);
 }
 
+TEST_F(CheckpointStoreTest, LegacyCompactionSnapshotsMigrateWithErrorCodes)
+{
+	ASSERT_EQ(db_exec(&database,
+			  "DELETE FROM schema_migrations WHERE version=3;"
+			  "ALTER TABLE history_compaction_attempts DROP COLUMN legacy_error_code;"
+			  "INSERT INTO history_compaction_attempts(session_id,trigger_kind,status,"
+			  "error_code,created_at) VALUES(1,'manual','failed',-261,1);"),
+		  0);
+	int64_t legacy = Create("before the error code migration");
+	db_close(&database);
+	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	int64_t current = Create("after the error code migration");
+	ASSERT_GT(current, legacy);
+	EXPECT_EQ(Scalar("SELECT error_code FROM checkpoint_rows_history_compaction_attempts "
+			 "WHERE checkpoint_id=" + std::to_string(legacy)),
+		  NB_ERR_PARSE);
+	EXPECT_EQ(Scalar("SELECT legacy_error_code FROM "
+			 "checkpoint_rows_history_compaction_attempts WHERE checkpoint_id=" +
+			 std::to_string(legacy)),
+		  -261);
+	ASSERT_EQ(db_exec(&database, "DELETE FROM history_compaction_attempts"), 0);
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(checkpoint_store_restore(&database, session.id, legacy,
+					   CHECKPOINT_RESTORE_CONVERSATION, &report),
+		  0);
+	EXPECT_EQ(Scalar("SELECT error_code FROM history_compaction_attempts"), NB_ERR_PARSE);
+	EXPECT_EQ(Scalar("SELECT legacy_error_code FROM history_compaction_attempts"), -261);
+	db_close(&database);
+	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	Create("migration is idempotent");
+	EXPECT_EQ(Scalar("SELECT error_code FROM history_compaction_attempts"), NB_ERR_PARSE);
+}
+
+TEST_F(CheckpointStoreTest, AddedSnapshotColumnsPreserveDefaultsAndMapByName)
+{
+	ASSERT_EQ(message_add(&database, session.id, "user", "before upgrade", 7), 0);
+	int64_t legacy = Create("before schema upgrade");
+	ASSERT_EQ(db_exec(&database,
+			  "ALTER TABLE messages ADD COLUMN upgrade_count INTEGER NOT NULL DEFAULT 9;"
+			  "ALTER TABLE checkpoint_rows_messages ADD COLUMN snapshot_only TEXT;"
+			  "UPDATE messages SET upgrade_count=23;"),
+		  0);
+	db_close(&database);
+	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	int64_t current = Create("after schema upgrade");
+	ASSERT_GT(current, legacy);
+	EXPECT_EQ(Scalar("SELECT upgrade_count FROM checkpoint_rows_messages WHERE checkpoint_id=" +
+			 std::to_string(legacy)),
+		  9);
+	EXPECT_EQ(Scalar("SELECT upgrade_count FROM checkpoint_rows_messages WHERE checkpoint_id=" +
+			 std::to_string(current)),
+		  23);
+	ASSERT_EQ(db_exec(&database, "DELETE FROM messages"), 0);
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(checkpoint_store_restore(&database, session.id, legacy,
+					   CHECKPOINT_RESTORE_CONVERSATION, &report),
+		  0);
+	EXPECT_EQ(Scalar("SELECT upgrade_count FROM messages"), 9);
+	EXPECT_EQ(message_count(&database, session.id), 1);
+}
+
+TEST_F(CheckpointStoreTest, FailedSnapshotMigrationRollsBackAndCanRetry)
+{
+	ASSERT_EQ(db_exec(&database,
+			  "DELETE FROM schema_migrations WHERE version=3;"
+			  "ALTER TABLE history_compaction_attempts DROP COLUMN legacy_error_code;"
+			  "INSERT INTO history_compaction_attempts(session_id,trigger_kind,status,"
+			  "error_code,created_at) VALUES(1,'manual','failed',-261,1);"),
+		  0);
+	Create("before schema upgrade");
+	db_close(&database);
+	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	ASSERT_EQ(db_exec(&database,
+			  "CREATE TRIGGER reject_snapshot_migration BEFORE UPDATE ON "
+			  "checkpoint_rows_history_compaction_attempts "
+			  "BEGIN SELECT RAISE(ABORT,'injected snapshot migration failure'); END;"),
+		  0);
+	int64_t failed = 99;
+	EXPECT_EQ(checkpoint_store_create(&database, session.id, workspace.c_str(), "failed",
+					  "schema upgrade should roll back", &failed),
+		  MORPH_ERR_DB);
+	EXPECT_EQ(failed, 0);
+	EXPECT_EQ(sqlite3_get_autocommit(database.handle), 1);
+	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoints"), 1);
+	EXPECT_EQ(Scalar("SELECT count(*) FROM "
+			 "pragma_table_info('checkpoint_rows_history_compaction_attempts') "
+			 "WHERE name='legacy_error_code'"),
+		  0);
+	EXPECT_EQ(Scalar("SELECT error_code FROM checkpoint_rows_history_compaction_attempts"),
+		  -261);
+	ASSERT_EQ(db_exec(&database, "DROP TRIGGER reject_snapshot_migration"), 0);
+	Create("retry schema upgrade on the same connection");
+	EXPECT_EQ(Scalar("SELECT count(*) FROM checkpoint_rows_history_compaction_attempts "
+			 "WHERE legacy_error_code=-261"),
+		  2);
+}
+
 TEST_F(CheckpointStoreTest, RestoresAddsDeletesEmptyFilesAndOverwrittenMoveDestination)
 {
 	Write("source", "original source");

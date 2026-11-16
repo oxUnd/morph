@@ -1,8 +1,10 @@
 #include "checkpoint_store.h"
 
+#include "db/error_migration.h"
 #include "nb/vec.h"
 #include "nb/cleanup.h"
 #include "nb/buf.h"
+#include "nb/log.h"
 #include "errors.h"
 #include "nb/file.h"
 #include "nb/random.h"
@@ -12,6 +14,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,7 +130,13 @@ static void checkpoint_plan_cleanup(struct checkpoint_plan *plan)
 
 static int checkpoint_prepare(struct db *db, const char *sql, sqlite3_stmt **out)
 {
-	return sqlite3_prepare_v2(db->handle, sql, -1, out, NULL) == SQLITE_OK ? 0 : MORPH_ERR_DB;
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, out, NULL);
+
+	if (rc == SQLITE_OK)
+		return 0;
+	nb_log_write(db->logger, NB_LOG_DEBUG, "checkpoint SQL prepare failed: %s",
+		     sqlite3_errmsg(db->handle));
+	return MORPH_ERR_DB;
 }
 
 static int checkpoint_done(sqlite3_stmt *stmt)
@@ -169,7 +178,89 @@ static int checkpoint_tables(struct checkpoint_table *tables, size_t capacity)
 	return (int)(sizeof(source) / sizeof(source[0]));
 }
 
-static int checkpoint_schema(struct db *db)
+static void checkpoint_identifier(nb_buf *sql, const char *name)
+{
+	(void)nb_buf_append_char(sql, '"');
+	for (const char *cursor = name; *cursor; cursor++) {
+		(void)nb_buf_append_char(sql, *cursor);
+		if (*cursor == '"')
+			(void)nb_buf_append_char(sql, '"');
+	}
+	(void)nb_buf_append_char(sql, '"');
+}
+
+static int checkpoint_columns(struct db *db, const char *table, nb_buf *out)
+{
+	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(checkpoint_stmt_cleanup) = NULL;
+
+	if (!nb_buf_printf(&sql, "PRAGMA table_info(%s)", table))
+		return nb_buf_status(&sql);
+	int rc = checkpoint_prepare(db, nb_buf_cstr(&sql), &stmt);
+	if (rc != 0)
+		return rc;
+	int step;
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *column = (const char *)sqlite3_column_text(stmt, 1);
+		if (out->len)
+			(void)nb_buf_append_char(out, ',');
+		checkpoint_identifier(out, column);
+		if (!nb_buf_ok(out))
+			return nb_buf_status(out);
+	}
+	return step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+}
+
+/* Snapshot tables outlive the schema they copied. Extend them without losing
+ * old rows; defaults give older snapshots the same additive migration values. */
+static int checkpoint_snapshot_schema(struct db *db, const char *table)
+{
+	nb_buf shadow NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {0};
+	sqlite3_stmt *stmt NB_CLEANUP(checkpoint_stmt_cleanup) = NULL;
+	bool legacy_errors = false;
+
+	if (!nb_buf_printf(&shadow, "checkpoint_rows_%s", table))
+		return nb_buf_status(&shadow);
+	int rc = checkpoint_prepare(
+		db, "SELECT name,type,dflt_value FROM pragma_table_info(?1) WHERE name NOT IN "
+		    "(SELECT name FROM pragma_table_info(?2)) ORDER BY cid",
+		&stmt);
+	if (rc != 0)
+		return rc;
+	sqlite3_bind_text(stmt, 1, table, -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, nb_buf_cstr(&shadow), -1, SQLITE_TRANSIENT);
+	int step;
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *name = (const char *)sqlite3_column_text(stmt, 0);
+		const char *type = (const char *)sqlite3_column_text(stmt, 1);
+		const char *value = (const char *)sqlite3_column_text(stmt, 2);
+
+		(void)nb_buf_printf(&sql, "ALTER TABLE %s ADD COLUMN ", nb_buf_cstr(&shadow));
+		checkpoint_identifier(&sql, name);
+		(void)nb_buf_printf(&sql, " %s", type);
+		if (value)
+			(void)nb_buf_printf(&sql, " DEFAULT %s", value);
+		(void)nb_buf_append_char(&sql, ';');
+		if (!strcmp(table, "history_compaction_attempts") &&
+		    !strcmp(name, "legacy_error_code"))
+			legacy_errors = true;
+	}
+	if (step != SQLITE_DONE)
+		return MORPH_ERR_DB;
+	checkpoint_stmt_cleanup(&stmt);
+	if (legacy_errors) {
+		(void)nb_buf_printf(&sql, "UPDATE %s SET legacy_error_code=error_code,error_code=",
+				    nb_buf_cstr(&shadow));
+		rc = db_error_migration_append_status_sql(&sql, "error_code");
+		(void)nb_buf_append_char(&sql, ';');
+	}
+	if (rc != 0 || !nb_buf_ok(&sql))
+		return rc != 0 ? rc : nb_buf_status(&sql);
+	return sql.len ? db_exec(db, nb_buf_cstr(&sql)) : 0;
+}
+
+static int checkpoint_schema_initialize(struct db *db)
 {
 	const char *sql =
 		"CREATE TABLE IF NOT EXISTS code_checkpoints("
@@ -222,12 +313,35 @@ static int checkpoint_schema(struct db *db)
 				      : NB_ERR_NOMEM);
 		if (rc == 0)
 			rc = db_exec(db, nb_buf_cstr(&query));
+		if (rc == 0)
+			rc = checkpoint_snapshot_schema(db, tables[i].name);
 	}
 	if (rc == 0)
 		rc = db_exec(
 			db,
 			"CREATE TEMP TABLE IF NOT EXISTS checkpoint_schema_ready(ready INTEGER)");
 	return rc;
+}
+
+static int checkpoint_transaction_finish(struct db *db, int rc)
+{
+	if (rc != 0) {
+		(void)db_exec(db, "ROLLBACK TO morph_checkpoint; RELEASE morph_checkpoint;");
+		return rc;
+	}
+	rc = db_exec(db, "RELEASE morph_checkpoint;");
+	if (rc != 0)
+		(void)db_exec(db, "ROLLBACK TO morph_checkpoint; RELEASE morph_checkpoint;");
+	return rc;
+}
+
+static int checkpoint_schema(struct db *db)
+{
+	int rc = db_exec(db, "SAVEPOINT morph_checkpoint");
+
+	if (rc != 0)
+		return rc;
+	return checkpoint_transaction_finish(db, checkpoint_schema_initialize(db));
 }
 
 static int checkpoint_enter(struct db *db, struct checkpoint_lock *lock)
@@ -252,18 +366,6 @@ static int checkpoint_enter(struct db *db, struct checkpoint_lock *lock)
 	if (step != SQLITE_DONE)
 		return MORPH_ERR_DB;
 	return checkpoint_schema(db);
-}
-
-static int checkpoint_transaction_finish(struct db *db, int rc)
-{
-	if (rc != 0) {
-		(void)db_exec(db, "ROLLBACK TO morph_checkpoint; RELEASE morph_checkpoint;");
-		return rc;
-	}
-	rc = db_exec(db, "RELEASE morph_checkpoint;");
-	if (rc != 0)
-		(void)db_exec(db, "ROLLBACK TO morph_checkpoint; RELEASE morph_checkpoint;");
-	return rc;
 }
 
 static int checkpoint_info_read(struct db *db, int64_t session_id, int64_t id,
@@ -548,14 +650,16 @@ static int checkpoint_snapshot(struct db *db, int64_t id, int64_t session_id)
 			return present;
 		if (!present)
 			continue;
+		nb_buf columns NB_CLEANUP(nb_buf_cleanup) = {0};
 		nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {0};
 		sqlite3_stmt *stmt NB_CLEANUP(checkpoint_stmt_cleanup) = NULL;
-		int rc = (nb_buf_init(&sql), nb_buf_reserve(&sql, 256) ? 0 : NB_ERR_NOMEM);
+		int rc = checkpoint_columns(db, tables[i].name, &columns);
 		if (rc == 0)
 			rc = (nb_buf_printf(&sql,
-					    "INSERT INTO checkpoint_rows_%s SELECT ?1,t.* FROM %s "
-					    "t WHERE %s",
-					    tables[i].name, tables[i].name, tables[i].filter)
+					    "INSERT INTO checkpoint_rows_%s(checkpoint_id,%s) "
+					    "SELECT ?1,t.* FROM %s t WHERE %s",
+					    tables[i].name, nb_buf_cstr(&columns), tables[i].name,
+					    tables[i].filter)
 				      ? 0
 				      : NB_ERR_NOMEM);
 		if (rc == 0)
@@ -1366,37 +1470,6 @@ static int checkpoint_backup_remove(const char *root, const char *path, const ch
 	if (unlinkat(parent, backup, 0) != 0 && errno != ENOENT)
 		return nb_status_from_errno(errno, NULL);
 	return 0;
-}
-
-static int checkpoint_columns(struct db *db, const char *table, nb_buf *out)
-{
-	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {0};
-	sqlite3_stmt *stmt NB_CLEANUP(checkpoint_stmt_cleanup) = NULL;
-	int rc = (nb_buf_init(&sql), nb_buf_reserve(&sql, 128) ? 0 : NB_ERR_NOMEM);
-	if (rc == 0)
-		rc = (nb_buf_printf(&sql, "PRAGMA table_info(%s)", table) ? 0 : NB_ERR_NOMEM);
-	if (rc == 0)
-		rc = checkpoint_prepare(db, nb_buf_cstr(&sql), &stmt);
-	if (rc != 0)
-		return rc;
-	int step;
-	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		const char *column = (const char *)sqlite3_column_text(stmt, 1);
-		if (out->len)
-			rc = (nb_buf_append_char(out, ',') ? 0 : NB_ERR_NOMEM);
-		if (rc == 0)
-			rc = (nb_buf_append_char(out, '"') ? 0 : NB_ERR_NOMEM);
-		for (const char *cursor = column; rc == 0 && *cursor; cursor++) {
-			rc = (nb_buf_append_char(out, *cursor) ? 0 : NB_ERR_NOMEM);
-			if (rc == 0 && *cursor == '"')
-				rc = (nb_buf_append_char(out, '"') ? 0 : NB_ERR_NOMEM);
-		}
-		if (rc == 0)
-			rc = (nb_buf_append_char(out, '"') ? 0 : NB_ERR_NOMEM);
-		if (rc != 0)
-			return rc;
-	}
-	return step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
 static int checkpoint_conversation_restore(struct db *db, const struct checkpoint_info *info)
