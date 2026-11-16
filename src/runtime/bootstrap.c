@@ -199,6 +199,7 @@ void runtime_bootstrap_tool_flags(struct tool_registry *tools, const struct conf
 static enum guardrail_hook runtime_guardrail_hook(const char *name)
 {
 	return !strcmp(name, "input")	      ? GUARDRAIL_HOOK_INPUT
+	       : !strcmp(name, "tool_input")  ? GUARDRAIL_HOOK_TOOL_INPUT
 	       : !strcmp(name, "tool_output") ? GUARDRAIL_HOOK_TOOL_OUTPUT
 					      : GUARDRAIL_HOOK_OUTPUT;
 }
@@ -212,6 +213,9 @@ static int runtime_apply_guardrails(struct react_context *react, const struct co
 	react->guardrail.enabled = config->react.guardrail_enabled;
 	react->guardrail.max_retries = config->react.guardrail_max_retries;
 	react->guardrail.max_empty_rounds = config->react.guardrail_max_empty_rounds;
+	react->guardrail.timeout_seconds = config->react.guardrail_timeout_seconds;
+	react->guardrail.max_check_tokens = config->react.guardrail_max_check_tokens;
+	react->guardrail.max_llm_checks = config->react.guardrail_max_llm_checks;
 	if (react->guardrail.rule_count == 0)
 		guardrail_register_builtin_rules(&react->guardrail);
 	for (int i = 0; i < config->react.guardrail_llm_rule_count; i++) {
@@ -221,6 +225,10 @@ static int runtime_apply_guardrails(struct react_context *react, const struct co
 			GUARDRAIL_RULE_LLM, NULL, cr->description, NULL, cr->action_text);
 		if (rc != 0)
 			return rc;
+		struct guardrail_rule *configured =
+			guardrail_rule_borrow(&react->guardrail, cr->name);
+		configured->block_on_error = !strcmp(cr->on_error, "block");
+		configured->stop_on_failure = !strcmp(cr->on_failure, "block");
 	}
 	for (int i = 0; i < config->react.guardrail_ext_rule_count; i++) {
 		const struct config_guardrail_ext_rule *cr = &config->react.guardrail_ext_rules[i];
@@ -232,6 +240,7 @@ static int runtime_apply_guardrails(struct react_context *react, const struct co
 		struct guardrail_rule *configured =
 			guardrail_rule_borrow(&react->guardrail, cr->name);
 		configured->block_on_error = !strcmp(cr->on_error, "block");
+		configured->stop_on_failure = !strcmp(cr->on_failure, "block");
 		if (!strcmp(cr->ext_type, "so")) {
 			configured->ext_type = GUARDRAIL_EXT_SO;
 			rc = guardrail_ext_so_load(react->logger, configured);

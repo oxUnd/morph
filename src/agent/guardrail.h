@@ -21,6 +21,7 @@ enum guardrail_hook {
 	GUARDRAIL_HOOK_INPUT,
 	GUARDRAIL_HOOK_TOOL_OUTPUT,
 	GUARDRAIL_HOOK_OUTPUT,
+	GUARDRAIL_HOOK_TOOL_INPUT,
 };
 
 #define GUARDRAIL_RULES_MAX          32
@@ -31,6 +32,7 @@ enum guardrail_hook {
 #define GUARDRAIL_EXT_ENTRY_MAX      PATH_MAX
 
 struct react_step;
+struct tool_call;
 enum guardrail_retry_policy {
 	GUARDRAIL_RETRY_UNSPECIFIED,
 	GUARDRAIL_RETRY_NEEDS_USER,
@@ -46,13 +48,18 @@ struct guardrail_eval_ctx {
 	int *check_error; /* Internal per-check error output, borrowed during evaluation. */
 	struct nb_log *logger;
 	const char *user_input;
+	const char *workdir;
+	const struct tool_call *pending_calls;
+	int pending_call_count;
+	int *llm_check_count; /* Borrowed turn-wide counter; NULL for standalone checks. */
+	int timeout_seconds;
 	const char *tool_name;
 	const char *tool_args;
 	const char *tool_result;
 	int tool_error_code;
 	const struct tool_artifact_list *tool_artifacts;
 	const char *proposed_answer;
-	const void *steps;
+	const struct react_step *steps;
 	int empty_round_count;
 	int max_empty_rounds;
 };
@@ -80,6 +87,7 @@ typedef int (*guardrail_ext_check_fn)(const char *text,
 
 struct guardrail_rule {
 	int block_on_error; /* Zero preserves legacy continue-on-check-error behavior. */
+	int stop_on_failure; /* Reject immediately instead of requesting a revision. */
 	char name[GUARDRAIL_NAME_MAX];
 	enum guardrail_hook hook;
 	enum guardrail_rule_type type;
@@ -95,6 +103,7 @@ struct guardrail_rule {
 
 struct guardrail_result {
 	int check_error; /* Negative error when any check could not be completed. */
+	int stop;
 	enum guardrail_verdict verdict;
 	char reason[GUARDRAIL_REASON_MAX];
 	const struct guardrail_rule *triggered_rule;
@@ -107,6 +116,9 @@ struct guardrail_config {
 	int enabled;
 	int max_retries;
 	int max_empty_rounds;
+	int timeout_seconds;
+	int max_check_tokens;
+	int max_llm_checks;
 	struct guardrail_rule rules[GUARDRAIL_RULES_MAX];
 	int rule_count;
 	struct model *llm;
@@ -135,6 +147,9 @@ struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
 					   const struct guardrail_eval_ctx *eval);
 
 void guardrail_set_llm(struct guardrail_config *cfg, struct model *llm);
+
+/* Whitespace-only and placeholder answers do not satisfy final validation. */
+int guardrail_answer_is_empty(const char *answer);
 
 #ifdef __cplusplus
 }

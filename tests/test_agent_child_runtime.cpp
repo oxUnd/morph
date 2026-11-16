@@ -289,10 +289,15 @@ TEST_F(AgentChildRuntimeTest, GuardrailHooksAndCheckerModelUseTheChildConfigurat
 {
 	config->react.guardrail_max_retries = 7;
 	config->react.guardrail_max_empty_rounds = 5;
+	config->react.guardrail_timeout_seconds = 11;
+	config->react.guardrail_max_check_tokens = 256;
+	config->react.guardrail_max_llm_checks = 4;
 	config->react.guardrail_llm_rule_count = 1;
 	std::strcpy(config->react.guardrail_llm_rules[0].name, "child_tool_rule");
 	std::strcpy(config->react.guardrail_llm_rules[0].hook, "tool_output");
 	std::strcpy(config->react.guardrail_llm_rules[0].description, "Validate child tool output");
+	std::strcpy(config->react.guardrail_llm_rules[0].on_error, "block");
+	std::strcpy(config->react.guardrail_llm_rules[0].on_failure, "block");
 	std::strcpy(config->react.guardrail_llm_model, "checker-model");
 	config->react.guardrail_disabled_rule_count = 1;
 	std::strcpy(config->react.guardrail_disabled_rules[0], "empty_answer");
@@ -309,8 +314,13 @@ TEST_F(AgentChildRuntimeTest, GuardrailHooksAndCheckerModelUseTheChildConfigurat
 	EXPECT_TRUE(react->guardrail.enabled);
 	EXPECT_EQ(react->guardrail.max_retries, 7);
 	EXPECT_EQ(react->guardrail.max_empty_rounds, 5);
+	EXPECT_EQ(react->guardrail.timeout_seconds, 11);
+	EXPECT_EQ(react->guardrail.max_check_tokens, 256);
+	EXPECT_EQ(react->guardrail.max_llm_checks, 4);
 	auto *rule = guardrail_rule_borrow(&react->guardrail, "child_tool_rule");
 	ASSERT_NE(rule, nullptr);
+	EXPECT_TRUE(rule->block_on_error);
+	EXPECT_TRUE(rule->stop_on_failure);
 	EXPECT_EQ(rule->hook, GUARDRAIL_HOOK_TOOL_OUTPUT);
 	EXPECT_FALSE(guardrail_rule_borrow(&react->guardrail, "empty_answer")->enabled);
 	ASSERT_NE(react->guardrail.llm, nullptr);

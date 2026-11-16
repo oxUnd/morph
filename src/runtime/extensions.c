@@ -107,6 +107,8 @@ static void runtime_register_guardrail_extension(struct runtime_context *ctx, st
 
 	if (strcmp(extension->manifest.hook, "input") == 0)
 		hook = GUARDRAIL_HOOK_INPUT;
+	else if (strcmp(extension->manifest.hook, "tool_input") == 0)
+		hook = GUARDRAIL_HOOK_TOOL_INPUT;
 	else if (strcmp(extension->manifest.hook, "tool_output") == 0)
 		hook = GUARDRAIL_HOOK_TOOL_OUTPUT;
 	guardrail_rule_register(&ctx->react->guardrail, extension->manifest.name, hook,

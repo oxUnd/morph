@@ -98,6 +98,8 @@ struct config_credits {
 #define CFG_GR_EXT_ENTRY_MAX PATH_MAX
 
 struct config_guardrail_llm_rule {
+	char on_error[16];
+	char on_failure[16];
 	char name[CFG_GR_NAME_MAX];
 	char hook[32];
 	char description[CFG_GR_DESC_MAX];
@@ -106,6 +108,7 @@ struct config_guardrail_llm_rule {
 
 struct config_guardrail_ext_rule {
 	char on_error[16];
+	char on_failure[16];
 	char name[CFG_GR_NAME_MAX];
 	char hook[32];
 	char ext_type[8];
@@ -130,6 +133,9 @@ struct config_react {
 	int guardrail_enabled;
 	int guardrail_max_retries;
 	int guardrail_max_empty_rounds;
+	int guardrail_timeout_seconds;
+	int guardrail_max_check_tokens;
+	int guardrail_max_llm_checks;
 	char guardrail_disabled_rules[GUARDRAIL_DISABLED_RULES_MAX][CFG_GR_NAME_MAX];
 	int guardrail_disabled_rule_count;
 	struct config_guardrail_llm_rule guardrail_llm_rules[GUARDRAIL_LLM_RULES_MAX];

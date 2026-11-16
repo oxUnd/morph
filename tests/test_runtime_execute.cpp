@@ -913,7 +913,8 @@ TEST_F(RuntimeExecuteTest, FailedMultiFilePatchRetainsCheckpointForActualPartial
 			     "*** Begin Patch\n*** Update File: first.c\n@@\n-before\n+after\n"
 			     "*** Update File: missing.c\n@@\n-not there\n+new\n*** End Patch\n"}};
 	struct runtime_result result{};
-	ASSERT_EQ(Execute("attempt a multi-file patch", &result), 0);
+	ASSERT_EQ(Execute("attempt a multi-file patch", &result), NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_FAILED);
 	ASSERT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "after\n");
 	cJSON *list NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &list), 0);
@@ -958,7 +959,8 @@ TEST_F(RuntimeExecuteTest, FailedCheckpointSealStopsFurtherTrackedEditsUntilNext
 		{"apply_patch",
 		 "*** Begin Patch\n*** Add File: second.c\n+second\n*** End Patch\n"}};
 	struct runtime_result result{};
-	ASSERT_EQ(Execute("exercise a tracking failure", &result), 0);
+	ASSERT_EQ(Execute("exercise a tracking failure", &result), NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_FAILED);
 	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "first\n");
 	EXPECT_FALSE(std::filesystem::exists(directory + "/second.c"));
 	EXPECT_TRUE(instance->checkpoint_failed);

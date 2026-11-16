@@ -743,6 +743,9 @@ void react_reset(struct react_context *ctx)
 	ctx->tool_result_history_truncated_count = 0;
 	ctx->tool_result_output_truncated_count = 0;
 	ctx->guardrail_retry_count = 0;
+	ctx->guardrail_llm_check_count = 0;
+	free(ctx->guardrail_user_input);
+	ctx->guardrail_user_input = NULL;
 	ctx->empty_round_count = 0;
 	ctx->hook_continuation_count = 0;
 	free(ctx->runtime_context);
@@ -887,15 +890,31 @@ static void react_cancel_background(struct react_context *ctx)
 	tool_handle_release(&handle);
 }
 
+static int react_guardrail_buffers_output(const struct react_context *ctx)
+{
+	if (!ctx->guardrail.enabled)
+		return 0;
+	for (int i = 0; i < ctx->guardrail.rule_count; i++) {
+		const struct guardrail_rule *rule = &ctx->guardrail.rules[i];
+		if (rule->enabled && rule->hook == GUARDRAIL_HOOK_OUTPUT &&
+		    (rule->stop_on_failure || rule->block_on_error))
+			return 1;
+	}
+	return 0;
+}
+
 struct react_stream_output {
 	struct react_event_sink events;
 	react_output_cb callback;
 	void *user_data;
+	int buffered;
 };
 
 static int react_stream_emit(enum react_step_type type, const char *text, void *user_data)
 {
 	struct react_stream_output *output = user_data;
+	if (output->buffered)
+		return 0;
 	const char *event = type == REACT_STEP_REASONING ? "react.reasoning.delta"
 			    : type == REACT_STEP_CONTENT ? "react.content.delta"
 			    : type == REACT_STEP_FINAL	 ? "react.final.delta"
@@ -1186,6 +1205,45 @@ static int react_track_tool_failure(struct react_context *ctx, const char *tool_
 	return 1;
 }
 
+static int react_stop_guardrail(struct react_context *ctx, const struct guardrail_result *result,
+				const char *reason)
+{
+	char *detail NB_CLEANUP(nb_charp_cleanup) = strdup(
+		result->reason[0] ? result->reason : "Guardrail rejected the proposed output.");
+	if (!detail)
+		return NB_ERR_NOMEM;
+	free(ctx->final_answer);
+	ctx->final_answer = nb_charp_steal(&detail);
+	react_set_error_detail_copy(ctx, ctx->final_answer);
+	react_set_result(ctx,
+			 result->check_error == NB_ERR_CANCELLED ? REACT_OUTCOME_CANCELLED
+								 : REACT_OUTCOME_GUARDRAIL_DENIED,
+			 result->check_error < 0 ? result->check_error : NB_ERR_NOT_PERMITTED,
+			 reason);
+	react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT, "react.reflection",
+			      "failed", "guardrail rejected", ctx->final_answer);
+	return 1;
+}
+
+static struct guardrail_result react_guardrail_run(struct react_context *ctx,
+						   enum guardrail_hook hook,
+						   struct guardrail_eval_ctx *eval)
+{
+	eval->cancel_token = &ctx->cancel_token;
+	eval->user_input = ctx->guardrail_user_input;
+	eval->workdir = ctx->workdir;
+	eval->steps = ctx->steps;
+	eval->llm_check_count = &ctx->guardrail_llm_check_count;
+	struct guardrail_result result = guardrail_run_hook(&ctx->guardrail, hook, eval);
+	if (result.check_error < 0)
+		react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT,
+				      "react.guardrail.unavailable", "failed",
+				      "guardrail check unavailable",
+				      nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+						 result.check_error));
+	return result;
+}
+
 /*
  * Evaluate the guardrail for a proposed final answer.
  *
@@ -1203,15 +1261,13 @@ static int react_handle_guardrail_retry(struct react_context *ctx, const char *p
 	struct chat_message *user_msg;
 	int answer_is_empty;
 
-	answer_is_empty = !proposed || !*proposed || strcmp(proposed, "(no response)") == 0;
+	answer_is_empty = guardrail_answer_is_empty(proposed);
 	if (!ctx->guardrail.enabled && !answer_is_empty)
 		return 0;
 	if (answer_is_empty) {
 		ctx->empty_round_count++;
 	} else {
 		ctx->empty_round_count = 0;
-		if (ctx->guardrail_retry_count >= ctx->guardrail.max_retries)
-			return 0;
 	}
 
 	react_set_state(ctx, REACT_STATE_GUARDRAIL);
@@ -1222,8 +1278,7 @@ static int react_handle_guardrail_retry(struct react_context *ctx, const char *p
 		.empty_round_count = ctx->empty_round_count,
 		.max_empty_rounds = ctx->guardrail.max_empty_rounds,
 	};
-	struct guardrail_result gr =
-		guardrail_run_hook(&ctx->guardrail, GUARDRAIL_HOOK_OUTPUT, &eval);
+	struct guardrail_result gr = react_guardrail_run(ctx, GUARDRAIL_HOOK_OUTPUT, &eval);
 	if (answer_is_empty && gr.verdict == GUARDRAIL_PASS) {
 		gr.verdict = GUARDRAIL_FAIL;
 		snprintf(gr.reason, sizeof(gr.reason), "The model returned an empty response.");
@@ -1232,6 +1287,12 @@ static int react_handle_guardrail_retry(struct react_context *ctx, const char *p
 	if (gr.verdict == GUARDRAIL_PASS) {
 		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_INFO, "guardrail: PASS");
 		return 0;
+	}
+	if (gr.stop ||
+	    (!answer_is_empty && ctx->guardrail_retry_count >= ctx->guardrail.max_retries)) {
+		int stopped = react_stop_guardrail(
+			ctx, &gr, gr.stop ? "guardrail_denied" : "guardrail_exhausted");
+		return stopped < 0 ? stopped : 2;
 	}
 	if (answer_is_empty && (ctx->guardrail_retry_count >= ctx->guardrail.max_retries ||
 				(ctx->guardrail.max_empty_rounds > 0 &&
@@ -1272,7 +1333,7 @@ static int react_handle_guardrail_retry(struct react_context *ctx, const char *p
 	user_msg = &slots[1];
 
 	asst_msg->role = strdup("assistant");
-	asst_msg->content = strdup(proposed);
+	asst_msg->content = strdup(proposed ? proposed : "");
 	asst_msg->reasoning_content =
 		ctx->final_reasoning_content ? strdup(ctx->final_reasoning_content) : NULL;
 	if (!asst_msg->role || !asst_msg->content ||
@@ -1316,7 +1377,7 @@ static int react_check_input_guardrail(struct react_context *ctx, const char *us
 	memset(&eval, 0, sizeof(eval));
 	eval.user_input = user_input;
 	eval.steps = NULL;
-	gr = guardrail_run_hook(&ctx->guardrail, GUARDRAIL_HOOK_INPUT, &eval);
+	gr = react_guardrail_run(ctx, GUARDRAIL_HOOK_INPUT, &eval);
 	if (gr.verdict != GUARDRAIL_FAIL)
 		return 0;
 
@@ -1331,7 +1392,12 @@ static int react_check_input_guardrail(struct react_context *ctx, const char *us
 			      "failed", "input rejected", msg);
 	free(ctx->final_answer);
 	ctx->final_answer = strdup(msg);
-	react_set_result(ctx, REACT_OUTCOME_GUARDRAIL_DENIED, NB_ERR_NOT_PERMITTED,
+	if (!ctx->final_answer)
+		return NB_ERR_NOMEM;
+	react_set_result(ctx,
+			 gr.check_error == NB_ERR_CANCELLED ? REACT_OUTCOME_CANCELLED
+							    : REACT_OUTCOME_GUARDRAIL_DENIED,
+			 gr.check_error < 0 ? gr.check_error : NB_ERR_NOT_PERMITTED,
 			 "guardrail_denied");
 	return 1;
 }
@@ -1408,7 +1474,8 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 			   react_output_cb cb, void *user_data, struct chat_response *response)
 {
 	struct react_stream stream;
-	struct react_stream_output output = {react_events_borrow(ctx), cb, user_data};
+	struct react_stream_output output = {react_events_borrow(ctx), cb, user_data,
+					     react_guardrail_buffers_output(ctx)};
 	struct react_stream_options options = {
 		.emit = react_stream_emit,
 		.user_data = &output,
@@ -1611,7 +1678,7 @@ static int react_handle_llm_cancelled(struct react_context *ctx, struct chat_res
 	add_step(ctx, obs);
 	react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT, "react.observation",
 			      "cancelled", "LLM call interrupted", "LLM call interrupted by user");
-	if (response->content) {
+	if (response->content && !react_guardrail_buffers_output(ctx)) {
 		free(ctx->final_answer);
 		ctx->final_answer = strdup(response->content);
 	}
@@ -1631,7 +1698,7 @@ static int react_handle_output_limit(struct react_context *ctx,
 
 	if (strcmp(response->usage.finish_reason, "length") != 0)
 		return 0;
-	if (response->content && *response->content) {
+	if (response->content && *response->content && !react_guardrail_buffers_output(ctx)) {
 		struct react_step *partial =
 			react_step_create(REACT_STEP_CONTENT, response->content, NULL, NULL, NULL);
 
@@ -1719,7 +1786,7 @@ static int react_recover_stream(struct react_context *ctx, const struct chat_res
 	if (!slots[0].role || !slots[0].content || !slots[1].role || !slots[1].content ||
 	    (response->reasoning_content && !slots[0].reasoning_content))
 		return NB_ERR_NOMEM;
-	if (response->content && *response->content) {
+	if (response->content && *response->content && !react_guardrail_buffers_output(ctx)) {
 		struct react_step *partial = react_step_create(REACT_STEP_CONTENT,
 			response->content, NULL, NULL, NULL);
 		if (!partial)
@@ -1875,6 +1942,30 @@ static int react_pre_tool_hooks(struct react_context *ctx, struct chat_response 
 	return react_normalize_tool_inputs(ctx, response);
 }
 
+static int react_check_tool_input_guardrails(struct react_context *ctx,
+					     struct chat_response *response,
+					     const struct react_tool_slot *slots)
+{
+	if (!ctx->guardrail.enabled)
+		return 0;
+	for (int i = 0; i < response->tool_call_count; i++) {
+		if (slots[i].hitl_denied)
+			continue;
+		const struct tool_call *call = &response->tool_calls[i];
+		struct guardrail_eval_ctx eval = {
+			.tool_name = call->name,
+			.tool_args = call->arguments,
+			.pending_calls = response->tool_calls,
+			.pending_call_count = response->tool_call_count,
+		};
+		struct guardrail_result result =
+			react_guardrail_run(ctx, GUARDRAIL_HOOK_TOOL_INPUT, &eval);
+		if (result.verdict == GUARDRAIL_FAIL)
+			return react_stop_guardrail(ctx, &result, "guardrail_tool_input_denied");
+	}
+	return 0;
+}
+
 static void react_start_tool_calls(struct react_context *ctx, struct chat_response *response,
 				   struct react_tool_slot *slots, react_output_cb cb,
 				   void *user_data)
@@ -2004,9 +2095,11 @@ static char *react_apply_tool_output_guardrail(struct react_context *ctx,
 	geval.tool_error_code = rc;
 	geval.tool_artifacts = artifacts;
 	geval.steps = ctx->steps;
-	ggr = guardrail_run_hook(&ctx->guardrail, GUARDRAIL_HOOK_TOOL_OUTPUT, &geval);
+	ggr = react_guardrail_run(ctx, GUARDRAIL_HOOK_TOOL_OUTPUT, &geval);
 	if (ggr.verdict != GUARDRAIL_FAIL)
 		return strdup(obs_text);
+	if (ggr.stop && react_stop_guardrail(ctx, &ggr, "guardrail_denied") < 0)
+		return NULL;
 
 	nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_INFO, "guardrail[tool_output]: %s",
 		     ggr.reason);
@@ -2038,7 +2131,8 @@ static int react_record_tool_observation(struct react_context *ctx, struct async
 {
 	struct react_step *obs;
 
-	obs = react_step_create(REACT_STEP_OBSERVATION, obs_text, NULL, NULL, NULL);
+	obs = react_step_create(REACT_STEP_OBSERVATION, obs_text, call->tool_name, call->tool_args,
+				call->tool_call_id);
 	if (obs) {
 		obs->error_code = rc;
 		if (guardrail_tool_retry_policy(obs) == GUARDRAIL_RETRY_BLOCKED)
@@ -2467,6 +2561,25 @@ static int react_drain_actions(struct react_context *ctx, nb_vec *messages, int 
 					 "internal_error");
 			return 1;
 		}
+		nb_buf objective NB_CLEANUP(nb_buf_cleanup) = {0};
+		if (!nb_buf_printf(&objective, "%s\n\nUser steering:\n%s",
+				   ctx->guardrail_user_input ? ctx->guardrail_user_input : "",
+				   content)) {
+			cJSON_Delete(payload);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, NB_ERR_NOMEM,
+					 "internal_error");
+			return 1;
+		}
+		char *updated_objective NB_CLEANUP(nb_charp_cleanup) =
+			strdup(nb_buf_cstr(&objective));
+		if (!updated_objective) {
+			cJSON_Delete(payload);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, NB_ERR_NOMEM,
+					 "internal_error");
+			return 1;
+		}
+		free(ctx->guardrail_user_input);
+		ctx->guardrail_user_input = nb_charp_steal(&updated_objective);
 		ctx->steer_count++;
 		if (agent_history_record_user_steer(ctx, content, ctx->steer_count) != 0) {
 			cJSON_Delete(payload);
@@ -2830,7 +2943,7 @@ static int react_handle_final_response(struct react_context *ctx, const char *pr
 	int retry;
 
 	react_split_legacy_final(ctx, proposed, &thought, &final_text);
-	if (thought) {
+	if (thought && !react_guardrail_buffers_output(ctx)) {
 		struct react_step *thought_step =
 			react_step_create(REACT_STEP_THOUGHT, thought, NULL, NULL, NULL);
 		add_step(ctx, thought_step);
@@ -3214,6 +3327,9 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 	}
 	int use_user_turn_id = ctx->turn_id_user_set && ctx->turn_id[0];
 	react_reset(ctx);
+	ctx->guardrail_user_input = strdup(user_input);
+	if (!ctx->guardrail_user_input)
+		return NB_ERR_NOMEM;
 	free(ctx->runtime_context);
 	ctx->runtime_context = NULL;
 	free(ctx->project_context);
@@ -3262,8 +3378,13 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 		}
 		cJSON_Delete(output);
 	}
-	if (react_check_input_guardrail(ctx, user_input) > 0)
+	int guardrail_rc = react_check_input_guardrail(ctx, user_input);
+	if (guardrail_rc != 0) {
+		if (guardrail_rc < 0)
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, guardrail_rc,
+					 "internal_error");
 		return react_finish_run(ctx);
+	}
 	struct model *llm = (struct model *)ctx->llm_model;
 
 	if (!model_api_key_borrow(llm)[0]) {
@@ -3594,7 +3715,8 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 		if (ctx->agent_finishing && response.tool_call_count > 0)
 			continue;
 
-		if (response.tool_call_count > 0 && response.content && *response.content) {
+		if (response.tool_call_count > 0 && response.content && *response.content &&
+		    !react_guardrail_buffers_output(ctx)) {
 			struct react_step *thought = react_step_create(
 				REACT_STEP_CONTENT, response.content, NULL, NULL, NULL);
 			add_step(ctx, thought);
@@ -3648,6 +3770,13 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 							 ? REACT_OUTCOME_CANCELLED
 							 : REACT_OUTCOME_INTERNAL_ERROR,
 						 id_rc, "hook_failed");
+				break;
+			}
+			id_rc = react_check_tool_input_guardrails(ctx, &response, slots);
+			if (id_rc != 0) {
+				if (id_rc < 0)
+					react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, id_rc,
+							 "internal_error");
 				break;
 			}
 			id_rc = agent_history_record_tool_calls(

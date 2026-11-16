@@ -194,6 +194,9 @@ uses an isolated model client and falls back to human review on failure or defer
 See [the design](docs/permissions-design.md) and
 [acceptance evidence](docs/permissions-acceptance.md) for integration and migration.
 
+[Guardrails and task evidence](docs/guardrails.md) describes final-answer validation,
+artifact checks, optional completion verification and contextual action monitoring.
+
 ## Layout
 
 ```

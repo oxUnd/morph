@@ -54,6 +54,7 @@ set(TEST_SOURCES
 	test_model_ownership.cpp
 	test_compress.cpp
 	test_react.cpp
+	test_guardrail.cpp
 	test_react_stream.cpp
 	test_agent_turn.cpp
 	test_sse.cpp

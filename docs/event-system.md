@@ -141,6 +141,7 @@ react.reasoning.delta
 react.action
 react.observation
 react.reflection
+react.guardrail.unavailable
 react.final
 react.final.delta
 react.final.retry

@@ -118,6 +118,9 @@ struct react_context {
 	/* Optional owned checker model; guardrail.llm borrows this or llm_model. */
 	struct model *guardrail_model;
 	int guardrail_retry_count;
+	int guardrail_llm_check_count;
+	/* Owned user objective and steering, independent of model history compaction. */
+	char *guardrail_user_input;
 	struct hitl_config hitl;
 	ask_user_callback_fn ask_user_fn;
 	void *ask_user_data;

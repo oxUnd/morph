@@ -11,8 +11,11 @@ target_include_directories(morph-agent PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
+target_include_directories(morph-agent SYSTEM PRIVATE
+	${MORPH_CMARK_SOURCE_DIR}/src ${MORPH_CMARK_BINARY_DIR}/src)
 target_link_libraries(morph-agent PUBLIC
 	nbase::nbase morph-cjson morph-permission morph-prompt morph-db morph-session morph-persistence
-	morph-models morph-http morph-event morph-ipc morph-bpe morph-terminal morph-regex Threads::Threads)
+	morph-models morph-http morph-event morph-ipc morph-bpe morph-terminal
+	morph-media libcmark-gfm_static Threads::Threads)
 
 add_subdirectory(tools)

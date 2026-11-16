@@ -6647,7 +6647,7 @@ TEST(Guardrail, RegisterBuiltinRules)
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	EXPECT_EQ(cfg.rule_count, 6);
+	EXPECT_EQ(cfg.rule_count, 7);
 	EXPECT_NE(guardrail_rule_borrow(&cfg, "empty_answer"), nullptr);
 	EXPECT_NE(guardrail_rule_borrow(&cfg, "consecutive_empty"), nullptr);
 	EXPECT_NE(guardrail_rule_borrow(&cfg, "tools_all_failed"), nullptr);
@@ -7020,7 +7020,7 @@ TEST(Guardrail, CustomCRule) {
 	};
 	guardrail_rule_register(&cfg, "no_forbidden", GUARDRAIL_HOOK_INPUT,
 		GUARDRAIL_RULE_C, my_check, NULL, NULL, "Do not use forbidden words.");
-	EXPECT_EQ(cfg.rule_count, 7);
+	EXPECT_EQ(cfg.rule_count, 8);
 
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
@@ -7147,7 +7147,7 @@ TEST(Guardrail, BuiltinRulesAutoRegistered) {
 	struct compress_config ccfg = {0};
 	struct react_context *ctx = react_context_create(nullptr, nullptr, &ccfg, &gcfg);
 	ASSERT_NE(ctx, nullptr);
-	EXPECT_EQ(ctx->guardrail.rule_count, 6);
+	EXPECT_EQ(ctx->guardrail.rule_count, 7);
 	EXPECT_NE(guardrail_rule_borrow(&ctx->guardrail, "empty_answer"), nullptr);
 	EXPECT_NE(guardrail_rule_borrow(&ctx->guardrail, "final_local_file_missing"), nullptr);
 	react_context_destroy(ctx);
@@ -8659,13 +8659,14 @@ TEST(GuardrailTest, LlmChecksReceiveLongTextAndCompleteResponseInstructions)
 	struct model model{};
 	strcpy(model.api_key, "mock");
 	model.handle = &requests;
-	model.chat = [](struct model *self, const char *, const char **messages, int count,
-		const struct model_chat_options *, sse_callback callback, void *user) -> int {
+	model.chat = [](struct model *self, const char *policy, const char **messages, int count,
+			const struct model_chat_options *, sse_callback callback,
+			void *user) -> int {
 		++*static_cast<int *>(self->handle);
 		EXPECT_EQ(count, 1);
 		EXPECT_NE(strstr(messages[0], "TAIL_GUARDRAIL_MARKER"), nullptr);
-		EXPECT_NE(strstr(messages[0], "{\"pass\": true/false, \"reason\":"), nullptr);
-		EXPECT_NE(strstr(messages[0], "Do not include any other text."), nullptr);
+		EXPECT_NE(strstr(policy, "{\"pass\": true/false, \"reason\":"), nullptr);
+		EXPECT_NE(strstr(policy, "Do not include any other text."), nullptr);
 		return callback("{\"pass\":false,\"reason\":\"tail was checked\"}", user);
 	};
 	struct guardrail_config config{};
@@ -8908,4 +8909,222 @@ TEST_F(MockServerTest, ReactRecoversInterruptedStreamsWithoutExecutingPartialToo
 		tool_registry_cleanup(&tools);
 		mock_server_stop(&srv);
 	}
+}
+
+TEST_F(MockLlmTest, GuardrailRetryExhaustionNeverAcceptsAnUncheckedCandidate)
+{
+	for (int retries : {0, 1, 2}) {
+		const char *responses[] = {"Final: bad answer", "Final: bad answer",
+					   "Final: bad answer"};
+		llm = create_multi_mock_llm(responses, 3);
+		struct react_context *ctx NB_CLEANUP(react_context_clear) =
+			react_context_create(&tools, tok, &cfg, nullptr);
+		ASSERT_NE(ctx, nullptr);
+		ctx->llm_model = llm;
+		ctx->guardrail.enabled = 1;
+		ctx->guardrail.max_retries = retries;
+		ASSERT_EQ(guardrail_rule_register(&ctx->guardrail, "reject_bad",
+						  GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C,
+						  reject_bad_answer, nullptr, nullptr,
+						  "Revise the answer."),
+			  0);
+		EXPECT_EQ(react_run(ctx, "answer carefully", nullptr, nullptr),
+			  NB_ERR_NOT_PERMITTED);
+		EXPECT_EQ(ctx->outcome, REACT_OUTCOME_GUARDRAIL_DENIED);
+		EXPECT_STREQ(ctx->outcome_reason, "guardrail_exhausted");
+		EXPECT_EQ(static_cast<multi_mock_data *>(llm->handle)->call_count, retries + 1);
+		EXPECT_EQ(msg_list_count(ctx->messages), 1);
+		model_destroy(llm);
+		llm = nullptr;
+	}
+}
+
+TEST_F(MockLlmTest, HardOutputGuardrailWithholdsCandidateDeltasAndStopsWithoutRetry)
+{
+	setup_streaming_llm_with_response("Final: SECRET_CANARY");
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 5;
+	ASSERT_EQ(guardrail_rule_register(
+			  &ctx->guardrail, "hard_output", GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C,
+			  [](const struct guardrail_eval_ctx *, char *reason,
+			     size_t cap) -> guardrail_verdict {
+				  snprintf(reason, cap, "Output violates the configured rule.");
+				  return GUARDRAIL_FAIL;
+			  },
+			  nullptr, nullptr, nullptr),
+		  0);
+	guardrail_rule_borrow(&ctx->guardrail, "hard_output")->stop_on_failure = 1;
+	struct morph_event_recorder recorder NB_CLEANUP(morph_event_recorder_cleanup) = {};
+	ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
+	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &recorder), 0);
+	EXPECT_EQ(react_run(ctx, "safe answer", nullptr, nullptr), NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(llm_data->call_count, 1);
+	EXPECT_EQ(ctx->guardrail_retry_count, 0);
+	EXPECT_EQ(event_recorder_count_name(&recorder, "react.content.delta"), 0);
+	EXPECT_EQ(event_recorder_count_name(&recorder, "react.final.delta"), 0);
+	EXPECT_FALSE(event_recorder_has_name(&recorder, "react.final"));
+	EXPECT_EQ(strstr(ctx->final_answer, "SECRET_CANARY"), nullptr);
+}
+
+TEST_F(MockLlmTest, ToolInputGuardrailChecksRewrittenBatchBeforeAnyExecution)
+{
+	int executions = 0;
+	for (const char *name : {"first", "second"})
+		ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, name, "Count calls",
+					       "{}", call_count_tool_fn, &executions, nullptr),
+			  0);
+	struct model client{};
+	strcpy(client.api_key, "mock");
+	client.chat_with_tools = [](struct model *, const char *, struct chat_message *, int,
+				    struct tool_desc *, int, struct chat_response *response,
+				    sse_callback, void *) -> int {
+		response->tool_calls =
+			static_cast<tool_call *>(calloc(2, sizeof(*response->tool_calls)));
+		if (!response->tool_calls)
+			return NB_ERR_NOMEM;
+		response->tool_call_count = 2;
+		for (int i = 0; i < 2; i++) {
+			response->tool_calls[i].name = strdup(i == 0 ? "first" : "second");
+			response->tool_calls[i].arguments = strdup("{}");
+		}
+		return 200;
+	};
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = &client;
+	ctx->guardrail.enabled = 1;
+	ctx->hook_fn = [](void *, const char *event, const cJSON *, cJSON **out) -> int {
+		*out = cJSON_CreateObject();
+		if (!strcmp(event, "PreToolUse"))
+			cJSON_AddItemToObject(*out, "updatedInput",
+					      cJSON_Parse("{\"rewritten\":true}"));
+		return 0;
+	};
+	ASSERT_EQ(guardrail_rule_register(
+			  &ctx->guardrail, "batch_monitor", GUARDRAIL_HOOK_TOOL_INPUT,
+			  GUARDRAIL_RULE_C,
+			  [](const struct guardrail_eval_ctx *eval, char *reason,
+			     size_t cap) -> guardrail_verdict {
+				  EXPECT_STREQ(eval->user_input, "Compare results");
+				  EXPECT_EQ(eval->pending_call_count, 2);
+				  EXPECT_NE(strstr(eval->tool_args, "rewritten"), nullptr);
+				  EXPECT_NE(eval->cancel_token, nullptr);
+				  if (!strcmp(eval->tool_name, "second")) {
+					  snprintf(reason, cap,
+						   "Second action is outside the objective.");
+					  return GUARDRAIL_FAIL;
+				  }
+				  return GUARDRAIL_PASS;
+			  },
+			  nullptr, nullptr, nullptr),
+		  0);
+	EXPECT_EQ(react_run(ctx, "Compare results", nullptr, nullptr), NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(executions, 0);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_GUARDRAIL_DENIED);
+	EXPECT_STREQ(ctx->outcome_reason, "guardrail_tool_input_denied");
+}
+
+TEST_F(MockLlmTest, CompletionCheckerReceivesOriginalObjectiveAndVerifiedArtifact)
+{
+	char path[] = "/tmp/morph-completion-evidence-XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	close(fd);
+	ASSERT_EQ(nb_file_write_all(path, "report", 6, nullptr), 0);
+	ASSERT_EQ(tool_register_borrow(
+			  TOOL_ORIGIN_BUILTIN, &tools, "write_report", "Write report", "{}",
+			  [](const char *, struct tool_result *result, void *data) -> int {
+				  int rc = tool_result_success_text_copy(
+					  result, "Report written and checked.");
+				  return rc == 0 ? tool_result_add_artifact_copy(
+							   result, TOOL_ARTIFACT_FILE,
+							   static_cast<const char *>(data))
+						 : rc;
+			  },
+			  path, nullptr),
+		  0);
+	const char *responses[] = {"Action: write_report({})", "Final: Report ready."};
+	llm = create_multi_mock_llm(responses, 2);
+	struct model checker{};
+	checker.chat = [](struct model *, const char *, const char **messages, int,
+			  const struct model_chat_options *, sse_callback callback,
+			  void *data) -> int {
+		cJSON *evidence NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(messages[0]);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(evidence, "user_objective")),
+			     "Create the report");
+		EXPECT_EQ(cJSON_GetObjectItem(evidence, "succeeded_calls")->valueint, 1);
+		cJSON *call = cJSON_GetArrayItem(cJSON_GetObjectItem(evidence, "recent_calls"), 0);
+		cJSON *artifact = cJSON_GetArrayItem(cJSON_GetObjectItem(call, "artifacts"), 0);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(artifact, "verification")),
+			     "regular_file");
+		EXPECT_EQ(cJSON_GetObjectItem(artifact, "actual_size_bytes")->valueint, 6);
+		return callback("{\"pass\":true}", data);
+	};
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 1;
+	guardrail_set_llm(&ctx->guardrail, &checker);
+	ASSERT_EQ(guardrail_rule_register(
+			  &ctx->guardrail, "completion", GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_LLM,
+			  nullptr, "Require evidence for completion claims.", nullptr, nullptr),
+		  0);
+	EXPECT_EQ(react_run(ctx, "Create the report", nullptr, nullptr), 0);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_SUCCESS);
+	EXPECT_EQ(ctx->guardrail_llm_check_count, 1);
+	react_reset(ctx);
+	EXPECT_EQ(ctx->guardrail_user_input, nullptr);
+	EXPECT_EQ(ctx->guardrail_llm_check_count, 0);
+	unlink(path);
+}
+
+TEST_F(MockLlmTest, CompletionCheckerRejectsUnsupportedSuccessAndKeepsObjectiveOnRevision)
+{
+	const char *responses[] = {"Final: Completed the report.",
+				   "Final: The report is incomplete; no file was created."};
+	llm = create_multi_mock_llm(responses, 2);
+	int checks = 0;
+	struct model checker{};
+	checker.handle = &checks;
+	checker.chat = [](struct model *self, const char *, const char **messages, int,
+			  const struct model_chat_options *, sse_callback callback,
+			  void *data) -> int {
+		++*static_cast<int *>(self->handle);
+		cJSON *evidence NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(messages[0]);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(evidence, "user_objective")),
+			     "Create the report file");
+		EXPECT_EQ(cJSON_GetObjectItem(evidence, "total_calls")->valueint, 0);
+		const char *answer =
+			cJSON_GetStringValue(cJSON_GetObjectItem(evidence, "candidate_answer"));
+		return callback(strstr(answer, "incomplete")
+					? "{\"pass\":true}"
+					: "{\"pass\":false,\"reason\":\"No artifact supports the "
+					  "completion claim.\"}",
+				data);
+	};
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 1;
+	guardrail_set_llm(&ctx->guardrail, &checker);
+	ASSERT_EQ(guardrail_rule_register(&ctx->guardrail, "completion", GUARDRAIL_HOOK_OUTPUT,
+					  GUARDRAIL_RULE_LLM, nullptr,
+					  "Completion requires evidence; allow honest limitations.",
+					  nullptr, "Verify the result or report limitations."),
+		  0);
+	guardrail_rule_borrow(&ctx->guardrail, "completion")->block_on_error = 1;
+	EXPECT_EQ(react_run(ctx, "Create the report file", nullptr, nullptr), 0);
+	EXPECT_EQ(checks, 2);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "incomplete"), nullptr);
+	EXPECT_EQ(ctx->guardrail_retry_count, 1);
 }

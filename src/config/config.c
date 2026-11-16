@@ -356,6 +356,9 @@ void config_set_defaults(struct nb_log *logger, struct config *cfg)
 	cfg->react.guardrail_enabled = 1;
 	cfg->react.guardrail_max_retries = 2;
 	cfg->react.guardrail_max_empty_rounds = 3;
+	cfg->react.guardrail_timeout_seconds = 30;
+	cfg->react.guardrail_max_check_tokens = 512;
+	cfg->react.guardrail_max_llm_checks = 8;
 	cfg->react.disabled_tools_count = 0;
 
 	cfg->react.hitl_enabled = 1;
@@ -834,6 +837,9 @@ int config_load(struct nb_log *logger, struct config *cfg, const char *path)
 		CFG_BOOL(react, "guardrail_enabled", cfg->react.guardrail_enabled);
 		CFG_INT(react, "guardrail_max_retries", cfg->react.guardrail_max_retries);
 		CFG_INT(react, "guardrail_max_empty_rounds", cfg->react.guardrail_max_empty_rounds);
+		CFG_INT(react, "guardrail_timeout_seconds", cfg->react.guardrail_timeout_seconds);
+		CFG_INT(react, "guardrail_max_check_tokens", cfg->react.guardrail_max_check_tokens);
+		CFG_INT(react, "guardrail_max_llm_checks", cfg->react.guardrail_max_llm_checks);
 		CFG_STR(react, "guardrail_llm_model", cfg->react.guardrail_llm_model);
 		const nb_toml_value *gdr =
 			nb_toml_table_get_cstr(react, "guardrail_disabled_rules");
@@ -864,6 +870,8 @@ int config_load(struct nb_log *logger, struct config *cfg, const char *path)
 				CFG_STR(lt, "hook", lr->hook);
 				CFG_STR(lt, "description", lr->description);
 				CFG_STR(lt, "action_text", lr->action_text);
+				CFG_STR(lt, "on_error", lr->on_error);
+				CFG_STR(lt, "on_failure", lr->on_failure);
 				cfg->react.guardrail_llm_rule_count++;
 			}
 		}
@@ -879,6 +887,7 @@ int config_load(struct nb_log *logger, struct config *cfg, const char *path)
 					&cfg->react.guardrail_ext_rules[
 						cfg->react.guardrail_ext_rule_count];
 				CFG_STR(et, "on_error", er->on_error);
+				CFG_STR(et, "on_failure", er->on_failure);
 				CFG_STR(et, "name", er->name);
 				CFG_STR(et, "hook", er->hook);
 				CFG_STR(et, "ext_type", er->ext_type);
