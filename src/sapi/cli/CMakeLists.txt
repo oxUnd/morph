@@ -45,6 +45,7 @@ add_library(morph-cli STATIC
 	widgets/notice.c
 	widgets/notification.c
 	widgets/plan.c
+	widgets/recap.c
 	widgets/shell_style.c
 	widgets/transcript.c
 

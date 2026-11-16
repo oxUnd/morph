@@ -7,6 +7,8 @@ extern "C" {
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/widgets/notice.h"
 #include "sapi/cli/widgets/plan.h"
+#include "sapi/cli/widgets/recap.h"
+#include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/widgets/composer.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
@@ -55,7 +57,7 @@ static std::string retained_normalized(const char *text)
 class CliRetainedWidgetsTest : public ::testing::Test
 {
       protected:
-	enum Kind { Tool, Notice, Plan, Composer } kind = Tool;
+	enum Kind { Tool, Notice, Plan, Composer, Recap } kind = Tool;
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
 	struct morph_tui_application *app = nullptr;
@@ -66,6 +68,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	int cursor_x = -1, cursor_y = -1;
 	struct cli_transcript_tool tool{};
 	struct cli_notice notice{};
+	std::string recap_summary, recap_next;
 	cJSON *plan = nullptr;
 	bool details = false;
 	std::string frame;
@@ -93,6 +96,9 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			else if (self->kind == Notice)
 				self->component = cli_notice_add_borrow(builder, root,
 					&self->notice, 1);
+			else if (self->kind == Recap)
+				self->component = cli_recap_add_borrow(builder, root,
+					self->recap_summary.c_str(), self->recap_next.c_str(), 1);
 			else if (self->kind == Composer) {
 				self->component = cli_composer_add_borrow(builder, root,
 					&self->ctx, &self->editor);
@@ -184,6 +190,9 @@ class CliRetainedWidgetsTest : public ::testing::Test
 					  0);
 		else if (kind == Notice)
 			ASSERT_EQ(cli_notice_append(&expected, &notice, columns, 1), 0);
+		else if (kind == Recap)
+			ASSERT_EQ(cli_recap_append(&expected, recap_summary.c_str(), recap_next.c_str(),
+				columns, 1), 0);
 		else {
 			const struct cli_plan_style style = {columns, 1, 1};
 			ASSERT_EQ(cli_plan_append(&expected, plan, &style), 0);
@@ -195,6 +204,25 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		nb_buf_cleanup(&expected);
 	}
 };
+
+TEST_F(CliRetainedWidgetsTest, RecapKeepsInlineHeadingHangingIndentAndStylesAcrossResize)
+{
+	kind = Recap;
+	for (int n = 0; n < 5; n++)
+		recap_summary += "中文🙂 recap retains completed work and preserves the draft. ";
+	recap_next = "Verify the installation.";
+	Present();
+	for (int columns : {120, 80, 60, 120}) {
+		Resize(columns);
+		ExpectLegacy(columns);
+		EXPECT_NE(frame.find("\033[1m"), std::string::npos);
+		EXPECT_NE(frame.find("\033[38;5;245m"), std::string::npos);
+		std::string plain = retained_normalized(frame.c_str());
+		EXPECT_EQ(plain.find("\n  ↳ Recap: 中文🙂"), 0u);
+		EXPECT_NE(plain.find("\n           "), std::string::npos);
+		EXPECT_NE(plain.find("Next: Verify the installation."), std::string::npos);
+	}
+}
 
 TEST_F(CliRetainedWidgetsTest, ToolKeepsLegacyTreePreviewMixedStylesAndResize)
 {

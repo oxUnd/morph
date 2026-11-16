@@ -21,6 +21,7 @@
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/jobs.h"
 #include "sapi/cli/widgets/notice.h"
+#include "sapi/cli/widgets/recap.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/style.h"
@@ -452,6 +453,11 @@ int cli_chat_block(struct cli_application *ctx, const struct cli_feed_block *blo
 	if (block->kind == CLI_FEED_BLOCK_NOTICE) {
 		cli_notice_add_borrow(page->builder, page->feed, block->content.notice,
 				      cli_output_color_enabled(ctx));
+		return cli_chat_page_error(page);
+	}
+	if (block->kind == CLI_FEED_BLOCK_RECAP) {
+		cli_recap_add_borrow(page->builder, page->feed, block->content.recap.summary,
+			block->content.recap.next, cli_output_color_enabled(ctx));
 		return cli_chat_page_error(page);
 	}
 	if (block->kind == CLI_FEED_BLOCK_PLAN) {

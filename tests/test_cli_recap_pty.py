@@ -93,6 +93,16 @@ def main():
             terminal.pump(1)
             screen = terminal.snapshot('recap commits without replacing the draft')
             assert 'Recap:' in screen and 'keep this draft' in screen, screen
+            rows = terminal.screen.display
+            recap_row = next(index for index, row in enumerate(rows) if '↳ Recap:' in row)
+            assert rows[recap_row].startswith('  ↳ Recap: 已完成'), screen
+            assert not rows[recap_row - 1].strip(), screen
+            assert not rows[recap_row + 1].strip(), screen
+            cells = terminal.screen.buffer[recap_row]
+            assert all(cells[x].fg == '8a8a8a' and cells[x].bg == 'default'
+                       for x in range(2, 11)), screen
+            assert all(cells[x].bold for x in range(4, 10)), screen
+            assert not cells[11].bold, screen
             assert 'Next:' not in screen, screen
             assert 'Generating recap' not in screen, screen
             with sqlite3.connect(directory / 'data.db') as db:

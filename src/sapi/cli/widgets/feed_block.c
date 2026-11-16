@@ -4,6 +4,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/messages.h"
+#include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/feed.h"
@@ -54,6 +55,10 @@ int cli_feed_block_append(nb_buf *out, const struct cli_feed_block *block,
 	}
 	case CLI_FEED_BLOCK_NOTICE:
 		rc = cli_notice_append(&body, block->content.notice, style->columns, style->styled);
+		break;
+	case CLI_FEED_BLOCK_RECAP:
+		rc = cli_recap_append(&body, block->content.recap.summary, block->content.recap.next,
+			style->columns, style->styled);
 		break;
 	default:
 		return NB_ERR_INVAL;

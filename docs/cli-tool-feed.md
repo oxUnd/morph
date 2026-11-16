@@ -87,6 +87,12 @@ Modal pages share the root Application. Underlying feed updates and the unsent
 draft survive navigation. Session restoration rebuilds message/tool controls from
 canonical stored records, without executing tools or generating a new turn.
 
+Recaps appear on the normal background as a gray `↳ Recap:` line, with only
+`Recap:` in bold and the summary immediately after it. Wrapped rows align with
+the start of the summary. An optional `Next:` row stays under that same text
+column. The component reflows on resize and owns a blank row above and below;
+background completion preserves the editable draft and cursor.
+
 `/mcp`, `/mcp list` and `/mcp status` produce a retained tree report. Service
 status markers share the feed's left edge; transport, negotiated server/protocol,
 capabilities, elapsed time and errors use explicit child branches. Tools,

@@ -54,6 +54,7 @@ static inline int cli_style_running_interval_ms(int64_t now_ms)
 #define CLI_INPUT_MARKER_INDEX 245u
 #define CLI_INPUT_ULTRA_INDEX 141u
 #define CLI_COMMAND_COLOR "\033[38;5;141m"
+#define CLI_RECAP_COLOR "\033[38;5;245m"
 #define CLI_INPUT_BACKGROUND "\033[48;5;237m"
 #define CLI_INPUT_MARKER_COLOR "\033[38;5;245m"
 #define CLI_INPUT_ULTRA_COLOR "\033[1;38;5;141m"

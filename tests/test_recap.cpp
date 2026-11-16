@@ -8,6 +8,74 @@ extern "C" {
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/presentation/recap.h"
+#include "sapi/cli/presentation/style.h"
+#include "nb/cleanup.h"
+#include "nb/utf8.h"
+#include <morph/tui/terminal/text.h>
+}
+
+TEST(CliRecapPresentationTest, KeepsHeadingAndSummaryInlineAndAlignsNextAction)
+{
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_recap_append(&text, "Completed the work.", "Verify the installation.",
+		120, 0), 0);
+	EXPECT_STREQ(nb_buf_cstr(&text),
+		"  ↳ Recap: Completed the work.\n           Next: Verify the installation.\n");
+	nb_buf_clear(&text);
+	ASSERT_EQ(cli_recap_append(&text, "Completed the work.", nullptr, 120, 1), 0);
+	std::string styled = nb_buf_cstr(&text);
+	EXPECT_NE(styled.find(CLI_RECAP_COLOR "  ↳ " ANSI_BOLD "Recap:"), std::string::npos);
+	EXPECT_NE(styled.find(ANSI_RESET CLI_RECAP_COLOR " Completed the work."),
+		std::string::npos);
+	EXPECT_EQ(styled.find("\033[3m"), std::string::npos);
+	EXPECT_EQ(styled.find("Next:"), std::string::npos);
+}
+
+TEST(CliRecapPresentationTest, VeryNarrowWidthsClipWholeGlyphsWithoutOverflow)
+{
+	for (int columns : {0, 1, 2, 3, 4, 10, 12, 14}) {
+		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(cli_recap_append(&text, "中文🙂 END", nullptr, columns, 0), 0);
+		EXPECT_EQ(nb_utf8_validate(nb_buf_str(&text), nullptr), NB_UTF8_OK);
+		std::string plain = nb_buf_cstr(&text);
+		size_t start = 0;
+		while (start < plain.size()) {
+			size_t end = plain.find('\n', start);
+			ASSERT_NE(end, std::string::npos);
+			EXPECT_LE(nb_utf8_width_cstr(plain.substr(start, end - start).c_str()),
+				static_cast<size_t>(columns - 2));
+			start = end + 1;
+		}
+	}
+}
+
+TEST(CliRecapPresentationTest, WrapsUnicodeUnderTheSummaryAndSanitizesControls)
+{
+	std::string summary;
+	for (int n = 0; n < 8; n++)
+		summary += "中文🙂 recap preserves the full summary. ";
+	summary += "\033[2JEND";
+	for (int columns : {120, 80, 60, 20}) {
+		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(cli_recap_append(&text, summary.c_str(), nullptr, columns, 0), 0);
+		std::string plain = nb_buf_cstr(&text);
+		EXPECT_EQ(plain.find("  ↳ Recap: 中文🙂"), 0u);
+		EXPECT_EQ(plain.find('\033'), std::string::npos);
+		EXPECT_EQ(nb_utf8_validate(nb_buf_str(&text), nullptr), NB_UTF8_OK);
+		size_t start = 0;
+		std::string joined;
+		while (start < plain.size()) {
+			size_t end = plain.find('\n', start);
+			ASSERT_NE(end, std::string::npos);
+			std::string row = plain.substr(start, end - start);
+			EXPECT_LE(nb_utf8_width_cstr(row.c_str()), static_cast<size_t>(columns - 2));
+			if (start)
+				EXPECT_EQ(row.find("           "), 0u);
+			joined += row.substr(start ? 11u : strlen("  ↳ Recap: "));
+			start = end + 1;
+		}
+		EXPECT_NE(joined.find("END"), std::string::npos);
+	}
 }
 
 class RecapTest : public RuntimeMetadataTest {
@@ -200,7 +268,10 @@ TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
 	cJSON *data = WaitEnd();
 	ASSERT_NE(data, nullptr);
 	std::string output = Render(data, &ctx);
-	EXPECT_NE(output.find("◇ Recap:"), std::string::npos);
+	char *plain NB_CLEANUP(nb_charp_cleanup) =
+		morph_terminal_strip_ansi_dup(output.c_str(), output.size(), nullptr);
+	ASSERT_NE(plain, nullptr);
+	EXPECT_NE(std::string(plain).find("↳ Recap: Implemented"), std::string::npos);
 	EXPECT_NE(output.find("installation remains unverified"), std::string::npos);
 	EXPECT_EQ(output.find("Next:"), std::string::npos);
 	EXPECT_FALSE(ctx.recap.pending);

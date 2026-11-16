@@ -16,6 +16,72 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int cli_recap_append_paragraph(nb_buf *out, const char *text, int columns,
+				      int styled, int heading)
+{
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!safe)
+		return NB_ERR_NOMEM;
+	const char *label = heading ? "  ↳ Recap: " : "           ";
+	size_t indent = nb_utf8_width_cstr(label);
+	size_t width = (size_t)columns;
+	const char *line = safe;
+	int first = 1;
+	if (width <= indent + 1) {
+		if (heading) {
+			const char *end = morph_terminal_advance_display_width_borrow(label, width);
+			(void)nb_buf_printf(out, "%s%.*s%s\n", styled ? CLI_RECAP_COLOR : "",
+				(int)(end - label), label, styled ? ANSI_RESET : "");
+		}
+		indent = 0;
+		first = 0;
+	}
+	while (*line) {
+		const char *end = morph_terminal_advance_display_width_borrow(line, width - indent);
+		int clipped = end == line;
+		if (clipped)
+			end = nb_utf8_advance(line, 1);
+		if (styled)
+			(void)nb_buf_append_cstr(out, CLI_RECAP_COLOR);
+		if (first && heading && styled)
+			(void)nb_buf_append_cstr(out,
+				"  ↳ " ANSI_BOLD "Recap:" ANSI_RESET CLI_RECAP_COLOR " ");
+		else if (first)
+			(void)nb_buf_append_cstr(out, label);
+		else
+			(void)nb_buf_printf(out, "%*s", (int)indent, "");
+		if (clipped)
+			(void)nb_buf_append_cstr(out, "…");
+		else
+			(void)nb_buf_append(out, line, (size_t)(end - line));
+		(void)nb_buf_append_cstr(out, styled ? ANSI_RESET "\n" : "\n");
+		if (!nb_buf_ok(out))
+			return nb_buf_status(out);
+		first = 0;
+		line = end;
+		while (*line == ' ')
+			line++;
+	}
+	return nb_buf_status(out);
+}
+
+int cli_recap_append(nb_buf *out, const char *summary, const char *next, int columns, int styled)
+{
+	if (!out || !summary)
+		return NB_ERR_INVAL;
+	if (columns <= (int)CLI_CONTENT_RIGHT_PADDING)
+		return 0;
+	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING;
+	int rc = cli_recap_append_paragraph(out, summary, width, styled, 1);
+	if (rc || !next || !*next)
+		return rc;
+	nb_buf action NB_CLEANUP(nb_buf_cleanup) = {0};
+	if (!nb_buf_printf(&action, "Next: %s", next))
+		return nb_buf_status(&action);
+	return cli_recap_append_paragraph(out, nb_buf_cstr(&action), width, styled, 0);
+}
+
 /* Wrap sanitized recap text under a fixed label, one line at a time. */
 static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 				 const char *text)
@@ -59,12 +125,12 @@ static void cli_recap_render_show(struct cli_application *ctx, const char *summa
 		return;
 	cli_feed_history_begin(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
-		nb_buf footer NB_CLEANUP(nb_buf_cleanup) = {0};
-
-		if (next && *next)
-			(void)nb_buf_printf(&footer, "Next: %s", next);
-		(void)cli_feed_notice_write(ctx, CLI_NOTICE_SYSTEM, "Recap:", summary,
-					    nb_buf_cstr(&footer));
+		struct cli_feed_block block = {
+			.kind = CLI_FEED_BLOCK_RECAP,
+			.margin = {.top = 1, .bottom = 1},
+			.content.recap = {.summary = summary, .next = next},
+		};
+		(void)cli_feed_block_write(ctx, &block);
 	} else {
 		if (cli_output_color_enabled(ctx))
 			cli_output_printf(ctx, ANSI_DIM "\033[3m");

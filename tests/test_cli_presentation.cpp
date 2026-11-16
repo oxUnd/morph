@@ -2549,17 +2549,16 @@ TEST(CliPlanWidgetTest, PlanAndNoticeShareExactlyOneSeparatorWithOtherFeedBlocks
 	}
 }
 
-TEST(CliPlanWidgetTest, FeedBlocksKeepOneBlankRowBetweenCommittedBlocks)
+TEST(CliPlanWidgetTest, FeedBlocksKeepOneBlankRowBeforeInlineRecap)
 {
 	nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ((nb_buf_append_cstr(&out, "TOOL\n") ? 0 : NB_ERR_NOMEM), 0);
 	struct cli_feed_block_style style{80, 0, 1};
-	struct cli_notice notice{CLI_NOTICE_SYSTEM, "Recap:", "summary", nullptr, 0};
 	struct cli_feed_block block{};
-	block.kind = CLI_FEED_BLOCK_NOTICE;
-	block.content.notice = &notice;
+	block.kind = CLI_FEED_BLOCK_RECAP;
+	block.content.recap.summary = "summary";
 	ASSERT_EQ(cli_feed_block_append(&out, &block, &style), 0);
-	EXPECT_STREQ(nb_buf_cstr(&out), "TOOL\n\n◇ Recap:\n└ summary\n");
+	EXPECT_STREQ(nb_buf_cstr(&out), "TOOL\n\n  ↳ Recap: summary\n");
 	EXPECT_EQ(style.trailing_newlines, 1);
 }
 

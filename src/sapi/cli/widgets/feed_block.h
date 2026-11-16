@@ -16,6 +16,7 @@ enum cli_feed_block_kind {
 	CLI_FEED_BLOCK_AGENT_RECEIPT,
 	CLI_FEED_BLOCK_PLAN,
 	CLI_FEED_BLOCK_NOTICE,
+	CLI_FEED_BLOCK_RECAP,
 };
 
 /* All content is borrowed for rendering. Each component owns its outer box
@@ -30,6 +31,10 @@ struct cli_feed_block {
 		const struct cli_transcript_tool *tool;
 		const struct cJSON *plan;
 		const struct cli_notice *notice;
+		struct {
+			const char *summary;
+			const char *next;
+		} recap;
 		struct {
 			const char *id;
 			enum agent_status status;
