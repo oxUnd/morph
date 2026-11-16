@@ -1,13 +1,13 @@
 #include "apply_patch.h"
 #include "cJSON.h"
 #include "agent/agent_control.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/patch.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
 #include "cJSON.h"
-#include "nb/buf.h"
+#include <nb/buf.h>
 #include "errors.h"
 
 #include <errno.h>

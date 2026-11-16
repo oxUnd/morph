@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/jobs.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "cJSON.h"

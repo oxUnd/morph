@@ -7,7 +7,7 @@
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/feed_block.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>

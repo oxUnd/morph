@@ -2,8 +2,8 @@
 #define MORPH_MEMORY_INTERNAL_H
 
 #include "db/database.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 
 int memory_prepare_session(struct db *db, int64_t session_id);
 int memory_read_version(struct db *db, int64_t session_id, int64_t *memory_version);

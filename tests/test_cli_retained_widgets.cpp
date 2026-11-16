@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "sapi/cli/models/transcript.h"
@@ -12,7 +12,7 @@ extern "C" {
 #include "sapi/cli/widgets/composer.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
@@ -21,7 +21,7 @@ extern "C" {
 #include <morph/tui/widgets/text_field.h>
 #include <morph/tui/widgets/editor.h>
 #include <morph/tui/widgets/list.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 }
 
 #include <cstdlib>

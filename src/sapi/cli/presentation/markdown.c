@@ -1,9 +1,9 @@
 #include "sapi/cli/presentation/markdown.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/style.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/cli/presentation/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "morph_markdown_kitty.h"

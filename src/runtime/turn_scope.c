@@ -5,8 +5,8 @@
 #include "runtime/engine.h"
 #include "runtime/hooks.h"
 #include "errors.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/str.h>
+#include <nb/utf8.h>
 
 #include <errno.h>
 #include <stdio.h>

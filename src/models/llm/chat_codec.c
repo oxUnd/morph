@@ -1,15 +1,15 @@
 #include "chat_codec.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include "cJSON.h"
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 
 static cJSON *build_simple_messages_cjson(const char *system_prompt, const char **messages, int n)
 {

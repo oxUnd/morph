@@ -1,10 +1,10 @@
 #include "skill_parse.h"
-#include "nb/log.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
+#include <nb/log.h>
+#include <nb/cleanup.h>
+#include <nb/buf.h>
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/utf8.h"
+#include <nb/file.h>
+#include <nb/utf8.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>

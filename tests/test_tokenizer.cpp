@@ -3,11 +3,11 @@
 #include "agent/tokenizer.h"
 #include "agent/context.h"
 #include "agent/bpe.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "encoding_fixture.h"
-#include "nb/utf8.h"
-#include "nb/encoding.h"
-#include "nb/cleanup.h"
+#include <nb/utf8.h>
+#include <nb/encoding.h>
+#include <nb/cleanup.h>
 #include <chrono>
 #include <climits>
 #include <filesystem>

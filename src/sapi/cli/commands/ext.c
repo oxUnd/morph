@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/ext.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/command_output.h"

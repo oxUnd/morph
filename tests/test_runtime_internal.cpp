@@ -1,10 +1,10 @@
 #include "errors.h"
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include <thread>
 
 extern "C" {
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "credits.h"
 #include "agent/system_prompt.h"
 #include "agent/tools/img_gen.h"
@@ -14,7 +14,7 @@ extern "C" {
 #include "runtime/turn_scope.h"
 #include "runtime/usage.h"
 #include "models/llm.h"
-#include "nb/file.h"
+#include <nb/file.h>
 }
 
 #include <cstdlib>

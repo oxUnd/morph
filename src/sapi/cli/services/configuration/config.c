@@ -1,8 +1,8 @@
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/role.h"
 #include "config/edit.h"
-#include "nb/toml.h"
-#include "nb/cleanup.h"
+#include <nb/toml.h>
+#include <nb/cleanup.h>
 #include <string.h>
 
 int cli_setup_config_merge_copy(const char *old, const char *patch, char **out)

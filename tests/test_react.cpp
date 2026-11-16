@@ -21,8 +21,8 @@
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "models/video_gen.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
+#include <nb/cleanup.h>
+#include <nb/buf.h>
 #include "cJSON.h"
 #include "http/client.h"
 #include "http/sse.h"
@@ -30,8 +30,8 @@
 #include "db/database.h"
 #include "session.h"
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/utf8.h"
+#include <nb/file.h>
+#include <nb/utf8.h>
 #include <cstring>
 #include <signal.h>
 #include <cstdlib>
@@ -3516,7 +3516,7 @@ TEST_F(HttpTimeoutTest, ZeroTimeoutUsesDefault) {
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 
 struct mock_server {
 	int port;

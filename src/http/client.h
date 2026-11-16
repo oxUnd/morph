@@ -6,12 +6,12 @@ extern "C" {
 #endif
 
 #include <stddef.h>
-#include "nb/thread.h"
-#include "nb/err.h"
+#include <nb/thread.h>
+#include <nb/err.h>
 #include <signal.h>
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/cancel.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/cancel.h>
 
 typedef int (*http_callback)(const char *data, size_t len, void *user_data);
 

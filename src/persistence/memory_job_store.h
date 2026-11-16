@@ -2,9 +2,9 @@
 #define MORPH_MEMORY_JOB_STORE_H
 
 #include "db/database.h"
-#include "nb/err.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

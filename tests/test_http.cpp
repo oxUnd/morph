@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include "http/client.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>

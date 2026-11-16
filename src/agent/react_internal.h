@@ -3,7 +3,7 @@
 
 #include "react.h"
 #include "react_events.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 
 #ifdef __cplusplus
 extern "C" {

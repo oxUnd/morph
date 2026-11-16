@@ -6,15 +6,15 @@ extern "C" {
 #endif
 
 #include <limits.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include <stddef.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <sys/types.h>
 
 #include "http/client.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/map.h"
+#include <nb/map.h>
 #include "agent/tool.h"
 
 #define MCP_PROTOCOL_VERSION   "2026-07-28"

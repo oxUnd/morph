@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_WIDGETS_TRANSCRIPT_H
 #define MORPH_CLI_WIDGETS_TRANSCRIPT_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 
 struct cli_application;
 struct cli_transcript_model;

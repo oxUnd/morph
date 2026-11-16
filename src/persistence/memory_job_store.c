@@ -1,6 +1,6 @@
 #include "memory_job_store.h"
 
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
 
 #include <errno.h>

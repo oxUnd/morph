@@ -1,5 +1,5 @@
 #include "agent_control.h"
-#include "nb/time.h"
+#include <nb/time.h>
 
 #include "agent/react.h"
 #include "agent/turn.h"
@@ -7,22 +7,22 @@
 #include "agent/system_prompt.h"
 #include "models/llm.h"
 #include "session.h"
-#include "nb/cleanup.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
-#include "nb/file.h"
+#include <nb/cleanup.h>
+#include <nb/random.h>
+#include <nb/encoding.h>
+#include <nb/file.h>
 #include <limits.h>
 #include <unistd.h>
-#include "nb/queue.h"
+#include <nb/queue.h>
 #include "errors.h"
 #include "cJSON.h"
-#include "nb/signal.h"
-#include "nb/utf8.h"
+#include <nb/signal.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 #include <stdio.h>
 #include <errno.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>

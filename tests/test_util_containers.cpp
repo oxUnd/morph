@@ -1,19 +1,19 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 #include "encoding_fixture.h"
 #include <unistd.h>
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
-#include "nb/str.h"
-#include "nb/queue.h"
-#include "nb/str.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/random.h>
+#include <nb/encoding.h>
+#include <nb/str.h>
+#include <nb/queue.h>
+#include <nb/str.h>
 
 #include <errno.h>
 #include <stdint.h>

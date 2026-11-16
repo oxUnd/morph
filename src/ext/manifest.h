@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 #include "ext.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 /* Borrow input for the call; out must have no owned fields. Success creates an
  * independent manifest owner; failure leaves out unchanged. Occupied: NB_ERR_EXISTS. */

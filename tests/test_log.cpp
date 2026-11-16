@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/log.h"
+#include <nb/log.h>
 #include <cstdio>
 #include <cstring>
 #include <fstream>

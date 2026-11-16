@@ -1,6 +1,6 @@
 #include "sapi/cli/pages/subagents.h"
-#include "nb/time.h"
-#include "nb/err.h"
+#include <nb/time.h>
+#include <nb/err.h>
 
 #include "sapi/cli/application.h"
 #include "config/config.h"
@@ -15,8 +15,8 @@
 #include "sapi/cli/widgets/composer_panel.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/widgets/subagents.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/frame.h>
 #include <morph/tui/input.h>
 #include <morph/tui/widgets/list.h>

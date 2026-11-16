@@ -1,8 +1,8 @@
 #include "compress.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/tokenizer.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
+#include <nb/cleanup.h>
+#include <nb/buf.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>

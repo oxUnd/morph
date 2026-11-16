@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/plan.h"
 #include "agent/tool.h"
 #include "agent/tools/plan.h"
@@ -234,7 +234,7 @@ extern "C" {
 #include "db/database.h"
 #include "session.h"
 #include "agent/tool_context.h"
-#include "nb/file.h"
+#include <nb/file.h>
 }
 #include <filesystem>
 #include <thread>

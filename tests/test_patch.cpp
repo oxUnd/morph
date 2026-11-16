@@ -1,6 +1,6 @@
 #include "errors.h"
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "agent/patch.h"
@@ -9,10 +9,10 @@ extern "C" {
 #include "agent/tools/apply_patch.h"
 #include "agent/tools/checkpoint.h"
 #include "agent/tool_runtime.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
+#include <nb/cleanup.h>
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/file.h>
 }
 
 #include <cerrno>

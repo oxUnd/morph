@@ -1,5 +1,5 @@
 #include "sapi/cli/adapters/input/cancel.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"

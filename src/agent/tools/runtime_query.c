@@ -2,10 +2,10 @@
 #include "user_evidence.h"
 #include "memory_update.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/memory.h"
 #include "agent/tokenizer.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include "agent/tool_runtime.h"
 #include "credits.h"
 #include "errors.h"

@@ -1,18 +1,18 @@
 #include "sapi/cli/adapters/clipboard/clipboard.h"
-#include "nb/time.h"
+#include <nb/time.h>
 #include <string.h>
 #include <stdlib.h>
-#include "nb/cleanup.h"
-#include "nb/err.h"
+#include <nb/cleanup.h>
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "config/config.h"
 #include "stb_image.h"
-#include "nb/process.h"
+#include <nb/process.h>
 #include "sapi/cli/application_internal.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
-#include "nb/utf8.h"
+#include <nb/random.h>
+#include <nb/encoding.h>
+#include <nb/utf8.h>
 #include "sapi/cli/widgets/feed.h"
 #include <morph/tui/terminal/text.h>
 

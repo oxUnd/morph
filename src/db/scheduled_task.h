@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include "database.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "event/event.h"
 #include <stdint.h>
 

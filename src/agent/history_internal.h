@@ -3,8 +3,8 @@
 
 #include "history.h"
 #include "react.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 /* Internal history contracts; transformations return owned strings. */
 char *history_redacted_text_create(struct react_context *ctx, const char *text);

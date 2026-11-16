@@ -2,8 +2,8 @@
 #define MORPH_CLI_WIDGETS_FEED_BLOCK_H
 
 #include "agent/agent_control.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include "sapi/cli/widgets/notice.h"
 #include <morph/tui/view.h>
 

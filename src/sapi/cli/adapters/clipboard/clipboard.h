@@ -1,7 +1,7 @@
 #ifndef MORPH_CLI_ADAPTERS_CLIPBOARD_CLIPBOARD_H
 #define MORPH_CLI_ADAPTERS_CLIPBOARD_CLIPBOARD_H
 
-#include "nb/buf.h"
+#include <nb/buf.h>
 
 struct cli_application;
 

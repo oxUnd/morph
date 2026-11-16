@@ -6,7 +6,7 @@
 extern "C" {
 #include "runtime/runtime_internal.h"
 #include "runtime/session_title.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include "credits.h"
 }
 

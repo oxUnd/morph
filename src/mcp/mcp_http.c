@@ -1,10 +1,10 @@
 #include "mcp/mcp_internal.h"
 #include "cJSON.h"
 #include "http/sse.h"
-#include "nb/log.h"
-#include "nb/buf.h"
-#include "nb/encoding.h"
-#include "nb/cleanup.h"
+#include <nb/log.h>
+#include <nb/buf.h>
+#include <nb/encoding.h>
+#include <nb/cleanup.h>
 #include "errors.h"
 #include <errno.h>
 #include <stdio.h>

@@ -1,5 +1,5 @@
 #include "model_metadata_test_support.hpp"
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "sapi/cli/presentation/presenter.h"
@@ -9,8 +9,8 @@ extern "C" {
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/presentation/style.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 }
 

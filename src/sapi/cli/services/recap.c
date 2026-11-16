@@ -5,7 +5,7 @@
 #include "cJSON.h"
 #include "sapi/cli/services/event_queue.h"
 #include "errors.h"
-#include "nb/time.h"
+#include <nb/time.h>
 
 #include <errno.h>
 #include <limits.h>

@@ -6,8 +6,8 @@ struct nb_log;
 extern "C" {
 #endif
 
-#include "nb/cleanup.h"
-#include "nb/cancel.h"
+#include <nb/cleanup.h>
+#include <nb/cancel.h>
 #include <limits.h>
 #include <stddef.h>
 

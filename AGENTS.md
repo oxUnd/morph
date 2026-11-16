@@ -171,6 +171,9 @@ Declare the dependencies actually consumed by a target. There is no shared
 `morph-util` facade. Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config,
 open runtime, `cli_application_run()`.
 
+Treat nbase as a third-party dependency: include its public headers with
+`#include <nb/xxx.h>`, never quoted includes or vendor-relative header paths.
+
 ## Vendor
 `vendor/nothing/` is a pinned nbase source snapshot with recorded local changes
 in `vendor/nothing/README.morph.md`; do not fetch a floating version at build time.
@@ -190,7 +193,7 @@ ANSI filtering, terminal sanitization, display clipping and ellipsis policies
 belong to `<morph/tui/terminal/text.h>`; language-block token weights belong to
 `agent/tokenizer.c`. See `docs/unicode.md`.
 
-## Core Data Structures (include `nb/*.h`, link `nbase::nbase`)
+## Core Data Structures (include `<nb/*.h>`, link `nbase::nbase`)
 Prefer these over hand-rolled equivalents.
 - **Scope cleanup** `nb/cleanup.h` — required GCC/Clang `NB_CLEANUP(fn)`.
   Initialize local owners to `NULL`/`{0}`. Callbacks are typed. Heap objects own

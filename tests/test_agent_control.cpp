@@ -17,7 +17,7 @@ extern "C" {
 #include "permission/context.h"
 #include "session.h"
 #include "cJSON.h"
-#include "nb/signal.h"
+#include <nb/signal.h>
 }
 
 #include <arpa/inet.h>

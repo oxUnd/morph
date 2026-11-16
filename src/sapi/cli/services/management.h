@@ -2,8 +2,8 @@
 #define MORPH_CLI_SERVICES_MANAGEMENT_H
 
 struct nb_log;
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <stddef.h>
 
 /* Management commands run without opening a conversational runtime. */

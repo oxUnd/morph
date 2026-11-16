@@ -3,8 +3,8 @@
 
 #include "react.h"
 #include "models/llm.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

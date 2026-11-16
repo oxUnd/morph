@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/compress.h"
 #include "agent/context.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <string.h>
 
 static void append_message_owned(struct message_list **head, struct message_list *message)

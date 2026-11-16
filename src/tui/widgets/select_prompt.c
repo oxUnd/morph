@@ -1,13 +1,13 @@
 #include <morph/tui/widgets/select.h>
-#include "nb/time.h"
-#include "nb/err.h"
+#include <nb/time.h>
+#include <nb/err.h>
 #include <morph/tui/widgets/editor.h>
 #include <morph/tui/screen.h>
 #include <morph/tui/draw.h>
-#include "nb/signal.h"
-#include "nb/utf8.h"
+#include <nb/signal.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/cancel.h"
+#include <nb/cancel.h>
 
 #include <stdlib.h>
 #include <string.h>

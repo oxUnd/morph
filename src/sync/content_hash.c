@@ -1,7 +1,7 @@
 #include "content_hash.h"
 #include "errors.h"
 #include "blake3.h"
-#include "nb/encoding.h"
+#include <nb/encoding.h>
 
 #include <errno.h>
 #include <stdio.h>

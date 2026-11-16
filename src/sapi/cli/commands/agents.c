@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/agents.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "runtime/runtime.h"
 
 #include "sapi/cli/application.h"
@@ -9,7 +9,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/list.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <string.h>
 
 struct cli_agents_snapshot {

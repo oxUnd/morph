@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_PRESENTATION_MCP_TREE_H
 #define MORPH_CLI_PRESENTATION_MCP_TREE_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <stddef.h>
 
 struct runtime_mcp_status;

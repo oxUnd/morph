@@ -23,7 +23,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(CheckCSourceCompiles)
 set(CMAKE_REQUIRED_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/nothing/include")
 check_c_source_compiles("\
-#include \"nb/cleanup.h\"
+#include <nb/cleanup.h>
 #if !defined(__GNUC__) && !defined(__clang__)
 #error scope cleanup is required
 #endif

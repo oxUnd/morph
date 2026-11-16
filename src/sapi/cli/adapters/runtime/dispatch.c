@@ -1,5 +1,5 @@
 #include "sapi/cli/adapters/runtime/dispatch.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"

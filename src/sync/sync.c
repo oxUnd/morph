@@ -1,11 +1,11 @@
 #include "sync/sync.h"
 #include "sync/db_backup.h"
-#include "nb/vec.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/log.h"
+#include <nb/file.h>
+#include <nb/log.h>
 #include "content_hash.h"
 #include <sqlite3.h>
 #include <dirent.h>

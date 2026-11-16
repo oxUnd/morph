@@ -1,5 +1,5 @@
 #include "sse.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include <limits.h>
 #include <string.h>
 

@@ -2,7 +2,7 @@
 #define MORPH_TOOL_RESULT_H
 
 #include "agent/tool_artifact.h"
-#include "nb/str.h"
+#include <nb/str.h>
 
 #ifdef __cplusplus
 extern "C" {

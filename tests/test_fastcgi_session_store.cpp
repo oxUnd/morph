@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "sapi/fastcgi/storage/quota.h"
@@ -8,8 +8,8 @@ extern "C" {
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/canvas.h"
 #include "sapi/fastcgi/storage/tokens.h"
-#include "nb/file.h"
-#include "nb/cleanup.h"
+#include <nb/file.h>
+#include <nb/cleanup.h>
 #include "cJSON.h"
 
 #include "sapi/fastcgi/session_store.h"

@@ -1,5 +1,5 @@
 #include "react_output.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include <errno.h>
 

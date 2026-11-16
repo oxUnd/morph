@@ -4,12 +4,12 @@
 #include "chat_codec.h"
 #include "stream.h"
 #include "agent/tool.h"
-#include "nb/log.h"
-#include "nb/file.h"
-#include "nb/utf8.h"
-#include "nb/cleanup.h"
+#include <nb/log.h>
+#include <nb/file.h>
+#include <nb/utf8.h>
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/buf.h"
+#include <nb/buf.h>
 #include "errors.h"
 #include "media/image.h"
 #include "http/client.h"

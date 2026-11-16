@@ -1,7 +1,7 @@
 #include "mcp_internal.h"
-#include "nb/encoding.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/encoding.h>
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include "errors.h"
 
 #include <stdint.h>

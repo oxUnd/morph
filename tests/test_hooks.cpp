@@ -1,14 +1,14 @@
 #include <gtest/gtest.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include "runtime/hooks.h"
 #include "runtime/runtime.h"
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
-#include "nb/file.h"
-#include "nb/hash.h"
+#include <nb/file.h>
+#include <nb/hash.h>
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 
 #include <chrono>

@@ -2,7 +2,7 @@
 #define MORPH_CLI_SERVICES_EVENT_QUEUE_ITEM_H
 
 #include "event/event.h"
-#include "nb/queue.h"
+#include <nb/queue.h>
 
 enum cli_event_queue_item_kind {
 	CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT,

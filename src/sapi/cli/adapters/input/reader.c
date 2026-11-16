@@ -1,6 +1,6 @@
 #include "sapi/cli/adapters/input/reader.h"
-#include "nb/time.h"
-#include "nb/err.h"
+#include <nb/time.h>
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
@@ -14,7 +14,7 @@
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/models/jobs.h"
-#include "nb/cancel.h"
+#include <nb/cancel.h>
 #include <fcntl.h>
 #include <sys/select.h>
 

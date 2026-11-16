@@ -1,13 +1,13 @@
 #include "image_output.h"
 #include <stdlib.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #include "agent/tool_result.h"
 #include "models/media_output.h"
 #include "permission/context.h"
-#include "nb/buf.h"
+#include <nb/buf.h>
 #include "errors.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "media/image.h"
 #include "stb_image_write.h"
 

@@ -2,7 +2,7 @@
 #define MORPH_DYNAMIC_TOOL_STORE_H
 
 #include "dynamic_tool_internal.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 struct dynamic_tool_definition {
 	/* Owned backing document; the text views borrow it until cleanup. */

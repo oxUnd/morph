@@ -1,5 +1,5 @@
 #include "runtime_test_support.hpp"
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "models/llm.h"
@@ -8,7 +8,7 @@ extern "C" {
 #include "permission/context_internal.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool_runtime.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 }
 

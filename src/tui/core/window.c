@@ -3,7 +3,7 @@
 #include <morph/tui/draw.h>
 #include "tui/render/native_media.h"
 #include "tui/render/frame_internal.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #include <stdlib.h>
 #include <string.h>

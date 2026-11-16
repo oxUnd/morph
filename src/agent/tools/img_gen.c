@@ -1,12 +1,12 @@
 #include "img_gen.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "agent/tool_context.h"
 #include "models/image_gen.h"
 #include "render/image.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include "errors.h"
 #include "media/image.h"
 #include "cJSON.h"

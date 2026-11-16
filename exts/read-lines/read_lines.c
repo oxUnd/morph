@@ -1,9 +1,9 @@
 #include "read_lines.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/err.h"
-#include "nb/file.h"
-#include "nb/str.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/err.h>
+#include <nb/file.h>
+#include <nb/str.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>

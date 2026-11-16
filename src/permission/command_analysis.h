@@ -7,8 +7,8 @@ extern "C" {
 
 #include <limits.h>
 #include <stddef.h>
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #define BASH_PARSE_COMMAND_NAME_MAX 256
 

@@ -2,10 +2,10 @@
 #define MORPH_CLI_MODELS_SUBAGENTS_H
 
 #include "event/event.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <stdint.h>
 
 struct cli_transcript_model;

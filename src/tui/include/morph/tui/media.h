@@ -1,8 +1,8 @@
 #ifndef MORPH_TUI_MEDIA_H
 #define MORPH_TUI_MEDIA_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <stddef.h>
 #include <stdint.h>
 

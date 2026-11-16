@@ -1,5 +1,5 @@
 #include "sapi/cli/widgets/feed_block.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
@@ -11,7 +11,7 @@
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/widgets/plan.h"
 #include "sapi/cli/widgets/notice.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <errno.h>
 
 int cli_feed_block_leading_rows(struct morph_tui_view_insets margin, int trailing_newlines)

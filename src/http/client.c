@@ -1,7 +1,7 @@
 #include "client.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <errno.h>
 #include <curl/curl.h>
 #include <limits.h>

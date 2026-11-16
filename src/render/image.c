@@ -1,10 +1,10 @@
 #include "image.h"
 #include <morph/tui/terminal/size.h>
 #include "morph_kitty_protocol.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/log.h"
-#include "nb/encoding.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/log.h>
+#include <nb/encoding.h>
 #include "errors.h"
 #include <errno.h>
 #include <limits.h>

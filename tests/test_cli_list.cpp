@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/commands/media.h"
@@ -12,9 +12,9 @@ extern "C" {
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/composer.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "event/event.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include "cJSON.h"
 #include "db/database.h"
 

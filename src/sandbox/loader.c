@@ -1,10 +1,10 @@
 #include "loader.h"
 #include <stdlib.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "ext.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include "errors.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

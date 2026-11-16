@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "event/event.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 }
 

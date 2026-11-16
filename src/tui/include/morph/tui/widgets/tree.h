@@ -3,8 +3,8 @@
 
 #include <morph/tui/layout.h>
 #include <morph/tui/widgets/list.h>
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

@@ -1,5 +1,5 @@
 #include "cleanup_probe.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
 
 struct cleanup_probe {

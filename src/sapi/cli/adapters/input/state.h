@@ -1,7 +1,7 @@
 #ifndef MORPH_CLI_ADAPTERS_INPUT_STATE_H
 #define MORPH_CLI_ADAPTERS_INPUT_STATE_H
 
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdint.h>
 
 struct cli_application;

@@ -1,7 +1,7 @@
 #include "react_stream.h"
 
-#include "nb/signal.h"
-#include "nb/utf8.h"
+#include <nb/signal.h>
+#include <nb/utf8.h>
 #include "errors.h"
 #include <errno.h>
 #include <string.h>

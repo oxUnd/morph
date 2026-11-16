@@ -1,5 +1,5 @@
 #include <morph/tui/screen.h>
-#include "nb/signal.h"
+#include <nb/signal.h>
 #include "errors.h"
 
 #include <unistd.h>

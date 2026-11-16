@@ -1,6 +1,6 @@
 #include "errors.h"
 #include "runtime_test_support.hpp"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "model_metadata_test_support.hpp"
 
 extern "C" {
@@ -12,7 +12,7 @@ extern "C" {
 #include "agent/tools/exec_tool.h"
 #include "config/edit.h"
 #include "sandbox/permission.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 #include "ext/ext.h"
 }

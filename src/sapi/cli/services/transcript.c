@@ -7,7 +7,7 @@
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/transcript.h"
 #include "errors.h"
-#include "nb/time.h"
+#include <nb/time.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>

@@ -3,12 +3,12 @@
 #include "prompt_context.h"
 #include "react.h"
 #include "tokenizer.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/buf.h"
+#include <nb/buf.h>
 #include "errors.h"
-#include "nb/log.h"
-#include "nb/utf8.h"
+#include <nb/log.h>
+#include <nb/utf8.h>
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>

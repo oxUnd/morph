@@ -2,9 +2,9 @@
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "errors.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/vec.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/vec.h>
 #include "cJSON.h"
 #include "cJSON.h"
 

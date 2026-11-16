@@ -1,6 +1,6 @@
 #include "output_store.h"
 #include "db/database.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
 
 #include <errno.h>

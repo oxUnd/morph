@@ -2,8 +2,8 @@
 #define MORPH_CLI_MODELS_AGENTS_H
 
 #include "agent/agent_control.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include <stdint.h>
 
 struct cli_agents_receipt {

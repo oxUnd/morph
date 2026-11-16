@@ -6,8 +6,8 @@ extern "C" {
 #endif
 
 #include <stddef.h>
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 
 typedef int (*sse_event_cb)(const char *event, const char *data, void *user_data);
 

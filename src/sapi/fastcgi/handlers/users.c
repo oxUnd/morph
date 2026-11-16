@@ -1,7 +1,7 @@
 /* users.c — install, signup, and current-user quota endpoints */
 #define _GNU_SOURCE
 #include "handlers.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/fastcgi/storage/users.h"
 #include "sapi/fastcgi/storage/quota.h"
 #include "sapi/fastcgi/storage/tokens.h"

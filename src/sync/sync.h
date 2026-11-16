@@ -8,7 +8,7 @@ extern "C" {
 
 #include <limits.h>
 #include <stdint.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 
 #define MORPH_SYNC_INCLUDE_MAX 16
 #define MORPH_SYNC_INCLUDE_LEN_MAX PATH_MAX

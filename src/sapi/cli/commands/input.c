@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/input.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/media.h"

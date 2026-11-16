@@ -1,11 +1,11 @@
 #include "sandbox.h"
 #include "permission/trusted_paths.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/buf.h>
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/log.h"
+#include <nb/file.h>
+#include <nb/log.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>

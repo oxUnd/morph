@@ -1,7 +1,7 @@
 #include "errors.h"
 #include <gtest/gtest.h>
-#include "nb/err.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
 
 #include "db/database.h"
 #include "agent/memory.h"
@@ -26,7 +26,7 @@
 #include <future>
 #include <utility>
 #include "models/llm.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 
 class MemoryTest : public ::testing::Test
 {

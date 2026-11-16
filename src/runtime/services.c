@@ -1,5 +1,5 @@
 #include "runtime/services.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "agent/memory.h"
 #include "agent/tools/skill_activate.h"
@@ -8,9 +8,9 @@
 #include "agent/compress.h"
 #include "agent/history.h"
 #include "agent/turn.h"
-#include "nb/cleanup.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
+#include <nb/cleanup.h>
+#include <nb/random.h>
+#include <nb/encoding.h>
 #include "cJSON.h"
 #include "runtime/scheduler.h"
 #include "cJSON.h"

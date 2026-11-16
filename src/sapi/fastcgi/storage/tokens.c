@@ -2,10 +2,10 @@
 #include "sapi/fastcgi/session_store_internal.h"
 #include "sapi/fastcgi/security.h"
 #include "cJSON.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
-#include "nb/str.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/file.h>
+#include <nb/str.h>
 
 #include <math.h>
 #include <stdlib.h>

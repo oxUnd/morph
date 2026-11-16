@@ -1,10 +1,10 @@
 #include "runtime/extensions.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/str.h>
+#include <nb/utf8.h>
 #include <limits.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #ifdef MORPH_NO_SHELL
 
@@ -23,7 +23,7 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 #include "agent/guardrail.h"
 #include "ext/ext.h"
 #include "agent/tool_runtime.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "permission/context.h"
 #include "sandbox/permission.h"
 

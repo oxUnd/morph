@@ -1,7 +1,7 @@
 #include "errors.h"
 #include <gtest/gtest.h>
-#include "nb/err.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
 
 #include "agent/react.h"
 #include "agent/history.h"
@@ -21,7 +21,7 @@
 #include <future>
 #include <chrono>
 #include <utility>
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include "cJSON.h"
 
 class AgentTurnTest : public ::testing::Test {

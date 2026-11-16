@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
-#include "nb/process.h"
-#include "nb/file.h"
+#include <nb/err.h>
+#include <nb/process.h>
+#include <nb/file.h>
 extern "C" {
 #include "sandbox/sandbox.h"
 #include "sandbox/tool_paths.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/tool_context.h"
 #include "permission/context_internal.h"
 #include "agent/tool.h"

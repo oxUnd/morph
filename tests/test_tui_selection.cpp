@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include <morph/tui/application.h>
 #include <morph/tui/canvas.h>
 #include <morph/tui/renderer.h>
@@ -8,7 +8,7 @@
 #include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/window.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 extern "C" {
 #include "tui/core/view_internal.h"

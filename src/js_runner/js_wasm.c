@@ -1,9 +1,9 @@
 #include "js_wasm.h"
-#include "nb/err.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
 #include "js_values.h"
-#include "nb/buf.h"
-#include "nb/file.h"
+#include <nb/buf.h>
+#include <nb/file.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>

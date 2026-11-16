@@ -1,7 +1,7 @@
 #ifndef DB_ERROR_MIGRATION_H
 #define DB_ERROR_MIGRATION_H
 
-#include "nb/buf.h"
+#include <nb/buf.h>
 
 struct db;
 

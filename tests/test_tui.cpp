@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include "nb/thread.h"
-#include "nb/err.h"
+#include <nb/thread.h>
+#include <nb/err.h>
 #include <morph/tui/terminal/size.h>
 #include <morph/tui/components.h>
 #include <morph/tui/widgets/tree.h>
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #include <cerrno>
 #include <cstdint>

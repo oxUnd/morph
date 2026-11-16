@@ -1,5 +1,5 @@
 #include "sapi/cli/widgets/subagents.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "sapi/cli/models/subagents.h"
 #include "sapi/cli/models/transcript.h"
@@ -9,7 +9,7 @@
 #include "sapi/cli/widgets/transcript.h"
 #include "sapi/cli/widgets/feed_block.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <errno.h>
 
 int cli_subagents_transcript(struct cli_application *ctx, const struct cli_subagents_thread *thread,

@@ -3,9 +3,9 @@
 
 #include <stddef.h>
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 struct cli_application;

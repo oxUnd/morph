@@ -1,9 +1,9 @@
 #include <morph/tui/widgets/text_view.h>
 #include <morph/tui/widgets/list.h>
 #include "errors.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #include <stdlib.h>
 #include <stdio.h>

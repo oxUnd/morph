@@ -1,5 +1,5 @@
 #include "sapi/fastcgi/storage/users.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
 #include "errors.h"
@@ -11,7 +11,7 @@
 #include <time.h>
 #include <sqlite3.h>
 #include "sapi/fastcgi/security.h"
-#include "nb/str.h"
+#include <nb/str.h>
 
 static int username_valid(const char *username)
 {

@@ -1,5 +1,5 @@
 #include "sapi/cli/widgets/transcript.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/agent_tools.h"
@@ -10,9 +10,9 @@
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/shell_style.h"
 #include <morph/tui/terminal/size.h>
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 #include "cJSON.h"
 #include <morph/tui/widgets/tree.h>

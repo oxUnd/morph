@@ -2,7 +2,7 @@
 #define MORPH_CHECKPOINT_STORE_H
 
 #include "db/database.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "cJSON.h"
 
 #define CHECKPOINT_FILE_MAX_BYTES (16U * 1024U * 1024U)

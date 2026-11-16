@@ -6,8 +6,8 @@ extern "C" {
 #endif
 
 #include "cJSON.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "errors.h"
 
 enum morph_event_type {

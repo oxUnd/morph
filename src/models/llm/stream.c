@@ -1,7 +1,7 @@
 #include "stream.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
-#include "nb/log.h"
+#include <nb/str.h>
+#include <nb/utf8.h>
+#include <nb/log.h>
 #include "errors.h"
 #include <errno.h>
 #include <limits.h>

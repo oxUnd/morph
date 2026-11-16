@@ -1,7 +1,7 @@
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/layout.h>
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "errors.h"
 
 #include <limits.h>

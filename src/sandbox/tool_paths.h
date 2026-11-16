@@ -2,7 +2,7 @@
 #define MORPH_SANDBOX_TOOL_PATHS_H
 
 #include "sandbox.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

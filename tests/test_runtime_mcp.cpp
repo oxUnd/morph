@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "runtime/runtime_internal.h"

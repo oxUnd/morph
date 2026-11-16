@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
-#include "nb/time.h"
+#include <nb/time.h>
 #include <stdlib.h>
-#include "nb/err.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
 #include "agent/tool.h"
 #include "agent/guardrail.h"
 #include "config/config.h"
@@ -10,10 +10,10 @@
 #include <fcntl.h>
 #include "db/database.h"
 #include "db/scheduled_task.h"
-#include "nb/process.h"
-#include "nb/time.h"
-#include "nb/file.h"
-#include "nb/cancel.h"
+#include <nb/process.h>
+#include <nb/time.h>
+#include <nb/file.h>
+#include <nb/cancel.h>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>

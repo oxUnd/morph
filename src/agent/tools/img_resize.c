@@ -1,11 +1,11 @@
 #include "img_resize.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "image_input.h"
 #include "image_output.h"
 #include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include "errors.h"
 #include "media/image.h"
 #include "cJSON.h"

@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include "agent/tool.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #define ASK_USER_CHOICES_MAX 64
 #define ASK_USER_TIMEOUT_DEFAULT 60

@@ -2,7 +2,7 @@
 #define MORPH_RUNTIME_SERVICES_H
 
 #include "agent/memory.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/tool.h"
 #include "credits.h"
 #include "mcp/mcp.h"

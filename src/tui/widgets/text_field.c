@@ -2,9 +2,9 @@
 #include <morph/tui/widgets/editor.h>
 #include <morph/tui/widgets/list.h>
 #include "errors.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <morph/tui/widgets/text_view.h>
 #include <limits.h>
 #include <stdlib.h>

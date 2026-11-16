@@ -1,7 +1,7 @@
 #include "resources.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
-#include "nb/file.h"
+#include <nb/file.h>
 
 #include <errno.h>
 #include <limits.h>

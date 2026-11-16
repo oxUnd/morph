@@ -2,8 +2,8 @@
 #define VIDEO_RENDER_H
 
 struct nb_log;
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #ifdef __cplusplus
 extern "C" {
 #endif

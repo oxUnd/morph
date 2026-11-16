@@ -2,7 +2,7 @@
 #define MORPH_JS_VALUES_H
 
 #include "runner_api.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 struct js_buffer_view {
 	JSContext *context;

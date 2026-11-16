@@ -22,9 +22,9 @@
 #include "agent/tool_runtime.h"
 #include "event/event.h"
 #include "render/image.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 #include "media/image.h"
 #include "encoding_fixture.h"

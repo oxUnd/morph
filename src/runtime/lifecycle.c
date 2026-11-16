@@ -1,6 +1,6 @@
 #include "runtime/runtime_internal.h"
 
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "runtime/approval.h"
 #include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
@@ -12,12 +12,12 @@
 #include "agent/history.h"
 #include "event/event.h"
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
-#include "nb/log.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/file.h>
+#include <nb/random.h>
+#include <nb/encoding.h>
+#include <nb/log.h>
+#include <nb/str.h>
+#include <nb/utf8.h>
 
 #include <errno.h>
 #include <stdio.h>

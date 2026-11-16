@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <morph/tui/terminal/activity.h>
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <string.h>
 #include <stdio.h>

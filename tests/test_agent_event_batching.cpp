@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent_http_test_support.hpp"
 
 extern "C" {
@@ -9,9 +9,9 @@ extern "C" {
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "session.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 }
 
 #include <future>

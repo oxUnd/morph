@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_MODELS_COMPOSER_H
 #define MORPH_CLI_MODELS_COMPOSER_H
 
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include <stdint.h>
 
 struct cli_composer_model {

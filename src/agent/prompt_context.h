@@ -1,9 +1,9 @@
 #ifndef MORPH_PROMPT_CONTEXT_H
 #define MORPH_PROMPT_CONTEXT_H
 
-#include "nb/cleanup.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

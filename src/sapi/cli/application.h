@@ -5,11 +5,11 @@ struct nb_log;
 #include "config/config.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/services/recap.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/models/agents.h"
-#include "nb/signal.h"
+#include <nb/signal.h>
 #include <morph/tui/application.h>
 #include "sapi/cli/models/presentation.h"
 #include <stdint.h>

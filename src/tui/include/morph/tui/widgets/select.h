@@ -2,9 +2,9 @@
 #define MORPH_TUI_WIDGET_SELECT_H
 
 #include <morph/tui/widgets/list.h>
-#include "nb/thread.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/thread.h>
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include <signal.h>
 #include <stdio.h>
 

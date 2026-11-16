@@ -1,6 +1,6 @@
 #include "errors.h"
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "sapi/cli/adapters/input/state.h"
@@ -30,11 +30,11 @@ extern "C" {
 #include "sapi/cli/widgets/plan.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/widgets/shell_style.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "agent/react.h"
 #include "agent/tool_context.h"
 #include "event/event.h"

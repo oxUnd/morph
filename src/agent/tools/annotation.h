@@ -2,8 +2,8 @@
 #define MORPH_TOOL_ANNOTATION_H
 
 #include "cJSON.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

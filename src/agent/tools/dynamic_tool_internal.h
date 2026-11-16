@@ -2,8 +2,8 @@
 #define MORPH_DYNAMIC_TOOL_INTERNAL_H
 
 #include "dynamic_tools.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <limits.h>
 #include <stdint.h>
 

@@ -1,8 +1,8 @@
 #ifndef MORPH_PERMISSION_TRUSTED_PATHS_H
 #define MORPH_PERMISSION_TRUSTED_PATHS_H
 
-#include "nb/buf.h"
-#include "nb/err.h"
+#include <nb/buf.h>
+#include <nb/err.h>
 
 #ifdef __cplusplus
 extern "C" {

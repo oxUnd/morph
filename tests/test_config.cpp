@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 #include <stdlib.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "config/config.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "errors.h"
 #include <cstdio>
 #include <cstring>

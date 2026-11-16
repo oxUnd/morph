@@ -2,7 +2,7 @@
 #define MORPH_PERMISSION_H
 
 #include "operation.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 
 #ifdef __cplusplus
 extern "C" {

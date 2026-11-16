@@ -2,9 +2,9 @@
 #define MORPH_MCP_INTERNAL_H
 
 #include "mcp.h"
-#include "nb/err.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #define MCP_STDIO_MAX_FRAME_BYTES (16u * 1024u * 1024u)
 

@@ -2,7 +2,7 @@
 
 extern "C" {
 #include "sapi/fastcgi/auth.h"
-#include "nb/err.h"
+#include <nb/err.h>
 }
 
 #include <map>

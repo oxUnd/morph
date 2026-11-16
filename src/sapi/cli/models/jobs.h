@@ -2,8 +2,8 @@
 #define MORPH_CLI_MODELS_JOBS_H
 
 #include "cJSON.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include <stdint.h>
 
 struct cli_jobs_job {

@@ -1,6 +1,6 @@
 #include "sapi/cli/models/transcript.h"
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 /* Database model-history API (src/session_history.h); the CLI restore service
  * lives in services/session_restore.h and no longer shares this name. */

@@ -3,12 +3,12 @@
 #include "agent/history.h"
 #include "agent/tokenizer.h"
 #include "session.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
-#include "nb/buf.h"
-#include "nb/utf8.h"
+#include <nb/random.h>
+#include <nb/encoding.h>
+#include <nb/buf.h>
+#include <nb/utf8.h>
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>

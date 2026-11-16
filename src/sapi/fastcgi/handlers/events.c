@@ -7,12 +7,12 @@
  */
 #define _GNU_SOURCE
 #include "handlers.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/fastcgi/storage/sessions.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "../session_store.h"
 #include "../stream_pool.h"
-#include "nb/signal.h"
+#include <nb/signal.h>
 
 #include <errno.h>
 #include <stdio.h>

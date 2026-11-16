@@ -1,4 +1,4 @@
-#include "nb/err.h"
+#include <nb/err.h>
 #ifndef MORPH_CLI_COMMANDS_REGISTRY_H
 #define MORPH_CLI_COMMANDS_REGISTRY_H
 

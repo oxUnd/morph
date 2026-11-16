@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 #include <limits.h>
 #include "sync/sync.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "blake3.h"
 #include "cJSON.h"
 #include <sqlite3.h>

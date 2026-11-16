@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include <climits>
 #include "agent/context.h"
 #include "agent/tokenizer.h"
 #include "agent/react_request.h"
 #include "agent/history.h"
 #include "agent/react_tool_worker.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <string.h>
 
 static void append_message_owned(struct message_list **head, struct message_list *message)

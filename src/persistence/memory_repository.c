@@ -2,7 +2,7 @@
 
 #include "preferences.h"
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #include <errno.h>
 #include <stdio.h>

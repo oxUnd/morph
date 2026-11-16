@@ -1,8 +1,8 @@
 #ifndef MORPH_TEST_ENCODING_FIXTURE_H
 #define MORPH_TEST_ENCODING_FIXTURE_H
 
-#include "nb/encoding.h"
-#include "nb/cleanup.h"
+#include <nb/encoding.h>
+#include <nb/cleanup.h>
 #include "media/image.h"
 #include <cstdlib>
 #include <cstring>

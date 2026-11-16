@@ -1,8 +1,8 @@
 #ifndef MORPH_SESSION_HISTORY_H
 #define MORPH_SESSION_HISTORY_H
 
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

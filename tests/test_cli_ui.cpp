@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "sapi/cli/adapters/runtime/dispatch.h"
@@ -18,8 +18,8 @@ extern "C" {
 #include "sapi/cli/services/event_queue.h"
 #include "agent/tool_context.h"
 #include "agent/tools/ask_user.h"
-#include "nb/cancel.h"
-#include "nb/cleanup.h"
+#include <nb/cancel.h>
+#include <nb/cleanup.h>
 #include "cJSON.h"
 #include "event/event.h"
 }

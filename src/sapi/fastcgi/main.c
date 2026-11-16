@@ -10,15 +10,15 @@
  *   MORPH_FCGI_TRUST_HDR  trusted proxy identity header, e.g. "X-Remote-User"
  */
 #define _GNU_SOURCE
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <fcgiapp.h>
 #include "sapi/fastcgi/storage/events.h"
 #include "sapi/fastcgi/storage/tokens.h"
-#include "nb/time.h"
+#include <nb/time.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,9 +35,9 @@
 #include "agent_bridge.h"
 #include "stream_pool.h"
 #include "errors.h"
-#include "nb/log.h"
-#include "nb/str.h"
-#include "nb/signal.h"
+#include <nb/log.h>
+#include <nb/str.h>
+#include <nb/signal.h>
 #include <sys/socket.h>
 
 #define FCGI_WORKERS_DEFAULT "128"

@@ -6,10 +6,10 @@
 #include "persistence/memory_repository.h"
 #include "persistence/memory_search.h"
 #include "persistence/memory_summary_store.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 
 #include <errno.h>
 #include <string.h>

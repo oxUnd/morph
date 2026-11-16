@@ -1,8 +1,8 @@
 #include "context.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/tokenizer.h"
 #include "agent/bpe.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>

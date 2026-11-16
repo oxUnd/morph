@@ -1,6 +1,6 @@
 #include <morph/tui/widgets/label.h>
 #include "errors.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 #include <limits.h>

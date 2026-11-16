@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "runtime/output.h"
 #include "persistence/output_store.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 }
 
 #include <cstring>

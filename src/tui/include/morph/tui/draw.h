@@ -1,8 +1,8 @@
 #ifndef MORPH_TUI_DRAW_H
 #define MORPH_TUI_DRAW_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <stdio.h>
 
 #ifdef __cplusplus

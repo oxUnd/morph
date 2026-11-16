@@ -6,8 +6,8 @@
 #include "sapi/cli/widgets/feed.h"
 #include "runtime/runtime.h"
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/cleanup.h"
+#include <nb/file.h>
+#include <nb/cleanup.h>
 #include <stdlib.h>
 #include <string.h>
 

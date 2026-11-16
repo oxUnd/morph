@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_WIDGETS_COMPOSER_PANEL_H
 #define MORPH_CLI_WIDGETS_COMPOSER_PANEL_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <morph/tui/event.h>
 #include <morph/tui/view.h>
 

@@ -1,8 +1,8 @@
 #include "img_info.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/tool_context.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include "errors.h"
 #include "cJSON.h"
 #include "stb_image.h"

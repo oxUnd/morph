@@ -3,12 +3,12 @@
 #include "agent/plan.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
-#include "nb/log.h"
-#include "nb/cleanup.h"
+#include <nb/log.h>
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/buf.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/buf.h>
+#include <nb/str.h>
+#include <nb/utf8.h>
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,13 +16,13 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include "errors.h"
-#include "nb/hash.h"
-#include "nb/encoding.h"
+#include <nb/hash.h>
+#include <nb/encoding.h>
 #include "agent/tool_context.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 
 struct plan_tool_context {
 	unsigned int refs;

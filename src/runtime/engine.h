@@ -5,7 +5,7 @@ struct nb_log;
 #include "agent/turn.h"
 #include "runtime/request.h"
 #include "runtime/result.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdint.h>
 
 struct runtime_turn_state {

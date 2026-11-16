@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include "agent/react.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/history.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"

@@ -1,6 +1,6 @@
 #include <morph/tui/input.h>
 #include "errors.h"
-#include "nb/time.h"
+#include <nb/time.h>
 
 #include <limits.h>
 #include <poll.h>

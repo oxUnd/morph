@@ -2,8 +2,8 @@
 #define MORPH_CLI_WIDGETS_AGENTS_BROWSER_H
 
 #include "agent/agent_control.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <morph/tui/widgets/list.h>
 
 enum cli_agents_browser_filter {

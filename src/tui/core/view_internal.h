@@ -5,9 +5,9 @@
 #include <morph/tui/layout.h>
 #include <morph/tui/window.h>
 #include <morph/tui/frame.h>
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 struct morph_tui_view_state {

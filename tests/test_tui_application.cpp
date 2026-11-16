@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
 

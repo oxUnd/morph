@@ -1,12 +1,12 @@
 #include "sapi/cli/widgets/tool_call.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/transcript.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/widgets/text_view.h>

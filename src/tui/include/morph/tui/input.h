@@ -2,7 +2,7 @@
 #define MORPH_TUI_INPUT_H
 
 #include <morph/tui/event.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include <stddef.h>
 #include <stdint.h>
 

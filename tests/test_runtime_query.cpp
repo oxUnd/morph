@@ -6,9 +6,9 @@
 #include "credits.h"
 #include "session.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include "agent/tokenizer.h"
 #include "persistence/memory_repository.h"
 #include "persistence/memory_summary_store.h"

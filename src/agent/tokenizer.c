@@ -1,7 +1,7 @@
 #include "tokenizer.h"
 #include "agent/context.h"
 #include "agent/bpe.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <limits.h>

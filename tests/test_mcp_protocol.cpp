@@ -1,6 +1,6 @@
 #include "errors.h"
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "mcp/mcp_internal.h"

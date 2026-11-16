@@ -2,7 +2,7 @@
 #define MORPH_OUTPUT_STORE_H
 
 #include <stdint.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 struct db;
 

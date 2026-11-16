@@ -1,8 +1,8 @@
 #include "js_process.h"
 #include "runner_api.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/process.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/process.h>
 #include "errors.h"
 
 #include <errno.h>

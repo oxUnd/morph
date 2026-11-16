@@ -1,6 +1,6 @@
 /* artifacts.c — zero-copy output_dir artifact access */
 #define _GNU_SOURCE
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "handlers.h"
 #include "sapi/fastcgi/storage/artifacts.h"
 #include "sapi/fastcgi/storage/sessions.h"
@@ -14,7 +14,7 @@
 #include <sys/stat.h>
 
 #include "cJSON.h"
-#include "nb/file.h"
+#include <nb/file.h>
 
 __attribute__((weak)) const char *fcgi_artifact_output_dir_borrow(struct fcgi_bridge *bridge);
 

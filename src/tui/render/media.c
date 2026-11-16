@@ -1,5 +1,5 @@
 #include <morph/tui/media.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "media/image.h"
 #include "errors.h"
 #include "stb_image.h"

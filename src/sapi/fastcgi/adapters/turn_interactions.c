@@ -1,5 +1,5 @@
 #include "sapi/fastcgi/adapters/turn_interactions.h"
-#include "nb/time.h"
+#include <nb/time.h>
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/storage/events.h"
 #include "cJSON.h"
@@ -10,7 +10,7 @@
 #include <string.h>
 #include <time.h>
 #include "sapi/fastcgi/action_pump.h"
-#include "nb/cancel.h"
+#include <nb/cancel.h>
 
 #define FCGI_ACTION_WAIT_SECONDS 300
 

@@ -1,11 +1,11 @@
 #include "sapi/cli/widgets/agents_browser.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/agents.h"
 #include "sapi/cli/widgets/composer_panel.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/text_view.h>
 #include <errno.h>

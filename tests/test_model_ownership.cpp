@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "models/llm.h"
 #include "models/llm/codec.h"
@@ -7,7 +7,7 @@ extern "C" {
 #include "models/llm/chat_codec.h"
 }
 #include "models/llm/stream.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 
 #include <cerrno>

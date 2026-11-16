@@ -3,13 +3,13 @@
 
 struct nb_log;
 #include "agent/hooks.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include "config/config.h"
 #include "db/database.h"
 #include "event/event.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/cancel.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/cancel.h>
 
 #ifdef __cplusplus
 extern "C" {

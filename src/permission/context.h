@@ -7,8 +7,8 @@ extern "C" {
 
 #include <limits.h>
 #include <stddef.h>
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #define TOOL_CONTEXT_OUTPUT_DIR_MAX PATH_MAX
 #define TOOL_CONTEXT_ALLOW_MAX 32

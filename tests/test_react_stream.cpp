@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "agent/react_stream.h"
-#include "nb/signal.h"
-#include "nb/utf8.h"
+#include <nb/signal.h>
+#include <nb/utf8.h>
 }
 
 #include <string>

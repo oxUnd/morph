@@ -1,5 +1,5 @@
 #include "sapi/cli/presentation/tool_preview.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/models/transcript.h"
 #include "agent/patch.h"
 #include "cJSON.h"

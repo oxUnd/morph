@@ -3,9 +3,9 @@
 #include "models/llm.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/buf.h"
+#include <nb/buf.h>
 #include "errors.h"
 #include "media/image.h"
 #include "cJSON.h"

@@ -1,7 +1,7 @@
 #ifndef MORPH_ERRORS_H
 #define MORPH_ERRORS_H
 
-#include "nb/err.h"
+#include <nb/err.h>
 #include <errno.h>
 
 /* Application error catalog. Portable mechanism statuses use nb_status;

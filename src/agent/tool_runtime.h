@@ -8,8 +8,8 @@ extern "C" {
 #include "config/config.h"
 #include "db/database.h"
 #include "event/event.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include "http/client.h"
 #include "agent/tools/ask_user.h"
 #include "cJSON.h"

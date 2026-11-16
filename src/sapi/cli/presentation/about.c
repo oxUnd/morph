@@ -1,6 +1,6 @@
 #include "sapi/cli/presentation/about.h"
 #include <limits.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/diagnostics.h"
 #include "sapi/cli/presentation/output.h"
@@ -8,7 +8,7 @@
 #include "config/config.h"
 #include "skill/skill.h"
 #include "runtime/resources.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

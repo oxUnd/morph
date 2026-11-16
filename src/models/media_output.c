@@ -1,7 +1,7 @@
 #include "media_output.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
-#include "nb/random.h"
+#include <nb/cleanup.h>
+#include <nb/file.h>
+#include <nb/random.h>
 #include <string.h>
 
 static int media_output_attempt(const char *output_dir, const char *prefix, const char *extension,

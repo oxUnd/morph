@@ -1,8 +1,8 @@
 #include <morph/tui/widgets/tree.h>
-#include "nb/err.h"
-#include "nb/utf8.h"
+#include <nb/err.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <stdlib.h>
 #include <string.h>
 

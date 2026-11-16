@@ -2,7 +2,7 @@
 #define MORPH_HISTORY_STORE_H
 
 #include "session.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #ifdef __cplusplus
 extern "C" {

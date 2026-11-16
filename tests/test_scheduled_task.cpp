@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
 #include "db/database.h"
 #include "db/scheduled_task.h"
 #include "session.h"
@@ -14,7 +14,7 @@
 #include <string>
 #include <cstdio>
 #include <cstring>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <unistd.h>
 
 TEST(ScheduledTaskOwnershipTest, OccupiedSnapshotRejectsWritesAndPreservesTheExistingTask)

@@ -1,5 +1,5 @@
 #include "prompt_context.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "environment_context.h"
 #include "errors.h"
 #include <errno.h>

@@ -1,11 +1,11 @@
 #include "config_write.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/str.h>
+#include <nb/utf8.h>
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/tool_context.h"
 #include "agent/patch.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "errors.h"
 #include "config/config.h"
 #include "cJSON.h"

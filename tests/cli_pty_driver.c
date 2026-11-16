@@ -1,9 +1,9 @@
 #include "sapi/cli/presentation/output.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/agents_browser.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <morph/tui/terminal/size.h>
 /* Exercise the real CLI with an isolated database and a local model server. */
 #include "sapi/cli/application.h"

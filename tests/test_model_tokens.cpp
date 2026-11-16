@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "models/llm.h"
 #include "models/image_provider.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/tokenizer.h"
 #include "agent/react_request.h"
 #include "errors.h"

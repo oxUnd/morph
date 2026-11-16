@@ -3,7 +3,7 @@
 extern "C" {
 #include "sapi/cli/widgets/composer_panel.h"
 #include "errors.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 }
 

@@ -2,7 +2,7 @@
 #define MORPH_FCGI_SERVICES_TURN_JOB_INTERNAL_H
 
 #include <limits.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>

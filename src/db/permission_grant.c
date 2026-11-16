@@ -1,7 +1,7 @@
 #include "permission_grant.h"
 #include "errors.h"
-#include "nb/cleanup.h"
-#include "nb/log.h"
+#include <nb/cleanup.h>
+#include <nb/log.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

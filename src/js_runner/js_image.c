@@ -1,10 +1,10 @@
 #include "js_image.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "js_values.h"
 #include "js_canvas.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/file.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>

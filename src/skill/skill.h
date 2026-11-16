@@ -7,9 +7,9 @@ extern "C" {
 
 #include <limits.h>
 #include <stddef.h>
-#include "nb/map.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/map.h>
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #define SKILL_NAME_MAX_CHARS 64
 #define SKILL_DESC_MAX_CHARS 1024

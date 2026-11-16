@@ -1,5 +1,5 @@
 #include "permission.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include <errno.h>
 #include <stdio.h>

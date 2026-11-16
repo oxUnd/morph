@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/tools/ask_user.h"
 #include "agent/tool.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>

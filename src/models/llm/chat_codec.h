@@ -2,7 +2,7 @@
 #define MORPH_LLM_CHAT_CODEC_H
 
 #include "codec.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 /* Inputs are borrowed. *out_body starts NULL; success creates an owner for
  * cJSON_free and fills length. Failure preserves outputs; occupied: NB_ERR_EXISTS. */

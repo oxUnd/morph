@@ -1,12 +1,12 @@
 #include "sapi/cli/presentation/mcp_tree.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/pages/chat.h"
 #include "runtime/runtime.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <morph/tui/widgets/tree.h>
 #include <errno.h>

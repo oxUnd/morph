@@ -6,9 +6,9 @@ extern "C" {
 #endif
 
 #include <stdio.h>
-#include "nb/time.h"
+#include <nb/time.h>
 #include <time.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <signal.h>
 
 enum spin_style {

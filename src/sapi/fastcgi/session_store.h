@@ -2,7 +2,7 @@
 #define MORPH_FCGI_SESSION_STORE_H
 
 #include "db/database.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 
 struct nb_log;
 struct event_subscriber;

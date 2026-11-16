@@ -12,11 +12,11 @@
 #include "sandbox/permission.h"
 #include "path_policy.h"
 #include "permission/command_analysis.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"
-#include "nb/random.h"
+#include <nb/random.h>
 #include "cJSON.h"
 
 #include <errno.h>
@@ -25,7 +25,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>

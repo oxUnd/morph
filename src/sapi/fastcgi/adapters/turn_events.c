@@ -4,7 +4,7 @@
 #include "sapi/fastcgi/event_sink.h"
 #include "cJSON.h"
 #include "errors.h"
-#include "nb/time.h"
+#include <nb/time.h>
 
 #include <stdio.h>
 #include <stdlib.h>

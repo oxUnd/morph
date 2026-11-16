@@ -2,8 +2,8 @@
 #include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
 #include "errors.h"
-#include "nb/log.h"
-#include "nb/time.h"
+#include <nb/log.h>
+#include <nb/time.h>
 
 #include <errno.h>
 #include <string.h>

@@ -1,6 +1,6 @@
 #include "mcp_internal.h"
 #include "errors.h"
-#include "nb/log.h"
+#include <nb/log.h>
 
 #include <errno.h>
 #include <stdlib.h>

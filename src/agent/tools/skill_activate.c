@@ -1,11 +1,11 @@
 #include "skill_activate.h"
 #include "agent/tool_runtime.h"
 #include "db/database.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/utf8.h"
-#include "nb/log.h"
+#include <nb/utf8.h>
+#include <nb/log.h>
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>

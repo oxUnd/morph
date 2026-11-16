@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "render/image.h"
 #include "render/video.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

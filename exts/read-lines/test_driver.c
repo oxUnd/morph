@@ -1,5 +1,5 @@
 #include "read_lines.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #include <stdio.h>
 

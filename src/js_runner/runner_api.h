@@ -2,7 +2,7 @@
 #define RUNNER_API_H
 
 #include "quickjs.h"
-#include "nb/time.h"
+#include <nb/time.h>
 
 #define RUNNER_DEFAULT_MAX_CAPTURE (1024u * 1024u)
 

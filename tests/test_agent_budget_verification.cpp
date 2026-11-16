@@ -11,10 +11,10 @@ extern "C" {
 #include "models/llm.h"
 #include "permission/context.h"
 #include "session.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"
-#include "nb/signal.h"
+#include <nb/signal.h>
 }
 
 #include <chrono>

@@ -2,7 +2,7 @@
 #include "agent/tool_context.h"
 #include "sandbox/tool_paths.h"
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <errno.h>
 
 /* Register the same resolved presets used by the OS sandbox with approvals. */

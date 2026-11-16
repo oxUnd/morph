@@ -6,9 +6,9 @@ extern "C" {
 #endif
 
 #include "models/llm.h"
-#include "nb/err.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <stddef.h>
 
 enum image_payload_kind {

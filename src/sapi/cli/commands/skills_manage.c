@@ -1,6 +1,6 @@
 #include "sapi/cli/commands/skills_manage.h"
 #include <limits.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 #include "config/config.h"
 #include "cJSON.h"
@@ -8,9 +8,9 @@
 #include "sapi/cli/services/skill_store.h"
 #include "runtime/resources.h"
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/str.h"
-#include "nb/toml.h"
+#include <nb/file.h>
+#include <nb/str.h>
+#include <nb/toml.h>
 #include <errno.h>
 #include <getopt.h>
 #include <stdio.h>

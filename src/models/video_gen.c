@@ -2,8 +2,8 @@
 #include "video_provider.h"
 #include "models/llm.h"
 #include "errors.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/str.h>
+#include <nb/utf8.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

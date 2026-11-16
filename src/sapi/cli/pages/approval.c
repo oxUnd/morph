@@ -1,5 +1,5 @@
 #include "sapi/cli/pages/approval.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"

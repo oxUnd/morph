@@ -18,7 +18,7 @@
 #include "skill/skill.h"
 
 #include <limits.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stddef.h>
 
 #define RUNTIME_PLAN_SESSION_CACHE_MAX 32

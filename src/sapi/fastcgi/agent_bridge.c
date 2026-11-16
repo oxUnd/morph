@@ -1,19 +1,19 @@
 /* agent_bridge.c -- FastCGI ownership of the shared Morph runtime pool. */
-#include "nb/time.h"
+#include <nb/time.h>
 #include "agent_bridge.h"
 
 #include "agent/tool_runtime.h"
 #include "config/config.h"
 #include "runtime/runtime.h"
 #include "errors.h"
-#include "nb/cleanup.h"
-#include "nb/queue.h"
-#include "nb/file.h"
-#include "nb/log.h"
+#include <nb/cleanup.h>
+#include <nb/queue.h>
+#include <nb/file.h>
+#include <nb/log.h>
 
 #include <errno.h>
 #include <limits.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

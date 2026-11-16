@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
-#include "nb/cleanup.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
 
 extern "C" {
 #include "sapi/cli/adapters/input/reader.h"
@@ -9,7 +9,7 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/callbacks.h"
 #include "http/client.h"
-#include "nb/signal.h"
+#include <nb/signal.h>
 }
 
 #include <chrono>

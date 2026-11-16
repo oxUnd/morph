@@ -1,13 +1,13 @@
 #include "sapi/cli/commands/mcp.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "mcp/mcp.h"
 #include "config/config.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/mcp_tree.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 

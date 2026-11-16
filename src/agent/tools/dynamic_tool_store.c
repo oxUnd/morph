@@ -1,10 +1,10 @@
 #include "dynamic_tool_store.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/str.h>
+#include <nb/utf8.h>
 #include <limits.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "cJSON.h"
 #include <dirent.h>
 #include <errno.h>

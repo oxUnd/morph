@@ -1,5 +1,5 @@
 #include "sapi/cli/pages/jobs.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
@@ -9,7 +9,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/feed_block.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/widgets/jobs.h"

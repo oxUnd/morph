@@ -3,12 +3,12 @@
 
 #include "sapi/cli/presentation/markdown.h"
 #include "mcp/mcp.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/map.h"
-#include "nb/utf8.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/map.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 struct morph_md_kitty;

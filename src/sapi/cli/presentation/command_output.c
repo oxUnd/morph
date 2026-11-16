@@ -1,5 +1,5 @@
 #include "sapi/cli/presentation/command_output.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/pages/chat.h"
 
 #include "sapi/cli/application.h"
@@ -8,9 +8,9 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/widgets/list.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 
 #include <stdarg.h>
 #include <stdio.h>

@@ -1,7 +1,7 @@
 #include <morph/tui/terminal/activity.h>
-#include "nb/signal.h"
+#include <nb/signal.h>
 #include <morph/tui/terminal/status.h>
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <string.h>
 #include <unistd.h>

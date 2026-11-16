@@ -2,7 +2,7 @@
 #define MORPH_AGENT_HOOKS_H
 
 #include "cJSON.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #ifdef __cplusplus
 extern "C" {

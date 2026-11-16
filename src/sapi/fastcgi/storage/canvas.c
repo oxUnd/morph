@@ -2,8 +2,8 @@
 #include "sapi/fastcgi/session_store_internal.h"
 #include "cJSON.h"
 #include "errors.h"
-#include "nb/cleanup.h"
-#include "nb/random.h"
+#include <nb/cleanup.h>
+#include <nb/random.h>
 
 #include <errno.h>
 #include <stdio.h>

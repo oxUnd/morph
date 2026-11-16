@@ -4,7 +4,7 @@
 #include "permission/context.h"
 #include "errors.h"
 #include "media/image.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "stb_image.h"
 
 #include <errno.h>

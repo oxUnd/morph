@@ -3,7 +3,7 @@
 #include "sapi/cli/application.h"
 #include "cJSON.h"
 #include "errors.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <morph/tui/application.h>
 
 #include <errno.h>

@@ -2,8 +2,8 @@
 #define MORPH_MEMORY_SEARCH_H
 
 #include "memory_store.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

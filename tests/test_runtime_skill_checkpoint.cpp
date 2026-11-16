@@ -5,7 +5,7 @@ extern "C" {
 #include "runtime/runtime_internal.h"
 #include "persistence/checkpoint_store.h"
 #include "skill/skill.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 }
 

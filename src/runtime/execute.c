@@ -1,9 +1,9 @@
 #include "runtime/execute.h"
 #include "agent/agent_control.h"
-#include "nb/signal.h"
+#include <nb/signal.h>
 #include "runtime/runtime_internal.h"
 #include "runtime/output.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include "errors.h"
 
 #include <errno.h>

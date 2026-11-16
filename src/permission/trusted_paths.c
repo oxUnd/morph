@@ -1,6 +1,6 @@
 #include "trusted_paths.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
+#include <nb/cleanup.h>
+#include <nb/file.h>
 
 #include <stdlib.h>
 #include <string.h>

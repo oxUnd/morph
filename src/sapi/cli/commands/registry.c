@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/registry.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/ext.h"
@@ -21,8 +21,8 @@
 #include "cJSON.h"
 #include "sapi/cli/presentation/command_output.h"
 #include "sapi/cli/presentation/output.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #include <ctype.h>
 #include <limits.h>

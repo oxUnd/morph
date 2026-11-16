@@ -1,6 +1,6 @@
 #include "sapi/cli/pages/setup/controls.h"
-#include "nb/thread.h"
-#include "nb/cleanup.h"
+#include <nb/thread.h>
+#include <nb/cleanup.h>
 #include "sapi/cli/services/configuration/model.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
@@ -10,9 +10,9 @@
 #include "sapi/cli/services/configuration/mcp.h"
 #include "sapi/cli/application.h"
 #include "errors.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include "nb/str.h"
+#include <nb/str.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>

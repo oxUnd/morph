@@ -1,14 +1,14 @@
 #include "errors.h"
 #include <gtest/gtest.h>
 #include <stdlib.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/tool_context.h"
 #include "permission/context_internal.h"
 #include "permission/trusted_paths.h"
 #include "db/database.h"
 #include "db/permission_grant.h"
-#include "nb/file.h"
-#include "nb/cleanup.h"
+#include <nb/file.h>
+#include <nb/cleanup.h>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>

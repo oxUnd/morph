@@ -1,11 +1,11 @@
 #include "edit.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "config/config.h"
 #include "cJSON.h"
-#include "nb/vec.h"
-#include "nb/buf.h"
+#include <nb/vec.h>
+#include <nb/buf.h>
 #include "errors.h"
-#include "nb/toml.h"
+#include <nb/toml.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>

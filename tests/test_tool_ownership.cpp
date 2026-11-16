@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "agent/tool_registry.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 #include <cerrno>
 #include <cstdlib>

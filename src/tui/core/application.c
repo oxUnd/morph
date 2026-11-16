@@ -1,13 +1,13 @@
 #include "application_loop.h"
 #include "view_internal.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "errors.h"
-#include "nb/queue.h"
-#include "nb/time.h"
+#include <nb/queue.h>
+#include <nb/time.h>
 
 #include <fcntl.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>

@@ -2,10 +2,10 @@
 #define MORPH_REACT_STREAM_H
 
 #include "agent/react_output.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include "models/llm.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <signal.h>
 
 #ifdef __cplusplus

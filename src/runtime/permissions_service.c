@@ -2,11 +2,11 @@
 
 #include "db/permission_grant.h"
 #include "runtime/runtime_internal.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/buf.h"
+#include <nb/file.h>
+#include <nb/buf.h>
 #include "config/edit.h"
 #include "agent/tools/exec_jobs.h"
 

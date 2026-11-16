@@ -1,10 +1,10 @@
 #define _GNU_SOURCE
 #include "mcp/mcp_internal.h"
-#include "nb/process.h"
+#include <nb/process.h>
 #include "cJSON.h"
 #include "errors.h"
-#include "nb/cleanup.h"
-#include "nb/log.h"
+#include <nb/cleanup.h>
+#include <nb/log.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,9 +17,9 @@
 #include <time.h>
 #include <limits.h>
 #include <spawn.h>
-#include "nb/vec.h"
-#include "nb/buf.h"
-#include "nb/time.h"
+#include <nb/vec.h>
+#include <nb/buf.h>
+#include <nb/time.h>
 
 extern char **environ;
 

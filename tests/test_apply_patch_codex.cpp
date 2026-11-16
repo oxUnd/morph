@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "agent/patch.h"
-#include "nb/file.h"
+#include <nb/file.h>
 }
 
 #include <algorithm>

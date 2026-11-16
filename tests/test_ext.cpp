@@ -5,8 +5,8 @@ extern "C" {
 #include "ext/manifest.h"
 #include "ipc/jsonrpc.h"
 #include "sandbox/loader.h"
-#include "nb/file.h"
-#include "nb/cleanup.h"
+#include <nb/file.h>
+#include <nb/cleanup.h>
 #include "errors.h"
 }
 #include <cerrno>

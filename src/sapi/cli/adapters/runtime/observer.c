@@ -7,7 +7,7 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/feed_block.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 void cli_runtime_observer_pause(void *user_data)
 {

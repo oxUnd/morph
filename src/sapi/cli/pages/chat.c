@@ -1,5 +1,5 @@
 #include "sapi/cli/pages/chat.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
@@ -26,8 +26,8 @@
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/command_job.h"
-#include "nb/map.h"
-#include "nb/time.h"
+#include <nb/map.h>
+#include <nb/time.h>
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/services/turn.h"
@@ -45,7 +45,7 @@
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/plan.h"
 #include "sapi/cli/application_internal.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <morph/tui/view_controller.h>
 #include <morph/tui/terminal.h>
 #include <morph/tui/widgets/stack.h>

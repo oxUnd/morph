@@ -1,16 +1,16 @@
 #include <gtest/gtest.h>
 #include <string.h>
 #include <stdlib.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "agent/tool_context.h"
 #include "agent/tool.h"
 #include "agent/tools/request_permissions.h"
 #include "db/database.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "permission/context.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 }
 
 #include <filesystem>

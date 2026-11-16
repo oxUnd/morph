@@ -2,10 +2,10 @@
 #define MORPH_TOOL_REGISTRY_H
 
 #include "agent/tool_result.h"
-#include "nb/map.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/thread.h"
+#include <nb/map.h>
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/thread.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

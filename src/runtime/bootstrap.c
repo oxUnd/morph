@@ -1,8 +1,8 @@
 #include "runtime/bootstrap.h"
-#include "nb/str.h"
-#include "nb/utf8.h"
+#include <nb/str.h>
+#include <nb/utf8.h>
 
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/compress.h"
 #include "agent/guardrail.h"
 #include "agent/system_prompt.h"
@@ -38,8 +38,8 @@
 #include "runtime/runtime_internal.h"
 #include "runtime/resources.h"
 #include "errors.h"
-#include "nb/file.h"
-#include "nb/log.h"
+#include <nb/file.h>
+#include <nb/log.h>
 
 #include <ctype.h>
 #include <errno.h>

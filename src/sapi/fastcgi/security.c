@@ -2,16 +2,16 @@
 #define _GNU_SOURCE
 #include "security.h"
 #include "errors.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
+#include <nb/random.h>
+#include <nb/encoding.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "nb/hash.h"
-#include "nb/cleanup.h"
+#include <nb/hash.h>
+#include <nb/cleanup.h>
 #define PWD_SALT_BYTES 16
 #define PWD_HASH_BYTES 32
 #define PWD_ITERATIONS 120000

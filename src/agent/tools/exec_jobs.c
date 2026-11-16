@@ -1,11 +1,11 @@
 #include "exec_jobs.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"
 
 #include <errno.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

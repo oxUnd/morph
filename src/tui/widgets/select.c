@@ -1,5 +1,5 @@
 #include <morph/tui/widgets/select.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include <string.h>
 
 int morph_tui_widget_select_init(struct morph_tui_widget_select *select, size_t count, int multi,

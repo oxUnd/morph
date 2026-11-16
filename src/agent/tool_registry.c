@@ -1,9 +1,9 @@
 #include "tool_registry.h"
 
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"
-#include "nb/log.h"
+#include <nb/log.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>

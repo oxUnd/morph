@@ -4,8 +4,8 @@
 #include "config/config.h"
 #include "agent/context.h"
 #include "agent/tool_runtime.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

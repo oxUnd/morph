@@ -4,12 +4,12 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/setup/controls.h"
 #include "runtime/runtime.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/vec.h"
-#include "nb/buf.h"
+#include <nb/vec.h>
+#include <nb/buf.h>
 #include "errors.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 #include <errno.h>

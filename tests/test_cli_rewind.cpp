@@ -12,8 +12,8 @@ extern "C" {
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/presentation/output.h"
 #include "errors.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
+#include <nb/cleanup.h>
+#include <nb/file.h>
 #include "cJSON.h"
 }
 

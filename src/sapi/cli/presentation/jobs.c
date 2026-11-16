@@ -1,5 +1,5 @@
 #include "sapi/cli/presentation/jobs.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/models/jobs.h"
@@ -10,7 +10,7 @@
 #include "sapi/cli/widgets/list.h"
 #include "sapi/cli/widgets/notice.h"
 #include "cJSON.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

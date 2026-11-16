@@ -1,11 +1,11 @@
 #include "preferences.h"
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include "errors.h"
-#include "nb/random.h"
-#include "nb/encoding.h"
-#include "nb/utf8.h"
-#include "nb/str.h"
+#include <nb/random.h>
+#include <nb/encoding.h>
+#include <nb/utf8.h>
+#include <nb/str.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>

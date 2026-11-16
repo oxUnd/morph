@@ -1,7 +1,7 @@
 #include "sapi/cli/widgets/notification.h"
 #include <time.h>
 #include "sapi/cli/widgets/feed_block.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/event_queue_item.h"
 #include "sapi/cli/presentation/output.h"

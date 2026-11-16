@@ -1,6 +1,6 @@
 #include <morph/tui/widgets/text_view.h>
 #include "errors.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 #include <string.h>

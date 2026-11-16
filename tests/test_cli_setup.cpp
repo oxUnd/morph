@@ -1,8 +1,8 @@
 extern "C" {
 #include <string.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/cli/services/configuration/model.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/services/configuration/role.h"
 }
 #include <gtest/gtest.h>
@@ -14,8 +14,8 @@ extern "C" {
 #include "agent/system_prompt.h"
 #include <filesystem>
 #include "config/config.h"
-#include "nb/file.h"
-#include "nb/toml.h"
+#include <nb/file.h>
+#include <nb/toml.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>

@@ -3,7 +3,7 @@
 extern "C" {
 #include "sapi/cli/widgets/rich_document.h"
 #include "encoding_fixture.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include "morph_kitty_protocol.h"
 #include <morph/tui/application.h>

@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_PRESENTATION_AGENT_TOOLS_H
 #define MORPH_CLI_PRESENTATION_AGENT_TOOLS_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 struct cli_transcript_tool;
 
 int cli_agent_tools_matches(const char *name);

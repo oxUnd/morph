@@ -4,8 +4,8 @@
 #include "errors.h"
 
 #include <errno.h>
-#include "nb/thread.h"
-#include "nb/queue.h"
+#include <nb/thread.h>
+#include <nb/queue.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

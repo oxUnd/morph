@@ -1,5 +1,5 @@
 #include "errors.h"
-#include "nb/log.h"
+#include <nb/log.h>
 
 int error_probe_return(struct nb_log *logger, int code, int *code_evaluations,
 		       int *logger_evaluations)

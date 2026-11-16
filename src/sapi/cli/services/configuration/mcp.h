@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_SERVICES_CONFIGURATION_MCP_H
 #define MORPH_CLI_SERVICES_CONFIGURATION_MCP_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 
 #ifdef __cplusplus
 extern "C" {

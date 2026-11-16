@@ -3,7 +3,7 @@
 #define MORPH_FCGI_IO_H
 
 #include <fcgiapp.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>

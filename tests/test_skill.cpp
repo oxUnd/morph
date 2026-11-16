@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include "skill/skill.h"
 #include "skill/skill_parse.h"
 #include "agent/tools/skill_activate.h"
 #include "agent/tool.h"
-#include "nb/file.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/file.h>
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>

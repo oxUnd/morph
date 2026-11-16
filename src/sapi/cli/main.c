@@ -1,5 +1,5 @@
 #include "sapi/cli/application.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "sapi/cli/commands/options.h"
 #include "sapi/cli/commands/mcp_manage.h"
 #include "sapi/cli/commands/skills_manage.h"
@@ -11,8 +11,8 @@
 #include "sapi/cli/services/management.h"
 #include "runtime/services.h"
 #include "http/client.h"
-#include "nb/log.h"
-#include "nb/file.h"
+#include <nb/log.h>
+#include <nb/file.h>
 #include "errors.h"
 #include <locale.h>
 #include <stdio.h>

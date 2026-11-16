@@ -1,8 +1,8 @@
 #ifndef MORPH_TUI_WIDGET_TEXT_VIEW_H
 #define MORPH_TUI_WIDGET_TEXT_VIEW_H
 
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include <morph/tui/widget.h>
 
 #ifdef __cplusplus

@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "agent/tool_context.h"
 #include "config/config.h"
 #include "runtime/services.h"
 #include "sapi/fastcgi/agent_bridge.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 }
 
 #include <cstdlib>

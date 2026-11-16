@@ -1,5 +1,5 @@
 #include "sapi/cli/widgets/shell_style.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 

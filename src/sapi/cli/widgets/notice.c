@@ -1,9 +1,9 @@
 #include "sapi/cli/widgets/notice.h"
-#include "nb/err.h"
+#include <nb/err.h>
 
 #include "sapi/cli/presentation/style.h"
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include "sapi/cli/presentation/messages.h"
 #include <morph/tui/widget.h>

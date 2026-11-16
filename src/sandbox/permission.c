@@ -1,10 +1,10 @@
 #include "permission.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "permission/context.h"
 #include "sandbox/tool_paths.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/file.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>

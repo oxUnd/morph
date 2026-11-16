@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_PRESENTATION_TOOL_PREVIEW_H
 #define MORPH_CLI_PRESENTATION_TOOL_PREVIEW_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 
 struct cli_transcript_tool;
 

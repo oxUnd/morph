@@ -1,13 +1,13 @@
 #include "sapi/cli/widgets/feed.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/widgets/feed_block.h"
 #include "sapi/cli/presentation/style.h"
 #include <morph/tui/terminal/size.h>
-#include "nb/cleanup.h"
-#include "nb/utf8.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <morph/tui/terminal.h>
 #include "sapi/cli/presentation/presenter.h"
@@ -18,7 +18,7 @@
 #include "sapi/cli/widgets/jobs.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/models/agents.h"
-#include "nb/time.h"
+#include <nb/time.h>
 
 #define CLI_FEED_TERMINAL_DEFAULT_COLUMNS 80
 #define CLI_FEED_TERMINAL_FRAME_MS 80

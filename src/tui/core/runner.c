@@ -3,7 +3,7 @@
 #include <morph/tui/window.h>
 #include "application_loop.h"
 #include "errors.h"
-#include "nb/signal.h"
+#include <nb/signal.h>
 
 #include <stdlib.h>
 

@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "sapi/cli/application.h"
@@ -12,9 +12,9 @@ extern "C" {
 #include "sapi/cli/widgets/subagents.h"
 #include "sapi/cli/widgets/agents_browser.h"
 #include "sapi/cli/widgets/transcript.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 }
 

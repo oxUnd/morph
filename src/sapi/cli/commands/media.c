@@ -1,8 +1,8 @@
 #include "sapi/cli/commands/media.h"
 #include <string.h>
 #include <stdlib.h>
-#include "nb/cleanup.h"
-#include "nb/err.h"
+#include <nb/cleanup.h>
+#include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"

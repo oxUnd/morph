@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "nb/err.h"
+#include <nb/err.h>
 #include <morph/tui/application.h>
 #include <morph/tui/view_controller.h>
 #include <morph/tui/layout.h>
@@ -11,7 +11,7 @@
 #include <morph/tui/widgets/scroll.h>
 #include <morph/tui/widgets/text_field.h>
 #include <morph/tui/widgets/text_view.h>
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 
 #include <chrono>

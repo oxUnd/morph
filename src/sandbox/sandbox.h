@@ -1,9 +1,9 @@
 #ifndef SANDBOX_H
 #define SANDBOX_H
 
-#include "nb/vec.h"
+#include <nb/vec.h>
 #include "permission/trusted_paths.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 
 struct nb_log;
 #ifdef __cplusplus

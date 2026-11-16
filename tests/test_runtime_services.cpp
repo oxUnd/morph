@@ -1,6 +1,6 @@
 #include "errors.h"
 #include "runtime_test_support.hpp"
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "agent/tool.h"
@@ -14,7 +14,7 @@ extern "C" {
 #include "runtime/tasks.h"
 #include "cJSON.h"
 #include "persistence/history_store.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
 }
 

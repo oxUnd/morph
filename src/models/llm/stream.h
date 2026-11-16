@@ -2,10 +2,10 @@
 #define MORPH_LLM_STREAM_H
 
 #include "models/llm.h"
-#include "nb/buf.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/vec.h>
+#include <nb/cleanup.h>
+#include <nb/cleanup.h>
 #include "cJSON.h"
 
 #ifdef __cplusplus

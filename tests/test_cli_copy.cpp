@@ -1,7 +1,7 @@
 #include "runtime_test_support.hpp"
-#include "nb/time.h"
+#include <nb/time.h>
 #include <string.h>
-#include "nb/err.h"
+#include <nb/err.h>
 
 extern "C" {
 #include "sapi/cli/application.h"
@@ -9,9 +9,9 @@ extern "C" {
 #include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/presentation/output.h"
-#include "nb/file.h"
-#include "nb/cleanup.h"
-#include "nb/time.h"
+#include <nb/file.h>
+#include <nb/cleanup.h>
+#include <nb/time.h>
 }
 
 #include <optional>

@@ -1,11 +1,11 @@
 #include "system_prompt.h"
 #include "errors.h"
-#include "nb/err.h"
-#include "nb/cleanup.h"
-#include "nb/buf.h"
-#include "nb/file.h"
-#include "nb/log.h"
-#include "nb/utf8.h"
+#include <nb/err.h>
+#include <nb/cleanup.h>
+#include <nb/buf.h>
+#include <nb/file.h>
+#include <nb/log.h>
+#include <nb/utf8.h>
 
 #include <errno.h>
 #include <limits.h>

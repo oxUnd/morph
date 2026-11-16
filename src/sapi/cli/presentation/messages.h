@@ -1,8 +1,8 @@
 #ifndef MORPH_CLI_PRESENTATION_MESSAGES_H
 #define MORPH_CLI_PRESENTATION_MESSAGES_H
 
-#include "nb/buf.h"
-#include "nb/cleanup.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
 #include <morph/tui/view.h>
 
 enum cli_message_kind {

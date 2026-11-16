@@ -1,17 +1,17 @@
 #include "exec/process.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "config/config.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tools/exec_jobs.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/tools/request_permissions.h"
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
 #include "permission/context.h"
 #include "sandbox/sandbox.h"
-#include "nb/file.h"
-#include "nb/utf8.h"
+#include <nb/file.h>
+#include <nb/utf8.h>
 #include "cJSON.h"
 
 #include <gtest/gtest.h>

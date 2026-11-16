@@ -3,8 +3,8 @@
 
 struct nb_log;
 #include "skill/skill.h"
-#include "nb/vec.h"
-#include "nb/cleanup.h"
+#include <nb/vec.h>
+#include <nb/cleanup.h>
 #include "cJSON.h"
 
 #define CLI_SKILL_STORE_INSTALL_METADATA ".morph-install.json"

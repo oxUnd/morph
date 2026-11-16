@@ -7,7 +7,7 @@ struct nb_log;
 #include "runtime/tasks.h"
 
 #include <limits.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 
 struct runtime_task_worker {
 	struct nb_log *logger;

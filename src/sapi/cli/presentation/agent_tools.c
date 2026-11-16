@@ -2,9 +2,9 @@
 
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/style.h"
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "cJSON.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <string.h>
 #include <stdio.h>

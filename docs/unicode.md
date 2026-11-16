@@ -1,6 +1,6 @@
 # Unicode support
 
-Project code includes `nb/utf8.h` and links the pinned `nbase::nbase` dependency.
+Project code includes `<nb/utf8.h>` and links the pinned `nbase::nbase` dependency.
 The morph Unicode wrapper and its compatibility names have been removed.
 Generic UTF-8 handling and Unicode properties belong to nbase; terminal protocol
 handling and token estimation retain their application owners.

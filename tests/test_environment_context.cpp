@@ -1,7 +1,7 @@
 #include "agent/environment_context.h"
-#include "nb/err.h"
+#include <nb/err.h>
 #include "agent/prompt_context.h"
-#include "nb/utf8.h"
+#include <nb/utf8.h>
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>

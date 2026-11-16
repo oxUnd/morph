@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include "agent/react_output.h"
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <stdint.h>
 #include <signal.h>
 #include "agent/tool.h"
@@ -17,7 +17,7 @@ extern "C" {
 #include "agent/tools/ask_user.h"
 #include "event/event.h"
 #include "skill/skill.h"
-#include "nb/cancel.h"
+#include <nb/cancel.h>
 
 enum react_state {
 	REACT_STATE_INIT,

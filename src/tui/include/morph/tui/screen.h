@@ -2,7 +2,7 @@
 #define MORPH_TUI_SCREEN_H
 
 #include <morph/tui/event.h>
-#include "nb/thread.h"
+#include <nb/thread.h>
 #include <morph/tui/input.h>
 #include <morph/tui/layout.h>
 #include <morph/tui/terminal.h>

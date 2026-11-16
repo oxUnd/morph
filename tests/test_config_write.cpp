@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "nb/cleanup.h"
+#include <nb/cleanup.h>
 #include "agent/tools/config_write.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "errors.h"
-#include "nb/file.h"
+#include <nb/file.h>
 #include "cJSON.h"
 #include <string>
 #include <cstdio>

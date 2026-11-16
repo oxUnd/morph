@@ -1,6 +1,6 @@
 #include "sapi/fastcgi/presentation/media_refs.h"
-#include "nb/cleanup.h"
-#include "nb/file.h"
+#include <nb/cleanup.h>
+#include <nb/file.h>
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/agent_bridge.h"
 #include "sapi/fastcgi/session_store.h"
@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "nb/buf.h"
+#include <nb/buf.h>
 #include <sys/stat.h>
 
 static const char *bridge_output_dir(struct fcgi_turn_job *j)
