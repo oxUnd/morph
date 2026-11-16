@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(morph LANGUAGES C CXX VERSION 0.4.2)
+project(morph LANGUAGES C CXX VERSION 0.5.0)
 
 # Modern linkers can resolve static archives independent of their command-line
 # position. Let CMake remove duplicate dependencies using that capability.
