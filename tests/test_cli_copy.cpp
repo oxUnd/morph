@@ -165,6 +165,36 @@ TEST_F(CliCopyTest, NativeClipboardPreservesAnswersBeyondPipeAndOsc52Limits)
 	EXPECT_EQ(Clipboard(), answer);
 }
 
+TEST_F(CliCopyTest, ReadsMultilineUnicodeClipboardAndFiltersTerminalControls)
+{
+	const char *answer = "first\n中文🙂\n\033[31mred\033[0m\003\r\nlast\n";
+	ASSERT_EQ(nb_file_write_all(copied.c_str(), answer, strlen(answer), nullptr), 0);
+	for (const char *name : {"pbpaste", "wl-paste", "xclip", "xsel"}) {
+		std::string path = binaries + "/" + name;
+		std::string script = "#!/bin/sh\n/bin/cat \"$MORPH_COPY_TEST_FILE\"\n";
+		ASSERT_EQ(nb_file_write_all(path.c_str(), script.data(), script.size(), nullptr), 0);
+		ASSERT_EQ(chmod(path.c_str(), 0700), 0);
+	}
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_clipboard_read_text(&text), 0);
+	EXPECT_STREQ(nb_buf_cstr(&text), "first\n中文🙂\nred\\x03\nlast\n");
+	ASSERT_EQ(nb_file_write_all(copied.c_str(), "", 0, nullptr), 0);
+	EXPECT_EQ(cli_clipboard_read_text(&text), NB_ERR_NO_DATA);
+	EXPECT_STREQ(nb_buf_cstr(&text), "first\n中文🙂\nred\\x03\nlast\n");
+	const char invalid[] = {'x', '\0', 'y'};
+	ASSERT_EQ(nb_file_write_all(copied.c_str(), invalid, sizeof(invalid), nullptr), 0);
+	EXPECT_EQ(cli_clipboard_read_text(&text), NB_ERR_FORMAT);
+	EXPECT_STREQ(nb_buf_cstr(&text), "first\n中文🙂\nred\\x03\nlast\n");
+	std::string large(1024u * 1024u + 1u, 'x');
+	ASSERT_EQ(nb_file_write_all(copied.c_str(), large.data(), large.size(), nullptr), 0);
+	EXPECT_EQ(cli_clipboard_read_text(&text), NB_ERR_TOO_BIG);
+	EXPECT_STREQ(nb_buf_cstr(&text), "first\n中文🙂\nred\\x03\nlast\n");
+	ASSERT_TRUE(std::filesystem::remove(copied));
+	EXPECT_EQ(cli_clipboard_read_text(&text), NB_ERR_IO);
+	EXPECT_STREQ(nb_buf_cstr(&text), "first\n中文🙂\nred\\x03\nlast\n");
+	EXPECT_EQ(cli_clipboard_read_text(nullptr), NB_ERR_INVAL);
+}
+
 TEST_F(CliCopyTest, ClipboardErrorsDoNotKillTheHostOrReportSuccess)
 {
 	Backends("exit 1");

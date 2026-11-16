@@ -12,7 +12,9 @@
 #include "sapi/cli/application_internal.h"
 #include "nb/random.h"
 #include "nb/encoding.h"
+#include "nb/utf8.h"
 #include "sapi/cli/widgets/feed.h"
+#include <morph/tui/terminal/text.h>
 
 #include <fcntl.h>
 #include <spawn.h>
@@ -21,6 +23,83 @@
 #define CLI_CLIPBOARD_ID_SIZE 64
 #define CLI_CLIPBOARD_COPY_TIMEOUT_MS 5000
 #define CLI_CLIPBOARD_OSC52_MAX_BYTES 100000
+#define CLI_CLIPBOARD_TEXT_MAX_BYTES (1024u * 1024u)
+
+static int cli_clipboard_read_backend(const char *const argv[], nb_buf *text, int64_t deadline)
+{
+	nb_process_options options = {
+		.argv = argv,
+		.search_path = true,
+		.close_fds = true,
+		.new_group = true,
+		.stdin_mode = NB_PROCESS_NULL,
+		.stdout_mode = NB_PROCESS_PIPE,
+		.stderr_mode = NB_PROCESS_NULL,
+	};
+	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
+	int rc = nb_process_spawn(&options, &child, NULL);
+	if (rc)
+		return rc;
+	int64_t remaining = deadline - nb_time_monotonic_ms();
+	bool truncated = false;
+	nb_process_exchange_options exchange = {
+		.timeout_ms = remaining > 0 ? (int)remaining : 1,
+		.max_output = CLI_CLIPBOARD_TEXT_MAX_BYTES,
+		.stdout_truncated = &truncated,
+	};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
+	int code = 0;
+	rc = nb_process_exchange(child, NULL, 0, &exchange, &output, &errors, &code, NULL);
+	if (rc)
+		return rc;
+	if (code)
+		return code == 127 ? NB_ERR_NOT_FOUND : NB_ERR_IO;
+	if (truncated)
+		return NB_ERR_TOO_BIG;
+	if (!output.len)
+		return NB_ERR_NO_DATA;
+	if (memchr(output.ptr, '\0', output.len) ||
+	    nb_utf8_validate(nb_buf_str(&output), NULL) != NB_UTF8_OK)
+		return NB_ERR_FORMAT;
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		output.ptr, output.len, MORPH_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		return NB_ERR_NOMEM;
+	nb_buf_clear(&output);
+	if (!nb_buf_append_cstr(&output, safe))
+		return NB_ERR_NOMEM;
+	if (!output.len)
+		return NB_ERR_NO_DATA;
+	nb_buf_move(text, &output);
+	return 0;
+}
+
+int cli_clipboard_read_text(nb_buf *text)
+{
+	if (!text)
+		return NB_ERR_INVAL;
+	int64_t deadline = nb_time_monotonic_ms() + CLI_CLIPBOARD_COPY_TIMEOUT_MS;
+#ifdef __APPLE__
+	const char *argv[] = {"pbpaste", "-Prefer", "txt", NULL};
+
+	return cli_clipboard_read_backend(argv, text, deadline);
+#else
+	const char *wl_paste[] = {"wl-paste", "--no-newline", "--type", "text", NULL};
+	const char *xclip[] = {"xclip", "-selection", "clipboard", "-t", "UTF8_STRING", "-o", NULL};
+	const char *xsel[] = {"xsel", "--clipboard", "--output", NULL};
+	const char *const *backends[] = {wl_paste, xclip, xsel};
+	int rc = NB_ERR_NOT_FOUND;
+
+	for (size_t i = 0; i < sizeof(backends) / sizeof(backends[0]); i++) {
+		rc = cli_clipboard_read_backend(backends[i], text, deadline);
+		if (!rc || rc == NB_ERR_TOO_BIG || rc == NB_ERR_FORMAT ||
+		    nb_time_monotonic_ms() >= deadline)
+			break;
+	}
+	return rc;
+#endif
+}
 
 static int cli_clipboard_write_text(const char *const argv[], const char *text, int64_t deadline)
 {

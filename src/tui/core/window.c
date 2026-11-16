@@ -129,11 +129,37 @@ int core_window_selection_dragging(const struct morph_tui_window *window)
 	return window && window->selection_dragging;
 }
 
+int morph_tui_window_set_text_copy_on_select(struct morph_tui_window *window, int enabled)
+{
+	if (!window)
+		return NB_ERR_INVAL;
+	if (!morph_tui_application_is_owner(window->app))
+		return NB_ERR_NOT_PERMITTED;
+	window->copy_on_select = !!enabled;
+	return 0;
+}
+
 static int core_window_selection_capture(struct morph_tui_window *window)
 {
 	return morph_tui_surface_selection_text(window->surface, window->selection_x1,
 		window->selection_y1, window->selection_x2, window->selection_y2,
 		&window->selection_text);
+}
+
+int core_window_copy_event(struct morph_tui_window *window, const struct morph_tui_event *event)
+{
+	if (!window || !event)
+		return NB_ERR_INVAL;
+	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting ||
+	    (event->key != MORPH_TUI_KEY_COPY && event->key != 3))
+		return 0;
+	if (window->copy_text && window->selection_active && window->selection_text.len) {
+		window->selection_dragging = 0;
+		int rc = window->copy_text(window->copy_data, nb_buf_cstr(&window->selection_text));
+
+		return rc < 0 ? rc : 1;
+	}
+	return 0;
 }
 
 int core_window_mouse_event(struct morph_tui_window *window, const struct morph_tui_event *event)
@@ -182,6 +208,9 @@ int core_window_mouse_event(struct morph_tui_window *window, const struct morph_
 
 	if (rc)
 		core_window_clear_selection(window);
+	if (!rc && window->copy_on_select && window->selection_active &&
+	    window->selection_text.len && mouse->action == MORPH_TUI_MOUSE_RELEASE)
+		rc = window->copy_text(window->copy_data, nb_buf_cstr(&window->selection_text));
 	morph_tui_application_invalidate(window->app, MORPH_TUI_INVALIDATE_DISPLAY);
 	return rc ? rc : 1;
 }

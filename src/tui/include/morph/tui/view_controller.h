@@ -37,7 +37,7 @@ struct morph_tui_view_controller_spec {
 	int quit_key;
 	/* Optional business refresh timer. Zero disables periodic callbacks. */
 	int tick_ms;
-	/* Additional mouse/focus capabilities; alternate screen and paste are always on. */
+	/* Additional terminal capabilities; alternate screen and paste are always on. */
 	int terminal_flags;
 };
 

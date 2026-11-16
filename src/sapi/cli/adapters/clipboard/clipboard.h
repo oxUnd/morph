@@ -1,6 +1,8 @@
 #ifndef MORPH_CLI_ADAPTERS_CLIPBOARD_CLIPBOARD_H
 #define MORPH_CLI_ADAPTERS_CLIPBOARD_CLIPBOARD_H
 
+#include "nb/buf.h"
+
 struct cli_application;
 
 /* out_path must be NULL; success returns a malloc-owned path. Failure
@@ -14,5 +16,8 @@ enum cli_clipboard_copy_result {
 
 /* Native success is confirmed. Terminal-only OSC 52 delivery is unconfirmed. */
 int cli_clipboard_copy_text(struct cli_application *ctx, const char *text);
+
+/* Replaces text only on success. Reads bounded UTF-8 text from the host clipboard. */
+int cli_clipboard_read_text(nb_buf *text);
 
 #endif

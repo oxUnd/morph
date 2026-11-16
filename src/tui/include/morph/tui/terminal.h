@@ -12,7 +12,9 @@ enum morph_tui_terminal_session_flags {
 	MORPH_TUI_TERMINAL_SESSION_ALTERNATE = 1,
 	MORPH_TUI_TERMINAL_SESSION_PASTE = 2,
 	MORPH_TUI_TERMINAL_SESSION_MOUSE = 4,
-	MORPH_TUI_TERMINAL_SESSION_FOCUS = 8
+	MORPH_TUI_TERMINAL_SESSION_FOCUS = 8,
+	/* Disambiguates modified keys on CSI u terminals; legacy terminals ignore it. */
+	MORPH_TUI_TERMINAL_SESSION_KEYBOARD = 16
 };
 
 /* Zero-initialize, enter once, then leave on every exit path. Screen ownership

@@ -53,6 +53,7 @@ struct morph_tui_window {
 	void *event_data;
 	int (*copy_text)(void *, const char *);
 	void *copy_data;
+	int copy_on_select;
 	nb_buf selection_text;
 	int selection_active, selection_dragging;
 	int selection_x1, selection_y1, selection_x2, selection_y2;
@@ -69,6 +70,7 @@ void core_window_clear_media(struct morph_tui_window *window);
 void core_window_invalidate(struct morph_tui_window *window);
 int core_window_draw(struct morph_tui_window *window, const struct morph_tui_screen *screen);
 int core_window_mouse_event(struct morph_tui_window *window, const struct morph_tui_event *event);
+int core_window_copy_event(struct morph_tui_window *window, const struct morph_tui_event *event);
 int core_window_selection_dragging(const struct morph_tui_window *window);
 void core_window_clear_selection(struct morph_tui_window *window);
 

@@ -61,6 +61,8 @@ int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session,
 		fputs("\033[?1004h", output);
 	if (flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
 		fputs("\033[?1000h\033[?1002h\033[?1006h", output);
+	if (flags & MORPH_TUI_TERMINAL_SESSION_KEYBOARD)
+		fputs("\033[>1u", output);
 	if (fflush(output) != 0 || ferror(output)) {
 		int rc = errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 
@@ -76,6 +78,8 @@ int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session)
 
 	if (!session || !session->active)
 		return 0;
+	if (session->flags & MORPH_TUI_TERMINAL_SESSION_KEYBOARD)
+		fputs("\033[<u", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
 		fputs("\033[?1006l\033[?1002l\033[?1000l", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_PASTE)
@@ -115,6 +119,8 @@ int morph_tui_terminal_session_reassert(struct morph_tui_terminal_session *sessi
 		fputs("\033[?1004h", session->output);
 	if (session->flags & MORPH_TUI_TERMINAL_SESSION_MOUSE)
 		fputs("\033[?1000h\033[?1002h\033[?1006h", session->output);
+	if (session->flags & MORPH_TUI_TERMINAL_SESSION_KEYBOARD)
+		fputs("\033[=1u", session->output);
 	return fflush(session->output) != 0 || ferror(session->output)
 		       ? (errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO)
 		       : 0;

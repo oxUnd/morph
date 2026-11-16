@@ -45,6 +45,90 @@ static int terminal_input_mouse(struct morph_tui_input *input, const char *seque
 	return MORPH_TUI_KEY_MOUSE;
 }
 
+static int terminal_input_shortcut(unsigned code, unsigned modifiers)
+{
+	/* Lock keys do not change shortcut matching. Protocol modifiers are one-based. */
+	if (!modifiers || modifiers > 256U)
+		return 0;
+	unsigned mods = (modifiers - 1U) & ~192U;
+	unsigned letter = code >= 'A' && code <= 'Z' ? code + ('a' - 'A') : code;
+
+	if (letter == 'v' && mods == 12U)
+		return MORPH_TUI_KEY_PASTE_IMAGE;
+	if (mods == 8U || mods == 5U) {
+		if (letter == 'c')
+			return MORPH_TUI_KEY_COPY;
+		if (letter == 'v')
+			return MORPH_TUI_KEY_PASTE_CLIPBOARD;
+		if (letter == 'z' && mods == 8U)
+			return 31;
+	}
+	if (code == 13U && (mods == 1U || mods == 2U))
+		return '\n';
+	if (code == 9U && mods == 1U)
+		return MORPH_TUI_KEY_BACK_TAB;
+	if (mods == 4U) {
+		if (letter >= 'a' && letter <= 'z')
+			return (int)(letter - 'a' + 1U);
+		if (code >= '@' && code <= '_')
+			return (int)(code - '@');
+	}
+	return mods == 0U && code < 128U ? (int)code : 0;
+}
+
+static int terminal_input_number(const char **sequence, unsigned *number)
+{
+	const char *p = *sequence;
+	unsigned value = 0;
+	if (*p < '0' || *p > '9')
+		return 0;
+	while (*p >= '0' && *p <= '9') {
+		unsigned digit = (unsigned)(*p++ - '0');
+		if (value > (UINT_MAX - digit) / 10U)
+			return 0;
+		value = value * 10U + digit;
+	}
+	*sequence = p;
+	*number = value;
+	return 1;
+}
+
+static int terminal_input_extended_key(const char *sequence)
+{
+	unsigned code = 0, modifiers = 1, type = 1;
+	const char *p = sequence;
+	if (!terminal_input_number(&p, &code))
+		return 0;
+	/* xterm modifyOtherKeys: CSI 27 ; modifiers ; code ~. */
+	if (code == 27U && *p == ';' && strchr(p, '~')) {
+		p++;
+		if (!terminal_input_number(&p, &modifiers) || *p++ != ';' ||
+		    !terminal_input_number(&p, &code) || strcmp(p, "~"))
+			return 0;
+		return terminal_input_shortcut(code, modifiers);
+	}
+	/* CSI u may include alternate key codes and an explicit press/repeat type. */
+	while (*p == ':') {
+		unsigned alternate = 0;
+		p++;
+		if (!terminal_input_number(&p, &alternate))
+			return 0;
+	}
+	if (*p == ';') {
+		p++;
+		if (!terminal_input_number(&p, &modifiers))
+			return 0;
+		if (*p == ':') {
+			p++;
+			if (!terminal_input_number(&p, &type))
+				return 0;
+		}
+	}
+	if (strcmp(p, "u") || (type != 1U && type != 2U))
+		return 0;
+	return terminal_input_shortcut(code, modifiers);
+}
+
 static int terminal_input_sequence_key(struct morph_tui_input *input, const char *sequence)
 {
 	if (strcmp(sequence, "A") == 0)
@@ -69,9 +153,9 @@ static int terminal_input_sequence_key(struct morph_tui_input *input, const char
 		return MORPH_TUI_KEY_PAGE_DOWN;
 	if (strcmp(sequence, "3~") == 0)
 		return MORPH_TUI_KEY_DELETE;
-	if (strcmp(sequence, "13;2u") == 0 || strcmp(sequence, "27;2;13~") == 0)
-		return '\n';
-	if (strcmp(sequence, "118;13u") == 0 || strcmp(sequence, "86;13u") == 0)
+	if (strcmp(sequence, "2;5~") == 0)
+		return MORPH_TUI_KEY_COPY;
+	if (strcmp(sequence, "2;2~") == 0)
 		return MORPH_TUI_KEY_PASTE_CLIPBOARD;
 	if (strcmp(sequence, "200~") == 0)
 		return MORPH_TUI_KEY_PASTE_BEGIN;
@@ -81,6 +165,8 @@ static int terminal_input_sequence_key(struct morph_tui_input *input, const char
 		return MORPH_TUI_KEY_FOCUS_IN;
 	if (strcmp(sequence, "O") == 0)
 		return MORPH_TUI_KEY_FOCUS_OUT;
+	if (sequence[0] >= '0' && sequence[0] <= '9')
+		return terminal_input_extended_key(sequence);
 	return terminal_input_mouse(input, sequence);
 }
 

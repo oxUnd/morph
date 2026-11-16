@@ -31,7 +31,9 @@ enum morph_tui_key {
 	MORPH_TUI_KEY_DELETE,
 	MORPH_TUI_KEY_PASTE_CLIPBOARD,
 	/* The complete mouse report is in the input stream's mouse field. */
-	MORPH_TUI_KEY_MOUSE
+	MORPH_TUI_KEY_MOUSE,
+	MORPH_TUI_KEY_COPY,
+	MORPH_TUI_KEY_PASTE_IMAGE
 };
 
 #define MORPH_TUI_INPUT_SEQUENCE_MAX 32

@@ -39,14 +39,23 @@ def main():
                 binaries = directory / 'bin'
                 binaries.mkdir()
                 copied = directory / 'clipboard.txt'
+                paste_source = directory / 'paste.txt'
                 for backend in ('pbcopy', 'wl-copy', 'xclip', 'xsel'):
                     program = binaries / backend
                     program.write_text('#!/bin/sh\n/bin/cat > "$MORPH_PTY_COPY_FILE"\n')
                     program.chmod(0o755)
+                for backend in ('pbpaste', 'wl-paste', 'xclip', 'xsel'):
+                    program = binaries / backend
+                    program.write_text(
+                        '#!/bin/sh\ncase "$*" in *--input*|*" -i"*) '
+                        '/bin/cat > "$MORPH_PTY_COPY_FILE";; '
+                        '*) /bin/cat "$MORPH_PTY_PASTE_FILE";; esac\n')
+                    program.chmod(0o755)
                 terminal = Terminal(binary, directory, server.server_port, production=True,
                                     hooks_enabled=False, extra_env={
                                         'PATH': str(binaries) + os.pathsep + os.environ['PATH'],
-                                        'MORPH_PTY_COPY_FILE': str(copied), 'NO_COLOR': '',
+                                        'MORPH_PTY_COPY_FILE': str(copied),
+                                        'MORPH_PTY_PASTE_FILE': str(paste_source), 'NO_COLOR': '',
                                         'TMUX': '', 'SSH_CONNECTION': '', 'SSH_TTY': '',
                                         'SSH_CLIENT': ''})
                 terminal.child.setwinsize(28, columns)
@@ -79,6 +88,11 @@ def main():
                     assert terminal.screen.buffer[y1][x1].reverse, screen
                     assert '› UNSENT_DRAFT_中文' in terminal.screen.display[composer_y], screen
                     assert terminal.screen.cursor.y == composer_y, screen
+                    deadline = time.monotonic() + 6
+                    while not copied.exists() or not copied.stat().st_size:
+                        assert time.monotonic() < deadline, terminal.snapshot('selection copy timeout')
+                        terminal.pump(.05)
+                    assert copied.read_text().startswith('COPY_中文 é END\n')
                     mouse(terminal, 2, x2, y2)
                     deadline = time.monotonic() + 6
                     while not copied.exists() or not copied.stat().st_size:
@@ -91,6 +105,17 @@ def main():
                     assert not Model.requests.qsize(), 'mouse input unexpectedly submitted draft'
                     mouse(terminal, 2, x1, y1)
                     assert copied.read_text() == content
+                    for key in ('\x1b[99;9u', '\x1b[67;6u', '\x1b[2;5~', '\x03'):
+                        copied.unlink()
+                        terminal.send(key)
+                        deadline = time.monotonic() + 6
+                        while not copied.exists() or not copied.stat().st_size:
+                            assert time.monotonic() < deadline, terminal.snapshot('key copy timeout')
+                            terminal.pump(.05)
+                        assert copied.read_text() == content
+                        screen = terminal.snapshot(f'{columns}: keyboard copy preserves draft')
+                        assert 'UNSENT_DRAFT_中文' in screen, screen
+                        assert terminal.screen.buffer[y1][x1].reverse, screen
                     terminal.send('X')
                     screen = terminal.snapshot(f'{columns}: typing clears selection')
                     assert not terminal.screen.buffer[y1][x1].reverse, screen
@@ -101,10 +126,33 @@ def main():
                     mouse(terminal, 0, x1, y1)
                     mouse(terminal, 32, x2, y2)
                     mouse(terminal, 0, x2, y2, release=True)
-                    terminal.child.setwinsize(28, 80 if columns != 80 else 60)
+                    copied.unlink()
+                    resized_columns = 80 if columns != 80 else 60
+                    terminal.child.setwinsize(28, resized_columns)
+                    terminal.screen.resize(28, resized_columns)
                     terminal.pump(.6)
                     mouse(terminal, 2, x1, y1)
                     assert not copied.exists(), 'resize left a stale clipboard selection'
+                    terminal.send('\x03')
+                    screen = terminal.snapshot('Ctrl+C without selection clears the draft')
+                    assert 'UNSENT_DRAFT' not in screen, screen
+                    paste_source.write_text('PASTED_中文🙂\nsecond line\x1b[31mRED\x1b[0m\x03')
+                    keys = ('\x16', '\x1b[118;9u', '\x1b[86;6u', '\x1b[2;2~',
+                            '\x1b[27;6;118~')
+                    undo_keys = ('\x1a', '\x1b[122;9u', '\x1f')
+                    for index, key in enumerate(keys):
+                        terminal.send('\x15prefix \x01' + key)
+                        screen = terminal.snapshot(f'{columns}: Unicode clipboard paste')
+                        assert 'PASTED_中文🙂' in screen, screen
+                        assert 'second lineRED\\x03prefix ' in screen, screen
+                        assert Model.requests.empty(), 'clipboard paste submitted the draft'
+                        terminal.send(undo_keys[index % len(undo_keys)])
+                        screen = terminal.snapshot('Undo restores the draft before paste')
+                        assert 'PASTED_中文🙂' not in screen and 'prefix ' in screen, screen
+                    terminal.send('\x15\x1b[200~TERMINAL_PASTE\n中文\x1b[201~')
+                    screen = terminal.snapshot('terminal-managed paste remains supported')
+                    assert 'TERMINAL_PASTE' in screen and '中文' in screen, screen
+                    assert Model.requests.empty(), 'terminal paste submitted the draft'
                     terminal.send('\x15/quit\r')
                     terminal.child.expect(pexpect.EOF, timeout=10)
                     terminal.child.close()

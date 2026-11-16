@@ -124,6 +124,53 @@ TEST_F(TuiTest, DecodesWheelAndFocusWithoutLeakingEscapeBytes)
 	}
 }
 
+TEST_F(TuiTest, DecodesClipboardShortcutsAndExtendedControlKeys)
+{
+	struct morph_tui_input input{};
+	struct {
+		const char *sequence;
+		int expected;
+	} cases[] = {
+		{"\033[99;9u", MORPH_TUI_KEY_COPY},
+		{"\033[67;6u", MORPH_TUI_KEY_COPY},
+		{"\033[99:67;6:1u", MORPH_TUI_KEY_COPY},
+		{"\033[99;73u", MORPH_TUI_KEY_COPY},
+		{"\033[118;9u", MORPH_TUI_KEY_PASTE_CLIPBOARD},
+		{"\033[86;6:2u", MORPH_TUI_KEY_PASTE_CLIPBOARD},
+		{"\033[118;13u", MORPH_TUI_KEY_PASTE_IMAGE},
+		{"\033[27;6;67~", MORPH_TUI_KEY_COPY},
+		{"\033[27;6;118~", MORPH_TUI_KEY_PASTE_CLIPBOARD},
+		{"\033[2;5~", MORPH_TUI_KEY_COPY},
+		{"\033[2;2~", MORPH_TUI_KEY_PASTE_CLIPBOARD},
+		{"\033[99;5u", 3},
+		{"\033[118;5u", 22},
+		{"\033[122;9u", 31},
+		{"\033[122;5u", 26},
+		{"\033[13;2u", '\n'},
+		{"\033[13;3u", '\n'},
+		{"\033[9;2u", MORPH_TUI_KEY_BACK_TAB},
+		{"\033[27;2;13~", '\n'},
+		{"\033[27u", 27},
+		{"\033[99;6:3u", 0},
+		{"\033[118;3u", 0},
+		{"\033[99;0u", 0},
+		{"\033[99999999999999999999;6u", 0},
+		{"\033[27;6;67;1~", 0},
+	};
+	for (const auto &item : cases) {
+		SCOPED_TRACE(item.sequence);
+		int result = 0;
+		for (const unsigned char *byte =
+			     reinterpret_cast<const unsigned char *>(item.sequence);
+		     *byte; byte++) {
+			EXPECT_EQ(result, 0);
+			result = morph_tui_input_feed(&input, *byte);
+		}
+		EXPECT_EQ(result, item.expected);
+		EXPECT_EQ(morph_tui_input_feed(&input, 'x'), 'x');
+	}
+}
+
 TEST_F(TuiTest, DecodesMouseDragReleaseModifiersAndRejectsInvalidReports)
 {
 	struct morph_tui_input input{};
@@ -269,6 +316,13 @@ TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
 	EXPECT_EQ(take(), "\033[?1006l\033[?1002l\033[?1000l\033[?2004l\033[0m\033[?25h\033[?1049l");
 	EXPECT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	EXPECT_TRUE(take().empty());
+	ASSERT_EQ(morph_tui_terminal_session_enter(&session, input, output,
+		MORPH_TUI_TERMINAL_SESSION_KEYBOARD), 0);
+	EXPECT_EQ(take(), "\033[?25l\033[>1u");
+	ASSERT_EQ(morph_tui_terminal_session_reassert(&session), 0);
+	EXPECT_EQ(take(), "\033[=1u");
+	ASSERT_EQ(morph_tui_terminal_session_leave(&session), 0);
+	EXPECT_EQ(take(), "\033[<u\033[?25h");
 	/* Inline sessions must preserve NO_COLOR's absence of SGR output. */
 	ASSERT_EQ(morph_tui_terminal_session_enter(&session, input, output,
 						   MORPH_TUI_TERMINAL_SESSION_PASTE),

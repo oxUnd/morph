@@ -212,6 +212,30 @@ TEST_F(TuiWindowSelectionTest, SingleClickAndRightClickWithoutSelectionDoNotCopy
 	EXPECT_EQ(copies, 0);
 }
 
+TEST_F(TuiWindowSelectionTest, KeyboardCopyPreservesSelectionAndCtrlCWithoutSelectionCancels)
+{
+	for (const char *key : {"\033[99;9u", "\033[67;6u", "\033[2;5~", "\003"}) {
+		select();
+		int before = copies;
+		send(key);
+		EXPECT_EQ(copied, "ello中é");
+		EXPECT_EQ(copies, before + 1);
+		EXPECT_NE(rendered.find("\033[7mello中é"), std::string::npos);
+	}
+	core_window_clear_selection(window);
+	struct morph_tui_event event{};
+	event.type = MORPH_TUI_EVENT_KEY;
+	event.key = 3;
+	EXPECT_EQ(core_window_copy_event(window, &event), 0);
+	event.key = MORPH_TUI_KEY_COPY;
+	EXPECT_EQ(core_window_copy_event(window, &event), 0);
+	select();
+	event.pasting = 1;
+	int before = copies;
+	EXPECT_EQ(core_window_copy_event(window, &event), 0);
+	EXPECT_EQ(copies, before);
+}
+
 TEST_F(TuiWindowSelectionTest, ChangedTextAndResizedViewportClearSelection)
 {
 	select();
@@ -241,6 +265,29 @@ TEST_F(TuiWindowSelectionTest, ClipboardHandlerIsOwnerOnlyAndCanBeRemoved)
 	ASSERT_EQ(morph_tui_window_set_text_copy_handler_borrow(window, nullptr, nullptr), 0);
 	EXPECT_EQ(mouse(MORPH_TUI_MOUSE_RIGHT, MORPH_TUI_MOUSE_PRESS, 0, 0), 0);
 	EXPECT_EQ(mouse(MORPH_TUI_MOUSE_LEFT, MORPH_TUI_MOUSE_PRESS, 0, 0), 0);
+}
+
+TEST_F(TuiWindowSelectionTest, OptionalCopyOnSelectSynchronizesOnlyCompletedNonemptyDrags)
+{
+	int result = 0;
+	std::thread worker([&] {
+		result = morph_tui_window_set_text_copy_on_select(window, 1);
+	});
+	worker.join();
+	EXPECT_EQ(result, NB_ERR_NOT_PERMITTED);
+	ASSERT_EQ(morph_tui_window_set_text_copy_on_select(window, 1), 0);
+	ASSERT_EQ(mouse(MORPH_TUI_MOUSE_LEFT, MORPH_TUI_MOUSE_PRESS, 1, 0), 1);
+	ASSERT_EQ(mouse(MORPH_TUI_MOUSE_LEFT, MORPH_TUI_MOUSE_RELEASE, 1, 0), 1);
+	EXPECT_EQ(copies, 0);
+	ASSERT_EQ(mouse(MORPH_TUI_MOUSE_LEFT, MORPH_TUI_MOUSE_PRESS, 1, 0), 1);
+	ASSERT_EQ(mouse(MORPH_TUI_MOUSE_LEFT, MORPH_TUI_MOUSE_MOVE, 7, 0), 1);
+	EXPECT_EQ(copies, 0);
+	ASSERT_EQ(mouse(MORPH_TUI_MOUSE_LEFT, MORPH_TUI_MOUSE_RELEASE, 7, 0), 1);
+	EXPECT_EQ(copies, 1);
+	EXPECT_EQ(copied, "ello中é");
+	ASSERT_EQ(morph_tui_window_set_text_copy_on_select(window, 0), 0);
+	select();
+	EXPECT_EQ(copies, 1);
 }
 
 class TuiPointerCaptureTest;

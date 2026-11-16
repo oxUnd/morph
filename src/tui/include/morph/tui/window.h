@@ -26,10 +26,14 @@ int morph_tui_window_set_event_handler_borrow(struct morph_tui_window *window,
 					      int (*event)(void *, const struct morph_tui_event *),
 					      void *data);
 /* Enables visible text selection with left-button drag and right-button copy.
+ * Copy shortcuts and Ctrl+C copy the active selection before page commands.
  * The host owns clipboard delivery; text is borrowed only during the callback.
  * A NULL handler disables selection and clears any current selection. */
 int morph_tui_window_set_text_copy_handler_borrow(struct morph_tui_window *window,
 						 int (*copy)(void *, const char *), void *data);
+/* Optional clipboard synchronization when a nonempty drag selection completes.
+ * Useful when the terminal consumes copy shortcuts without forwarding a key. */
+int morph_tui_window_set_text_copy_on_select(struct morph_tui_window *window, int enabled);
 
 #ifdef __cplusplus
 }

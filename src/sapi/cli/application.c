@@ -190,6 +190,9 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 			morph_tui_application_window_borrow(&ctx->base),
 			cli_application_copy_selection, ctx);
 		if (!app_rc)
+			app_rc = morph_tui_window_set_text_copy_on_select(
+				morph_tui_application_window_borrow(&ctx->base), 1);
+		if (!app_rc)
 			app_rc = cli_chat_present(page);
 		if (!app_rc)
 			app_rc = morph_tui_application_run(&ctx->base);

@@ -24,10 +24,14 @@ def main():
         binaries = directory / 'bin'
         binaries.mkdir()
         # Exercise the production clipboard pipeline without touching the user's clipboard.
-        scripts = {'osascript': 'cp "$MORPH_PTY_IMAGE" "$3"',
+        scripts = {'pbpaste': 'exit 1',
+                   'osascript': 'cp "$MORPH_PTY_IMAGE" "$3"',
                    'sips': 'cp "$MORPH_PTY_IMAGE" "$6"',
-                   'wl-paste': 'cat "$MORPH_PTY_IMAGE"',
-                   'xclip': 'cat "$MORPH_PTY_IMAGE"'}
+                   'wl-paste': 'case "$*" in *image/png*) cat "$MORPH_PTY_IMAGE";; '
+                               '*) exit 1;; esac',
+                   'xclip': 'case "$*" in *image/png*) cat "$MORPH_PTY_IMAGE";; '
+                            '*) exit 1;; esac',
+                   'xsel': 'exit 1'}
         for name, body in scripts.items():
             script = binaries / name
             script.write_text('#!/bin/sh\n' + body + '\n')
@@ -39,7 +43,7 @@ def main():
         try:
             terminal.wait_for_composer()
             composer_raw_start = len(terminal.raw)
-            terminal.send('Compare \x16\x16')
+            terminal.send('Compare \x16\x1b[118;13u')
             deadline = time.monotonic() + 8
             while '[IMAGE#1][IMAGE#2]' not in '\n'.join(terminal.screen.display):
                 assert time.monotonic() < deadline, '\n'.join(terminal.screen.display)

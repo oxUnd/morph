@@ -218,7 +218,7 @@ int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *e
 		key = MORPH_TUI_KEY_DELETE;
 	if (editor->pasting && (key < 32 || key >= 256 || key == 127))
 		return MORPH_TUI_WIDGET_UNHANDLED;
-	if (key == 31)
+	if (key == 31 || key == 26)
 		return morph_tui_widget_editor_state_undo(editor);
 	if (key == 3 || key == 4)
 		return MORPH_TUI_WIDGET_CANCEL;

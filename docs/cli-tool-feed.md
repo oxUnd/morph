@@ -53,6 +53,29 @@ Tab completes slash commands. Clipboard image insertion and dragged image-path
 conversion reuse composer services. The footer retains permission, context,
 credits and background naming state.
 
+Clipboard shortcuts work alongside the terminal's own copy/paste bindings:
+
+| Action | Shortcuts |
+| --- | --- |
+| Copy visible selection | Cmd+C, Ctrl+Shift+C, Ctrl+Insert, or right-click |
+| Paste text, falling back to an image | Cmd+V, Ctrl+Shift+V, Shift+Insert, Ctrl+V |
+| Paste an image explicitly | Ctrl+Cmd+V |
+| Undo an edit or an entire paste | Cmd+Z, Ctrl+Z, Ctrl+_ |
+
+Ctrl+C copies an active selection; otherwise it clears the draft and cancels the
+active turn. Completing a mouse drag also synchronizes the selection to the
+clipboard, so terminals that consume Cmd+C themselves can use that selection.
+Terminal-managed paste still arrives as bracketed text and never submits pasted
+newlines. Forwarded paste shortcuts read UTF-8 text from the host clipboard with
+a five-second deadline and a 1 MiB limit. Remote clients should use their
+terminal's paste binding to send their local clipboard.
+
+The chat requests disambiguated modified keys through the
+[CSI u keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/),
+restoring the previous keyboard mode when leaving. Legacy terminals keep their
+normal input behavior. CSI u and xterm modifyOtherKeys shortcuts are decoded
+when forwarded; shortcuts consumed by the terminal remain terminal-owned.
+
 The original welcome banner, adaptive footer, message styles and work rows are
 the visual baseline. Short feeds follow document flow; the composer reaches the
 bottom only as the feed grows. Once allocated, transient feed space is retained

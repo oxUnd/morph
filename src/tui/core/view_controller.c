@@ -198,7 +198,10 @@ static int core_view_controller_dispatch(void *data, struct morph_tui_applicatio
 	struct morph_tui_view_controller *controller = data;
 	struct morph_tui_view_controller_state *state = controller->state;
 	struct morph_tui_window *window = morph_tui_application_window_borrow(app);
-	int rc = 0;
+	int rc = core_window_copy_event(window, event);
+
+	if (rc)
+		return rc;
 
 	if (event->type == MORPH_TUI_EVENT_RESIZE || event->type == MORPH_TUI_EVENT_KEY ||
 	    event->type == MORPH_TUI_EVENT_TEXT || event->type == MORPH_TUI_EVENT_PASTE) {
@@ -343,7 +346,7 @@ int morph_tui_view_controller_present_borrow(struct morph_tui_application *app,
 	if (!spec || !spec->ops || !spec->ops->build || spec->tick_ms < 0 ||
 	    (spec->terminal_flags & ~(MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
 		MORPH_TUI_TERMINAL_SESSION_PASTE | MORPH_TUI_TERMINAL_SESSION_MOUSE |
-		MORPH_TUI_TERMINAL_SESSION_FOCUS)) ||
+		MORPH_TUI_TERMINAL_SESSION_FOCUS | MORPH_TUI_TERMINAL_SESSION_KEYBOARD)) ||
 	    (spec->size && spec->size < sizeof(*controller)))
 		return NB_ERR_INVAL;
 	size_t size = spec->size ? spec->size : sizeof(*controller);

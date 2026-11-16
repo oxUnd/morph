@@ -715,7 +715,32 @@ static int cli_chat_page_key(struct morph_tui_view_controller *controller,
 		cli_recap_focus(ctx, key == MORPH_TUI_KEY_FOCUS_IN, cli_recap_now());
 		return 1;
 	}
-	if (key == 22 || key == MORPH_TUI_KEY_PASTE_CLIPBOARD) {
+	if (key == 22 || key == MORPH_TUI_KEY_PASTE_CLIPBOARD ||
+	    key == MORPH_TUI_KEY_PASTE_IMAGE) {
+		if (key != MORPH_TUI_KEY_PASTE_IMAGE) {
+			nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+			int rc = cli_clipboard_read_text(&text);
+			if (!rc) {
+				rc = morph_tui_widget_text_field_insert_text_copy(
+					page->editor, nb_buf_cstr(&text));
+				if (!rc) {
+					struct morph_tui_widget_action action = {
+						.type = MORPH_TUI_WIDGET_ACTION_CHANGED,
+						.text = morph_tui_widget_text_field_text_borrow(
+							page->editor)};
+					rc = cli_chat_page_action(controller, &action);
+				}
+				if (rc)
+					CMD_ERROR(ctx, "Paste failed: %s", nb_err_str(
+						morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+				return 1;
+			}
+			if (rc == NB_ERR_TOO_BIG || rc == NB_ERR_FORMAT || rc == NB_ERR_TIMEOUT) {
+				CMD_ERROR(ctx, "Paste failed: %s", nb_err_str(
+					morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+				return 1;
+			}
+		}
 		char *path NB_CLEANUP(nb_charp_cleanup) = NULL;
 		const char *label = NULL;
 		int rc = cli_clipboard_save_image(ctx, &path);
@@ -726,7 +751,9 @@ static int cli_chat_page_key(struct morph_tui_view_controller *controller,
 		if (rc) {
 			if (path)
 				(void)unlink(path);
-			CMD_ERROR(ctx, "clipboard does not contain a supported image");
+			CMD_ERROR(ctx, "%s", key == MORPH_TUI_KEY_PASTE_IMAGE
+				? "clipboard does not contain a supported image"
+				: "clipboard does not contain supported text or an image");
 		}
 		return 1;
 	}
@@ -1291,7 +1318,8 @@ int cli_chat_present(struct cli_chat_page *page)
 		.data = page,
 		.tick_ms = 100,
 		.terminal_flags =
-			MORPH_TUI_TERMINAL_SESSION_MOUSE | MORPH_TUI_TERMINAL_SESSION_FOCUS};
+			MORPH_TUI_TERMINAL_SESSION_MOUSE | MORPH_TUI_TERMINAL_SESSION_FOCUS |
+			MORPH_TUI_TERMINAL_SESSION_KEYBOARD};
 	return morph_tui_view_controller_present_borrow(&page->ctx->base, &spec);
 }
 
