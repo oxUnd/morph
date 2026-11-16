@@ -309,6 +309,32 @@ TEST_F(PatchTrackingTest, ParseFailureAndPermissionDenialStillFinishWithoutCaptu
 	EXPECT_FALSE(std::filesystem::exists(path("denied.txt")));
 }
 
+TEST_F(PatchTrackingTest, ContextMismatchSealsWithoutReportingFileMutations)
+{
+	const char *original = "before\n\n\nafter\n";
+	write_file("file.txt", original);
+	for (const char *patch : {
+		"*** Begin Patch\n*** Update File: file.txt\n@@\n before\n \n-after\n"
+		"+changed\n*** End Patch",
+		"*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+changed\n"
+		"@@\n-missing\n+changed again\n*** End Patch"}) {
+		SCOPED_TRACE(patch);
+		struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+		EXPECT_EQ(run("apply_patch", patch, &result), NB_ERR_INVAL);
+		EXPECT_EQ(read_file("file.txt"), original);
+		EXPECT_FALSE(recorder.active);
+		const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")),
+			"sealed");
+		EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(checkpoint,
+			"changes_may_have_applied")));
+		EXPECT_NE(strstr(result.text.ptr, "failed to find expected lines"), nullptr);
+		EXPECT_NE(strstr(result.text.ptr, "No patch file mutations were performed"), nullptr);
+		EXPECT_EQ(strstr(result.text.ptr, "Files may already have changed"), nullptr);
+	}
+	EXPECT_EQ(recorder.finish_count, 2);
+}
+
 TEST_F(PatchTrackingTest, PartialPatchFailureSealsChangesAndReportsRisk)
 {
 	write_file("first.txt", "before\n");
@@ -346,6 +372,22 @@ TEST_F(PatchTrackingTest, SealFailureAfterEditingIsNeverReportedAsSuccess)
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
 }
 
+TEST_F(PatchTrackingTest, SealFailureBeforeWritingDoesNotReportFileMutations)
+{
+	recorder.finish_error = NB_ERR_IO;
+	write_file("file.txt", "actual\n");
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	EXPECT_EQ(run("apply_patch",
+		"*** Begin Patch\n*** Update File: file.txt\n@@\n-missing\n+changed\n"
+		"*** End Patch", &result), NB_ERR_IO);
+	EXPECT_EQ(read_file("file.txt"), "actual\n");
+	EXPECT_EQ(recorder.finish_count, 1);
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")),
+		"seal_failed");
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
+}
+
 TEST_F(PatchTrackingTest, RejectsOversizedPostimageBeforeWritingAndStillSeals)
 {
 	runtime.checkpoint.max_file_bytes = 8;
@@ -359,6 +401,8 @@ TEST_F(PatchTrackingTest, RejectsOversizedPostimageBeforeWritingAndStillSeals)
 	EXPECT_EQ(read_file("file.txt"), "ok\n");
 	EXPECT_EQ(recorder.finish_count, 1);
 	EXPECT_NE(std::string(result.text.ptr).find("8-byte checkpoint limit"), std::string::npos);
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
 	tool_result_cleanup(&result);
 	EXPECT_EQ(run("apply_patch",
 		      "*** Begin Patch\n*** Add File: new.txt\n+too much content\n*** End Patch",
@@ -366,6 +410,8 @@ TEST_F(PatchTrackingTest, RejectsOversizedPostimageBeforeWritingAndStillSeals)
 		  NB_ERR_TOO_BIG);
 	EXPECT_FALSE(std::filesystem::exists(path("new.txt")));
 	EXPECT_EQ(recorder.finish_count, 2);
+	checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
 }
 
 TEST_F(PatchTrackingTest, AggregateValidationRejectsAWriteAndStillSealsTheAttempt)
@@ -387,6 +433,8 @@ TEST_F(PatchTrackingTest, AggregateValidationRejectsAWriteAndStillSealsTheAttemp
 	EXPECT_EQ(recorder.finish_count, 1);
 	EXPECT_NE(std::string(result.text.ptr).find("postimage budget rejected"),
 		  std::string::npos);
+	const cJSON *checkpoint = cJSON_GetObjectItem(result.meta, "checkpoint");
+	EXPECT_TRUE(cJSON_IsFalse(cJSON_GetObjectItem(checkpoint, "changes_may_have_applied")));
 }
 
 TEST_F(PatchTrackingTest, MoveValidationCombinesTheDestinationWriteAndSourceRemoval)

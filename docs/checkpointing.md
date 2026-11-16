@@ -50,6 +50,12 @@ restores tracked edits from that turn and the later turns being rewound.
 If a turn's captured edits have been rewound, or change tracking failed, start a
 new user turn before making further captured edits.
 
+A patch context mismatch rejects that file before writing it; reread the current
+file and rebuild the patch against its actual contents. A `sealed` checkpoint
+means the editing attempt's resulting state was recorded, including a rejected
+attempt that changed no files. Failure reports distinguish attempts that never
+reached a filesystem mutation from those that may have partially applied.
+
 This is independent of Git: Morph does not create commits, branches, stashes,
 worktrees, or snapshots of the entire repository. Existing uncommitted work is
 part of the preimage rather than something to discard.

@@ -21,8 +21,8 @@ struct patch_application {
 	int tracking;
 	int begun;
 	int captured;
+	int mutation_attempted;
 	int capture_error;
-	int authorization_error;
 	nb_buf authorization_detail;
 };
 
@@ -51,7 +51,6 @@ static int authorize_patch_path(const char *path, int deletion, void *opaque)
 		rc = tool_context_check_operation(context, &operation);
 
 	if (rc != 0) {
-		application->authorization_error = rc;
 		if ((nb_buf_init(&application->authorization_detail),
 		     nb_buf_reserve(&application->authorization_detail, 256) ? 0 : NB_ERR_NOMEM) ==
 		    0) {
@@ -93,8 +92,16 @@ static int validate_patch_postimage(const char *path, size_t bytes, const char *
 {
 	struct patch_application *application = opaque;
 	const struct tool_checkpoint_context *checkpoint = application->checkpoint;
-	int rc = checkpoint->validate_write(checkpoint->user_data, checkpoint->id, path,
-		bytes, removed_path);
+	int rc = 0;
+
+	if (application->tracking && checkpoint->validate_write)
+		rc = checkpoint->validate_write(checkpoint->user_data, checkpoint->id, path,
+			bytes, removed_path);
+	/* The engine validates after matching every chunk in this file and before
+	 * creating directories, writing files or removing a source path. Capturing
+	 * a preimage alone does not mean any filesystem mutation was attempted. */
+	if (rc == 0)
+		application->mutation_attempted = 1;
 
 	return rc > 0 ? NB_ERR_PROTOCOL : rc;
 }
@@ -241,8 +248,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 	}
 	struct patch_write_policy policy = {
 		.max_file_bytes = application.tracking ? application.checkpoint->max_file_bytes : 0,
-		.validate = application.tracking && application.checkpoint->validate_write
-			? validate_patch_postimage : NULL,
+		.validate = validate_patch_postimage,
 		.user_data = &application,
 	};
 	rc = patch_apply_authorized_with_policy(
@@ -257,9 +263,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 	if (finish_rc != 0)
 		return patch_failure(result, &application, finish_rc, "checkpoint_seal_failed",
 				     "Could not seal checkpoint tracking after the patch attempt.",
-				     "seal_failed",
-				     application.captured > 0 && !application.capture_error &&
-					     !application.authorization_error);
+				     "seal_failed", application.mutation_attempted);
 	if (rc != 0) {
 		const char *code = application.capture_error	? "checkpoint_capture_failed"
 				   : rc == NB_ERR_PERMISSION	? "permission_denied"
@@ -275,9 +279,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 				? nb_buf_cstr(&application.authorization_detail)
 			: error[0] ? error
 				   : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc),
-			status,
-			application.captured > 0 && !application.capture_error &&
-				!application.authorization_error);
+			status, application.mutation_attempted);
 	}
 	rc = patch_success(result, &application, &patch_result);
 	if (rc != 0)
