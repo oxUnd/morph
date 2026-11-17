@@ -176,6 +176,12 @@ migration is blocked on it.
     package metadata and allowed-link policies as callbacks. Regressions cover
     filtered subtrees, bounds, failure cleanup, modes and source-link changes.
 
+24. Cygwin executable discovery: the POSIX backend resolves `/proc/self/exe`
+    on Cygwin as well as Linux. This lets installed applications locate their
+    sibling executables and runtime data independently of the working directory.
+    The existing executable-path regression in `tests/test_fs_extra.c` covers
+    the returned absolute, existing executable path.
+
 ## License
 
 The pinned upstream commit does not contain a license file for the library

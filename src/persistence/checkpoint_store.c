@@ -402,10 +402,10 @@ static int checkpoint_state_read_sql(sqlite3_stmt *stmt, int offset, struct chec
 {
 	out->exists = sqlite3_column_int(stmt, offset);
 	out->mode = (mode_t)sqlite3_column_int(stmt, offset + 1);
-	int size = sqlite3_column_bytes(stmt, offset + 2);
-	if (size < 0 || (unsigned int)size > CHECKPOINT_FILE_MAX_BYTES)
+	size_t size = (size_t)sqlite3_column_bytes(stmt, offset + 2);
+	if (size > CHECKPOINT_FILE_MAX_BYTES)
 		return NB_ERR_TOO_BIG;
-	out->size = (size_t)size;
+	out->size = size;
 	if (size) {
 		out->bytes = malloc(out->size);
 		if (!out->bytes)
@@ -1109,8 +1109,8 @@ static int checkpoint_plan_load(struct db *db, int64_t session_id, int64_t id,
 			file->path = strdup(path);
 			if (!file->path)
 				return NB_ERR_NOMEM;
-			int size = sqlite3_column_bytes(stmt, 3);
-			if (size < 0 || (size_t)size > CHECKPOINT_PLAN_MAX_BYTES - plan->bytes)
+			size_t size = (size_t)sqlite3_column_bytes(stmt, 3);
+			if (size > CHECKPOINT_PLAN_MAX_BYTES - plan->bytes)
 				return NB_ERR_TOO_BIG;
 			rc = checkpoint_state_read_sql(stmt, 1, &file->before);
 			if (rc != 0)
@@ -1119,8 +1119,8 @@ static int checkpoint_plan_load(struct db *db, int64_t session_id, int64_t id,
 		}
 		plan->bytes -= file->after.size;
 		checkpoint_state_cleanup(&file->after);
-		int size = sqlite3_column_bytes(stmt, 6);
-		if (size < 0 || (size_t)size > CHECKPOINT_PLAN_MAX_BYTES - plan->bytes)
+		size_t size = (size_t)sqlite3_column_bytes(stmt, 6);
+		if (size > CHECKPOINT_PLAN_MAX_BYTES - plan->bytes)
 			return NB_ERR_TOO_BIG;
 		rc = checkpoint_state_read_sql(stmt, 4, &file->after);
 		if (rc != 0)

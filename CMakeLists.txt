@@ -186,6 +186,10 @@ target_compile_options(quickjs PRIVATE
 	-Wno-implicit-fallthrough
 	-Wno-pedantic
 )
+if(CYGWIN)
+	# QuickJS uses Cygwin's allocator size API without including its declaration.
+	target_compile_options(quickjs PRIVATE -include malloc.h)
+endif()
 target_link_libraries(quickjs PUBLIC m pthread)
 if(NOT APPLE)
 	target_link_libraries(quickjs PUBLIC dl)

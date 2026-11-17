@@ -177,6 +177,10 @@ target_include_directories(morph PRIVATE
 )
 target_link_libraries(morph PRIVATE morph-cli)
 add_dependencies(morph morph-data)
+if(CYGWIN)
+	# The configuration includes path arrays larger than Cygwin's 2 MiB stack.
+	target_link_options(morph PRIVATE "LINKER:--stack,33554432")
+endif()
 
 install(TARGETS morph
 	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

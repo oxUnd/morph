@@ -15,6 +15,15 @@
 #include "wasm3.h"
 #define WASM_STACK_SIZE (64 * 1024)
 #define WASM_MAX_EXPORTS 128
+
+#ifdef __CYGWIN__
+/* PE/COFF needs a strong definition of wasm3's default yield hook. */
+M3Result m3_Yield(void)
+{
+	return m3Err_none;
+}
+#endif
+
 struct wasm_module {
 	uint8_t *bytes;
 	size_t len;

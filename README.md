@@ -43,6 +43,9 @@ cmake --install build --prefix /usr/local   # optional
 Runtime data lives in `share/morph` relative to the executable; the installed
 user manual is `share/morph/morph.txt`.
 
+Windows x86-64 builds through Cygwin, runtime bundling, and Wine validation:
+[docs/windows-cygwin.md](docs/windows-cygwin.md).
+
 Run tests:
 
 ```bash

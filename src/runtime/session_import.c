@@ -12,6 +12,7 @@
 #include "blake3.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -140,7 +141,10 @@ static int import_revision(sqlite3 *db, int64_t session_id, char hash[65])
 					continue;
 				int type = sqlite3_column_type(stmt, column);
 				const void *value = sqlite3_column_blob(stmt, column);
-				int length = sqlite3_column_bytes(stmt, column);
+				size_t bytes = (size_t)sqlite3_column_bytes(stmt, column);
+				if (bytes > INT_MAX)
+					return NB_ERR_TOO_BIG;
+				int length = (int)bytes;
 				blake3_hasher_update(&hasher, name, strlen(name) + 1);
 				blake3_hasher_update(&hasher, &type, sizeof(type));
 				blake3_hasher_update(&hasher, &length, sizeof(length));

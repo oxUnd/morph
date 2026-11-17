@@ -101,8 +101,8 @@ nb_status nb_platform_path_canonical(nb_buf *out, const char *path,
     return NB_OK;
 }
 
-#if defined(__linux__)
-static nb_status executable_linux(nb_buf *out, nb_err *err)
+#if defined(__linux__) || defined(__CYGWIN__)
+static nb_status executable_procfs(nb_buf *out, nb_err *err)
 {
     size_t cap = 256u;
     for (;;) {
@@ -174,8 +174,8 @@ nb_status nb_platform_path_executable(nb_buf *out, nb_err *err)
         return NB_ERR_INVAL;
     }
     nb_buf_clear(out);
-#if defined(__linux__)
-    return executable_linux(out, err);
+#if defined(__linux__) || defined(__CYGWIN__)
+    return executable_procfs(out, err);
 #elif defined(__APPLE__)
     return executable_macos(out, err);
 #else
