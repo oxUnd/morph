@@ -5,8 +5,8 @@
 #include "sapi/cli/application_internal.h"
 #include "credits.h"
 #include "sapi/cli/services/event_queue.h"
-#include "sapi/cli/component/feed.h"
-#include "sapi/cli/component/feed_block.h"
+#include "sapi/cli/components/feed.h"
+#include "sapi/cli/components/feed_block.h"
 #include <nb/cleanup.h>
 
 void cli_runtime_observer_pause(void *user_data)

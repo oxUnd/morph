@@ -10,8 +10,8 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include "sapi/cli/component/list.h"
-#include "sapi/cli/page/permissions.h"
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/pages/permissions.h"
 #include "sapi/cli/application.h"
 
 #include <stdint.h>

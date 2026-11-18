@@ -31,7 +31,7 @@ Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libuv ≥ 1.44, libffi,
 [mathjax-c](https://github.com/oxUnd/mathjax-c).
 
 The CLI builds against the companion nothing-tui checkout at `../nothing-tui`
-at commit `be798de4c4ee5caa76f975ac8a847ab3c04bdaf4` on branch
+at commit `52f7bf0276e3953faa23716a931bb413ed9ae425` on branch
 `feat/morph-cli-integration`. Use `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui`
 to select another checkout of that revision. Both libraries use the nbase snapshot in `vendor/nothing`.
 

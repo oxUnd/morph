@@ -92,6 +92,7 @@ def main():
             seed(Path(temp) / 'data.db')
             terminal.send('/history\r')
             overview = terminal.snapshot('full history with current membership')
+            terminal.assert_panel_heading('morph / history')
             assert '300 saved entries' in overview, overview
             assert 'estimated history' in overview, overview
             assert '#300' in overview and '中文 target latest' in overview, overview

@@ -7,7 +7,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/page/memory.h"
+#include "sapi/cli/pages/memory.h"
 
 static const char *cli_memory_scope_display(enum memory_clear_scope scope)
 {

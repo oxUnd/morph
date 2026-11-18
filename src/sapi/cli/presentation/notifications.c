@@ -1,6 +1,6 @@
 #include "sapi/cli/presentation/notifications.h"
 
-#include "sapi/cli/component/notification.h"
+#include "sapi/cli/components/notification.h"
 
 void cli_notifications_render(struct cli_application *ctx, const struct cli_event_queue_item *item)
 {

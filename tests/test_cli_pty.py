@@ -166,6 +166,13 @@ retry_count = 0
                    for row in text.splitlines()) <= 1, text
         return text
 
+    def assert_panel_heading(self, title):
+        row = next(y for y, line in enumerate(self.screen.display) if line.strip() == title)
+        start = self.screen.display[row].index(title)
+        for x in range(start, start + len(title)):
+            cell = self.screen.buffer[row][x]
+            assert cell.bold and cell.bg == 'default' and not cell.reverse, (title, x, cell)
+
     def send(self, text):
         if getattr(self, 'fast_recap', False) and text == '\x1b[99;9~':
             os.kill(self.child.pid, signal.SIGUSR2)

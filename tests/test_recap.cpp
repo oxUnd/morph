@@ -6,7 +6,7 @@ extern "C" {
 #include "runtime/recap.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/component/feed.h"
+#include "sapi/cli/components/feed.h"
 #include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>

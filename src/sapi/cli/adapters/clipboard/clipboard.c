@@ -13,7 +13,7 @@
 #include <nb/random.h>
 #include <nb/encoding.h>
 #include <nb/utf8.h>
-#include "sapi/cli/component/feed.h"
+#include "sapi/cli/components/feed.h"
 #include <morph/tui/terminal/text.h>
 
 #include <fcntl.h>

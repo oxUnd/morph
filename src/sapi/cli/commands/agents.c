@@ -3,12 +3,12 @@
 #include "runtime/runtime.h"
 
 #include "sapi/cli/application.h"
-#include "sapi/cli/page/subagents.h"
+#include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/component/agents.h"
-#include "sapi/cli/component/list.h"
+#include "sapi/cli/components/agents.h"
+#include "sapi/cli/components/list.h"
 #include <nb/cleanup.h>
 #include <string.h>
 

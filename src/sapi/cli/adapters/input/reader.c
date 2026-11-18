@@ -4,7 +4,7 @@
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/pages/chat.h"
 #include <stdio.h>
 #include <readline/readline.h>
 #include <readline/history.h>

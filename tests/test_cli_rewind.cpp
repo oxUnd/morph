@@ -7,7 +7,7 @@ extern "C" {
 #include "runtime/checkpoint.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/page/rewind.h"
+#include "sapi/cli/pages/rewind.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/presentation/output.h"

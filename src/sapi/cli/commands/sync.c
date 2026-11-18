@@ -11,7 +11,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include "sapi/cli/component/list.h"
+#include "sapi/cli/components/list.h"
 
 static void cli_sync_print_sync_field(struct cli_application *ctx, const char *ancestor,
 				      int is_last, const char *name, const char *value, int columns)

@@ -3,13 +3,13 @@
 
 extern "C" {
 #include "sapi/cli/models/transcript.h"
-#include "sapi/cli/component/tool_call.h"
-#include "sapi/cli/component/transcript.h"
-#include "sapi/cli/component/notice.h"
-#include "sapi/cli/component/plan.h"
-#include "sapi/cli/component/recap.h"
+#include "sapi/cli/components/tool_call.h"
+#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/components/notice.h"
+#include "sapi/cli/components/plan.h"
+#include "sapi/cli/components/recap.h"
 #include "sapi/cli/presentation/recap.h"
-#include "sapi/cli/component/composer.h"
+#include "sapi/cli/components/composer.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include <nb/utf8.h>

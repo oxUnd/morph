@@ -14,8 +14,8 @@
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/page/model.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/pages/model.h"
+#include "sapi/cli/pages/chat.h"
 
 static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
 {

@@ -3,8 +3,8 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/component/feed.h"
-#include "sapi/cli/component/feed_block.h"
+#include "sapi/cli/components/feed.h"
+#include "sapi/cli/components/feed_block.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include "errors.h"

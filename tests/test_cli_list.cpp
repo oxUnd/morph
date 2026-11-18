@@ -9,7 +9,7 @@ extern "C" {
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/component/list.h"
+#include "sapi/cli/components/list.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/composer.h"
 #include <nb/file.h>

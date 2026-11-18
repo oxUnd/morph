@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "sapi/cli/component/rich_document.h"
+#include "sapi/cli/components/rich_document.h"
 #include "sapi/cli/application.h"
 #include "stb_image_write.h"
 #include <nb/cleanup.h>

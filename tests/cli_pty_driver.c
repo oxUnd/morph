@@ -1,7 +1,7 @@
 #include "sapi/cli/presentation/output.h"
 #include <nb/err.h>
 #include "sapi/cli/presentation/presenter.h"
-#include "sapi/cli/component/feed.h"
+#include "sapi/cli/components/feed.h"
 #include "cli_agents_browser_fixture.h"
 #include <nb/cleanup.h>
 #include <morph/tui/terminal/size.h>

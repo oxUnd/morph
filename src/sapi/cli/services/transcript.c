@@ -1,11 +1,11 @@
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/tool_preview.h"
-#include "sapi/cli/component/feed.h"
-#include "sapi/cli/component/transcript.h"
+#include "sapi/cli/components/feed.h"
+#include "sapi/cli/components/transcript.h"
 #include "errors.h"
 #include <nb/time.h>
 #include <stdio.h>

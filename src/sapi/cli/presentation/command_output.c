@@ -1,14 +1,14 @@
 #include "sapi/cli/presentation/command_output.h"
 #include <nb/err.h>
-#include "sapi/cli/page/chat.h"
-#include "sapi/cli/component/skill_tree.h"
+#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/components/skill_tree.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
-#include "sapi/cli/component/list.h"
+#include "sapi/cli/components/list.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include <nb/utf8.h>

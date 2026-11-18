@@ -5,7 +5,7 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/agents.h"
-#include "sapi/cli/page/subagents.h"
+#include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/application_internal.h"
 
 int cli_runtime_events_callback(const struct morph_event *ev, void *user_data)

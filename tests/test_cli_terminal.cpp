@@ -8,10 +8,10 @@ extern "C" {
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/command_job.h"
-#include "sapi/cli/component/feed.h"
+#include "sapi/cli/components/feed.h"
 #include "sapi/cli/presentation/jobs.h"
 #include "sapi/cli/models/jobs.h"
-#include "sapi/cli/component/jobs.h"
+#include "sapi/cli/components/jobs.h"
 }
 
 #include <fcntl.h>

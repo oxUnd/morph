@@ -4,7 +4,7 @@
 
 extern "C" {
 #include "sapi/cli/adapters/input/state.h"
-#include "sapi/cli/page/turn_details.h"
+#include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 
 #include "sapi/cli/services/turn.h"
@@ -17,18 +17,18 @@ extern "C" {
 #include "sapi/cli/presentation/work_status.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/models/transcript.h"
-#include "sapi/cli/component/banner.h"
-#include "sapi/cli/page/approval.h"
-#include "sapi/cli/component/transcript.h"
-#include "sapi/cli/component/agents.h"
+#include "sapi/cli/components/banner.h"
+#include "sapi/cli/pages/approval.h"
+#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/components/agents.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/component/feed.h"
-#include "sapi/cli/component/feed_block.h"
-#include "sapi/cli/component/plan.h"
-#include "sapi/cli/component/list.h"
-#include "sapi/cli/component/shell_style.h"
+#include "sapi/cli/components/feed.h"
+#include "sapi/cli/components/feed_block.h"
+#include "sapi/cli/components/plan.h"
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/components/shell_style.h"
 #include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <nb/cleanup.h>

@@ -1,9 +1,9 @@
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/history.h"
 #include "sapi/cli/presentation/presenter.h"
-#include "sapi/cli/component/feed.h"
+#include "sapi/cli/components/feed.h"
 #include "runtime/runtime.h"
 #include "errors.h"
 #include <nb/file.h>

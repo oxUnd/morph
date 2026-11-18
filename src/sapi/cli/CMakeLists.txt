@@ -10,47 +10,48 @@ add_library(morph-cli STATIC
 	models/transcript.c
 
 	# Page controllers
-	page/approval.c
-	page/chat.c
-	page/history.c
-	page/hooks.c
-	page/jobs.c
-	page/memory.c
-	page/subagents.c
-	page/model.c
-	page/permissions.c
-	page/question.c
-	page/resume.c
-	page/rewind.c
-	page/turn_details.c
-	page/setup/controls.c
-	page/setup/wizard.c
+	pages/approval.c
+	pages/chat.c
+	pages/history.c
+	pages/hooks.c
+	pages/jobs.c
+	pages/memory.c
+	pages/subagents.c
+	pages/model.c
+	pages/permissions.c
+	pages/question.c
+	pages/resume.c
+	pages/rewind.c
+	pages/turn_details.c
+	pages/setup/controls.c
+	pages/setup/wizard.c
 
 	# Application components
-	component/setup_prompt.c
-	component/subagents.c
-	component/agents.c
-	component/agents_browser.c
-	component/banner.c
-	component/skill_tree.c
-	component/selector.c
-	component/composer.c
-	component/message.c
-	component/mcp_tree.c
-	component/media.c
-	component/rich_document.c
-	component/tool_call.c
-	component/feed.c
-	component/feed_block.c
-	component/jobs.c
-	component/list.c
-	component/notice.c
-	component/notification.c
-	component/plan.c
-	component/recap.c
-	component/report.c
-	component/shell_style.c
-	component/transcript.c
+	components/setup_prompt.c
+	components/subagents.c
+	components/agents.c
+	components/agents_browser.c
+	components/banner.c
+	components/skill_tree.c
+	components/selector.c
+	components/composer.c
+	components/message.c
+	components/mcp_tree.c
+	components/media.c
+	components/rich_document.c
+	components/tool_call.c
+	components/feed.c
+	components/feed_block.c
+	components/jobs.c
+	components/list.c
+	components/visibility.c
+	components/notice.c
+	components/notification.c
+	components/plan.c
+	components/recap.c
+	components/report.c
+	components/shell_style.c
+	components/transcript.c
 
 	# Commands
 	commands/agents.c

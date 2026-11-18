@@ -5,7 +5,7 @@
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/application_internal.h"
 #include "ext/ext.h"

@@ -1,7 +1,7 @@
 #include "sapi/cli/presentation/output.h"
 #include <nb/err.h>
 #include "sapi/cli/application.h"
-#include "sapi/cli/page/turn_details.h"
+#include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/services/command_job.h"
 #include "agent/turn.h"
 #include "sapi/cli/adapters/input/callbacks.h"
@@ -9,11 +9,11 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/component/feed.h"
+#include "sapi/cli/components/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "runtime/runtime.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/pages/chat.h"
 #include <stdarg.h>
 
 

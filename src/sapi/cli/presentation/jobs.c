@@ -5,10 +5,10 @@
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
-#include "sapi/cli/component/feed.h"
-#include "sapi/cli/component/feed_block.h"
-#include "sapi/cli/component/list.h"
-#include "sapi/cli/component/notice.h"
+#include "sapi/cli/components/feed.h"
+#include "sapi/cli/components/feed_block.h"
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/components/notice.h"
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include <errno.h>

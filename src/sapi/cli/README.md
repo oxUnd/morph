@@ -18,14 +18,14 @@ cli/
     presentation.h             output/presentation state
     transcript.c, .h            tool/reasoning event projection and owned records
     setup.h                    configuration wizard data
-  page/
+  pages/
     chat.c, .h                 chat controller and page-local editing state
     history, hooks, jobs, memory, resume
     model, permissions         inline mode/policy selectors in the input area
     turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
-  component/                   feed, transcript, banner, list and shell styling
+  components/                   feed, transcript, banner, list and shell styling
   commands/                    options, slash actions, registry and management entry points
   services/
     command_job, event_queue   workers, owner calls and wakeup bridge
@@ -52,9 +52,9 @@ import application state. Configuration services do not import wizard pages.
 
 Interactive chat is a retained ViewController in alternate screen. Its page layout
 contains a scrolling feed, activity/jobs/queue controls and a multiline TextField
-composer. `component/message` composes Label and content-sized TextView controls;
-`component/tool_call`, plan and notice bind domain state to rich text through
-`component/report`. View margin/padding determine
+composer. `components/message` composes Label and content-sized TextView controls;
+`components/tool_call`, plan and notice bind domain state to rich text through
+`components/report`. View margin/padding determine
 spacing; pages and event handlers do not count terminal rows or move the cursor.
 Tool events update the existing control by call ID. Streaming messages keep their
 source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
@@ -73,13 +73,13 @@ Unicode transcript. It also checks that the oldest and newest records remain
 reachable, drafts survive scrolling and resize, and replay does not add records.
 The CI case uses 1,000 turns and has no machine-dependent timing threshold.
 
-`component/feed_block` and the stateless append formatters remain adapters for
+`components/feed_block` and the stateless append formatters remain adapters for
 legacy renderers, child transcript documents, fixtures and non-retained consumers.
 Their trailing-newline helper is a text-output compatibility policy, not a View
 layout engine. Keep new interactive feed content on the retained component path.
 Plain and JSON modes retain their separate output contracts.
 
-The full-screen agents browser follows the same boundary: `component/agents_browser`
+The full-screen agents browser follows the same boundary: `components/agents_browser`
 owns responsive split/stacked layout, filters, selection and detail scrolling.
 It consumes borrowed snapshots and performs no runtime calls. The subagents page
 owns snapshot refresh, selection identity and navigation to agent conversations.
@@ -115,9 +115,14 @@ the app's runtime, command services and output policies without opening a TUI.
 
 ## Extending the app
 
-- Add a page in `page/`, expose its open/factory function in its sibling header
+- Add a page in `pages/`, expose its open/factory function in its sibling header
   and dispatch it from a command or existing page using an NT view controller.
-- Add a reusable app component in `component/`; keep its state and drawing local.
+- A custom `*_view` embeds its NT superclass first and registers its matching
+  `nt_view_class`. Use `nt_view_add` to construct it. Vertical page roots can
+  inherit `nt_stack_view_class` to reuse measurement and layout.
+- Declare local UI state on its owning view. Bind derived properties during
+  construction. Flush pending state before a synchronous focus transfer.
+- Add a reusable app component in `components/`; keep its state and drawing local.
   The [customization demo](../../tui/samples/customization/README.md) shows Widget,
   ViewController and Application extension, semantic actions and shared models.
 - Add data operations in `models/`, business actions in `services/` and an
@@ -178,7 +183,7 @@ keeps the same geometry.
 
 `cli_chat_panel_mount` builds the inline panel in the chat view tree. The panel
 returns its initial focus target and receives its completion callback once.
-`component/selector` supplies native lists and labels for the model and
+`components/selector` supplies native lists and labels for the model and
 permission pages. The subagent picker supplies its own activity list. Closing
 the panel restores the draft, footer and input focus.
 
@@ -189,8 +194,8 @@ to the primary conversation. Noninteractive `/agents` retains text snapshots.
 `/subagents [id|shortname]` opens a compact agent picker within the composer area.
 Selecting a child replaces the visible feed with that child's full-width
 conversation in an alternate terminal screen; Escape returns directly to the
-primary feed. `page/subagents` owns navigation and follow-up input,
-`models/subagents` reduces ordered child events, `component/subagents` composes
+primary feed. `pages/subagents` owns navigation and follow-up input,
+`models/subagents` reduces ordered child events, `components/subagents` composes
 shared feed messages and tool rows, and `services/agents` enters the runtime
 facade. Snapshot/live sequence frontiers prevent duplicate replay; child events
 never enter the primary reducer. Shared message presentation retains user boxes,

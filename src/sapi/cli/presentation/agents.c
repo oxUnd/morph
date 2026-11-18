@@ -4,9 +4,9 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/presenter_state.h"
-#include "sapi/cli/component/agents.h"
-#include "sapi/cli/component/feed.h"
-#include "sapi/cli/component/feed_block.h"
+#include "sapi/cli/components/agents.h"
+#include "sapi/cli/components/feed.h"
+#include "sapi/cli/components/feed_block.h"
 #include <nb/cleanup.h>
 #include <errno.h>
 #include <stdlib.h>

@@ -10,7 +10,7 @@
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/component/list.h"
+#include "sapi/cli/components/list.h"
 
 static int cli_ext_origin_rank(enum tool_origin origin)
 {

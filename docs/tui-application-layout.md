@@ -12,9 +12,9 @@ is separate from the application layout.
   application.c, .h            Application subclass, composition and lifecycle
   application_internal.h       optional implementation conveniences
   models/                      shared application data and model operations
-  page/                        page controllers, navigation and modal interactions
+  pages/                        page controllers, navigation and modal interactions
     <feature>/                 cohesive multi-module feature, when needed
-  component/                   application-specific reusable components
+  components/                   application-specific reusable components
   commands/                    local command parsing and action dispatch
   services/                    use cases, persistence and asynchronous jobs
   adapters/                    external runtime, protocol, input and media bridges
@@ -62,7 +62,7 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
 The chat page mounts inline controls using `cli_chat_panel_mount`. A panel
 builds its native views, identifies the control to focus and handles its
 selection and completion. The model and permissions pages share
-`component/selector`. Child threads use the same feed formatting as the primary
+`components/selector`. Child threads use the same feed formatting as the primary
 conversation through `presentation/messages`.
 
 Prepare termination while the stopped framework is still initialized: stop new

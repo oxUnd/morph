@@ -7,8 +7,8 @@
 #include "sapi/cli/adapters/input/cancel.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/notifications.h"
-#include "sapi/cli/component/feed.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/components/feed.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application_internal.h"
 
 int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue_item *item)

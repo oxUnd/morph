@@ -10,10 +10,10 @@ extern "C" {
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/component/subagents.h"
+#include "sapi/cli/components/subagents.h"
 #include "cli_agents_browser_fixture.h"
 #include <nothing/tui/input.h>
-#include "sapi/cli/component/transcript.h"
+#include "sapi/cli/components/transcript.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/utf8.h>

@@ -112,7 +112,7 @@ morph 完整回归和性能基准见第 10–11 节；iOS/Android 未实测。
   同样执行临时文件、写循环、fsync 和 rename，但没有父目录 fsync，使用 stat 读取模式。
 - [`atomic_write_config`](../src/agent/tools/config_write.c:211)：
   再实现一遍写循环/临时文件/模式/rename，没有父目录 fsync。
-- [`cli_wizard_save_config`](../src/sapi/cli/page/setup/wizard.c)：
+- [`cli_wizard_save_config`](../src/sapi/cli/pages/setup/wizard.c)：
   支持 create-only 的 link 发布、覆盖 rename、父目录 fsync，另外报告是否已经发布。
 - [`cli_share_store_share_publish`](../src/sapi/cli/services/share_store.c)：
   临时文件完整写入后 link 为最终文件名，另有失败回收。
@@ -707,7 +707,7 @@ C-family 文件，共 843 个，包含头文件与 `.inc`，排除 vendor 和生
 - 文件读取后反查 errno 的实例：`agent/tools/dynamic_tool_store.c:28–35`、
   `config/schema.c:1048–1056`、`runtime/model.c:46–55`、
   `runtime/permissions_service.c:120–128`、`agent/tools/config_write.c:351–362`、
-  `sapi/cli/page/setup/wizard.c:355–363`、`agent/patch.c:1269–1282` 等。
+  `sapi/cli/pages/setup/wizard.c:355–363`、`agent/patch.c:1269–1282` 等。
   nbase 的参数、容量、内存和大小限制失败没有“errno 必须同步”的契约。
 - `skill/skill_parse.c:335–346` 将全部读取/复制失败归为 NOT_FOUND。
 - 应保留每一步的返回码，分开处理 nbase 读取与 malloc 边界复制失败；

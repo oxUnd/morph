@@ -2,8 +2,8 @@
 #include <nb/err.h>
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/component/list.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/pages/chat.h"
 #include "runtime/runtime.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>

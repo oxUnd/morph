@@ -2,9 +2,9 @@
 
 extern "C" {
 #include "sapi/cli/application.h"
-#include "sapi/cli/component/selector.h"
+#include "sapi/cli/components/selector.h"
 #include "sapi/cli/models/composer.h"
-#include "sapi/cli/page/chat.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/services/event_queue.h"

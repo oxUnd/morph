@@ -12,9 +12,9 @@
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/page/setup/controls.h"
-#include "sapi/cli/page/history.h"
-#include "sapi/cli/page/resume.h"
+#include "sapi/cli/pages/setup/controls.h"
+#include "sapi/cli/pages/history.h"
+#include "sapi/cli/pages/resume.h"
 #include "sapi/cli/services/session_restore.h"
 
 static int cli_session_command_new(struct cli_application *ctx, int argc, char **argv)
