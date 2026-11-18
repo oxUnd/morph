@@ -67,8 +67,7 @@ struct cli_hooks_action_input {
 };
 
 struct cli_hooks_page {
-	struct cli_application *ctx;
-	struct nt_view_controller *controller;
+	struct nt_view_controller base;
 	cJSON *rows;
 	struct nt_view *root, *brand, *path, *title, *subtitle, *scope, *rule, *heading, *list,
 		*range, *divider, *viewport, *document, *choice_title, *choices, *message_view,
@@ -992,7 +991,7 @@ static void cli_hooks_choose(int *index, int count, int page, int key, unsigned 
 static int cli_hooks_update(void *data, const struct nt_event *event)
 {
 	struct cli_hooks_page *screen = data;
-	struct cli_application *ctx = screen->ctx;
+	struct cli_application *ctx = cli_application_from_controller(&screen->base);
 	cJSON **rows = &screen->rows;
 
 	if (event->type != NT_EVENT_KEY || event->pasting)
@@ -1157,7 +1156,7 @@ static int cli_hooks_handle(struct cli_hooks_page *s, const struct nt_event *eve
 {
 	int rc = cli_hooks_update(s, event);
 	if (rc == NT_NAVIGATION_BACK) {
-		rc = nt_view_controller_dismiss(s->controller, 0);
+		rc = nt_view_controller_dismiss(&s->base, 0);
 	} else if (rc == NT_NAVIGATION_CHANGED) {
 		rc = cli_hooks_sync(s);
 	}
@@ -1202,8 +1201,7 @@ static int cli_hooks_size(void *data, const struct nt_view_event *event)
 
 static void cli_hooks_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
-	struct cli_hooks_page *s = controller->data;
-	s->controller = controller;
+	struct cli_hooks_page *s = (struct cli_hooks_page *)controller;
 	s->root = nt_view_add(builder, NULL, &nt_view_base_class, NULL);
 	nt_builder_fail(builder, nt_view_use_reducer(s->root,
 						     &(struct nt_component_state_options){
@@ -1266,81 +1264,61 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 	nt_builder_fail(builder, nt_view_focus(s->root));
 }
 
-static void cli_hooks_free(void *data, int result)
-{
-	struct cli_hooks_page *s = data;
-	(void)result;
-	cJSON_Delete(s->rows);
-	free(s);
-}
-
 static void cli_hooks_destroy(struct nt_view_controller *controller)
 {
-	struct cli_hooks_page *s = controller->data;
-	if (s)
-		cli_application_panel_complete(s->ctx, s, cli_hooks_free,
-					       nt_view_controller_result(controller));
+	struct cli_hooks_page *page = (struct cli_hooks_page *)controller;
+	cJSON_Delete(page->rows);
 }
 
-static int cli_hooks_present(struct cli_application *ctx, cJSON **rows, const char *review_id,
-			     int batch)
+int cli_hooks_create_take(cJSON **rows, const char *review_id, int batch,
+			  struct nt_view_controller **out)
 {
 	static const struct nt_view_controller_class type = {
-		.superclass = &nt_view_controller_base_class,
-		.instance_size = sizeof(struct nt_view_controller),
+		.superclass = &cli_application_panel_class,
+		.instance_size = sizeof(struct cli_hooks_page),
 		.load_view = cli_hooks_build,
-		.deinit = cli_hooks_destroy};
-	struct cli_hooks_page *s = calloc(1, sizeof(*s));
-	if (!s)
-		return NB_ERR_NOMEM;
+		.deinit = cli_hooks_destroy,
+	};
+	if (!rows || !*rows)
+		return NB_ERR_INVAL;
 
-	s->ctx = ctx;
-	s->initial.batch = batch;
-	s->choice = batch ? 2 : 0;
-	s->rows = cJSON_Duplicate(*rows, 1);
-	int rc = s->rows ? 0 : NB_ERR_NOMEM;
-	nt_terminal_dimensions(STDOUT_FILENO, &s->columns, &s->height);
-	s->width = s->columns > 4 ? s->columns - 4 : 1;
-	if (!rc && review_id) {
-		const cJSON *row;
-		cJSON_ArrayForEach (row, s->rows) {
+	int focus = 0;
+	const cJSON *row = NULL;
+	if (review_id) {
+		cJSON_ArrayForEach (row, *rows) {
 			if (!strcmp(cli_hooks_field(row, "id"), review_id))
 				break;
 
-			s->focus++;
+			focus++;
 		}
 
-		if (row) {
-			struct cli_hooks_action actions[4];
-			s->initial.section = HOOKS_REVIEW;
-			s->choice = cli_hooks_actions(row, actions) - 1;
-		} else
-			rc = NB_ERR_NOT_FOUND;
+		if (!row)
+			return NB_ERR_NOT_FOUND;
 	}
 
-	int accepted = 0;
-	if (!rc)
-		rc = cli_application_show_page(ctx, &type, s, 0, &accepted);
+	int rc = nt_view_controller_create(&type, out);
+	if (rc)
+		return rc;
 
-	if (!accepted)
-		cli_hooks_free(s, rc);
+	struct cli_hooks_page *page = (struct cli_hooks_page *)*out;
+	page->rows = cJSON_StealOwner(rows);
+	page->focus = focus;
+	page->initial.batch = batch;
+	page->choice = batch ? 2 : 0;
+	if (row) {
+		struct cli_hooks_action actions[4];
+		page->initial.section = HOOKS_REVIEW;
+		page->choice = cli_hooks_actions(row, actions) - 1;
+	}
 
-	return rc;
-}
-
-int cli_hooks_ui(struct cli_application *ctx, cJSON **rows, const char *review_id)
-{
-	return cli_hooks_present(ctx, rows, review_id, 0);
-}
-
-int cli_hooks_review_all(struct cli_application *ctx, cJSON **rows)
-{
-	return cli_hooks_present(ctx, rows, NULL, 1);
+	nt_terminal_dimensions(STDOUT_FILENO, &page->columns, &page->height);
+	page->width = page->columns > 4 ? page->columns - 4 : 1;
+	return 0;
 }
 
 int cli_hooks_startup(struct cli_application *ctx)
 {
-	cJSON *rows = NULL;
+	cJSON *rows NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	const cJSON *row;
 	int rc;
 
@@ -1357,11 +1335,12 @@ int cli_hooks_startup(struct cli_application *ctx)
 		if (strcmp(state, "needs_review") == 0 ||
 		    strcmp(state, "changed / needs_review") == 0 ||
 		    strcmp(state, "project_untrusted") == 0) {
-			rc = cli_hooks_review_all(ctx, &rows);
-			break;
+			struct nt_view_controller *page NB_CLEANUP(
+				cli_application_controller_cleanup) = NULL;
+			rc = cli_hooks_create_take(&rows, NULL, 1, &page);
+			return rc ? rc : cli_application_show_page(ctx, &page, 0);
 		}
 	}
 
-	cJSON_Delete(rows);
 	return rc;
 }

@@ -97,6 +97,9 @@
   NT view or a composition of NT controls. Bind view properties to their owning
   state and handle interaction through NT view events. Shared text formatters,
   stream writers and presentation policies belong in `presentation/`.
+  Each presented page embeds `struct nt_view_controller` first. Keep local state
+  on the page and use `cli_application_from_controller()` to access its host.
+  Modal pages inherit `cli_application_panel_class` for command completion.
   Every implementation includes its sibling
   header first and imports other interfaces directly. `application_internal.h`
   owns no function declarations or domain SDK include collection. Run

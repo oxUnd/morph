@@ -344,10 +344,9 @@ enum cli_resume_label {
 };
 
 struct cli_resume_picker {
-	struct cli_application *ctx;
+	struct nt_view_controller base;
 	struct cli_resume_model model;
 	struct session *sessions;
-	struct nt_view_controller *controller;
 	struct nt_view *list;
 	struct nt_view *labels[CLI_RESUME_LABEL_COUNT];
 	int rows, columns, grouped, page_size, first_row;
@@ -591,13 +590,12 @@ static int cli_resume_action(void *data, const struct nt_view_event *event)
 		return cli_resume_pagination(page);
 
 	page->selection = page->model.order[event->index];
-	return nt_view_controller_dismiss(page->controller, 0);
+	return nt_view_controller_dismiss(&page->base, 0);
 }
 
 static void cli_resume_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
-	struct cli_resume_picker *page = controller->data;
-	page->controller = controller;
+	struct cli_resume_picker *page = (struct cli_resume_picker *)controller;
 	struct nt_view *root = nt_view_add(builder, NULL, &nt_view_base_class, NULL);
 	for (int i = 0; i < CLI_RESUME_LABEL_COUNT; i++) {
 		struct nt_view_options options = cli_panel_hint(NT_AUTO);
@@ -631,7 +629,7 @@ static void cli_resume_build(struct nt_view_controller *controller, struct nt_bu
 
 	struct nt_terminal_environment env;
 	if (!rc)
-		rc = nt_application_environment(&page->ctx->base, &env);
+		rc = nt_application_environment(nt_view_controller_application(controller), &env);
 
 	if (!rc)
 		rc = cli_resume_layout(page, env.columns, env.rows);
@@ -645,7 +643,7 @@ static void cli_resume_build(struct nt_view_controller *controller, struct nt_bu
 
 static int cli_resume_event(struct nt_view_controller *controller, const struct nt_event *event)
 {
-	struct cli_resume_picker *page = controller->data;
+	struct cli_resume_picker *page = (struct cli_resume_picker *)controller;
 	if (event->type == NT_EVENT_RESIZE)
 		return cli_resume_layout(page, event->columns, event->rows);
 
@@ -690,70 +688,44 @@ static int cli_resume_select(struct cli_application *ctx, int64_t id)
 	return rc;
 }
 
-static void cli_resume_picker_cleanup(struct cli_resume_picker **owner)
-{
-	struct cli_resume_picker *picker = owner ? *owner : NULL;
-	if (!picker)
-		return;
-
-	cli_resume_model_cleanup(&picker->model);
-	cli_resume_sessions_cleanup(&picker->sessions);
-	free(picker);
-	*owner = NULL;
-}
-
-static void cli_resume_close(void *data, int result)
-{
-	struct cli_resume_picker *picker = data;
-	struct cli_application *ctx = picker->ctx;
-
-	if (!result && picker->selection >= 0)
-		(void)cli_resume_select(ctx, picker->model.sessions[picker->selection].id);
-
-	cli_resume_picker_cleanup(&picker);
-}
-
 static void cli_resume_deinit(struct nt_view_controller *controller)
 {
-	struct cli_resume_picker *page = controller->data;
-	if (page)
-		cli_application_panel_complete(page->ctx, page, cli_resume_close,
-					       nt_view_controller_result(controller));
+	struct cli_resume_picker *page = (struct cli_resume_picker *)controller;
+	struct cli_application *ctx = cli_application_from_controller(controller);
+	int result = nt_view_controller_result(controller);
+	if (ctx && !result && page->selection >= 0)
+		(void)cli_resume_select(ctx, page->model.sessions[page->selection].id);
+
+	cli_resume_model_cleanup(&page->model);
+	cli_resume_sessions_cleanup(&page->sessions);
 }
 
-static int cli_resume_present_take(struct cli_application *ctx, struct session **sessions,
-				   int count)
+static int cli_resume_create_take(struct session **sessions, int count, const char *workdir,
+				  struct nt_view_controller **out)
 {
 	static const struct nt_view_controller_class type = {
-		.superclass = &nt_view_controller_base_class,
-		.instance_size = sizeof(struct nt_view_controller),
+		.superclass = &cli_application_panel_class,
+		.instance_size = sizeof(struct cli_resume_picker),
 		.load_view = cli_resume_build,
 		.handle_event = cli_resume_event,
 		.deinit = cli_resume_deinit,
 	};
-	struct cli_resume_picker *page NB_CLEANUP(cli_resume_picker_cleanup) =
-		calloc(1, sizeof(*page));
-	if (!page)
-		return NB_ERR_NOMEM;
+	struct nt_view_controller *owner NB_CLEANUP(cli_application_controller_cleanup) = NULL;
+	int rc = nt_view_controller_create(&type, &owner);
+	if (rc)
+		return rc;
 
-	page->ctx = ctx;
+	struct cli_resume_picker *page = (struct cli_resume_picker *)owner;
 	page->selection = -1;
-	int rc = cli_resume_model_build(&page->model, *sessions, count,
-					runtime_workdir_borrow(ctx->runtime));
+	rc = cli_resume_model_build(&page->model, *sessions, count, workdir);
 	if (rc)
 		return rc;
 
 	page->sessions = *sessions;
-	int accepted = 0;
-	rc = cli_application_show_page(ctx, &type, page, 0, &accepted);
-	if (accepted) {
-		*sessions = NULL;
-		page = NULL;
-	} else {
-		page->sessions = NULL;
-	}
-
-	return rc;
+	*sessions = NULL;
+	*out = owner;
+	owner = NULL;
+	return 0;
 }
 
 int cli_resume_show(struct cli_application *ctx)
@@ -779,11 +751,15 @@ int cli_resume_show(struct cli_application *ctx)
 		return 0;
 	}
 
-	int controls_available = nt_terminal_available(stdin, stdout);
-	if (controls_available)
-		return cli_resume_present_take(ctx, &list, count);
+	const char *workdir = runtime_workdir_borrow(ctx->runtime);
+	if (nt_terminal_available(stdin, stdout)) {
+		struct nt_view_controller *picker NB_CLEANUP(cli_application_controller_cleanup) =
+			NULL;
+		rc = cli_resume_create_take(&list, count, workdir, &picker);
+		return rc ? rc : cli_application_show_page(ctx, &picker, 0);
+	}
 
-	rc = cli_resume_model_build(&model, list, count, runtime_workdir_borrow(ctx->runtime));
+	rc = cli_resume_model_build(&model, list, count, workdir);
 	if (rc != NB_OK)
 		return rc;
 

@@ -28,7 +28,7 @@ struct cli_transcript_model;
 struct cli_turn_details;
 struct cli_jobs;
 struct cli_chat_page;
-struct cli_subagents_page;
+struct cli_subagents_session;
 
 struct cli_application {
 	struct nt_application base;
@@ -50,13 +50,14 @@ struct cli_application {
 	struct config_file_error startup_error;
 	struct cli_event_queue *events;
 	int application_command;
+	size_t modal_count;
 	struct cli_feed *terminal;
 	struct cli_command_job *input_job;
 	struct cli_transcript_model *transcript;
 	struct cli_agents_model agents;
 	struct cli_turn_details *details;
 	struct cli_jobs *jobs;
-	struct cli_subagents_page *subagents;
+	struct cli_subagents_session *subagents;
 	struct cli_input_status input_status;
 	int tool_details;
 	enum cli_presentation_mode presentation_mode;
@@ -85,13 +86,13 @@ void cli_application_run(struct cli_application *ctx);
 void cli_application_run_once(struct cli_application *ctx, const char *prompt);
 void cli_application_shutdown(struct cli_application *ctx);
 struct nt_application *cli_application_tui_borrow(struct cli_application *);
-/* accepted transfers the page context even if a standalone run later fails. */
-int cli_application_show_page(struct cli_application *, const struct nt_view_controller_class *,
-			      void *data, int tick_ms, int *accepted);
-int cli_application_present_page(struct nt_application *, const struct nt_view_controller_class *,
-				 void *data, int tick_ms);
+struct cli_application *cli_application_from_controller(const struct nt_view_controller *);
+struct cli_application *cli_application_from_view(const struct nt_view *);
+void cli_application_controller_cleanup(struct nt_view_controller **);
+/* Present a cli_application_panel_class instance. NT clears the owner on acceptance. */
+int cli_application_show_page(struct cli_application *, struct nt_view_controller **, int tick_ms);
 int cli_application_prompt_deferred(const struct cli_application *);
-void cli_application_panel_complete(struct cli_application *, void *data,
-				    void (*complete)(void *, int), int result);
+extern const struct nt_view_controller_class cli_application_panel_class;
+void cli_application_panel_finished(struct cli_application *, int result);
 
 #endif

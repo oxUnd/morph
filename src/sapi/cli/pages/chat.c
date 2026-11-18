@@ -1,82 +1,87 @@
 #include "sapi/cli/pages/chat.h"
-#include <nothing/tui/choice_prompt.h>
-#include "sapi/cli/components/list.h"
-#include "sapi/cli/components/plan.h"
-#include "sapi/cli/components/notice.h"
-#include <nb/err.h>
-#include "runtime/runtime.h"
-#include "sapi/cli/application.h"
-#include "sapi/cli/commands/registry.h"
-#include "sapi/cli/commands/media.h"
-#include "sapi/cli/models/composer.h"
-#include "sapi/cli/models/jobs.h"
+
 #include "config/config.h"
 #include "credits.h"
-#include "sapi/cli/models/transcript.h"
-#include "sapi/cli/pages/resume.h"
-#include "sapi/cli/presentation/output.h"
-#include "sapi/cli/presentation/messages.h"
-#include "sapi/cli/presentation/composer_footer.h"
-#include "sapi/cli/presentation/work_status.h"
-#include "sapi/cli/pages/turn_details.h"
+#include "runtime/runtime.h"
+#include "sapi/cli/adapters/clipboard/clipboard.h"
+#include "sapi/cli/adapters/input/cancel.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/commands/media.h"
+#include "sapi/cli/commands/registry.h"
 #include "sapi/cli/components/banner.h"
 #include "sapi/cli/components/composer.h"
-#include "sapi/cli/presentation/panel.h"
-#include "sapi/cli/presentation/agents.h"
-#include "sapi/cli/presentation/jobs.h"
-
-
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/components/mcp_tree.h"
+#include "sapi/cli/components/media.h"
+#include "sapi/cli/components/message.h"
+#include "sapi/cli/components/notice.h"
+#include "sapi/cli/components/plan.h"
 #include "sapi/cli/components/recap.h"
+#include "sapi/cli/components/report.h"
+#include "sapi/cli/components/rich_document.h"
+#include "sapi/cli/components/skill_tree.h"
+#include "sapi/cli/components/tool_call.h"
+#include "sapi/cli/models/composer.h"
+#include "sapi/cli/models/jobs.h"
+#include "sapi/cli/models/transcript.h"
+#include "sapi/cli/pages/resume.h"
+#include "sapi/cli/pages/turn_details.h"
+#include "sapi/cli/presentation/agents.h"
+#include "sapi/cli/presentation/composer_footer.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/feed_block.h"
+#include "sapi/cli/presentation/jobs.h"
+#include "sapi/cli/presentation/messages.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/panel.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/style.h"
+#include "sapi/cli/presentation/work_status.h"
 #include "sapi/cli/services/command_job.h"
-#include <nb/map.h>
-#include <nb/time.h>
+#include "sapi/cli/services/composer.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/services/turn.h"
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/services/transcript.h"
-#include "sapi/cli/services/composer.h"
-#include "sapi/cli/adapters/clipboard/clipboard.h"
-#include "sapi/cli/adapters/input/cancel.h"
-#include "sapi/cli/components/message.h"
-#include "sapi/cli/components/rich_document.h"
-#include "sapi/cli/components/media.h"
-#include "sapi/cli/components/mcp_tree.h"
-#include "sapi/cli/components/tool_call.h"
-#include "sapi/cli/presentation/feed_block.h"
-#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/services/turn.h"
 
-#include "sapi/cli/components/report.h"
-#include "sapi/cli/components/skill_tree.h"
-#include "sapi/cli/application_internal.h"
 #include <nb/cleanup.h>
-#include <nothing/tui/view_controller.h>
-#include <nothing/tui/window.h>
+#include <nb/err.h>
+#include <nb/map.h>
+#include <nb/time.h>
+#include <nothing/tui/choice_prompt.h>
+#include <nothing/tui/controls/list_view.h>
+#include <nothing/tui/controls/text_field.h>
 #include <nothing/tui/shortcut.h>
 #include <nothing/tui/terminal.h>
-#include <nothing/tui/views/stack_view.h>
-#include <nothing/tui/views/scroll_view.h>
+#include <nothing/tui/view_controller.h>
 #include <nothing/tui/views/label.h>
-#include <nothing/tui/controls/list_view.h>
+#include <nothing/tui/views/scroll_view.h>
+#include <nothing/tui/views/stack_view.h>
 #include <nothing/tui/views/text_view.h>
-#include <nothing/tui/controls/text_field.h>
+#include <nothing/tui/window.h>
+
 #include <time.h>
 #include <unistd.h>
 
+struct cli_chat_panel {
+	struct nt_stack_view base;
+	struct nt_view *focus;
+	void *data;
+	cli_chat_panel_complete_fn complete;
+	int (*refresh)(void *, const struct nt_event *);
+	int result, closed;
+};
+
 struct cli_chat_page {
-	struct cli_application *ctx;
-	struct cli_command_job *job;
-	struct nt_view_controller *controller;
+	struct nt_view_controller base;
 	struct nt_builder *builder;
 	struct nt_component_state *modal;
 	struct nt_view *scroll, *feed, *composer, *editor, *status, *footer;
-	struct nt_view *panel_host, *panel, *output_container;
-	void *panel_data;
-	void (*panel_complete)(void *, int);
-	int (*panel_refresh)(void *, const struct nt_event *);
+	struct nt_view *panel_host, *output_container;
+	struct cli_chat_panel *panel;
 	struct nt_view *stream_view, *output_view, *queue, *jobs, *agents;
 	struct nt_view *last_assistant, *command_group, *command_tail;
 	char *last_assistant_text;
@@ -114,14 +119,14 @@ int cli_chat_yield_input(struct cli_application *ctx)
 
 int cli_chat_panel_active(const struct cli_application *ctx)
 {
-	return cli_chat_active(ctx) && ctx->chat->panel;
+	return cli_chat_active(ctx) && ctx->chat->panel && ctx->chat->panel->complete;
 }
 
 static int cli_chat_switch_input(struct cli_chat_page *page, struct nt_view *focus)
 {
 	int rc = nt_component_state_set_bool(page->modal, page->panel || page->prompt_rows);
 	if (!rc)
-		rc = nt_view_flush_state(nt_view_controller_root_view(page->controller));
+		rc = nt_view_flush_state(nt_view_controller_root_view(&page->base));
 
 	return rc || !focus ? rc : nt_view_focus(focus);
 }
@@ -129,7 +134,7 @@ static int cli_chat_switch_input(struct cli_chat_page *page, struct nt_view *foc
 static int cli_chat_activity_hidden(void *data, struct nt_value *value)
 {
 	struct nt_view *row = data;
-	struct cli_chat_page *page = nt_view_controller(row)->data;
+	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(row);
 	return nt_value_set_bool(value, nt_component_state_get_bool(page->modal) ||
 						!*nt_text_view_text(row));
 }
@@ -179,8 +184,20 @@ int cli_chat_prompt_choice(struct cli_application *ctx, int rows, struct nt_sele
 	return terminal_rc ? terminal_rc : render_rc;
 }
 
-int cli_chat_panel_mount(struct cli_application *ctx, cli_chat_panel_build_fn build,
-			 void *data, void (*complete)(void *, int))
+static void cli_chat_panel_deinit(struct nt_view *view)
+{
+	struct cli_chat_panel *panel = (struct cli_chat_panel *)view;
+	if (!panel->complete)
+		return;
+
+	struct cli_application *ctx = cli_application_from_view(view);
+	panel->complete(ctx, panel->data, panel->closed ? panel->result : NB_ERR_CANCELLED);
+	if (panel->closed)
+		cli_application_panel_finished(ctx, panel->result);
+}
+
+int cli_chat_panel_mount(struct cli_application *ctx, cli_chat_panel_build_fn build, void *data,
+			 cli_chat_panel_complete_fn complete)
 {
 	if (!cli_chat_active(ctx) || !build || !complete)
 		return NB_ERR_INVAL;
@@ -189,16 +206,29 @@ int cli_chat_panel_mount(struct cli_application *ctx, cli_chat_panel_build_fn bu
 		return NB_ERR_CANCELLED;
 
 	struct cli_chat_page *page = ctx->chat;
-	if (page->panel)
+	if (nt_view_child_count(page->panel_host))
 		return NB_ERR_BUSY;
 
-	page->panel = build(page->builder, page->panel_host, data);
+	static const struct nt_view_class type = {
+		.superclass = &nt_stack_view_class,
+		.instance_size = sizeof(struct cli_chat_panel),
+		.deinit = cli_chat_panel_deinit,
+		.kind = "cli_chat_panel",
+	};
+	struct nt_view *container = nt_view_add(page->builder, page->panel_host, &type, NULL);
+	if (!container)
+		return nt_builder_error(page->builder);
+
+	struct cli_chat_panel *panel = (struct cli_chat_panel *)container;
+	panel->focus = build(page->builder, container, data);
 	int rc = nt_builder_error(page->builder);
-	if (!rc && !page->panel)
+	if (!rc && !panel->focus)
 		rc = NB_ERR_NOMEM;
 
-	if (!rc)
-		rc = cli_chat_switch_input(page, page->panel);
+	if (!rc) {
+		page->panel = panel;
+		rc = cli_chat_switch_input(page, panel->focus);
+	}
 
 	if (rc) {
 		page->panel = NULL;
@@ -207,8 +237,8 @@ int cli_chat_panel_mount(struct cli_application *ctx, cli_chat_panel_build_fn bu
 		return rc;
 	}
 
-	page->panel_data = data;
-	page->panel_complete = complete;
+	panel->data = data;
+	panel->complete = complete;
 	return 0;
 }
 
@@ -216,21 +246,7 @@ void cli_chat_panel_set_refresh(struct cli_application *ctx,
 				int (*refresh)(void *, const struct nt_event *))
 {
 	if (cli_chat_panel_active(ctx))
-		ctx->chat->panel_refresh = refresh;
-}
-
-static int cli_chat_panel_remove(struct cli_application *ctx, struct nt_view *panel)
-{
-	if (!cli_chat_panel_active(ctx) || ctx->chat->panel != panel)
-		return NB_ERR_INVAL;
-
-	struct cli_chat_page *page = ctx->chat;
-	page->panel = NULL;
-	int rc = cli_chat_switch_input(page, page->editor);
-	if (!rc)
-		rc = nt_view_clear_children(page->panel_host);
-
-	return rc;
+		ctx->chat->panel->refresh = refresh;
 }
 
 int cli_chat_panel_close(struct cli_application *ctx, int result)
@@ -239,14 +255,16 @@ int cli_chat_panel_close(struct cli_application *ctx, int result)
 		return 0;
 
 	struct cli_chat_page *page = ctx->chat;
-	void *data = page->panel_data;
-	void (*complete)(void *, int) = page->panel_complete;
-	page->panel_complete = NULL;
-	page->panel_data = NULL;
-	page->panel_refresh = NULL;
-	int rc = cli_chat_panel_remove(ctx, page->panel);
-	cli_application_panel_complete(ctx, data, complete, result ? result : rc);
-	return rc ? rc : 1;
+	struct cli_chat_panel *panel = page->panel;
+	page->panel = NULL;
+	int rc = cli_chat_switch_input(page, page->editor);
+	panel->closed = 1;
+	panel->result = result ? result : rc;
+	int clear_rc = nt_view_clear_children(page->panel_host);
+	if (rc || clear_rc)
+		return rc ? rc : clear_rc;
+
+	return 1;
 }
 
 int cli_chat_reset(struct cli_application *ctx)
@@ -329,8 +347,8 @@ int cli_chat_media(struct cli_application *ctx, const char *type, const char *pa
 	cli_chat_page_boundary(page);
 	const struct nt_view_options options = {
 		.margin = {.top = page->command_group ? 0 : 1}};
-	cli_media_add_borrow(page->builder,
-		page->command_group ? page->command_group : page->feed, ctx, type, path, &options);
+	cli_media_add(page->builder, page->command_group ? page->command_group : page->feed,
+		      cli_output_color_enabled(ctx), type, path, &options);
 	return cli_chat_page_error(page);
 }
 
@@ -582,14 +600,15 @@ int cli_chat_block(struct cli_application *ctx, const struct cli_feed_block *blo
 	return 0;
 }
 
-static int cli_chat_page_stream(struct cli_chat_page *page, int kind, const char *text, int delta)
+static int cli_chat_page_stream(struct cli_application *ctx, int kind, const char *text, int delta)
 {
+	struct cli_chat_page *page = ctx->chat;
 	if (!page->stream_view || page->stream_kind != kind) {
 		cli_chat_page_boundary(page);
 		page->stream_kind = kind;
 		page->stream_view = cli_message_add_borrow(page->builder, page->feed,
 							   (enum cli_message_kind)kind, "",
-							   cli_output_color_enabled(page->ctx));
+							   cli_output_color_enabled(ctx));
 		if (!page->stream_view)
 			return cli_chat_page_error(page);
 	}
@@ -629,21 +648,21 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 		rc = cli_transcript_reasoning_append(ctx, text ? text : "", text ? strlen(text) : 0,
 						     begin);
 		if (!rc)
-			rc = cli_chat_page_stream(page, CLI_MESSAGE_REASONING, text, 1);
+			rc = cli_chat_page_stream(ctx, CLI_MESSAGE_REASONING, text, 1);
 	} else if (!strcmp(name, "react.content.delta") || !strcmp(name, "react.thought.delta") ||
 		   !strcmp(name, "react.final.delta")) {
 		cli_chat_activity(ctx, "");
-		rc = cli_chat_page_stream(page, CLI_MESSAGE_ASSISTANT, text, 1);
+		rc = cli_chat_page_stream(ctx, CLI_MESSAGE_ASSISTANT, text, 1);
 	} else if (!strcmp(name, "react.content.end") || !strcmp(name, "react.thought.end")) {
 		if (text && *text)
-			rc = cli_chat_page_stream(page, CLI_MESSAGE_ASSISTANT, text, 0);
+			rc = cli_chat_page_stream(ctx, CLI_MESSAGE_ASSISTANT, text, 0);
 
 		cli_chat_page_boundary(page);
 	} else if (!strcmp(name, "react.final")) {
 		if (text && *text &&
 		    !(page->last_assistant && page->last_assistant_text &&
 		      !strcmp(page->last_assistant_text, text)))
-			rc = cli_chat_page_stream(page, CLI_MESSAGE_ASSISTANT, text, 0);
+			rc = cli_chat_page_stream(ctx, CLI_MESSAGE_ASSISTANT, text, 0);
 
 		ctx->presenter->final_rendered = 1;
 		cli_chat_page_boundary(page);
@@ -671,7 +690,7 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 
 static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 {
-	struct cli_application *ctx = page->ctx;
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	struct nt_application *app = &ctx->base;
 	if (!text || !*text)
 		return 0;
@@ -703,7 +722,7 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 	cli_chat_page_boundary(page);
 	if (input[0] == '/') {
 		cli_presentation_command_input(ctx, input);
-		if (page->job->active && strcmp(input, "/recap") && strcmp(input, "/jobs") &&
+		if (ctx->input_job->active && strcmp(input, "/recap") && strcmp(input, "/jobs") &&
 		    strncmp(input, "/jobs ", 6) && strcmp(input, "/agents") &&
 		    strncmp(input, "/agents ", 8) && strcmp(input, "/subagents") &&
 		    strncmp(input, "/subagents ", 11)) {
@@ -714,7 +733,7 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 					  "wait for the active turn before running this command");
 				nt_text_field_set_text(page->editor, input);
 			}
-		} else if (page->job->active && !strcmp(input, "/recap"))
+		} else if (ctx->input_job->active && !strcmp(input, "/recap"))
 			(void)cli_recap_start(ctx, 0);
 		else
 			(void)ctx->input_execute(ctx, input);
@@ -742,15 +761,15 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 			return NB_ERR_NOMEM;
 
 		cli_turn_record_input_images(ctx, input);
-		if (page->job->active)
-			rc = cli_command_job_prompt(page->job, expanded, input);
+		if (ctx->input_job->active)
+			rc = cli_command_job_prompt(ctx->input_job, expanded, input);
 		else {
 			int handled = 0;
 			rc = cli_media_handle_path(ctx, expanded, &handled);
 			if (!handled && !rc) {
 				cli_presentation_user_input(ctx, input);
 				cli_turn_begin(ctx);
-				rc = cli_command_job_start(page->job, ctx, expanded);
+				rc = cli_command_job_start(ctx->input_job, ctx, expanded);
 				if (rc)
 					cli_turn_finish(ctx, rc);
 			}
@@ -768,6 +787,7 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 static int cli_chat_page_complete(struct cli_chat_page *page,
 				  const struct nt_view_event *action)
 {
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	const char *input = action->text;
 	if (!input || input[0] != '/' || action->index != strlen(input) || strchr(input, ' '))
 		return 0;
@@ -813,7 +833,7 @@ static int cli_chat_page_complete(struct cli_chat_page *page,
 									  nb_buf_cstr(&suffix));
 	} else {
 		cli_chat_page_boundary(page);
-		rc = cli_chat_output(page->ctx, nb_buf_cstr(&choices));
+		rc = cli_chat_output(ctx, nb_buf_cstr(&choices));
 		cli_chat_page_boundary(page);
 	}
 
@@ -839,9 +859,10 @@ static int cli_chat_page_action(void *data,
 				return 0;
 		}
 
+		struct cli_application *ctx = cli_application_from_controller(&page->base);
 		char *converted NB_CLEANUP(nb_charp_cleanup) = NULL;
-		int rc = cli_composer_service_convert_paths_copy(&page->ctx->composer,
-			action->text, &converted);
+		int rc = cli_composer_service_convert_paths_copy(&ctx->composer, action->text,
+								 &converted);
 		if (rc < 0)
 			return rc;
 
@@ -856,8 +877,8 @@ static int cli_chat_page_action(void *data,
 static int cli_chat_page_key(struct nt_view_controller *controller,
 			     const struct nt_event *event)
 {
-	struct cli_chat_page *page = controller->data;
-	struct cli_application *ctx = page->ctx;
+	struct cli_chat_page *page = (struct cli_chat_page *)controller;
+	struct cli_application *ctx = cli_application_from_controller(controller);
 	if (event->type != NT_EVENT_KEY || event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return 0;
 
@@ -967,8 +988,8 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 	}
 
 	if (key == 3 || key == 27) {
-		if (page->job->active) {
-			if (key == 27 && cli_command_job_expedite_prompts(page->job))
+		if (ctx->input_job->active) {
+			if (key == 27 && cli_command_job_expedite_prompts(ctx->input_job))
 				return 1;
 
 			if (key == 27 && cli_jobs_model_waiting(ctx->jobs))
@@ -995,17 +1016,13 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 	return 0;
 }
 
-struct cli_chat_view {
-	struct nt_view base;
-	struct cli_chat_page *page;
-};
-
-static int cli_chat_update_queue(struct cli_chat_page *page)
+static int cli_chat_update_queue(struct cli_application *ctx)
 {
+	struct cli_chat_page *page = ctx->chat;
 	char *prompts[3] = {0};
 	int64_t revision = page->queue_revision;
 	size_t total = 0;
-	int rc = cli_command_job_prompts_copy_since(page->job, prompts, 3, &total, &revision);
+	int rc = cli_command_job_prompts_copy_since(ctx->input_job, prompts, 3, &total, &revision);
 	if (rc == NB_ERR_AGAIN)
 		return 0;
 
@@ -1043,9 +1060,10 @@ static int cli_chat_update_queue(struct cli_chat_page *page)
 	return rc;
 }
 
-static int cli_chat_update_agents(struct cli_chat_page *page, int columns, int styled, int resized)
+static int cli_chat_update_agents(struct cli_application *ctx, int columns, int styled, int resized)
 {
-	const struct cli_agents_model *model = &page->ctx->agents;
+	struct cli_chat_page *page = ctx->chat;
+	const struct cli_agents_model *model = &ctx->agents;
 	if (!resized && page->agents_revision == model->activity_revision)
 		return 0;
 
@@ -1069,10 +1087,11 @@ static int cli_chat_update_agents(struct cli_chat_page *page, int columns, int s
 	return rc;
 }
 
-static int cli_chat_update_jobs(struct cli_chat_page *page, int columns, int styled, int resized,
+static int cli_chat_update_jobs(struct cli_application *ctx, int columns, int styled, int resized,
 				int64_t now)
 {
-	const struct cli_jobs *model = page->ctx->jobs;
+	struct cli_chat_page *page = ctx->chat;
+	const struct cli_jobs *model = ctx->jobs;
 	uint64_t revision = model ? model->revision : 0;
 	if (!resized && revision == page->jobs_revision && now < page->next_jobs_update)
 		return 0;
@@ -1104,10 +1123,10 @@ static int cli_chat_update_jobs(struct cli_chat_page *page, int columns, int sty
 	return 0;
 }
 
-static int cli_chat_update_status(struct cli_chat_page *page, int columns, int styled,
-				  int changed, int64_t now)
+static int cli_chat_update_status(struct cli_application *ctx, int columns, int styled, int changed,
+				  int64_t now)
 {
-	struct cli_application *ctx = page->ctx;
+	struct cli_chat_page *page = ctx->chat;
 	if (changed)
 		page->next_status_update = 0;
 
@@ -1156,19 +1175,20 @@ static int cli_chat_update_activity(struct cli_chat_page *page, int columns, int
 	if (columns <= 0)
 		return 0;
 
-	int styled = cli_output_color_enabled(page->ctx);
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	int styled = cli_output_color_enabled(ctx);
 	int resized = columns != page->activity_columns || styled != page->activity_styled;
-	int status_changed = resized || page->agents_revision != page->ctx->agents.activity_revision ||
-			     page->status_ultra != page->ctx->composer.ultra;
-	int rc = cli_chat_update_agents(page, columns, styled, resized);
+	int status_changed = resized || page->agents_revision != ctx->agents.activity_revision ||
+			     page->status_ultra != ctx->composer.ultra;
+	int rc = cli_chat_update_agents(ctx, columns, styled, resized);
 	if (!rc)
-		rc = cli_chat_update_jobs(page, columns, styled, resized, now);
+		rc = cli_chat_update_jobs(ctx, columns, styled, resized, now);
 
 	if (!rc)
-		rc = cli_chat_update_status(page, columns, styled, status_changed, now);
+		rc = cli_chat_update_status(ctx, columns, styled, status_changed, now);
 
 	if (!rc) {
-		page->status_ultra = page->ctx->composer.ultra;
+		page->status_ultra = ctx->composer.ultra;
 		page->activity_columns = columns;
 		page->activity_styled = styled;
 	}
@@ -1178,10 +1198,11 @@ static int cli_chat_update_activity(struct cli_chat_page *page, int columns, int
 
 static int cli_chat_page_footer(struct cli_chat_page *page, int columns)
 {
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 128) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
-		rc = cli_composer_footer_render(page->ctx, columns, &text);
+		rc = cli_composer_footer_render(ctx, columns, &text);
 
 	if (rc || (page->footer_text && !strcmp(page->footer_text, nb_buf_cstr(&text))))
 		return rc;
@@ -1191,7 +1212,7 @@ static int cli_chat_page_footer(struct cli_chat_page *page, int columns)
 		return NB_ERR_NOMEM;
 
 	rc = cli_messages_set_rendered_view(page->footer, nb_buf_cstr(&text),
-					    cli_output_color_enabled(page->ctx));
+					    cli_output_color_enabled(ctx));
 	if (!rc) {
 		free(page->footer_text);
 		page->footer_text = nb_charp_steal(&copy);
@@ -1202,7 +1223,7 @@ static int cli_chat_page_footer(struct cli_chat_page *page, int columns)
 
 static int cli_chat_page_layout(struct nt_view *view)
 {
-	struct cli_chat_page *page = ((struct cli_chat_view *)view)->page;
+	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(view);
 	struct nt_view_rect content = nt_view_content_rect(view);
 	if (page->columns != content.width) {
 		int rc = cli_chat_page_footer(page, content.width);
@@ -1320,8 +1341,8 @@ static int cli_chat_page_layout(struct nt_view *view)
 
 static int cli_chat_panel_cursor(struct nt_view *view, struct nt_canvas *canvas)
 {
-	struct cli_chat_page *page = ((struct cli_chat_view *)view)->page;
-	if (page->panel && nt_view_is_focused(page->panel)) {
+	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(view);
+	if (page->panel && nt_view_is_focused(page->panel->focus)) {
 		struct nt_view_rect panel = nt_view_content_rect(page->panel_host);
 		struct nt_view_rect root = nt_view_content_rect(view);
 		nt_canvas_cursor(canvas, panel.x - root.x, panel.y - root.y);
@@ -1337,28 +1358,30 @@ static int cli_chat_editor_key(void *data, const struct nt_view_event *event)
 
 static void cli_chat_page_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
-	struct cli_chat_page *page = controller->data;
-	page->controller = controller;
+	struct cli_chat_page *page = (struct cli_chat_page *)controller;
+	struct cli_application *ctx = cli_application_from_controller(controller);
+	if (!ctx) {
+		nt_builder_fail(builder, NB_ERR_STATE);
+		return;
+	}
+
 	page->builder = builder;
 	static const struct nt_view_class cli_chat_layout_class = {
 		.superclass = &nt_view_base_class,
-		.instance_size = sizeof(struct cli_chat_view),
+		.instance_size = sizeof(struct nt_view),
 		.layout = cli_chat_page_layout,
 		.draw_overlay = cli_chat_panel_cursor};
-	struct cli_chat_view *layout =
-		(struct cli_chat_view *)nt_view_add(builder, NULL, &cli_chat_layout_class, NULL);
-	if (!layout)
+	struct nt_view *root = nt_view_add(builder, NULL, &cli_chat_layout_class, NULL);
+	if (!root)
 		return;
 
-	layout->page = page;
-	struct nt_view *root = &layout->base;
 	page->scroll = nt_scroll_view_add(builder, root, NULL);
 	nt_builder_fail(builder, nt_view_set_focusable(page->scroll, 0));
 	nt_builder_fail(builder, nt_scroll_view_set_scrollbars(page->scroll, 0));
 	nt_builder_fail(builder, nt_scroll_view_follow(page->scroll, 1));
 	page->feed = nt_column_add(builder, page->scroll, 0,
 				   &(struct nt_view_options){.width = NT_FILL});
-	cli_banner_add_borrow(builder, page->feed, page->ctx);
+	cli_banner_add(builder, page->feed);
 	const struct nt_view_options jobs = {.max_height = 3};
 	page->jobs = cli_report_text_add(builder, root, &jobs);
 
@@ -1373,7 +1396,8 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 	page->queue = cli_list_add(builder, root, &queue);
 	nt_view_set_focusable(page->queue, 0);
 	page->panel_host = nt_stack_view_add(builder, root, NT_STACK_VIEW_VERTICAL, 0, NULL);
-	page->composer = cli_composer_add_borrow(builder, root, page->ctx, &page->editor);
+	page->composer = cli_composer_add_borrow(builder, root, &ctx->composer,
+						 cli_output_color_enabled(ctx), &page->editor);
 	page->footer = cli_report_text_add(
 		builder, root, &(struct nt_view_options){.padding = {.left = 2, .right = 2}});
 
@@ -1417,25 +1441,21 @@ static int cli_chat_page_refresh(struct cli_chat_page *page);
 
 static int cli_chat_page_resume(struct nt_view_controller *controller)
 {
-	struct cli_chat_page *page = controller->data;
-	int delivery_rc = cli_event_queue_set_events_enabled(page->ctx, 1);
+	struct cli_chat_page *page = (struct cli_chat_page *)controller;
+	struct cli_application *ctx = cli_application_from_controller(controller);
+	int delivery_rc = cli_event_queue_set_events_enabled(ctx, 1);
 	if (delivery_rc)
 		return delivery_rc;
 
-	if (page->ctx->session_history_pending) {
-		page->ctx->session_history_pending = 0;
-		int rc = cli_session_history_restore(page->ctx);
+	if (ctx->session_history_pending) {
+		ctx->session_history_pending = 0;
+		int rc = cli_session_history_restore(ctx);
 		if (rc)
 			return rc;
 	}
 
-	if (page->ctx->application_command && !page->panel) {
-		page->ctx->application_command = 0;
-		cli_presentation_command_end(page->ctx);
-	}
-
 	int rc = cli_chat_page_refresh(page);
-	return rc ? rc : nt_view_focus(page->panel ? page->panel : page->editor);
+	return rc ? rc : nt_view_focus(page->panel ? page->panel->focus : page->editor);
 }
 
 static void cli_chat_page_appear(struct nt_view_controller *controller)
@@ -1445,34 +1465,27 @@ static void cli_chat_page_appear(struct nt_view_controller *controller)
 		nt_application_stop(nt_view_controller_application(controller), rc);
 }
 
-static void cli_chat_page_closed(struct nt_view_controller *controller)
+static void cli_chat_page_prepare_deinit(struct nt_view_controller *controller)
 {
-	struct cli_chat_page *page = controller->data;
-	if (!page)
-		return;
-
+	struct cli_chat_page *page = (struct cli_chat_page *)controller;
+	struct cli_application *ctx = cli_application_from_controller(controller);
 	page->ready = 0;
-	if (page->panel_complete)
-		page->panel_complete(page->panel_data, NB_ERR_CANCELLED);
-
-	page->panel = NULL;
-	page->panel_complete = NULL;
-	page->controller = NULL;
+	if (ctx && ctx->chat == page)
+		ctx->chat = NULL;
 }
 
-static void cli_chat_page_finish_job(struct cli_chat_page *page)
+static void cli_chat_page_finish_job(struct cli_application *ctx)
 {
-	struct cli_application *ctx = page->ctx;
-	int result = cli_command_job_finish(page->job);
+	int result = cli_command_job_finish(ctx->input_job);
 	(void)cli_event_queue_drain(ctx);
 	cli_turn_finish(ctx, result);
 	char *display NB_CLEANUP(nb_charp_cleanup) = NULL;
 	char *pending NB_CLEANUP(nb_charp_cleanup) =
-		cli_command_job_take_prompt(page->job, &display);
+		cli_command_job_take_prompt(ctx->input_job, &display);
 	if (pending) {
 		cli_presentation_user_input(ctx, display ? display : pending);
 		cli_turn_begin(ctx);
-		result = cli_command_job_start(page->job, ctx, pending);
+		result = cli_command_job_start(ctx->input_job, ctx, pending);
 		if (result)
 			cli_turn_finish(ctx, result);
 	}
@@ -1480,7 +1493,7 @@ static void cli_chat_page_finish_job(struct cli_chat_page *page)
 
 static int cli_chat_page_refresh(struct cli_chat_page *page)
 {
-	struct cli_application *ctx = page->ctx;
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	if (!page->ready)
 		return 0;
 
@@ -1550,7 +1563,7 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 		timeout = (int)(next - now);
 
 	nt_application_schedule(&ctx->base, timeout);
-	rc = cli_chat_update_queue(page);
+	rc = cli_chat_update_queue(ctx);
 
 	return rc ? rc : cli_chat_page_error(page);
 }
@@ -1558,8 +1571,12 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 static int cli_chat_page_event(void *data, struct nt_application *app,
 			       const struct nt_event *event)
 {
-	struct cli_chat_page *page = data;
-	struct cli_application *ctx = page->ctx;
+	(void)data;
+	struct cli_application *ctx = (struct cli_application *)app;
+	if (!cli_chat_active(ctx))
+		return 0;
+
+	struct cli_chat_page *page = ctx->chat;
 	cli_recap_tick(ctx, cli_recap_now());
 	if (nb_atomic_int_load(&ctx->terminate_requested)) {
 		ctx->running = 0;
@@ -1586,8 +1603,8 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 			return rc;
 	}
 
-	if (!modal && cli_command_job_done(page->job))
-		cli_chat_page_finish_job(page);
+	if (!modal && cli_command_job_done(ctx->input_job))
+		cli_chat_page_finish_job(ctx);
 
 	if (!modal && ctx->resume_requested && !nt_application_transition_pending(app)) {
 		ctx->resume_requested = 0;
@@ -1600,7 +1617,7 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 		else if (modal)
 			(void)nt_view_controller_dismiss(
 				nt_view_controller(nt_window_root_view(nt_application_window(app))), 0);
-		else if (page->job->active)
+		else if (ctx->input_job->active)
 			runtime_cancel_turn(ctx->runtime);
 	}
 
@@ -1610,9 +1627,10 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 	if (!ctx->running)
 		nt_application_stop(app, 0);
 
-	if (page->panel_refresh && (event->type == NT_EVENT_TICK || event->type == NT_EVENT_WAKE ||
-				    event->type == NT_EVENT_RESIZE)) {
-		int rc = page->panel_refresh(page->panel_data, event);
+	if (page->panel && page->panel->refresh &&
+	    (event->type == NT_EVENT_TICK || event->type == NT_EVENT_WAKE ||
+	     event->type == NT_EVENT_RESIZE)) {
+		int rc = page->panel->refresh(page->panel->data, event);
 		if (rc < 0)
 			return rc;
 	}
@@ -1620,103 +1638,23 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 	return cli_chat_page_refresh(page);
 }
 
-static void cli_chat_page_cleanup(struct cli_chat_page **owner)
+static int cli_chat_page_init(struct nt_view_controller *controller)
 {
-	if (owner && *owner) {
-		cli_chat_destroy(*owner, 0);
-		*owner = NULL;
-	}
-}
-
-static struct cli_chat_page *cli_chat_page_steal(struct cli_chat_page **owner)
-{
-	struct cli_chat_page *page = *owner;
-	*owner = NULL;
-	return page;
-}
-
-int cli_chat_create(struct cli_application *ctx, struct cli_command_job *job,
-		    struct cli_chat_page **out)
-{
-	if (!ctx || !job || !out || *out || ctx->chat)
-		return NB_ERR_INVAL;
-
-	struct cli_chat_page *page NB_CLEANUP(cli_chat_page_cleanup) = calloc(1, sizeof(*page));
-	if (!page)
-		return NB_ERR_NOMEM;
-
-	page->ctx = ctx;
-	page->job = job;
-	int rc =
-		(nb_buf_init(&page->stream), nb_buf_reserve(&page->stream, 128) ? 0 : NB_ERR_NOMEM);
-	if (!rc)
-		rc = (nb_buf_init(&page->output),
-		      nb_buf_reserve(&page->output, 128) ? 0 : NB_ERR_NOMEM);
-
-	if (!rc) {
-		page->tools = nb_map_new_with_cap(16);
-		if (!page->tools)
-			rc = NB_ERR_NOMEM;
-	}
-
+	struct cli_chat_page *page = (struct cli_chat_page *)controller;
 	char *entry = NULL;
-	if (!rc)
-		rc = (nb_vec_init(&page->history, sizeof(entry)),
-		      nb_vec_reserve(&page->history, 16) ? 0 : NB_ERR_NOMEM);
-
-	if (rc)
-		return rc;
-
-	ctx->chat = page;
-	cli_feed_set_hidden(ctx, 1);
-	*out = cli_chat_page_steal(&page);
-	return 0;
+	nb_vec_init(&page->history, sizeof(entry));
+	page->tools = nb_map_new_with_cap(16);
+	return page->tools ? 0 : NB_ERR_NOMEM;
 }
 
-struct nt_application_options cli_chat_options(struct cli_chat_page *page)
+static void cli_chat_page_deinit(struct nt_view_controller *controller)
 {
-	return (struct nt_application_options){.external_signals = 1,
-		.terminal_flags = NT_TERMINAL_MOUSE_DRAG | NT_TERMINAL_PASTE | NT_TERMINAL_FOCUS,
-						      .input = stdin,
-						      .output = stdout,
-						      .event = cli_chat_page_event,
-						      .data = page};
-}
-
-int cli_chat_present(struct cli_chat_page *page)
-{
-	static const struct nt_view_controller_class type = {
-		.superclass = &nt_view_controller_base_class,
-		.instance_size = sizeof(struct nt_view_controller),
-		.load_view = cli_chat_page_build,
-		.handle_event = cli_chat_page_key,
-		.view_will_appear = cli_chat_page_appear,
-		.deinit = cli_chat_page_closed,
-	};
-	return cli_application_present_page(&page->ctx->base, &type, page, 100);
-}
-
-void cli_chat_job_finished(struct cli_chat_page *page, int result)
-{
-	if (page && page->ctx->turn_active)
-		cli_turn_finish(page->ctx, result);
-}
-
-void cli_chat_destroy(struct cli_chat_page *page, int result)
-{
-	if (!page)
-		return;
-
-	struct cli_application *ctx = page->ctx;
-	char **entry;
-	for (size_t _i_ = 0;
-	     _i_ < nb_vec_len(&page->history) && (entry = (char **)nb_vec_at(&page->history, _i_));
-	     _i_++)
-		free(*entry);
+	struct cli_chat_page *page = (struct cli_chat_page *)controller;
+	for (size_t i = 0; i < page->history.len; i++)
+		free(*(char **)nb_vec_at(&page->history, i));
 
 	nb_vec_cleanup(&page->history);
 	nb_map_free(page->tools);
-	page->tools = NULL;
 	nb_buf_cleanup(&page->stream);
 	nb_buf_cleanup(&page->output);
 	nb_buf_cleanup(&page->agent_summary);
@@ -1724,11 +1662,48 @@ void cli_chat_destroy(struct cli_chat_page *page, int result)
 	free(page->last_assistant_text);
 	free(page->footer_text);
 	free(page->activity_text);
-	if (page->ctx->chat == page)
-		page->ctx->chat = NULL;
+}
 
-	free(page);
-	if (result < 0)
-		CMD_ERROR(ctx, "Application failed: %s",
-			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, result));
+struct nt_application_options cli_chat_options(void)
+{
+	return (struct nt_application_options){
+		.external_signals = 1,
+		.terminal_flags = NT_TERMINAL_MOUSE_DRAG | NT_TERMINAL_PASTE | NT_TERMINAL_FOCUS,
+		.input = stdin,
+		.output = stdout,
+		.event = cli_chat_page_event,
+	};
+}
+
+int cli_chat_present(struct cli_application *ctx)
+{
+	if (!ctx || !ctx->input_job || ctx->chat)
+		return NB_ERR_INVAL;
+
+	static const struct nt_view_controller_class type = {
+		.superclass = &nt_view_controller_base_class,
+		.instance_size = sizeof(struct cli_chat_page),
+		.init = cli_chat_page_init,
+		.prepare_deinit = cli_chat_page_prepare_deinit,
+		.deinit = cli_chat_page_deinit,
+		.load_view = cli_chat_page_build,
+		.handle_event = cli_chat_page_key,
+		.view_will_appear = cli_chat_page_appear,
+	};
+	struct nt_view_controller *controller NB_CLEANUP(cli_application_controller_cleanup) = NULL;
+	int rc = nt_view_controller_create(&type, &controller);
+	if (rc)
+		return rc;
+
+	struct cli_chat_page *page = (struct cli_chat_page *)controller;
+	rc = nt_view_controller_set_tick_interval(controller, 100);
+	if (!rc)
+		rc = nt_application_present_view_controller(&ctx->base, &controller);
+
+	if (!rc) {
+		ctx->chat = page;
+		cli_feed_set_hidden(ctx, 1);
+	}
+
+	return rc;
 }

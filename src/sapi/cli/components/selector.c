@@ -16,7 +16,6 @@
 #include <string.h>
 
 struct cli_selector {
-	struct cli_application *ctx;
 	const struct cli_selector_choice *choices;
 	const char *title;
 	char *subtitle, *detail;
@@ -36,10 +35,12 @@ struct cli_selector_rows {
 	int subtitle, detail, options, description, footer;
 };
 
-static struct cli_selector_rows cli_selector_rows(const struct cli_selector *selector)
+static struct cli_selector_rows cli_selector_rows(const struct cli_selector_view *view)
 {
 	struct nt_terminal_environment env = {0};
-	nt_application_environment(&selector->ctx->base, &env);
+	struct cli_selector *selector = view->selector;
+	nt_application_environment(nt_view_controller_application(nt_view_controller(&view->base)),
+				   &env);
 	int budget = env.rows > 4 ? env.rows - 4 : 1;
 	struct cli_selector_rows rows = {
 		.subtitle = budget >= 7,
@@ -60,8 +61,7 @@ static struct cli_selector_rows cli_selector_rows(const struct cli_selector *sel
 
 static int cli_selector_measure(struct nt_view *view, int width, struct nt_view_size *size)
 {
-	struct cli_selector_rows rows =
-		cli_selector_rows(((struct cli_selector_view *)view)->selector);
+	struct cli_selector_rows rows = cli_selector_rows((struct cli_selector_view *)view);
 	*size = (struct nt_view_size){width, 1 + rows.subtitle + rows.detail + rows.options +
 						     rows.description * 2 + rows.footer};
 	return 0;
@@ -78,7 +78,7 @@ static int cli_selector_place(struct nt_view *view, struct nt_view_rect *slot, i
 static int cli_selector_layout(struct nt_view *view)
 {
 	struct cli_selector_view *s = (struct cli_selector_view *)view;
-	struct cli_selector_rows rows = cli_selector_rows(s->selector);
+	struct cli_selector_rows rows = cli_selector_rows(s);
 	struct nt_view_rect slot = nt_view_content_rect(view);
 	int rc = cli_selector_place(s->heading, &slot, 1);
 	if (!rc)
@@ -114,7 +114,7 @@ static int cli_selector_row(void *data, struct nt_canvas *canvas, size_t item, s
 	struct cli_selector *s = view->selector;
 	(void)group;
 	struct nt_text_style style = view->normal;
-	if (selected && cli_output_color_enabled(s->ctx)) {
+	if (selected && cli_output_color_enabled(cli_application_from_view(&view->base))) {
 		style.foreground = (struct nt_color){NT_COLOR_INDEXED, 15};
 		style.background = (struct nt_color){NT_COLOR_INDEXED, 4};
 	}
@@ -140,9 +140,9 @@ static int cli_selector_description(void *data, struct nt_value *value)
 
 static int cli_selector_activate(void *data, const struct nt_view_event *event)
 {
-	struct cli_selector *s = data;
-	s->submitted = event->index;
-	return cli_chat_panel_close(s->ctx, 0);
+	struct cli_selector_view *view = data;
+	view->selector->submitted = event->index;
+	return cli_chat_panel_close(cli_application_from_view(&view->base), 0);
 }
 
 static struct nt_view *cli_selector_build(struct nt_builder *builder, struct nt_view *parent,
@@ -162,7 +162,7 @@ static struct nt_view *cli_selector_build(struct nt_builder *builder, struct nt_
 	layout->selector = s;
 	struct nt_view *root = &layout->base;
 	struct nt_view_options title = {0}, dim = {0};
-	if (cli_output_color_enabled(s->ctx)) {
+	if (cli_output_color_enabled(cli_application_from_view(root))) {
 		layout->normal.background =
 			(struct nt_color){NT_COLOR_INDEXED, CLI_INPUT_BACKGROUND_INDEX};
 		title = cli_panel_heading(NT_AUTO);
@@ -201,18 +201,18 @@ static struct nt_view *cli_selector_build(struct nt_builder *builder, struct nt_
 		rc = nt_view_bind_compute(layout->description, NT_PROP_TEXT,
 					  cli_selector_description, layout);
 
-	if (!rc && !nt_view_on(layout->list, NT_VIEW_EVENT_ACTIVATE, cli_selector_activate, s))
+	if (!rc && !nt_view_on(layout->list, NT_VIEW_EVENT_ACTIVATE, cli_selector_activate, layout))
 		rc = NB_ERR_NOMEM;
 
 	nt_builder_fail(builder, rc);
 	return layout->list;
 }
 
-static void cli_selector_complete(void *data, int result)
+static void cli_selector_complete(struct cli_application *ctx, void *data, int result)
 {
 	struct cli_selector *s = data;
 	if (!result && s->submitted < s->count)
-		s->apply(s->ctx, s->submitted);
+		s->apply(ctx, s->submitted);
 
 	free(s->detail);
 	free(s->subtitle);
@@ -235,8 +235,7 @@ int cli_selector_show(struct cli_application *ctx, const char *title, const char
 	if (!s)
 		return NB_ERR_NOMEM;
 
-	*s = (struct cli_selector){.ctx = ctx,
-				   .title = title,
+	*s = (struct cli_selector){.title = title,
 				   .choices = choices,
 				   .count = count,
 				   .current = current,
@@ -248,7 +247,7 @@ int cli_selector_show(struct cli_application *ctx, const char *title, const char
 			 ? cli_chat_panel_mount(ctx, cli_selector_build, s, cli_selector_complete)
 			 : NB_ERR_NOMEM;
 	if (rc)
-		cli_selector_complete(s, rc);
+		cli_selector_complete(ctx, s, rc);
 
 	return rc;
 }

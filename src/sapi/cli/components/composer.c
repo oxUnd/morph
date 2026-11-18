@@ -1,8 +1,6 @@
 #include "sapi/cli/components/composer.h"
 #include <nb/err.h>
-#include "sapi/cli/application.h"
 #include "sapi/cli/models/composer.h"
-#include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include <nothing/tui/component_state.h>
 #include <nothing/tui/controls/text_field.h>
@@ -12,19 +10,20 @@
 struct cli_composer {
 	struct nt_view base;
 	struct nt_view *editor;
-	struct cli_application *ctx;
+	struct cli_composer_model *model;
+	int styled;
 	struct nt_component_state *frame;
 };
 
 static int cli_composer_decorate(void *data, const char *text, size_t offset,
 				 struct nt_text_style *style)
 {
-	struct cli_application *ctx = data;
-	if (!cli_output_color_enabled(ctx) || offset > INT_MAX)
+	struct cli_composer_model *model = data;
+	if (offset > INT_MAX)
 		return 0;
 
 	int start, end;
-	if (cli_composer_model_image_span(&ctx->composer, text, (int)offset, 0, &start, &end)) {
+	if (cli_composer_model_image_span(model, text, (int)offset, 0, &start, &end)) {
 		style->foreground = (struct nt_color){NT_COLOR_INDEXED, 153};
 		style->background = (struct nt_color){NT_COLOR_INDEXED, 24};
 	}
@@ -35,13 +34,12 @@ static int cli_composer_decorate(void *data, const char *text, size_t offset,
 static int cli_composer_atomic_range(void *data, const char *text, size_t cursor, int backward,
 				     size_t *start, size_t *end)
 {
-	struct cli_application *ctx = data;
+	struct cli_composer_model *model = data;
 	if (cursor > INT_MAX)
 		return NB_ERR_NOT_FOUND;
 
 	int first, last;
-	if (!cli_composer_model_image_span(&ctx->composer, text, (int)cursor, backward, &first,
-					   &last))
+	if (!cli_composer_model_image_span(model, text, (int)cursor, backward, &first, &last))
 		return NB_ERR_NOT_FOUND;
 
 	*start = (size_t)first;
@@ -63,7 +61,7 @@ static int cli_composer_draw_padding(struct nt_view *view, enum nt_view_edge edg
 				     struct nt_canvas *canvas)
 {
 	struct cli_composer *composer = (struct cli_composer *)view;
-	if (cli_output_color_enabled(composer->ctx)) {
+	if (composer->styled) {
 		int rc = nt_canvas_fill_styled(canvas, &canvas->style);
 		if (rc)
 			return rc;
@@ -134,8 +132,8 @@ int cli_composer_update(struct nt_view *view, int64_t now_ms)
 		return NB_ERR_NOT_PERMITTED;
 
 	struct cli_composer *composer = (struct cli_composer *)view;
-	int frame = cli_composer_model_animation_frame(&composer->ctx->composer, now_ms);
-	if (!cli_output_color_enabled(composer->ctx) || frame >= 30)
+	int frame = cli_composer_model_animation_frame(composer->model, now_ms);
+	if (!composer->styled || frame >= 30)
 		frame = -1;
 
 	if (frame == nt_component_state_get_int(composer->frame))
@@ -149,9 +147,10 @@ int cli_composer_update(struct nt_view *view, int64_t now_ms)
 }
 
 struct nt_view *cli_composer_add_borrow(struct nt_builder *builder, struct nt_view *parent,
-					struct cli_application *ctx, struct nt_view **editor_borrow)
+					struct cli_composer_model *model, int styled,
+					struct nt_view **editor_borrow)
 {
-	if (!ctx || !editor_borrow) {
+	if (!model || !editor_borrow) {
 		nt_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
@@ -159,7 +158,7 @@ struct nt_view *cli_composer_add_borrow(struct nt_builder *builder, struct nt_vi
 	*editor_borrow = NULL;
 	struct nt_view_options options = {
 		.margin = {.top = 1}, .padding = {.top = 1, .bottom = 1}, .max_height = 8};
-	if (cli_output_color_enabled(ctx))
+	if (styled)
 		options.style.background =
 			(struct nt_color){NT_COLOR_INDEXED, CLI_INPUT_BACKGROUND_INDEX};
 
@@ -168,7 +167,8 @@ struct nt_view *cli_composer_add_borrow(struct nt_builder *builder, struct nt_vi
 	if (!composer)
 		return NULL;
 
-	composer->ctx = ctx;
+	composer->model = model;
+	composer->styled = styled;
 	struct nt_view *view = &composer->base;
 	nt_builder_fail(builder, nt_view_use_state_int(view, -1, &composer->frame));
 	const struct nt_view_options editor_options = {.max_height = 6};
@@ -178,10 +178,12 @@ struct nt_view *cli_composer_add_borrow(struct nt_builder *builder, struct nt_vi
 	composer->editor = editor;
 	if (editor) {
 		nt_builder_fail(builder, nt_text_field_set_multiline(editor, 1));
-		nt_builder_fail(builder,
-				nt_text_field_set_decoration(editor, cli_composer_decorate, ctx));
+		if (styled)
+			nt_builder_fail(builder, nt_text_field_set_decoration(
+							 editor, cli_composer_decorate, model));
+
 		nt_builder_fail(builder, nt_text_field_set_atomic_range_resolver(
-						 editor, cli_composer_atomic_range, ctx));
+						 editor, cli_composer_atomic_range, model));
 	}
 
 	*editor_borrow = editor;

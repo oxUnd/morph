@@ -20,20 +20,13 @@
 
 enum cli_history_mode { HISTORY_LIST, HISTORY_SEARCH, HISTORY_ENTRY, HISTORY_REQUEST };
 
-struct cli_history_source {
-	struct cli_application *ctx;
-	cJSON *report;
-};
-
-struct cli_history_view {
-	struct nt_stack_view base;
+struct cli_history_page {
+	struct nt_view_controller base;
 	struct nt_component_state *mode, *width, *small;
-	struct cli_application *ctx;
 	struct nt_view *count, *budget, *scope, *filters, *heading, *list, *query, *document_view,
 		*range;
 	cJSON *report;
 	nb_vec matches;
-	nb_buf document;
 	int filter, stored;
 	char row[BUFSIZ];
 };
@@ -101,18 +94,18 @@ static int cli_history_contains(const char *text, const char *query)
 	return 0;
 }
 
-static int cli_history_filter(struct cli_history_view *view)
+static int cli_history_filter(struct cli_history_page *page)
 {
 	cJSON *entry;
-	const char *query = nt_text_field_text(view->query);
+	const char *query = nt_text_field_text(page->query);
 
-	nb_vec_clear(&view->matches);
-	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(view->report, "entries")) {
+	nb_vec_clear(&page->matches);
+	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(page->report, "entries")) {
 		char sequence[32];
 
 		snprintf(sequence, sizeof(sequence), "#%lld",
 			 (long long)cli_history_number(entry, "sequence_no"));
-		if (!cli_history_matches_filter(entry, view->filter))
+		if (!cli_history_matches_filter(entry, page->filter))
 			continue;
 
 		if (!cli_history_contains(cli_history_string(entry, "content"), query) &&
@@ -123,7 +116,7 @@ static int cli_history_filter(struct cli_history_view *view)
 		    !cli_history_contains(cli_history_label(entry), query))
 			continue;
 
-		cJSON **slot = nb_vec_push(&view->matches);
+		cJSON **slot = nb_vec_push(&page->matches);
 
 		if (!slot)
 			return NB_ERR_NOMEM;
@@ -133,9 +126,9 @@ static int cli_history_filter(struct cli_history_view *view)
 	return 0;
 }
 
-static cJSON *cli_history_selected(struct cli_history_view *view)
+static cJSON *cli_history_selected(struct cli_history_page *page)
 {
-	cJSON **slot = nb_vec_at(&view->matches, nt_list_view_selected(view->list));
+	cJSON **slot = nb_vec_at(&page->matches, nt_list_view_selected(page->list));
 
 	return slot ? *slot : NULL;
 }
@@ -293,45 +286,35 @@ static int cli_history_entry_document(struct cli_application *ctx, const cJSON *
 	return rc;
 }
 
-static int cli_history_document(struct cli_history_view *view, enum cli_history_mode mode)
+static int cli_history_document(struct cli_history_page *page, enum cli_history_mode mode)
 {
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, BUFSIZ) ? 0 : NB_ERR_NOMEM);
+	int rc = 0;
+	cJSON *entry = cli_history_selected(page);
+	if (mode == HISTORY_REQUEST)
+		rc = cli_history_request_document(ctx, &text);
+	else if (entry)
+		rc = cli_history_entry_document(ctx, entry, page->stored, &text);
 
-	if (rc != 0)
+	if (rc)
 		return rc;
 
-	if (mode == HISTORY_REQUEST)
-		rc = cli_history_request_document(view->ctx, &text);
-	else if (cli_history_selected(view))
-		rc = cli_history_entry_document(view->ctx, cli_history_selected(view), view->stored,
-						&text);
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		nb_buf_cstr(&text), text.len, MORPH_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		return NB_ERR_NOMEM;
 
-	char *safe = rc == 0 ? morph_terminal_sanitize_dup(nb_buf_cstr(&text), text.len,
-							   MORPH_TERMINAL_TEXT_MULTILINE, NULL)
-			     : NULL;
+	for (char *p = safe; *p; p++)
+		if (*p == '\t')
+			*p = ' ';
 
-	if (rc == 0 && !safe)
-		rc = NB_ERR_NOMEM;
-
-	nb_buf_clear(&view->document);
-	if (rc == 0) {
-		for (char *p = safe; *p; p++) {
-			if (*p == '\t')
-				*p = ' ';
-		}
-
-		rc = (nb_buf_append_cstr(&view->document, safe) ? 0 : NB_ERR_NOMEM);
-	}
-
-	free(safe);
-	nb_buf_cleanup(&text);
-	return rc;
+	return nt_document_view_set_text(page->document_view, safe);
 }
 
 static const char *cli_history_row(void *data, size_t index)
 {
-	struct cli_history_view *page = data;
+	struct cli_history_page *page = data;
 	cJSON **item = nb_vec_at(&page->matches, index);
 	if (!item)
 		return "";
@@ -355,9 +338,9 @@ static const char *cli_history_row(void *data, size_t index)
 static void cli_history_row_style(void *data, size_t index, int selected,
 				  struct nt_text_style *style)
 {
-	struct cli_history_view *page = data;
+	struct cli_history_page *page = data;
 	*style = (struct nt_text_style){0};
-	if (!cli_output_color_enabled(page->ctx))
+	if (!cli_output_color_enabled(cli_application_from_controller(&page->base)))
 		return;
 
 	cJSON **item = nb_vec_at(&page->matches, index);
@@ -371,7 +354,7 @@ static void cli_history_row_style(void *data, size_t index, int selected,
 		style->foreground = (struct nt_color){NT_COLOR_INDEXED, 3};
 }
 
-static int cli_history_summary(struct cli_history_view *page)
+static int cli_history_summary(struct cli_history_page *page)
 {
 	int columns = (int)nt_component_state_get_int(page->width);
 	char text[BUFSIZ];
@@ -426,7 +409,7 @@ static int cli_history_summary(struct cli_history_view *page)
 	return rc;
 }
 
-static int cli_history_range(struct cli_history_view *page)
+static int cli_history_range(struct cli_history_page *page)
 {
 	size_t first, count, total;
 	int rc = nt_document_view_visible_lines(page->document_view, &first, &count, &total);
@@ -440,7 +423,7 @@ static int cli_history_range(struct cli_history_view *page)
 
 static int cli_history_overview_hidden(void *data, struct nt_value *value)
 {
-	struct cli_history_view *page = data;
+	struct cli_history_page *page = data;
 	return nt_value_set_bool(value,
 				 nt_component_state_get_bool(page->small) ||
 					 nt_component_state_get_int(page->mode) >= HISTORY_ENTRY);
@@ -448,7 +431,7 @@ static int cli_history_overview_hidden(void *data, struct nt_value *value)
 
 static int cli_history_reader_hidden(void *data, struct nt_value *value)
 {
-	struct cli_history_view *page = data;
+	struct cli_history_page *page = data;
 	return nt_value_set_bool(value,
 				 nt_component_state_get_bool(page->small) ||
 					 nt_component_state_get_int(page->mode) < HISTORY_ENTRY);
@@ -481,7 +464,7 @@ static int cli_history_help(void *data, struct nt_value *value)
 
 static int cli_history_detail_help(void *data, struct nt_value *value)
 {
-	struct cli_history_view *page = data;
+	struct cli_history_page *page = data;
 	int request = nt_component_state_get_int(page->mode) == HISTORY_REQUEST;
 	int narrow = nt_component_state_get_int(page->width) < 76;
 	return nt_value_set_string(value,
@@ -492,9 +475,10 @@ static int cli_history_detail_help(void *data, struct nt_value *value)
 						       "PgUp/PgDn scroll · Esc back"));
 }
 
-static int cli_history_focus(struct cli_history_view *page)
+static int cli_history_focus(struct cli_history_page *page)
 {
-	int rc = nt_view_flush_state(&page->base.base);
+	struct nt_view *root = nt_view_controller_root_view(&page->base);
+	int rc = nt_view_flush_state(root);
 	if (rc || nt_component_state_get_bool(page->small))
 		return rc;
 
@@ -502,10 +486,10 @@ static int cli_history_focus(struct cli_history_view *page)
 	return nt_view_focus(mode == HISTORY_SEARCH  ? page->query
 			     : mode >= HISTORY_ENTRY ? page->document_view
 			     : page->matches.len     ? page->list
-						     : &page->base.base);
+						     : root);
 }
 
-static int cli_history_set_mode(struct cli_history_view *page, enum cli_history_mode mode)
+static int cli_history_set_mode(struct cli_history_page *page, enum cli_history_mode mode)
 {
 	int rc = nt_component_state_set_int(page->mode, mode);
 	if (!rc)
@@ -515,7 +499,7 @@ static int cli_history_set_mode(struct cli_history_view *page, enum cli_history_
 	return rc ? rc : cli_history_focus(page);
 }
 
-static int cli_history_reload(struct cli_history_view *page, size_t selected)
+static int cli_history_reload(struct cli_history_page *page, size_t selected)
 {
 	int rc = cli_history_filter(page);
 	if (!rc)
@@ -532,12 +516,9 @@ static int cli_history_reload(struct cli_history_view *page, size_t selected)
 	return rc ? rc : cli_history_focus(page);
 }
 
-static int cli_history_open_document(struct cli_history_view *page, enum cli_history_mode mode)
+static int cli_history_open_document(struct cli_history_page *page, enum cli_history_mode mode)
 {
 	int rc = cli_history_document(page, mode);
-	if (!rc)
-		rc = nt_document_view_set_text(page->document_view, nb_buf_cstr(&page->document));
-
 	if (!rc)
 		rc = cli_history_set_mode(page, mode);
 
@@ -546,7 +527,7 @@ static int cli_history_open_document(struct cli_history_view *page, enum cli_his
 
 static int cli_history_action(void *data, const struct nt_view_event *event)
 {
-	struct cli_history_view *page = data;
+	struct cli_history_page *page = data;
 	if (event->type == NT_VIEW_EVENT_ACTIVATE)
 		return cli_history_open_document(page, HISTORY_ENTRY);
 
@@ -564,7 +545,7 @@ static int cli_history_action(void *data, const struct nt_view_event *event)
 
 static int cli_history_key(void *data, const struct nt_view_event *key)
 {
-	struct cli_history_view *page = data;
+	struct cli_history_page *page = data;
 	const struct nt_event *event = key->input;
 	int64_t mode = nt_component_state_get_int(page->mode);
 	int value = event->key;
@@ -573,7 +554,7 @@ static int cli_history_key(void *data, const struct nt_view_event *key)
 
 	int rc = 0;
 	if (value == 3 || value == 4) {
-		rc = nt_view_controller_dismiss(nt_view_controller(&page->base.base), 0);
+		rc = nt_view_controller_dismiss(&page->base, 0);
 	} else if (mode == HISTORY_SEARCH) {
 		if (value != 27 && value != '\r' && value != '\n')
 			return 0;
@@ -581,7 +562,7 @@ static int cli_history_key(void *data, const struct nt_view_event *key)
 		rc = cli_history_set_mode(page, HISTORY_LIST);
 	} else if (value == 27 || value == 'q') {
 		if (mode == HISTORY_LIST)
-			rc = nt_view_controller_dismiss(nt_view_controller(&page->base.base), 0);
+			rc = nt_view_controller_dismiss(&page->base, 0);
 		else
 			rc = cli_history_set_mode(page, HISTORY_LIST);
 	} else if (value == 's')
@@ -602,8 +583,8 @@ static int cli_history_key(void *data, const struct nt_view_event *key)
 
 static int cli_history_size(void *data, const struct nt_view_event *event)
 {
-	struct cli_history_view *page = data;
-	if (event->target != &page->base.base)
+	struct cli_history_page *page = data;
+	if (event->target != nt_view_controller_root_view(&page->base))
 		return 0;
 
 	int rc = nt_component_state_set_int(page->width, event->rect.width);
@@ -617,27 +598,13 @@ static int cli_history_size(void *data, const struct nt_view_event *event)
 	return rc ? rc : cli_history_summary(page);
 }
 
-static void cli_history_view_destroy(struct nt_view *view)
-{
-	struct cli_history_view *page = (struct cli_history_view *)view;
-	nb_vec_cleanup(&page->matches);
-	nb_buf_cleanup(&page->document);
-}
-
 static void cli_history_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
-	static const struct nt_view_class type = {.superclass = &nt_stack_view_class,
-						  .instance_size = sizeof(struct cli_history_view),
-						  .kind = "cli_history",
-						  .deinit = cli_history_view_destroy};
-	struct nt_view *root = nt_view_add(builder, NULL, &type, NULL);
+	struct cli_history_page *page = (struct cli_history_page *)controller;
+	struct nt_view *root = nt_column_add(builder, NULL, 0, NULL);
 	if (!root)
 		return;
 
-	struct cli_history_view *page = (struct cli_history_view *)root;
-	struct cli_history_source *source = controller->data;
-	page->ctx = source->ctx;
-	page->report = source->report;
 	nb_vec_init(&page->matches, sizeof(page->report));
 	int columns, rows;
 	nt_terminal_dimensions(STDOUT_FILENO, &columns, &rows);
@@ -716,42 +683,29 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	nt_builder_fail(builder, cli_history_reload(page, SIZE_MAX));
 }
 
-static void cli_history_close(void *data, int result)
-{
-	struct cli_history_source *source = data;
-	(void)result;
-	cJSON_Delete(source->report);
-	free(source);
-}
-
 static void cli_history_destroy(struct nt_view_controller *controller)
 {
-	struct cli_history_source *source = controller->data;
-	if (source)
-		cli_application_panel_complete(source->ctx, source, cli_history_close,
-					       nt_view_controller_result(controller));
+	struct cli_history_page *page = (struct cli_history_page *)controller;
+	nb_vec_cleanup(&page->matches);
+	cJSON_Delete(page->report);
 }
 
-int cli_history_view(struct cli_application *ctx, cJSON *report)
+int cli_history_show(struct cli_application *ctx)
 {
 	static const struct nt_view_controller_class type = {
-		.superclass = &nt_view_controller_base_class,
-		.instance_size = sizeof(struct nt_view_controller),
+		.superclass = &cli_application_panel_class,
+		.instance_size = sizeof(struct cli_history_page),
 		.load_view = cli_history_build,
-		.deinit = cli_history_destroy};
-	struct cli_history_source *source = calloc(1, sizeof(*source));
-	if (!source)
-		return NB_ERR_NOMEM;
+		.deinit = cli_history_destroy,
+	};
+	struct nt_view_controller *owner NB_CLEANUP(cli_application_controller_cleanup) = NULL;
+	int rc = nt_view_controller_create(&type, &owner);
+	if (rc)
+		return rc;
 
-	source->ctx = ctx;
-	source->report = cJSON_Duplicate(report, 1);
-	int accepted = 0;
-	int rc = source->report ? cli_application_show_page(ctx, &type, source, 0, &accepted)
-			      : NB_ERR_NOMEM;
-	if (!accepted)
-		cli_history_close(source, rc);
-
-	return rc;
+	struct cli_history_page *page = (struct cli_history_page *)owner;
+	rc = runtime_session_history_inspect_copy(ctx->runtime, &page->report);
+	return rc ? rc : cli_application_show_page(ctx, &owner, 0);
 }
 
 void cli_history_print(struct cli_application *ctx, const cJSON *report, int limit, int all)

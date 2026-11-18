@@ -5,7 +5,7 @@
 
 struct cli_application;
 
-int cli_history_view(struct cli_application *ctx, cJSON *report);
+int cli_history_show(struct cli_application *ctx);
 void cli_history_print(struct cli_application *ctx, const cJSON *report, int limit, int all);
 int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, int64_t sequence,
 			    int stored);

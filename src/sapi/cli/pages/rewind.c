@@ -17,10 +17,9 @@
 #include <string.h>
 
 struct cli_rewind_picker {
-	struct cli_application *ctx;
+	struct nt_view_controller base;
 	cJSON *listing;
 	cJSON *preview;
-	struct nt_view_controller *controller;
 	struct nt_view *heading[4], *list, *files, *footer;
 	cli_rewind_apply_fn apply;
 	int64_t id;
@@ -28,13 +27,6 @@ struct cli_rewind_picker {
 	enum runtime_rewind_mode mode;
 	char error[256];
 };
-
-static void cli_rewind_cleanup(struct cli_rewind_picker *picker)
-{
-	cJSON_Delete(picker->listing);
-	cJSON_Delete(picker->preview);
-	free(picker);
-}
 
 static const char *cli_rewind_prompt(const cJSON *entry)
 {
@@ -64,15 +56,6 @@ static const char *cli_rewind_reason(const struct cli_rewind_picker *picker)
 	return reason && *reason ? reason
 				 : "Code restore is unavailable; inspect conflicts or choose "
 				   "conversation only.";
-}
-
-static void cli_rewind_close(void *opaque, int result)
-{
-	struct cli_rewind_picker *picker = opaque;
-	if (!result && picker->mode)
-		(void)picker->apply(picker->ctx, picker->id, picker->mode);
-
-	cli_rewind_cleanup(picker);
 }
 
 static const char *const cli_rewind_names[] = {"Code and conversation", "Code only",
@@ -118,7 +101,7 @@ static int cli_rewind_row(void *data, struct nt_canvas *canvas, size_t item, siz
 static int cli_rewind_layout(struct cli_rewind_picker *page)
 {
 	struct nt_terminal_environment env;
-	int rc = nt_application_environment(&page->ctx->base, &env);
+	int rc = nt_application_environment(nt_view_controller_application(&page->base), &env);
 	if (rc)
 		return rc;
 
@@ -233,14 +216,15 @@ static int cli_rewind_activate(void *data, const struct nt_view_event *event)
 		}
 
 		page->mode = cli_rewind_modes[index];
-		return nt_view_controller_dismiss(page->controller, 0);
+		return nt_view_controller_dismiss(&page->base, 0);
 	}
 
 	const cJSON *entry =
 		cJSON_GetArrayItem(cJSON_GetObjectItem(page->listing, "checkpoints"), (int)index);
 	page->id = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id"));
 	cJSON_DeleteOwner(&page->preview);
-	int rc = runtime_checkpoint_preview_copy(page->ctx->runtime, page->id, &page->preview);
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	int rc = runtime_checkpoint_preview_copy(ctx->runtime, page->id, &page->preview);
 	if (rc) {
 		snprintf(page->error, sizeof(page->error), "Preview failed: %s",
 			 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
@@ -257,8 +241,7 @@ static int cli_rewind_activate(void *data, const struct nt_view_event *event)
 
 static void cli_rewind_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
-	struct cli_rewind_picker *page = controller->data;
-	page->controller = controller;
+	struct cli_rewind_picker *page = (struct cli_rewind_picker *)controller;
 	struct nt_view *root = nt_view_add(builder, NULL, &nt_view_base_class, NULL);
 	const struct nt_view_options heading = cli_panel_heading(NT_AUTO);
 	const struct nt_view_options hint = cli_panel_hint(NT_AUTO);
@@ -284,7 +267,7 @@ static void cli_rewind_build(struct nt_view_controller *controller, struct nt_bu
 
 static int cli_rewind_event(struct nt_view_controller *controller, const struct nt_event *event)
 {
-	struct cli_rewind_picker *page = controller->data;
+	struct cli_rewind_picker *page = (struct cli_rewind_picker *)controller;
 	if (event->type == NT_EVENT_RESIZE)
 		return cli_rewind_layout(page);
 
@@ -306,40 +289,36 @@ static int cli_rewind_event(struct nt_view_controller *controller, const struct 
 
 static void cli_rewind_deinit(struct nt_view_controller *controller)
 {
-	struct cli_rewind_picker *page = controller->data;
-	if (page)
-		cli_application_panel_complete(page->ctx, page, cli_rewind_close,
-					       nt_view_controller_result(controller));
+	struct cli_rewind_picker *page = (struct cli_rewind_picker *)controller;
+	struct cli_application *ctx = cli_application_from_controller(controller);
+	int result = nt_view_controller_result(controller);
+	if (ctx && !result && page->mode)
+		(void)page->apply(ctx, page->id, page->mode);
+
+	cJSON_Delete(page->listing);
+	cJSON_Delete(page->preview);
 }
 
-int cli_rewind_show_take(struct cli_application *ctx, cJSON **listing, cli_rewind_apply_fn apply)
+int cli_rewind_create_take(cJSON **listing, cli_rewind_apply_fn apply,
+			   struct nt_view_controller **out)
 {
-	if (!ctx || !listing || !*listing || !apply ||
+	if (!listing || !*listing || !apply ||
 	    cJSON_GetArraySize(cJSON_GetObjectItem(*listing, "checkpoints")) <= 0)
 		return NB_ERR_INVAL;
 
-	struct cli_rewind_picker *picker = calloc(1, sizeof(*picker));
-	if (!picker)
-		return NB_ERR_NOMEM;
-
-	picker->ctx = ctx;
-	picker->listing = *listing;
-	picker->apply = apply;
 	static const struct nt_view_controller_class type = {
-		.superclass = &nt_view_controller_base_class,
-		.instance_size = sizeof(struct nt_view_controller),
+		.superclass = &cli_application_panel_class,
+		.instance_size = sizeof(struct cli_rewind_picker),
 		.load_view = cli_rewind_build,
 		.handle_event = cli_rewind_event,
 		.deinit = cli_rewind_deinit,
 	};
-	int accepted = 0;
-	int rc = cli_application_show_page(ctx, &type, picker, 0, &accepted);
-	if (accepted)
-		*listing = NULL;
-	else {
-		picker->listing = NULL;
-		cli_rewind_cleanup(picker);
-	}
+	int rc = nt_view_controller_create(&type, out);
+	if (rc)
+		return rc;
 
-	return rc;
+	struct cli_rewind_picker *page = (struct cli_rewind_picker *)*out;
+	page->listing = cJSON_StealOwner(listing);
+	page->apply = apply;
+	return 0;
 }

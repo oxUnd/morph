@@ -1,9 +1,7 @@
 #include "sapi/cli/components/media.h"
 #include <nb/err.h>
-#include "sapi/cli/application.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/presentation/messages.h"
-#include "sapi/cli/presentation/output.h"
 #include "render/video.h"
 #include "sapi/cli/adapters/media/asset.h"
 #include <nb/cleanup.h>
@@ -11,7 +9,7 @@
 #include <nothing/tui/terminal/text.h>
 #include <nothing/tui/views/image_view.h>
 #include <nothing/tui/views/text_view.h>
-#include <nothing/tui/window.h>
+#include <nothing/tui/view_controller.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -19,7 +17,6 @@
 
 struct cli_media {
 	struct nt_view base;
-	struct cli_application *ctx;
 	struct nt_view *image, *caption;
 	int pixels_wide, pixels_high, columns, rows;
 };
@@ -31,8 +28,7 @@ static int cli_media_measure(struct nt_view *view, int width,
 	media->columns = 0;
 	media->rows = 0;
 	if (media->image && width > 0) {
-		struct nt_view *root = nt_window_root_view(
-			nt_application_window(&media->ctx->base));
+		struct nt_view *root = nt_view_controller_root_view(nt_view_controller(view));
 		int limit = root ? nt_view_frame(root).height : 0;
 		if (limit < 1)
 			limit = 24;
@@ -89,18 +85,18 @@ static void cli_media_asset_cleanup(struct nt_media_asset **owner)
 	*owner = NULL;
 }
 
-struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
-	struct nt_view *parent, struct cli_application *ctx, const char *type,
-	const char *path, const struct nt_view_options *options)
+struct nt_view *cli_media_add(struct nt_builder *builder, struct nt_view *parent, int styled,
+			      const char *type, const char *path,
+			      const struct nt_view_options *options)
 {
-	if (!ctx || !type || !path || !*path || (strcmp(type, "image") && strcmp(type, "video"))) {
+	if (!type || !path || !*path || (strcmp(type, "image") && strcmp(type, "video"))) {
 		nt_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
 
 	int video = !strcmp(type, "video");
 	struct nt_media_asset *asset NB_CLEANUP(cli_media_asset_cleanup) = NULL;
-	if (cli_output_color_enabled(ctx) && cli_media_native_available())
+	if (styled && cli_media_native_available())
 		(void)cli_renderer_media_asset_create_copy(type, path, &asset);
 
 	static const struct nt_view_class ops = {.superclass = &nt_view_base_class,
@@ -113,7 +109,6 @@ struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
 	if (!media)
 		return NULL;
 
-	media->ctx = ctx;
 	struct nt_view *view = &media->base;
 	if (asset) {
 		media->pixels_wide = nt_media_asset_width(asset);
@@ -146,10 +141,9 @@ struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
 		if (media->caption) {
 			nt_view_set_focusable(media->caption, 0);
 			if (!rc)
-				nt_builder_fail(
-					builder, cli_messages_set_rendered_view(
-							 media->caption, nb_buf_cstr(&caption),
-							 cli_output_color_enabled(ctx)));
+				nt_builder_fail(builder, cli_messages_set_rendered_view(
+								 media->caption,
+								 nb_buf_cstr(&caption), styled));
 		}
 	}
 

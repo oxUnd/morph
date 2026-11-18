@@ -17,8 +17,6 @@ struct cli_command_job_prompt {
 static void *cli_command_job_run(void *opaque)
 {
 	struct cli_command_job *job = opaque;
-	struct cli_application *ctx = job->ctx;
-	(void)ctx;
 	int result;
 
 	result = job->fn(job->ctx, job->input, job->user_data);
@@ -304,8 +302,6 @@ int cli_command_job_prompts_copy(struct cli_command_job *job, char **items, size
 int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 {
 	struct cli_command_job *job = opaque;
-	struct cli_application *ctx = job->ctx;
-	(void)ctx;
 	struct cli_command_job_prompt *items;
 
 	(void)timeout;

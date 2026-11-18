@@ -212,7 +212,6 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 }
 
 struct cli_question_ask_user_call {
-	struct cli_application *ctx;
 	const char *question;
 	const char *const *choices;
 	int choices_count;
@@ -224,15 +223,13 @@ struct cli_question_ask_user_call {
 	int *answers_count;
 };
 
-static int cli_question_ask_user_on_owner(void *opaque)
+static int cli_question_ask_user_on_owner(struct cli_application *ctx, void *opaque)
 {
-	struct cli_question_ask_user_call *call = opaque;
-	struct cli_application *ctx = call->ctx;
-	(void)ctx;
+	const struct cli_question_ask_user_call *call = opaque;
 
 	return cli_question_callback(call->question, call->choices, call->choices_count,
 				     call->selection_mode, call->min_choices, call->max_choices,
-				     call->options, call->answers, call->answers_count, call->ctx);
+				     call->options, call->answers, call->answers_count, ctx);
 }
 
 static int cli_question_ask_user_prompt(const char *question, const char *const *choices,
@@ -509,8 +506,15 @@ int cli_question_callback(const char *question, const char *const *choices, int 
 
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
 		struct cli_question_ask_user_call call = {
-			ctx,	     question,	  choices, choices_count, selection_mode,
-			min_choices, max_choices, options, answers,	  answers_count,
+			.question = question,
+			.choices = choices,
+			.choices_count = choices_count,
+			.selection_mode = selection_mode,
+			.min_choices = min_choices,
+			.max_choices = max_choices,
+			.options = options,
+			.answers = answers,
+			.answers_count = answers_count,
 		};
 		return cli_event_queue_call_owner(ctx, cli_question_ask_user_on_owner, &call);
 	}

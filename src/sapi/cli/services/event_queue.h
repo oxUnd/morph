@@ -10,7 +10,7 @@ struct cli_event_queue_item;
 struct cli_event_queue_owner_call;
 typedef int (*cli_event_queue_dispatch_fn)(struct cli_application *,
 					   const struct cli_event_queue_item *);
-typedef int (*cli_event_queue_call_fn)(void *data);
+typedef int (*cli_event_queue_call_fn)(struct cli_application *ctx, void *data);
 
 int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_fn dispatch);
 int cli_event_queue_run_owner_call(struct cli_application *ctx,

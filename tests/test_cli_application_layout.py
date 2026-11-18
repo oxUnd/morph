@@ -101,6 +101,20 @@ def main():
         relative = source.relative_to(CLI).as_posix()
         if len(re.findall(r'(?<![\w/])' + re.escape(relative) + r'(?![\w.])', cmake)) != 1:
             errors.append(f'{source}: source must appear exactly once in CMake')
+        if (CLI / 'pages') in source.parents:
+            descriptors = re.findall(r'\bstruct nt_view_controller_class\s+\w+\s*=\s*\{([^}]+)', code)
+            for descriptor in descriptors:
+                instance = re.search(r'\.instance_size\s*=\s*sizeof\(struct (cli_\w+)\)', descriptor)
+                body = instance and re.search(r'\bstruct ' + instance[1] + r'\s*\{([^}]+)', code)
+                if not body or not re.match(r'\s*struct nt_view_controller\s+\w+;', body[1]):
+                    errors.append(f'{source}: a page must embed its NT controller as its first member')
+                elif re.search(r'\bstruct cli_application\s*\*|'
+                               r'\bstruct nt_view_controller\s*\*\s*controller\s*;', body[1]):
+                    errors.append(f'{source}: obtain the page and its host from the embedded controller')
+                if source.name != 'chat.c' and '&cli_application_panel_class' not in descriptor:
+                    errors.append(f'{source}: present modal pages through the common panel lifecycle')
+            if source.name != 'chat.c' and 'nt_application_present_view_controller' in code:
+                errors.append(f'{source}: present modal pages with cli_application_show_page')
         if source.parent == CLI / 'components':
             calls = set(re.findall(r'\b(cli_\w+)\s*\(', code)) - headers[header]
             if not (calls & view_factories or re.search(r'\bnt_\w+_add\s*\(', code)):
@@ -172,8 +186,8 @@ def main():
     if re.search(r'\b(?:ioctl|TIOCGWINSZ|winsize)\b', feed):
         errors.append('presentation/feed.c: terminal dimensions belong to the shared size helper')
     chat = code_only((CLI / 'pages/chat.c').read_text())
-    if 'cli_application_present_page' not in chat:
-        errors.append('pages/chat.c: chat must present a retained ViewController')
+    if 'nt_application_present_view_controller' not in chat:
+        errors.append('pages/chat.c: chat must present its NT view controller')
     if re.search(r'\b(?:fprintf|printf|fputs|fwrite|putchar|nt_frame_present|'
                  r'cli_readline_(?:render_frame|suspend_copy|resume_take))\s*\(', chat):
         errors.append('pages/chat.c: retained chat must not own terminal painting or Readline geometry')

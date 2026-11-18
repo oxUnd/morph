@@ -335,7 +335,10 @@ class CliPresentationTest : public ::testing::Test
 				};
 				return type;
 			}();
-			ASSERT_EQ(cli_application_present_page(&ctx.base, &root, nullptr, 0), 0);
+			struct nt_view_controller *page NB_CLEANUP(
+				cli_application_controller_cleanup) = nullptr;
+			ASSERT_EQ(nt_view_controller_create(&root, &page), 0);
+			ASSERT_EQ(nt_application_present_view_controller(&ctx.base, &page), 0);
 			ASSERT_EQ(nt_application_step(&ctx.base, 0), 0);
 		}
 

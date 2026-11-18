@@ -46,10 +46,12 @@ static std::string retained_media_transfer(unsigned id, unsigned format, int col
 	char *encoded = test_encode_bytes(bytes, length);
 	if (!encoded)
 		return "";
+
 	std::string result = "\033_Ga=T,f=" + std::to_string(format) + ",i=" + std::to_string(id) +
 			     ",U=1,q=2,c=" + std::to_string(columns) + ",r=" + std::to_string(rows);
 	if (format == 32)
 		result += ",s=" + std::to_string(width) + ",v=" + std::to_string(height);
+
 	result += ";";
 	result += encoded;
 	result += "\033\\";
@@ -85,8 +87,10 @@ class CliRetainedMediaTest : public ::testing::Test
 					nt_terminal_strip_ansi_dup(rows.ptr, rows.len, nullptr);
 				if (plain)
 					self->plain = plain;
+
 				free(plain);
 			}
+
 			nb_buf_cleanup(&rows);
 			self->placements.clear();
 			for (size_t i = 0; i < nt_surface_image_count(surface); i++) {
@@ -97,6 +101,7 @@ class CliRetainedMediaTest : public ::testing::Test
 					 image->source_height, nt_media_asset_key(image->asset),
 					 reinterpret_cast<uintptr_t>(image->asset)});
 			}
+
 			return rc;
 		},
 		nullptr, this};
@@ -123,6 +128,7 @@ class CliRetainedMediaTest : public ::testing::Test
 	{
 		if (const char *term = getenv("TERM"))
 			original_term = term;
+
 		ASSERT_EQ(setenv("TERM", "xterm-kitty", 1), 0);
 		master = posix_openpt(O_RDWR | O_NOCTTY);
 		ASSERT_GE(master, 0);
@@ -149,10 +155,13 @@ class CliRetainedMediaTest : public ::testing::Test
 			setenv("TERM", original_term->c_str(), 1);
 		else
 			unsetenv("TERM");
+
 		if (input)
 			fclose(input);
+
 		if (output)
 			fclose(output);
+
 		if (master >= 0)
 			close(master);
 	}
@@ -166,7 +175,11 @@ class CliRetainedMediaTest : public ::testing::Test
 			value.load_view = Build;
 			return value;
 		}();
-		ASSERT_EQ(cli_application_present_page(app, &type, this, 0), 0);
+		struct nt_view_controller *page NB_CLEANUP(cli_application_controller_cleanup) =
+			nullptr;
+		ASSERT_EQ(nt_view_controller_create(&type, &page), 0);
+		page->data = this;
+		ASSERT_EQ(nt_application_present_view_controller(app, &page), 0);
 		ASSERT_EQ(nt_application_step(app, 0), 0);
 	}
 
@@ -288,6 +301,7 @@ TEST_F(CliRetainedMediaTest, TextUpdatesKeepTheirOriginalViewBindingAndReflowWit
 		ASSERT_EQ(nt_view_child(document, 0), original_text);
 		ASSERT_EQ(nt_view_child_count(document), 1u);
 	}
+
 	ASSERT_EQ(nt_view_emit(nt_view_child(document, 0), NT_VIEW_EVENT_ACTIVATE, 0, "retained"),
 		  0);
 	EXPECT_EQ(text_actions, 1);

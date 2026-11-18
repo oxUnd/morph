@@ -4,11 +4,12 @@
 #include <nothing/tui/view.h>
 #include <stdint.h>
 
-struct cli_application;
+struct cli_composer_model;
 
 /* Both returned views are borrowed for their controller's lifetime. */
 struct nt_view *cli_composer_add_borrow(struct nt_builder *, struct nt_view *parent,
-					struct cli_application *, struct nt_view **editor_borrow);
+					struct cli_composer_model *, int styled,
+					struct nt_view **editor_borrow);
 int cli_composer_update(struct nt_view *, int64_t now_ms);
 /* Preserve editable rows before shrinking the component's own spacing.
  * A preceding history separator replaces this component's leading margin. */

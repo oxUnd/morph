@@ -22,18 +22,15 @@ void cli_runtime_observer_resume(void *user_data)
 }
 
 struct cli_runtime_observer_credit_warning {
-	struct cli_application *ctx;
 	int64_t credits;
 	int daily_limit;
 };
 
-static int cli_runtime_observer_credit_warning_on_owner(void *opaque)
+static int cli_runtime_observer_credit_warning_on_owner(struct cli_application *ctx, void *opaque)
 {
-	struct cli_runtime_observer_credit_warning *warning = opaque;
-	struct cli_application *ctx = warning->ctx;
-	(void)ctx;
+	const struct cli_runtime_observer_credit_warning *warning = opaque;
 
-	cli_feed_history_begin(warning->ctx);
+	cli_feed_history_begin(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 		nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
 		(void)nb_buf_printf(&title, "Credits warning: %lld / %d today",
@@ -41,11 +38,12 @@ static int cli_runtime_observer_credit_warning_on_owner(void *opaque)
 		(void)cli_feed_notice_write(ctx, CLI_NOTICE_WARNING, nb_buf_cstr(&title), NULL,
 					    NULL);
 	} else {
-	cli_output_printf(ctx, ANSI_YELLOW "credits warning: %lld / %d today" ANSI_RESET "\n",
-	       (long long)warning->credits, warning->daily_limit);
+		cli_output_printf(ctx,
+				  ANSI_YELLOW "credits warning: %lld / %d today" ANSI_RESET "\n",
+				  (long long)warning->credits, warning->daily_limit);
 	}
 
-	cli_feed_history_end(warning->ctx);
+	cli_feed_history_end(ctx);
 	return 0;
 }
 
@@ -66,15 +64,14 @@ void cli_runtime_observer_usage(const struct model_usage *usage, void *user_data
 	if (runtime_credit_summary_today_get(ctx->runtime, &today) == 0 &&
 	    today.credits > config->credits.daily_limit) {
 		struct cli_runtime_observer_credit_warning warning = {
-			ctx,
-			today.credits,
-			config->credits.daily_limit,
+			.credits = today.credits,
+			.daily_limit = config->credits.daily_limit,
 		};
 
 		if (ctx->events)
 			(void)cli_event_queue_call_owner(
 				ctx, cli_runtime_observer_credit_warning_on_owner, &warning);
 		else
-			(void)cli_runtime_observer_credit_warning_on_owner(&warning);
+			(void)cli_runtime_observer_credit_warning_on_owner(ctx, &warning);
 	}
 }

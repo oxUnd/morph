@@ -14,9 +14,9 @@
 #include <locale.h>
 /* Age scheduling state on the UI owner. The host's next timer event starts
  * the real recap, after this owner callback has returned. */
-static int advance_recap(void *opaque)
+static int advance_recap(struct cli_application *ctx, void *data)
 {
-	struct cli_application *ctx = opaque;
+	(void)data;
 	if (ctx->turn_active)
 		return 0;
 
@@ -39,7 +39,7 @@ static int advance_recap(void *opaque)
 static void advance_recap_signal(int number, void *opaque)
 {
 	if (number == SIGUSR2)
-		(void)cli_event_queue_call_owner(opaque, advance_recap, opaque);
+		(void)cli_event_queue_call_owner(opaque, advance_recap, NULL);
 }
 
 /* Replay the real presenter without a model, for deterministic visual review. */

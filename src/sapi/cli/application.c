@@ -42,34 +42,33 @@
 #include <nothing/tui/window.h>
 #include "cJSON.h"
 
-int cli_application_present_page(struct nt_application *app,
-				 const struct nt_view_controller_class *type, void *data, int tick_ms)
+struct cli_application *cli_application_from_controller(const struct nt_view_controller *controller)
 {
-	struct nt_view_controller *page = NULL;
-	int rc = nt_view_controller_create(type, &page);
+	return (struct cli_application *)nt_view_controller_application(controller);
+}
 
+struct cli_application *cli_application_from_view(const struct nt_view *view)
+{
+	return cli_application_from_controller(nt_view_controller(view));
+}
+
+void cli_application_controller_cleanup(struct nt_view_controller **owner)
+{
+	nt_view_controller_destroy(*owner);
+	*owner = NULL;
+}
+
+int cli_application_show_page(struct cli_application *ctx, struct nt_view_controller **owner,
+			      int tick_ms)
+{
+	if (!ctx || !owner || !*owner)
+		return NB_ERR_INVAL;
+
+	int rc = nt_view_controller_set_tick_interval(*owner, tick_ms);
 	if (rc)
 		return rc;
 
-	page->data = data;
-	rc = nt_view_controller_set_tick_interval(page, tick_ms);
-	if (!rc)
-		rc = nt_application_present_view_controller(app, &page);
-
-	if (rc) {
-		page->data = NULL;
-		nt_view_controller_destroy(page);
-	}
-
-	return rc;
-}
-
-int cli_application_show_page(struct cli_application *ctx, const struct nt_view_controller_class *type,
-			      void *data, int tick_ms, int *accepted)
-{
-	*accepted = 0;
 	int standalone = !cli_application_tui_borrow(ctx);
-	int rc = 0;
 	if (standalone) {
 		const struct nt_application_options options = {.input = stdin,
 							       .output = stdout,
@@ -87,14 +86,14 @@ int cli_application_show_page(struct cli_application *ctx, const struct nt_view_
 								  : NT_COLOR_PROFILE_NONE);
 	}
 
-	if (!rc)
-		rc = cli_application_present_page(&ctx->base, type, data, tick_ms);
-
 	if (!rc) {
-		*accepted = 1;
-		if (standalone)
-			rc = nt_application_run(&ctx->base);
+		rc = nt_application_present_view_controller(&ctx->base, owner);
+		if (!rc)
+			ctx->modal_count++;
 	}
+
+	if (!rc && standalone)
+		rc = nt_application_run(&ctx->base);
 
 	if (standalone)
 		nt_application_deinit(&ctx->base);
@@ -109,23 +108,35 @@ int cli_application_prompt_deferred(const struct cli_application *ctx)
 		nt_application_transition_pending(&ctx->base));
 }
 
-void cli_application_panel_complete(struct cli_application *ctx, void *data,
-				    void (*complete)(void *, int), int result)
+void cli_application_panel_finished(struct cli_application *ctx, int result)
 {
-	complete(data, result);
-	if (ctx->application_command &&
-	    !cli_chat_panel_active(ctx) &&
-	    !nt_application_transition_pending(cli_application_tui_borrow(ctx)) &&
-	    nt_application_depth(cli_application_tui_borrow(ctx)) <= 1) {
-		ctx->application_command = 0;
-		if (result < 0 && result != NB_ERR_CANCELLED)
-			CMD_ERROR(
-				ctx, "%s",
-				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, result));
+	if (!ctx || !ctx->application_command || ctx->modal_count || cli_chat_panel_active(ctx))
+		return;
 
-		cli_presentation_command_end(ctx);
-	}
+	ctx->application_command = 0;
+	if (result < 0 && result != NB_ERR_CANCELLED)
+		CMD_ERROR(ctx, "%s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, result));
+
+	cli_presentation_command_end(ctx);
 }
+
+static void cli_application_panel_deinit(struct nt_view_controller *controller)
+{
+	struct cli_application *ctx = cli_application_from_controller(controller);
+	if (!ctx)
+		return;
+
+	/* A child may already have presented its successor from its deinit. */
+	ctx->modal_count--;
+	cli_application_panel_finished(ctx, nt_view_controller_result(controller));
+}
+
+const struct nt_view_controller_class cli_application_panel_class = {
+	.superclass = &nt_view_controller_base_class,
+	.instance_size = sizeof(struct nt_view_controller),
+	.deinit = cli_application_panel_deinit,
+};
 
 static void cli_application_prepare_termination(struct nt_application *base, int result)
 {
@@ -140,7 +151,9 @@ static void cli_application_prepare_termination(struct nt_application *base, int
 	(void)cli_event_queue_stop_owner_calls(ctx);
 	if (ctx->input_job && ctx->input_job->active) {
 		runtime_cancel_turn(ctx->runtime);
-		cli_chat_job_finished(ctx->chat, cli_command_job_finish(ctx->input_job));
+		int job_result = cli_command_job_finish(ctx->input_job);
+		if (ctx->turn_active)
+			cli_turn_finish(ctx, job_result);
 	}
 
 	cli_event_queue_attach_app(ctx, NULL);
@@ -160,18 +173,9 @@ static int cli_application_copy_selection(void *data, const char *text)
 	return 0;
 }
 
-static void cli_application_run_session(struct cli_application *ctx, struct cli_command_job *job)
+static void cli_application_run_session(struct cli_application *ctx)
 {
-	struct cli_chat_page *page = NULL;
-	int app_rc = cli_chat_create(ctx, job, &page);
-
-	if (app_rc) {
-		CMD_ERROR(ctx, "Application failed: %s",
-			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, app_rc));
-		return;
-	}
-
-	struct nt_application_options options = cli_chat_options(page);
+	struct nt_application_options options = cli_chat_options();
 	options.synchronized_output = 1;
 	options.repaint_rows = 1;
 	static const struct nt_application_class type = {
@@ -180,7 +184,7 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 		.prepare_termination = cli_application_prepare_termination,
 	};
 
-	app_rc = nt_application_init_with_class(&ctx->base, &type, &options);
+	int app_rc = nt_application_init_with_class(&ctx->base, &type, &options);
 	if (!app_rc) {
 		cli_event_queue_attach_app(ctx, &ctx->base);
 		app_rc = nt_application_set_color_profile(&ctx->base, cli_output_color_enabled(ctx)
@@ -190,7 +194,7 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 			cli_application_copy_selection, ctx);
 
 		if (!app_rc)
-			app_rc = cli_chat_present(page);
+			app_rc = cli_chat_present(ctx);
 
 		if (!app_rc)
 			app_rc = nt_application_run(&ctx->base);
@@ -199,7 +203,9 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 		cli_feed_set_hidden(ctx, 0);
 	}
 
-	cli_chat_destroy(page, app_rc);
+	if (app_rc < 0)
+		CMD_ERROR(ctx, "Application failed: %s",
+			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, app_rc));
 }
 
 static void cli_application_run_interactive(struct cli_application *ctx)
@@ -216,7 +222,7 @@ static void cli_application_run_interactive(struct cli_application *ctx)
 	ctx->input_job = &job;
 	ctx->input_status.enabled = 1;
 	if (cli_composer_model_init(&ctx->composer) == 0) {
-		cli_application_run_session(ctx, &job);
+		cli_application_run_session(ctx);
 		cli_composer_model_cleanup(&ctx->composer);
 	}
 
@@ -267,7 +273,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	rc = cli_event_queue_init(ctx, cli_dispatch_event);
 	if (rc != 0) {
 		cli_subagents_cleanup(ctx);
-	cli_presentation_cleanup(ctx);
+		cli_presentation_cleanup(ctx);
 		cli_feed_cleanup(ctx);
 		cli_input_cleanup(ctx);
 		return rc;
@@ -313,7 +319,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	if (rc != 0) {
 		cli_event_queue_cleanup(ctx);
 		cli_subagents_cleanup(ctx);
-	cli_presentation_cleanup(ctx);
+		cli_presentation_cleanup(ctx);
 		cli_feed_cleanup(ctx);
 		cli_input_cleanup(ctx);
 		return rc;

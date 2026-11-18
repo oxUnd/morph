@@ -135,8 +135,9 @@ class CliRetainedWidgetsTest : public ::testing::Test
 				self->component = cli_recap_add_borrow(builder, root,
 					self->recap_summary.c_str(), self->recap_next.c_str(), 1);
 			else if (self->kind == Composer) {
-				self->component = cli_composer_add_borrow(builder, root,
-					&self->ctx, &self->editor);
+				self->component = cli_composer_add_borrow(
+					builder, root, &self->ctx.composer,
+					cli_output_color_enabled(&self->ctx), &self->editor);
 				nt_builder_fail(builder,
 					nt_text_field_set_prompt(
 							self->editor, "› "));
@@ -202,7 +203,11 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		type.instance_size = sizeof(struct nt_view_controller);
 		type.load_view = Build;
 		static const struct nt_view_controller_class page_class = type;
-		ASSERT_EQ(cli_application_present_page(app, &page_class, this, 0), 0);
+		struct nt_view_controller *page NB_CLEANUP(cli_application_controller_cleanup) =
+			nullptr;
+		ASSERT_EQ(nt_view_controller_create(&page_class, &page), 0);
+		page->data = this;
+		ASSERT_EQ(nt_application_present_view_controller(app, &page), 0);
 		ASSERT_EQ(nt_application_step(app, 0), 0);
 		if (editor)
 			ASSERT_EQ(nt_window_focus_view(nt_application_window(app), editor), 0);

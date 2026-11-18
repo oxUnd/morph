@@ -23,14 +23,12 @@
 
 struct cli_memory_page {
 	struct nt_view_controller base;
-	struct cli_application *ctx;
 	struct nt_view *list;
 	struct nt_view *document;
 	struct nt_view *search;
 	cJSON *report;
 	struct nt_component_state *query, *detail, *searching;
 	char row[BUFSIZ];
-	int presented;
 };
 
 static const char *cli_memory_string(const cJSON *object, const char *key)
@@ -134,7 +132,8 @@ static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 			cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "enabled"))
 				? "enabled"
 				: "disabled (stored records remain inspectable)",
-			runtime_workdir_borrow(page->ctx->runtime),
+			runtime_workdir_borrow(
+				cli_application_from_controller(&page->base)->runtime),
 			cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "learning_enabled"))
 				? "enabled"
 				: "disabled",
@@ -291,7 +290,7 @@ static int cli_memory_show_document(struct cli_memory_page *page)
 static int cli_memory_refresh(struct cli_memory_page *page)
 {
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
-	int rc = runtime_memory_report_copy(page->ctx->runtime,
+	int rc = runtime_memory_report_copy(cli_application_from_controller(&page->base)->runtime,
 					    nt_component_state_get_string(page->query), &report);
 
 	if (rc != 0)
@@ -335,7 +334,6 @@ static void cli_memory_build(struct nt_view_controller *controller, struct nt_bu
 	const struct nt_view_options hint = cli_panel_hint(NT_AUTO);
 	struct nt_view *root = nt_stack_view_add(builder, NULL, NT_STACK_VIEW_VERTICAL, 0, &inset);
 
-	page->ctx = controller->data;
 	struct nt_view *title = nt_label_add(builder, root, "morph / memory", &heading);
 	struct nt_view *description = nt_label_add(builder, root, "", NULL);
 	page->list = cli_list_add(builder, root, &fill);
@@ -411,39 +409,25 @@ static int cli_memory_event(struct nt_view_controller *controller, const struct 
 	return rc ? rc : 1;
 }
 
-static void cli_memory_cleanup(void *data, int result)
-{
-	struct cli_memory_page *page = data;
-
-	(void)result;
-	cJSON_Delete(page->report);
-}
-
-static void cli_memory_appear(struct nt_view_controller *controller)
-{
-	((struct cli_memory_page *)controller)->presented = 1;
-}
-
 static void cli_memory_destroy(struct nt_view_controller *controller)
 {
 	struct cli_memory_page *page = (struct cli_memory_page *)controller;
-
-	int result = nt_view_controller_result(controller);
-	if (page->presented)
-		cli_application_panel_complete(page->ctx, page, cli_memory_cleanup, result);
-	else
-		cli_memory_cleanup(page, result);
+	cJSON_Delete(page->report);
 }
 
 int cli_memory_page_show(struct cli_application *ctx)
 {
 	static const struct nt_view_controller_class type = {
-		.superclass = &nt_view_controller_base_class,
+		.superclass = &cli_application_panel_class,
 		.instance_size = sizeof(struct cli_memory_page),
 		.load_view = cli_memory_build,
 		.handle_event = cli_memory_event,
-		.view_did_appear = cli_memory_appear,
 		.deinit = cli_memory_destroy,
 	};
-	return cli_application_present_page(cli_application_tui_borrow(ctx), &type, ctx, 0);
+	if (!cli_application_tui_borrow(ctx))
+		return NB_ERR_INVAL;
+
+	struct nt_view_controller *owner NB_CLEANUP(cli_application_controller_cleanup) = NULL;
+	int rc = nt_view_controller_create(&type, &owner);
+	return rc ? rc : cli_application_show_page(ctx, &owner, 0);
 }

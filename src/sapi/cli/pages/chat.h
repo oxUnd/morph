@@ -1,10 +1,10 @@
 #ifndef MORPH_CLI_PAGES_CHAT_H
 #define MORPH_CLI_PAGES_CHAT_H
+
 #include <nothing/tui/application.h>
 #include <nothing/tui/choice_prompt.h>
+
 struct cli_application;
-struct cli_command_job;
-struct cli_chat_page;
 struct cli_transcript_tool;
 struct morph_event;
 struct cli_feed_block;
@@ -13,11 +13,9 @@ struct cli_mcp_tree_item;
 struct cli_skill_list_row;
 struct nt_view;
 struct nt_builder;
-int cli_chat_create(struct cli_application *, struct cli_command_job *, struct cli_chat_page **out);
-struct nt_application_options cli_chat_options(struct cli_chat_page *);
-int cli_chat_present(struct cli_chat_page *);
-void cli_chat_job_finished(struct cli_chat_page *, int result);
-void cli_chat_destroy(struct cli_chat_page *, int result);
+
+struct nt_application_options cli_chat_options(void);
+int cli_chat_present(struct cli_application *);
 int cli_chat_active(const struct cli_application *);
 int cli_chat_output(struct cli_application *, const char *text);
 int cli_chat_media(struct cli_application *, const char *type, const char *path);
@@ -41,10 +39,14 @@ int cli_chat_prompt_choice(struct cli_application *, int rows, struct nt_selecti
 			   FILE *input, char **custom);
 int cli_chat_panel_active(const struct cli_application *);
 typedef struct nt_view *(*cli_chat_panel_build_fn)(struct nt_builder *, struct nt_view *, void *);
+typedef void (*cli_chat_panel_complete_fn)(struct cli_application *, void *, int);
+/* Successful mounting transfers data to complete, called once after the panel's native views
+ * and active listeners retire. */
 int cli_chat_panel_mount(struct cli_application *, cli_chat_panel_build_fn, void *data,
-			 void (*complete)(void *, int));
+			 cli_chat_panel_complete_fn complete);
 int cli_chat_panel_close(struct cli_application *, int result);
 void cli_chat_panel_set_refresh(struct cli_application *,
 				int (*refresh)(void *, const struct nt_event *));
 void cli_chat_transcript_reset(struct cli_application *);
+
 #endif

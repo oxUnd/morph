@@ -404,19 +404,19 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 		return cli_history_request_print(ctx);
 
 	if (!show_messages) {
-		cJSON *report = NULL;
-		int rc = runtime_session_history_inspect_copy(ctx->runtime, &report);
+		int rc;
+		if (argc == 1 && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
+		    cli_setup_controls_available(stdin, stdout)) {
+			rc = cli_history_show(ctx);
+		} else {
+			cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+			rc = runtime_session_history_inspect_copy(ctx->runtime, &report);
+			if (!rc && sequence)
+				rc = cli_history_entry_print(ctx, report, sequence, stored);
+			else if (!rc)
+				cli_history_print(ctx, report, n, show_all);
+		}
 
-		if (rc == 0 && sequence)
-			rc = cli_history_entry_print(ctx, report, sequence, stored);
-		else if (rc == 0 && argc == 1 &&
-			 ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
-			 cli_setup_controls_available(stdin, stdout))
-			rc = cli_history_view(ctx, report);
-		else if (rc == 0)
-			cli_history_print(ctx, report, n, show_all);
-
-		cJSON_Delete(report);
 		if (rc != 0)
 			CMD_ERROR(ctx, "history inspection failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));

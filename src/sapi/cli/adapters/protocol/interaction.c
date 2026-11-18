@@ -13,7 +13,6 @@
 #define CLI_INTERACTION_INPUT_MAX (1024 * 1024)
 
 struct cli_interaction_call {
-	struct cli_application *ctx;
 	const char *kind;
 	const cJSON *request_data;
 	cli_interaction_validate_fn validate;
@@ -178,22 +177,20 @@ static int cli_interaction_parse_response(const char *json, const char *request_
 	return 0;
 }
 
-static int cli_interaction_request_on_owner(void *opaque)
+static int cli_interaction_request_on_owner(struct cli_application *ctx, void *opaque)
 {
-	struct cli_interaction_call *call = opaque;
-	struct cli_application *ctx = call->ctx;
-	(void)ctx;
+	const struct cli_interaction_call *call = opaque;
 	char request_id[CLI_INTERACTION_ID_MAX];
 	nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
-	if (!call || !call->ctx || !call->kind || !call->response_data)
+	if (!call || !ctx || !call->kind || !call->response_data)
 		return NB_ERR_INVAL;
 
-	call->ctx->interaction_sequence++;
+	ctx->interaction_sequence++;
 	snprintf(request_id, sizeof(request_id), "interaction-%llu",
-		 (unsigned long long)call->ctx->interaction_sequence);
-	rc = cli_interaction_emit(call->ctx, "interaction.request", "begin", request_id, call->kind,
+		 (unsigned long long)ctx->interaction_sequence);
+	rc = cli_interaction_emit(ctx, "interaction.request", "begin", request_id, call->kind,
 				  call->request_data, NULL);
 	if (rc != 0)
 		return rc;
@@ -214,7 +211,7 @@ static int cli_interaction_request_on_owner(void *opaque)
 		int cancelled = 0;
 		int64_t pending_deadline = deadline;
 
-		rc = cli_interaction_read_line(call->ctx, &line, &deadline);
+		rc = cli_interaction_read_line(ctx, &line, &deadline);
 		if (rc != 0) {
 			cJSON *indices = cJSON_GetObjectItemCaseSensitive(call->request_data,
 									  "recommended_indices");
@@ -224,7 +221,7 @@ static int cli_interaction_request_on_owner(void *opaque)
 								       : "timeout_no_input")
 					: nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 						     rc);
-			(void)cli_interaction_emit(call->ctx,
+			(void)cli_interaction_emit(ctx,
 						   rc == NB_ERR_TIMEOUT ? "interaction.resolved"
 									: "interaction.cancelled",
 						   rc == NB_ERR_TIMEOUT ? "end" : "failed",
@@ -253,14 +250,14 @@ static int cli_interaction_request_on_owner(void *opaque)
 						    &cancelled);
 		if (rc != 0) {
 			(void)cli_interaction_emit(
-				call->ctx, "interaction.invalid_response", "failed", request_id,
+				ctx, "interaction.invalid_response", "failed", request_id,
 				call->kind, NULL,
 				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			continue;
 		}
 
 		if (cancelled) {
-			(void)cli_interaction_emit(call->ctx, "interaction.cancelled", "failed",
+			(void)cli_interaction_emit(ctx, "interaction.cancelled", "failed",
 						   request_id, call->kind, NULL,
 						   "interaction cancelled");
 			nb_buf_cleanup(&line);
@@ -271,9 +268,8 @@ static int cli_interaction_request_on_owner(void *opaque)
 			rc = call->validate(response, call->validate_user_data);
 			if (rc != 0) {
 				cJSON_Delete(response);
-				(void)cli_interaction_emit(call->ctx,
-							   "interaction.invalid_response", "failed",
-							   request_id, call->kind, NULL,
+				(void)cli_interaction_emit(ctx, "interaction.invalid_response",
+							   "failed", request_id, call->kind, NULL,
 							   nb_err_str(morph_error_descriptions(),
 								      MORPH_ERROR_COUNT, rc));
 				continue;
@@ -281,7 +277,7 @@ static int cli_interaction_request_on_owner(void *opaque)
 		}
 
 		*call->response_data = response;
-		(void)cli_interaction_emit(call->ctx, "interaction.resolved", "end", request_id,
+		(void)cli_interaction_emit(ctx, "interaction.resolved", "end", request_id,
 					   call->kind, NULL, NULL);
 		nb_buf_cleanup(&line);
 		return 0;
@@ -315,7 +311,6 @@ int cli_interaction_request(struct cli_application *ctx, const char *kind,
 
 	*response_data = NULL;
 	call = (struct cli_interaction_call){
-		.ctx = ctx,
 		.kind = kind,
 		.request_data = request_data,
 		.validate = validate,

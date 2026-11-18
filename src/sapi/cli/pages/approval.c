@@ -185,32 +185,26 @@ static enum hitl_verdict cli_approval_json_hitl_approval(struct cli_application 
 }
 
 struct cli_approval_hitl_call {
-	struct cli_application *ctx;
 	const char *tool_name;
 	const char *tool_args;
 };
 
-static int cli_approval_hitl_on_owner(void *opaque)
+static int cli_approval_hitl_on_owner(struct cli_application *ctx, void *opaque)
 {
-	struct cli_approval_hitl_call *call = opaque;
-	struct cli_application *ctx = call->ctx;
-	(void)ctx;
+	const struct cli_approval_hitl_call *call = opaque;
 
-	return (int)cli_approval_tool_callback(call->tool_name, call->tool_args, call->ctx);
+	return (int)cli_approval_tool_callback(call->tool_name, call->tool_args, ctx);
 }
 
 struct cli_approval_operation_call {
-	struct cli_application *ctx;
 	const struct tool_operation *operation;
 };
 
-static int cli_approval_operation_on_owner(void *opaque)
+static int cli_approval_operation_on_owner(struct cli_application *ctx, void *opaque)
 {
-	struct cli_approval_operation_call *call = opaque;
-	struct cli_application *ctx = call->ctx;
-	(void)ctx;
+	const struct cli_approval_operation_call *call = opaque;
 
-	return (int)cli_approval_operation_callback(call->operation, call->ctx);
+	return (int)cli_approval_operation_callback(call->operation, ctx);
 }
 
 /* Reserve a right gutter so terminal autowrap never owns card layout. */
@@ -344,7 +338,7 @@ enum hitl_verdict cli_approval_tool_callback(const char *tool_name, const char *
 		return cli_approval_json_hitl_approval(ctx, tool_name, tool_args);
 
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
-		struct cli_approval_hitl_call call = {ctx, tool_name, tool_args};
+		struct cli_approval_hitl_call call = {tool_name, tool_args};
 
 		return (enum hitl_verdict)cli_event_queue_call_owner(
 			ctx, cli_approval_hitl_on_owner, &call);
@@ -642,7 +636,7 @@ enum tool_operation_verdict cli_approval_operation_callback(const struct tool_op
 		return cli_approval_json_operation_approval(ctx, op);
 
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
-		struct cli_approval_operation_call call = {ctx, op};
+		struct cli_approval_operation_call call = {.operation = op};
 
 		return (enum tool_operation_verdict)cli_event_queue_call_owner(
 			ctx, cli_approval_operation_on_owner, &call);

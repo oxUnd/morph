@@ -23,7 +23,6 @@ class CliSelectorTest : public RuntimeFacadeTest
       protected:
 	cli_application ctx{};
 	cli_command_job job{};
-	cli_chat_page *chat = nullptr;
 	FILE *input = nullptr;
 	FILE *output = nullptr;
 	size_t applied = SIZE_MAX;
@@ -46,7 +45,7 @@ class CliSelectorTest : public RuntimeFacadeTest
 			cli_event_queue_init(&ctx, [](cli_application *,
 						      const cli_event_queue_item *) { return 0; }),
 			0);
-		ASSERT_EQ(cli_chat_create(&ctx, &job, &chat), 0);
+		ctx.input_job = &job;
 		input = tmpfile();
 		output = tmpfile();
 		ASSERT_NE(input, nullptr);
@@ -56,7 +55,7 @@ class CliSelectorTest : public RuntimeFacadeTest
 		options.output = output;
 		options.external_signals = 1;
 		ASSERT_EQ(nt_application_init(&ctx.base, &options), 0);
-		ASSERT_EQ(cli_chat_present(chat), 0);
+		ASSERT_EQ(cli_chat_present(&ctx), 0);
 		ASSERT_EQ(nt_application_step(&ctx.base, 0), 0);
 	}
 
@@ -64,15 +63,19 @@ class CliSelectorTest : public RuntimeFacadeTest
 	{
 		if (cli_chat_panel_active(&ctx))
 			cli_chat_panel_close(&ctx, NB_ERR_CANCELLED);
+
 		nt_application_deinit(&ctx.base);
-		cli_chat_destroy(chat, 0);
+		EXPECT_EQ(ctx.chat, nullptr);
+		ctx.input_job = nullptr;
 		cli_command_job_cleanup(&job);
 		cli_composer_model_cleanup(&ctx.composer);
 		cli_event_queue_cleanup(&ctx);
 		if (input)
 			fclose(input);
+
 		if (output)
 			fclose(output);
+
 		RuntimeFacadeTest::TearDown();
 	}
 
@@ -106,6 +109,99 @@ class CliSelectorTest : public RuntimeFacadeTest
 		return out;
 	}
 };
+
+TEST_F(CliSelectorTest, PendingRootReleasesBorrowOnShutdownBeforeItsFirstFrame)
+{
+	ASSERT_TRUE(cli_chat_active(&ctx));
+	nt_application_deinit(&ctx.base);
+	ASSERT_EQ(ctx.chat, nullptr);
+
+	auto options = cli_chat_options();
+	options.input = input;
+	options.output = output;
+	ASSERT_EQ(nt_application_init(&ctx.base, &options), 0);
+	ASSERT_EQ(cli_chat_present(&ctx), 0);
+	EXPECT_NE(ctx.chat, nullptr);
+	EXPECT_FALSE(cli_chat_active(&ctx));
+	nt_application_deinit(&ctx.base);
+	EXPECT_EQ(ctx.chat, nullptr);
+	EXPECT_EQ(cli_chat_present(&ctx), NB_ERR_INVAL);
+	EXPECT_EQ(ctx.chat, nullptr);
+}
+
+TEST_F(CliSelectorTest, ControllerRetiresInlinePanelOnceOnShutdown)
+{
+	struct Completion {
+		cli_application *app;
+		int calls;
+		int result;
+	} completion{};
+
+	const auto build = [](nt_builder *builder, nt_view *parent, void *) {
+		return nt_list_view_add(builder, parent, nullptr, 0, 0, nullptr);
+	};
+	const auto complete = [](cli_application *app, void *data, int result) {
+		auto *observed = static_cast<Completion *>(data);
+		observed->app = app;
+		observed->calls++;
+		observed->result = result;
+		EXPECT_FALSE(cli_chat_active(app));
+	};
+	ASSERT_EQ(cli_chat_panel_mount(&ctx, build, &completion, complete), 0);
+	nt_application_deinit(&ctx.base);
+	EXPECT_EQ(completion.app, &ctx);
+	EXPECT_EQ(completion.calls, 1);
+	EXPECT_EQ(completion.result, NB_ERR_CANCELLED);
+	EXPECT_EQ(ctx.chat, nullptr);
+}
+
+TEST_F(CliSelectorTest, FocusFailureRetiresPanelAfterItsInputCallbackReturns)
+{
+	struct Observation {
+		int result = 0;
+		int calls = 0;
+		bool returned = false;
+		bool released = false;
+	} observed;
+
+	const auto build = [](nt_builder *builder, nt_view *parent, void *data) {
+		auto *list = nt_list_view_add(builder, parent, nullptr, 0, 0, nullptr);
+		nt_view_listener_options listener{};
+		listener.data = data;
+		listener.callback = [](void *payload, const nt_view_event *event) {
+			auto &state = *static_cast<Observation *>(payload);
+			auto *app = cli_application_from_view(event->current);
+			EXPECT_EQ(cli_chat_panel_close(app, 0), NB_ERR_STATE);
+			EXPECT_FALSE(cli_chat_panel_active(app));
+			EXPECT_FALSE(state.released);
+			EXPECT_EQ(state.calls, 0);
+			state.returned = true;
+			return 1;
+		};
+		listener.release = [](void *payload) {
+			auto &state = *static_cast<Observation *>(payload);
+			EXPECT_TRUE(state.returned);
+			EXPECT_EQ(state.calls, 0);
+			state.released = true;
+		};
+		EXPECT_NE(nt_view_on_full(list, NT_VIEW_EVENT_ACTIVATE, &listener), 0u);
+		return list;
+	};
+	const auto complete = [](cli_application *, void *data, int result) {
+		auto &state = *static_cast<Observation *>(data);
+		EXPECT_TRUE(state.released);
+		state.calls++;
+		state.result = result;
+	};
+	auto *editor = List();
+	ASSERT_NE(editor, nullptr);
+	ASSERT_EQ(cli_chat_panel_mount(&ctx, build, &observed, complete), 0);
+	ASSERT_EQ(nt_view_set_enabled(editor, 0), 0);
+	ASSERT_GT(nt_view_emit(List(), NT_VIEW_EVENT_ACTIVATE, 0, nullptr), 0);
+	EXPECT_EQ(observed.calls, 1);
+	EXPECT_EQ(observed.result, NB_ERR_STATE);
+	EXPECT_EQ(cli_chat_panel_close(&ctx, 0), 0);
+}
 
 TEST_F(CliSelectorTest, NavigationChangesDescriptionAndAppliesOnlyOnActivation)
 {

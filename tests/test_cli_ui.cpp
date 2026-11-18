@@ -59,18 +59,9 @@ class CliUiTest : public ::testing::Test
 	}
 };
 
-struct cli_owner_call_data {
-	struct cli_application *ctx;
-	int ran_on_owner;
-};
-
-static int cli_owner_call(void *opaque)
+static int cli_owner_call(struct cli_application *ctx, void *opaque)
 {
-	cli_owner_call_data *data = static_cast<cli_owner_call_data *>(opaque);
-	struct cli_application *ctx = data->ctx;
-	(void)ctx;
-
-	data->ran_on_owner = cli_event_queue_is_owner(data->ctx);
+	*static_cast<int *>(opaque) = cli_event_queue_is_owner(ctx);
 	return 73;
 }
 
@@ -174,9 +165,10 @@ TEST_F(CliUiTest, PausedEventsAllowStartupOwnerCallsWithoutDeliveringTheirPredec
 		"held startup event", nullptr, nullptr};
 	ASSERT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
-	cli_owner_call_data data{&ctx, 0};
+	int ran_on_owner = 0;
 	int result = 0;
-	std::thread worker([&] { result = cli_event_queue_call_owner(&ctx, cli_owner_call, &data); });
+	std::thread worker(
+		[&] { result = cli_event_queue_call_owner(&ctx, cli_owner_call, &ran_on_owner); });
 	struct pollfd ready{};
 	ready.fd = cli_event_queue_wake_fd(&ctx);
 	ready.events = POLLIN;
@@ -185,7 +177,7 @@ TEST_F(CliUiTest, PausedEventsAllowStartupOwnerCallsWithoutDeliveringTheirPredec
 	EXPECT_EQ(cli_event_queue_drain_batch(&ctx), 0);
 	worker.join();
 	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
-	EXPECT_EQ(data.ran_on_owner, 1);
+	EXPECT_EQ(ran_on_owner, 1);
 	EXPECT_EQ(result, 73);
 	ASSERT_EQ(cli_event_queue_set_events_enabled(&ctx, 1), 0);
 	testing::internal::CaptureStdout();
@@ -220,13 +212,11 @@ TEST_F(CliUiTest, CancelledOwnerPromptConsumesItsInterruptBeforeComposerRestore)
 	std::thread worker([&] {
 		result = cli_event_queue_call_owner(
 			&ctx,
-			+[](void *data) -> int {
-				auto *context = static_cast<struct cli_application *>(data);
-
-				nb_atomic_int_store(&context->interrupted, 1);
+			+[](struct cli_application *owner, void *) -> int {
+				nb_atomic_int_store(&owner->interrupted, 1);
 				return NB_ERR_CANCELLED;
 			},
-			&ctx);
+			nullptr);
 	});
 	struct pollfd ready{};
 	ready.fd = cli_event_queue_wake_fd(&ctx);
@@ -439,10 +429,10 @@ TEST_F(CliUiTest, NonOwnerCannotDrainPresentationState)
 
 TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
 {
-	cli_owner_call_data data{&ctx, 0};
+	int ran_on_owner = 0;
 	int call_rc = 0;
 	std::thread worker(
-		[&] { call_rc = cli_event_queue_call_owner(&ctx, cli_owner_call, &data); });
+		[&] { call_rc = cli_event_queue_call_owner(&ctx, cli_owner_call, &ran_on_owner); });
 
 	struct pollfd fd{};
 	fd.fd = cli_event_queue_wake_fd(&ctx);
@@ -451,29 +441,31 @@ TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
 	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	worker.join();
 	EXPECT_EQ(call_rc, 73);
-	EXPECT_EQ(data.ran_on_owner, 1);
+	EXPECT_EQ(ran_on_owner, 1);
 }
 
 TEST_F(CliUiTest, CommandWaitPumpsSynchronousOwnerCall)
 {
 	struct cli_command_job job{};
-	cli_owner_call_data data{&ctx, 0};
+	int ran_on_owner = 0;
 
 	ASSERT_EQ(cli_command_job_init(&job), 0);
-	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "test", cli_command_with_owner_call, &data),
+	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "test", cli_command_with_owner_call,
+					   &ran_on_owner),
 		  0);
 	EXPECT_EQ(cli_command_job_wait(&job), 73);
-	EXPECT_EQ(data.ran_on_owner, 1);
+	EXPECT_EQ(ran_on_owner, 1);
 	cli_command_job_cleanup(&job);
 }
 
 TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
 {
 	struct cli_command_job job{};
-	cli_owner_call_data data{&ctx, 0};
+	int ran_on_owner = 0;
 
 	ASSERT_EQ(cli_command_job_init(&job), 0);
-	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "test", cli_command_with_owner_call, &data),
+	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "test", cli_command_with_owner_call,
+					   &ran_on_owner),
 		  0);
 	struct pollfd fd{};
 	fd.fd = cli_event_queue_wake_fd(&ctx);
@@ -486,13 +478,14 @@ TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
 	EXPECT_FALSE(cli_event_queue_owner_call_pending(&ctx));
 	/* Joining cannot depend on pumping a prompt after the UI has stopped. */
 	EXPECT_EQ(cli_command_job_finish(&job), NB_ERR_CANCELLED);
-	EXPECT_EQ(data.ran_on_owner, 0);
-	EXPECT_EQ(cli_event_queue_call_owner(&ctx, cli_owner_call, &data), NB_ERR_CANCELLED);
+	EXPECT_EQ(ran_on_owner, 0);
+	EXPECT_EQ(cli_event_queue_call_owner(&ctx, cli_owner_call, &ran_on_owner),
+		  NB_ERR_CANCELLED);
 	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "late test", cli_command_with_owner_call,
-					   &data),
+					   &ran_on_owner),
 		  0);
 	EXPECT_EQ(cli_command_job_finish(&job), NB_ERR_CANCELLED);
-	EXPECT_EQ(data.ran_on_owner, 0);
+	EXPECT_EQ(ran_on_owner, 0);
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
 	EXPECT_NE(testing::internal::GetCapturedStdout().find("shutdown output"),
@@ -502,10 +495,10 @@ TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
 
 TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)
 {
-	cli_owner_call_data data{&ctx, 0};
+	int ran_on_owner = 0;
 	int call_rc = 0;
 	std::thread worker(
-		[&] { call_rc = cli_event_queue_call_owner(&ctx, cli_owner_call, &data); });
+		[&] { call_rc = cli_event_queue_call_owner(&ctx, cli_owner_call, &ran_on_owner); });
 
 	struct pollfd fd{};
 	fd.fd = cli_event_queue_wake_fd(&ctx);
@@ -518,7 +511,7 @@ TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)
 	ASSERT_EQ(cli_event_queue_drain(&ctx), 0);
 	worker.join();
 	EXPECT_EQ(call_rc, 73);
-	EXPECT_EQ(data.ran_on_owner, 1);
+	EXPECT_EQ(ran_on_owner, 1);
 }
 
 static std::string run_structured_interaction(struct cli_application *ctx, const std::string &input,

@@ -102,8 +102,9 @@ the turn and stops its commands.
 Interrupted tools retain an explicit result indicating that side effects may
 have occurred, so the agent can inspect state before retrying.
 
-For interactive chat, Application initializes the worker, creates the chat page,
-initializes its embedded TUI base and presents the retained chat ViewController.
+For interactive chat, Application initializes the worker and its embedded TUI
+base, then presents the chat controller. NT owns the accepted controller. The
+app borrows it to route events until the controller begins teardown.
 The framework owns key decoding, alternate screen, paste, mouse/focus reporting,
 resize and drawing. The TextField owns editing; the page owns submission, recall,
 completion and command routing. Modal pages use the same controller stack.
@@ -111,8 +112,9 @@ Application owns initialization, run and deinitialization.
 
 The prepare-termination hook rejects new owner calls, cancels and joins an active
 worker and detaches its event queue before the framework destroys controllers
-and terminal state. Retained view state stays alive until the worker has joined and the framework
-has destroyed its controllers; the page and job are released afterward. Plain/JSON modes reuse
+and terminal state. Each controller releases its page state as NT destroys it.
+Subagent feeds and drafts belong to the session so reopening a page restores
+them. Application releases the worker after the TUI loop ends. Plain/JSON modes reuse
 the app's runtime, command services and output policies without opening a TUI.
 
 ## Extending the app

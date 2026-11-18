@@ -17,10 +17,10 @@ struct cli_setup_prompt_card {
 };
 
 struct cli_setup_prompt {
+	struct nt_view_controller base;
 	struct cli_setup_prompt_options state;
-	struct nt_view_controller *controller;
 	struct nt_surface *surface;
-	struct nt_view *root, *progress, *scope, *title, *detail, *summary, *policy, *space;
+	struct nt_view *progress, *scope, *title, *detail, *summary, *policy, *space;
 	struct nt_view *list, *input, *cards, *preview[3], *gap, *hint;
 	struct cli_setup_prompt_card *card;
 	nb_buf row;
@@ -95,31 +95,31 @@ static struct nt_text_style cli_setup_prompt_card_style(void *data, int row, int
 static void cli_setup_prompt_build(struct nt_view_controller *controller,
 				   struct nt_builder *builder)
 {
-	struct cli_setup_prompt *p = controller->data;
+	struct cli_setup_prompt *p = (struct cli_setup_prompt *)controller;
 	const struct cli_setup_prompt_options *s = &p->state;
 	struct nt_text_style dim = cli_setup_prompt_style(s->styled, NT_STYLE_DIM, -1, -1);
 	struct nt_text_style cyan = cli_setup_prompt_style(s->styled, 0, 6, -1);
 	struct nt_text_style bold = cli_setup_prompt_style(s->styled, NT_STYLE_BOLD, -1, -1);
-	p->root = nt_column_add(builder, NULL, 0,
-				&(struct nt_view_options){.padding = {.left = 2, .right = 2}});
-	p->progress = cli_setup_prompt_label(builder, p->root, s->progress, dim);
-	p->scope = cli_setup_prompt_label(builder, p->root, s->scope, cyan);
-	p->title = cli_setup_prompt_label(builder, p->root, s->title, bold);
-	p->detail = cli_setup_prompt_label(builder, p->root, s->detail, dim);
-	p->summary = cli_setup_prompt_label(builder, p->root, s->summary, dim);
-	p->policy = cli_setup_prompt_label(builder, p->root,
+	struct nt_view *root = nt_column_add(
+		builder, NULL, 0, &(struct nt_view_options){.padding = {.left = 2, .right = 2}});
+	p->progress = cli_setup_prompt_label(builder, root, s->progress, dim);
+	p->scope = cli_setup_prompt_label(builder, root, s->scope, cyan);
+	p->title = cli_setup_prompt_label(builder, root, s->title, bold);
+	p->detail = cli_setup_prompt_label(builder, root, s->detail, dim);
+	p->summary = cli_setup_prompt_label(builder, root, s->summary, dim);
+	p->policy = cli_setup_prompt_label(builder, root,
 					   "Read/media: auto-approved. Host exec: on.", dim);
-	p->space = cli_setup_prompt_label(builder, p->root, "", dim);
+	p->space = cli_setup_prompt_label(builder, root, "", dim);
 	if (s->editor)
-		p->input = cli_setup_prompt_label(builder, p->root, "", cyan);
+		p->input = cli_setup_prompt_label(builder, root, "", cyan);
 	else {
-		p->list = nt_list_view_add(builder, p->root, NULL, 0, 0, NULL);
+		p->list = nt_list_view_add(builder, root, NULL, 0, 0, NULL);
 		nt_builder_fail(builder, nt_list_view_set_source(p->list, (size_t)s->count,
 								 cli_setup_prompt_item, p));
 		nt_builder_fail(builder, nt_list_view_set_row_renderer(
 						 p->list, cli_setup_prompt_draw_row, p));
 		if (p->card) {
-			p->cards = nt_column_add(builder, p->root, 0, NULL);
+			p->cards = nt_column_add(builder, root, 0, NULL);
 			for (int i = 0; i < s->count; i++) {
 				struct cli_setup_prompt_card *card = &p->card[i];
 				card->box = nt_block_view_add(
@@ -140,31 +140,46 @@ static void cli_setup_prompt_build(struct nt_view_controller *controller,
 		}
 
 		if (s->roles) {
-			p->gap = cli_setup_prompt_label(builder, p->root, "", dim);
+			p->gap = cli_setup_prompt_label(builder, root, "", dim);
 			for (size_t i = 0; i < 3; i++) {
-				p->preview[i] =
-					nt_text_view_add(builder, p->root, "",
-							 &(struct nt_view_options){.style = dim});
+				p->preview[i] = nt_text_view_add(
+					builder, root, "", &(struct nt_view_options){.style = dim});
 				nt_builder_fail(builder, nt_text_view_set_wrap_mode(
 								 p->preview[i], NT_TEXT_WRAP_CHAR));
 			}
 		}
 	}
 
-	p->hint = cli_setup_prompt_label(builder, p->root, "", dim);
+	p->hint = cli_setup_prompt_label(builder, root, "", dim);
+}
+
+static void cli_setup_prompt_deinit(struct nt_view_controller *controller)
+{
+	struct cli_setup_prompt *p = (struct cli_setup_prompt *)controller;
+	nt_surface_destroy(p->surface);
+	nb_buf_cleanup(&p->row);
+	free(p->card);
 }
 
 int cli_setup_prompt_create(const struct cli_setup_prompt_options *state,
 			    struct cli_setup_prompt **out)
 {
+	if (!state || !out || *out)
+		return NB_ERR_INVAL;
+
 	static const struct nt_view_controller_class type = {
 		.superclass = &nt_view_controller_base_class,
-		.instance_size = sizeof(struct nt_view_controller),
-		.load_view = cli_setup_prompt_build};
-	struct cli_setup_prompt *p NB_CLEANUP(cli_setup_prompt_cleanup) = calloc(1, sizeof(*p));
-	if (!p)
-		return NB_ERR_NOMEM;
+		.instance_size = sizeof(struct cli_setup_prompt),
+		.load_view = cli_setup_prompt_build,
+		.deinit = cli_setup_prompt_deinit,
+	};
+	struct nt_view_controller *controller = NULL;
+	int rc = nt_view_controller_create(&type, &controller);
+	if (rc)
+		return rc;
 
+	struct cli_setup_prompt *p NB_CLEANUP(cli_setup_prompt_cleanup) =
+		(struct cli_setup_prompt *)controller;
 	p->state = *state;
 	if (state->descriptions && !state->roles) {
 		p->card = calloc((size_t)state->count, sizeof(*p->card));
@@ -172,14 +187,9 @@ int cli_setup_prompt_create(const struct cli_setup_prompt_options *state,
 			return NB_ERR_NOMEM;
 	}
 
-	int rc = nt_surface_create(&p->surface);
+	rc = nt_surface_create(&p->surface);
 	if (!rc)
-		rc = nt_view_controller_create(&type, &p->controller);
-
-	if (!rc) {
-		p->controller->data = p;
-		rc = nt_view_controller_load(p->controller);
-	}
+		rc = nt_view_controller_load(&p->base);
 
 	if (!rc) {
 		*out = p;
@@ -191,13 +201,8 @@ int cli_setup_prompt_create(const struct cli_setup_prompt_options *state,
 
 void cli_setup_prompt_cleanup(struct cli_setup_prompt **owner)
 {
-	struct cli_setup_prompt *p = *owner;
-	if (p) {
-		nt_view_controller_destroy(p->controller);
-		nt_surface_destroy(p->surface);
-		nb_buf_cleanup(&p->row);
-		free(p->card);
-		free(p);
+	if (*owner) {
+		nt_view_controller_destroy(&(*owner)->base);
 		*owner = NULL;
 	}
 }
@@ -327,6 +332,7 @@ int cli_setup_prompt_present(struct cli_setup_prompt *p, struct nt_inline_region
 			     FILE *output, int columns, int rows, const char *validation)
 {
 	struct cli_setup_prompt_options *s = &p->state;
+	struct nt_view *root = nt_view_controller_root_view(&p->base);
 	int scope = s->scope && *s->scope;
 	const char *detail = s->editor && s->editor->overflow
 				     ? "Value is too long. Shorten it before continuing."
@@ -370,18 +376,18 @@ int cli_setup_prompt_present(struct cli_setup_prompt *p, struct nt_inline_region
 
 	struct nt_view_size size = {0};
 	if (!rc)
-		rc = nt_view_measure(p->root, columns, &size);
+		rc = nt_view_measure(root, columns, &size);
 
 	if (!rc)
 		rc = nt_surface_resize(p->surface, columns, size.height);
 
 	if (!rc) {
 		nt_surface_clear(p->surface);
-		rc = nt_view_arrange(p->root, (struct nt_view_rect){0, 0, columns, size.height});
+		rc = nt_view_arrange(root, (struct nt_view_rect){0, 0, columns, size.height});
 	}
 
 	if (!rc)
-		rc = nt_view_render(p->root, p->surface);
+		rc = nt_view_render(root, p->surface);
 
 	if (!rc)
 		rc = nt_inline_region_present(region, output, p->surface, columns, rows, x, y,

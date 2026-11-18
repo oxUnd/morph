@@ -384,7 +384,7 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 		if (stopped)
 			return NB_ERR_CANCELLED;
 
-		return fn(data);
+		return fn(ctx, data);
 	}
 
 	memset(&call, 0, sizeof(call));

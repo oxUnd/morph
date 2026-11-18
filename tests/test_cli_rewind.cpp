@@ -7,6 +7,7 @@ extern "C" {
 #include "runtime/checkpoint.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/pages/hooks.h"
 #include "sapi/cli/pages/rewind.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/rewind.h"
@@ -18,6 +19,7 @@ extern "C" {
 }
 
 #include <chrono>
+#include <memory>
 #include <thread>
 #ifdef __APPLE__
 #include <util.h>
@@ -152,7 +154,9 @@ TEST(CliRewindPicker, EscapeClosesWithoutRestoringOrPrintingAReceipt)
 	};
 	testing::internal::CaptureStdout();
 	cli_presentation_command_input(&cli, "/rewind");
-	int shown = cli_rewind_show_take(&cli, &listing, apply);
+	struct nt_view_controller *page NB_CLEANUP(cli_application_controller_cleanup) = nullptr;
+	ASSERT_EQ(cli_rewind_create_take(&listing, apply, &page), 0);
+	int shown = cli_application_show_page(&cli, &page, 0);
 	cli.application_command = shown == 0;
 	int stepped = shown == 0 ? nt_application_step(&cli.base, 0) : shown;
 	ssize_t written = write(master, "\033", 1);
@@ -162,6 +166,7 @@ TEST(CliRewindPicker, EscapeClosesWithoutRestoringOrPrintingAReceipt)
 		stepped = nt_application_step(&cli.base, 0);
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	}
+
 	size_t depth = nt_application_depth(&cli.base);
 	nt_application_deinit(&cli.base);
 	std::string output = testing::internal::GetCapturedStdout();
@@ -173,10 +178,111 @@ TEST(CliRewindPicker, EscapeClosesWithoutRestoringOrPrintingAReceipt)
 	EXPECT_EQ(listing, nullptr);
 	EXPECT_EQ(depth, 0U);
 	EXPECT_EQ(cli.turn_active, 0);
+	EXPECT_EQ(cli.application_command, 0);
 	EXPECT_NE(output.find("/rewind"), std::string::npos);
 	EXPECT_EQ(output.find("› /rewind"), std::string::npos);
 	EXPECT_EQ(output.find("rewound"), std::string::npos);
 	EXPECT_EQ(output.find("cancelled"), std::string::npos);
+}
+
+TEST(CliPageOwnership, RejectedConstructionAndPresentationPreserveTheirInputs)
+{
+	struct cli_application cli{};
+	struct nt_application_options options{};
+	options.external_signals = 1;
+	ASSERT_EQ(nt_application_init(&cli.base, &options), 0);
+	nt_application_stop(&cli.base, NB_ERR_CANCELLED);
+	cli.application_command = 1;
+
+	cJSON *hooks NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
+	cJSON *checkpoints NB_CLEANUP(cJSON_DeleteOwner) =
+		cJSON_Parse("{\"checkpoints\":[{\"id\":1}]}");
+	auto apply = +[](struct cli_application *, int64_t, enum runtime_rewind_mode) -> int {
+		ADD_FAILURE() << "A rejected picker must not restore a checkpoint";
+		return NB_ERR_INVAL;
+	};
+	struct nt_view_controller *hook_page NB_CLEANUP(cli_application_controller_cleanup) =
+		nullptr;
+	struct nt_view_controller *picker NB_CLEANUP(cli_application_controller_cleanup) = nullptr;
+	const cJSON *original_hooks = hooks;
+	const cJSON *original_checkpoints = checkpoints;
+	EXPECT_EQ(cli_hooks_create_take(&hooks, "missing", 0, &hook_page), NB_ERR_NOT_FOUND);
+	EXPECT_EQ(hooks, original_hooks);
+	EXPECT_EQ(hook_page, nullptr);
+	ASSERT_EQ(cli_hooks_create_take(&hooks, nullptr, 0, &hook_page), 0);
+	EXPECT_EQ(hooks, nullptr);
+
+	EXPECT_EQ(cli_rewind_create_take(&checkpoints, apply, &hook_page), NB_ERR_EXISTS);
+	EXPECT_EQ(checkpoints, original_checkpoints);
+	ASSERT_EQ(cli_rewind_create_take(&checkpoints, apply, &picker), 0);
+	EXPECT_EQ(checkpoints, nullptr);
+
+	auto *original_hook_page = hook_page;
+	auto *original_picker = picker;
+	EXPECT_EQ(cli_application_show_page(&cli, &hook_page, 0), NB_ERR_CANCELLED);
+	EXPECT_EQ(cli_application_show_page(&cli, &picker, 0), NB_ERR_CANCELLED);
+	EXPECT_EQ(hook_page, original_hook_page);
+	EXPECT_EQ(picker, original_picker);
+	cli_application_controller_cleanup(&hook_page);
+	cli_application_controller_cleanup(&picker);
+	EXPECT_EQ(cli.application_command, 1);
+	nt_application_deinit(&cli.base);
+}
+
+TEST(CliPageOwnership, CommandFinishesAfterTheLastPanelInAChain)
+{
+	struct Panel {
+		struct nt_view_controller base;
+		struct nt_view_controller **successor;
+	};
+	nt_view_controller_class type{};
+	type.superclass = &cli_application_panel_class;
+	type.instance_size = sizeof(Panel);
+	type.load_view = [](struct nt_view_controller *, nt_builder *builder) {
+		nt_view_add(builder, nullptr, &nt_view_base_class, nullptr);
+	};
+	type.deinit = [](struct nt_view_controller *controller) {
+		auto *next = reinterpret_cast<Panel *>(controller)->successor;
+		if (next && !nt_view_controller_result(controller))
+			EXPECT_EQ(cli_application_show_page(
+					  cli_application_from_controller(controller), next, 0),
+				  0);
+	};
+
+	std::unique_ptr<FILE, decltype(&fclose)> input(tmpfile(), fclose),
+		output(tmpfile(), fclose);
+	ASSERT_TRUE(input);
+	ASSERT_TRUE(output);
+	cli_application cli{};
+	cli.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	nt_application_options options{};
+	options.input = input.get();
+	options.output = output.get();
+	options.external_signals = 1;
+	struct nt_view_controller *first NB_CLEANUP(cli_application_controller_cleanup) = nullptr;
+	struct nt_view_controller *second NB_CLEANUP(cli_application_controller_cleanup) = nullptr;
+	ASSERT_EQ(nt_application_init(&cli.base, &options), 0);
+	std::unique_ptr<nt_application, decltype(&nt_application_deinit)> app(
+		&cli.base, nt_application_deinit);
+	ASSERT_EQ(nt_view_controller_create(&type, &first), 0);
+	ASSERT_EQ(nt_view_controller_create(&type, &second), 0);
+	reinterpret_cast<Panel *>(first)->successor = &second;
+	auto *first_page = first;
+	auto *second_page = second;
+
+	ASSERT_EQ(cli_application_show_page(&cli, &first, 0), 0);
+	cli.application_command = 1;
+	ASSERT_EQ(nt_application_step(app.get(), 0), 0);
+	ASSERT_EQ(nt_view_controller_dismiss(first_page, 0), 0);
+	ASSERT_EQ(nt_application_step(app.get(), 0), 0);
+	ASSERT_EQ(second, nullptr);
+	EXPECT_EQ(nt_application_depth(app.get()), 1U);
+	EXPECT_EQ(cli.application_command, 1);
+
+	ASSERT_EQ(nt_view_controller_dismiss(second_page, 0), 0);
+	ASSERT_EQ(nt_application_step(app.get(), 0), 0);
+	EXPECT_EQ(nt_application_depth(app.get()), 0U);
+	EXPECT_EQ(cli.application_command, 0);
 }
 
 TEST(CliRewindReport, FailedCompensationShowsTheFileAndSanitizedRecoveryCopy)

@@ -1,5 +1,6 @@
 #include "sapi/cli/commands/hooks.h"
 #include <nb/err.h>
+#include <nb/cleanup.h>
 #include "sapi/cli/presentation/output.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
@@ -18,7 +19,7 @@ static const char *cli_hooks_hook_field(const cJSON *row, const char *key)
 
 static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char **argv)
 {
-	cJSON *rows = NULL;
+	cJSON *rows NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	const cJSON *row;
 	const char *action = argc > 1 ? argv[1] : "list";
 	int rc = runtime_hooks_snapshot_copy(ctx->runtime, &rows);
@@ -31,11 +32,11 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 	    ((argc <= 2 && strcmp(action, "list") == 0) ||
 	     (argc == 2 && strcmp(action, "review-all") == 0) ||
 	     (argc == 3 && strcmp(action, "review") == 0))) {
-		rc = strcmp(action, "review-all") == 0
-			     ? cli_hooks_review_all(ctx, &rows)
-			     : cli_hooks_ui(ctx, &rows, argc == 3 ? argv[2] : NULL);
-		cJSON_Delete(rows);
-		return rc;
+		struct nt_view_controller *page NB_CLEANUP(cli_application_controller_cleanup) =
+			NULL;
+		rc = cli_hooks_create_take(&rows, argc == 3 ? argv[2] : NULL,
+					   strcmp(action, "review-all") == 0, &page);
+		return rc ? rc : cli_application_show_page(ctx, &page, 0);
 	}
 
 	if (strcmp(action, "project") == 0) {
@@ -112,7 +113,6 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		rc = NB_ERR_INVAL;
 	}
 
-	cJSON_Delete(rows);
 	return rc;
 }
 

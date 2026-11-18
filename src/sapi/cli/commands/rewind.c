@@ -111,8 +111,12 @@ static int cli_rewind_list(struct cli_application *ctx, int interactive)
 
 	cJSON *entries = cJSON_GetObjectItemCaseSensitive(report, "checkpoints");
 	if (interactive && cJSON_GetArraySize(entries) > 0 &&
-	    cli_setup_controls_available(stdin, stdout))
-		return cli_rewind_show_take(ctx, &report, cli_rewind_restore);
+	    cli_setup_controls_available(stdin, stdout)) {
+		struct nt_view_controller *page NB_CLEANUP(cli_application_controller_cleanup) =
+			NULL;
+		rc = cli_rewind_create_take(&report, cli_rewind_restore, &page);
+		return rc ? rc : cli_application_show_page(ctx, &page, 0);
+	}
 
 	CMD_HEADER(ctx, "rewind checkpoints");
 	const cJSON *entry;

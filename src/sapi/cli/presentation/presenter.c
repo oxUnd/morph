@@ -1693,7 +1693,6 @@ void cli_presentation_cleanup(struct cli_application *ctx)
 	if (cli_turn_details_is_open(ctx))
 		cli_turn_details_toggle(ctx);
 
-	cli_turn_details_cleanup(ctx);
 	cli_transcript_reset(ctx);
 	cli_presenter_clear_status(ctx);
 	cli_markdown_stream_reset(ctx, 0);

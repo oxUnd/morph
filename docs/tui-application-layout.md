@@ -39,9 +39,11 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   base for initialization, run/step, presentation and shutdown. Noninteractive
   modes may leave the terminal framework uninitialized while using the same app.
 - Pages compose views, keep editing/navigation state and bind semantic actions.
-  Custom retained pages embed `struct nt_view_controller` first. Existing
-  external renderers/input libraries may use the public controller adapter;
-  those pages still belong to the same Application controller stack.
+  Each presented page embeds `struct nt_view_controller` first and owns its
+  page-local state. Resolve the host with `cli_application_from_controller()`
+  while attached. NT takes ownership on acceptance and releases the page after
+  its views retire. Modal pages inherit `cli_application_panel_class` so the
+  enclosing command finishes after the page applies its result.
 - Compose components with the NT builder, native controls and observable state. A custom view embeds `struct nt_view` first.
   Each component module constructs an NT view or composes native controls.
   Reusable state bindings and text-output policies live in presentation. Rendering,
