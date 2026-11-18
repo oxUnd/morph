@@ -6,6 +6,7 @@
 #include <nb/vec.h>
 #include <nb/cleanup.h>
 #include <nb/thread.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -70,8 +71,9 @@ typedef void (*tool_environment_fn)(void *user_data, struct prompt_context_input
 typedef int (*tool_refresh_context_fn)(void *user_data);
 
 typedef int (*tool_background_list_fn)(void *user_data, int64_t owner, cJSON **out);
-typedef int (*tool_background_wait_fn)(void *user_data, int64_t owner, const char *turn_id,
-				       int (*cancelled)(void *), void *cancel_data, cJSON **out);
+typedef int (*tool_background_collect_fn)(void *user_data, int64_t owner, const char *turn_id,
+					  bool wait, int (*cancelled)(void *), void *cancel_data,
+					  cJSON **out, bool *pending);
 typedef void (*tool_background_cancel_fn)(void *user_data, int64_t owner, const char *turn_id);
 
 struct tool_spec {
@@ -87,7 +89,7 @@ struct tool_spec {
 	tool_environment_fn get_environment;
 	tool_refresh_context_fn refresh_context;
 	tool_background_list_fn background_list;
-	tool_background_wait_fn background_wait;
+	tool_background_collect_fn background_collect;
 	tool_background_cancel_fn background_cancel;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
@@ -104,7 +106,7 @@ struct tool_entry {
 	tool_environment_fn get_environment;
 	tool_refresh_context_fn refresh_context;
 	tool_background_list_fn background_list;
-	tool_background_wait_fn background_wait;
+	tool_background_collect_fn background_collect;
 	tool_background_cancel_fn background_cancel;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
@@ -125,7 +127,7 @@ struct tool_handle {
 	tool_environment_fn get_environment;
 	tool_refresh_context_fn refresh_context;
 	tool_background_list_fn background_list;
-	tool_background_wait_fn background_wait;
+	tool_background_collect_fn background_collect;
 	tool_background_cancel_fn background_cancel;
 	void *user_data;
 	enum tool_origin origin;

@@ -1,6 +1,8 @@
 #ifndef MORPH_EXEC_JOBS_H
 #define MORPH_EXEC_JOBS_H
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,8 +31,9 @@ int exec_jobs_authority(struct exec_jobs *jobs, const char *id, int *host, int *
 int exec_jobs_authorize(struct exec_jobs *jobs, const char *id, int64_t owner);
 void exec_jobs_observed(struct exec_jobs *jobs, const char *id);
 void exec_jobs_wait_event(struct exec_jobs *jobs, const char *id, int begin);
-int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
-		   int (*cancelled)(void *), void *cancel_data, cJSON **out);
+/* A nonblocking collection reports whether it encountered unfinished jobs. */
+int exec_jobs_collect(struct exec_jobs *jobs, int64_t owner, const char *turn_id, bool wait,
+		      int (*cancelled)(void *), void *cancel_data, cJSON **out, bool *pending);
 
 #ifdef __cplusplus
 }

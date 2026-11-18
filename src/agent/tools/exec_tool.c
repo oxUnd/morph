@@ -908,11 +908,13 @@ static int exec_background_list(void *opaque, int64_t owner, cJSON **out)
 	return exec_jobs_list(runtime->jobs, owner, out);
 }
 
-static int exec_background_wait(void *opaque, int64_t owner, const char *turn_id,
-	int (*cancelled)(void *), void *cancel_data, cJSON **out)
+static int exec_background_collect(void *opaque, int64_t owner, const char *turn_id, bool wait,
+				  int (*cancelled)(void *), void *cancel_data,
+				  cJSON **out, bool *pending)
 {
 	struct exec_runtime *runtime = opaque;
-	return exec_jobs_wait(runtime->jobs, owner, turn_id, cancelled, cancel_data, out);
+	return exec_jobs_collect(runtime->jobs, owner, turn_id, wait, cancelled, cancel_data,
+				 out, pending);
 }
 
 static void exec_background_cancel(void *opaque, int64_t owner, const char *turn_id)
@@ -1003,7 +1005,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.exec = exec_run;
 	exec_spec.get_environment = exec_environment;
 	exec_spec.background_list = exec_background_list;
-	exec_spec.background_wait = exec_background_wait;
+	exec_spec.background_collect = exec_background_collect;
 	exec_spec.background_cancel = exec_background_cancel;
 	exec_spec.user_data = runtime;
 	exec_spec.user_data_destroy = exec_runtime_destroy;

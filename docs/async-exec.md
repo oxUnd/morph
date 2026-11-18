@@ -97,11 +97,13 @@ For example, `[exec] max_wait_ms = 1200000` permits the model to choose waits up
 to 20 minutes. The background tool's own timeout reserves time beyond that configured
 maximum so it does not prematurely end a valid long wait. Waits remain cancellable.
 
-Before accepting a final answer, the agent collects unobserved finite commands
-started by its current turn. It waits in the runtime without additional model
-calls or shell sleeps, then supplies their actual output and exit states for a
-final assessment. New user input or cancellation interrupts this wait. Commands
-from other turns are not silently adopted as new work.
+Before each model request, the agent collects the output and exit states of
+completed finite commands from the current turn whose results it has yet to read.
+If commands are still running, it holds the draft response until it knows whether
+the response needs more tool calls or is ready to become the final answer. When
+the model is ready to finish, the runtime waits for remaining finite commands
+and sends their results to the model for the final assessment. New user input or
+cancellation interrupts this wait.
 
 Use `service=true` for persistent servers/watchers. They remain tracked but do
 not hold the final answer. `notify_only=true` also permits a finite command to

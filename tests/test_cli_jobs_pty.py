@@ -281,7 +281,9 @@ def main():
             text = terminal.snapshot('draft remains editable above the footer')
             assert 'keep my draft' in text, text
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts
-            release.delta = {'content': 'Premature completion candidate.'}
+            candidate = 'Premature completion candidate.'
+            candidate_start = len(terminal.stream.frames)
+            release.delta = {'content': candidate}
             release.set()
             terminal.pump(.6)
             assert Model.requests.empty(), 'finite job unexpectedly accepted as completed'
@@ -306,7 +308,10 @@ def main():
             release.delta = {'content': 'Verified build failure: exit 7.'}
             release.set()
             text = until(terminal, lambda text: 'Worked for' in text)
-            assert 'Verified build failure' in text, text
+            assert text.count('Verified build failure') == 1, text
+            for frame in terminal.stream.frames[candidate_start:]:
+                frame_text = '\n'.join(frame['rows'])
+                assert candidate not in frame_text, frame_text
             assert 'keep my draft' in text, text
             assert text.count('exited 7 · /jobs') == 1, text
             with sqlite3.connect(directory / 'data.db') as db:
@@ -428,6 +433,37 @@ def main():
                 assert 'background job running' not in text, text
                 assert Model.requests.empty(), 'completion started a model call'
                 assert not terminal.duplicate_prompts, terminal.duplicate_prompts
+
+            terminal.send('Collect completed background output before the next response\r')
+            _, release = terminal.request()
+            releases.append(release)
+            release.delta = {'tool_calls': [{
+                'index': 0, 'id': 'harvest_job', 'type': 'function',
+                'function': {'name': 'exec', 'arguments': json.dumps({
+                    'command': 'while [ ! -f release-harvest ]; do sleep .05; done; '
+                               'printf HARVESTED_OUTPUT; exit 6',
+                    'description': 'Harvest job', 'background': True})}}]}
+            release.set()
+            _, release = terminal.request()
+            releases.append(release)
+            (directory / 'release-harvest').touch()
+            until(terminal, lambda text: 'Harvest job · exited 6' in text)
+            release.delta = {'content': 'Checking the job list.', 'tool_calls': [{
+                'index': 0, 'id': 'list_before_final', 'type': 'function',
+                'function': {'name': 'background', 'arguments': '{"action":"list"}'}}]}
+            release.set()
+            body, release = terminal.request()
+            releases.append(release)
+            completion = [m['content'] for m in body['messages']
+                          if 'Runtime process completion records' in str(m.get('content', ''))]
+            assert len(completion) == 1 and 'HARVESTED_OUTPUT' in completion[0], completion
+            assert '"exit_code":6' in completion[0], completion
+            release.delta = {'content': 'Confirmed harvest result.'}
+            release.set()
+            text = until(terminal, lambda text: 'Confirmed harvest result.' in text
+                         and 'Worked for' in text)
+            assert text.count('Checking the job list.') == 1, text
+            assert Model.requests.empty(), 'completed job triggered an extra model response'
     finally:
         for release in releases:
             release.set()

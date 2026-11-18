@@ -1550,10 +1550,10 @@ TEST(ExecToolTest, ExplicitNotifyOnlyAndServicesDoNotHoldFinalization)
 		tool_result_cleanup(&result);
 	}
 	tool_entry *entry = tool_borrow(&registry, "exec");
-	ASSERT_NE(entry->background_wait, nullptr);
+	ASSERT_NE(entry->background_collect, nullptr);
 	cJSON *completed = nullptr;
-	ASSERT_EQ(entry->background_wait(entry->user_data, 42, "notify-test", nullptr,
-		nullptr, &completed), 0);
+	ASSERT_EQ(entry->background_collect(entry->user_data, 42, "notify-test", true, nullptr,
+		nullptr, &completed, nullptr), 0);
 	ASSERT_EQ(cJSON_GetArraySize(completed), 1);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
 		cJSON_GetArrayItem(completed, 0), "stdout")), "verified");
@@ -1845,7 +1845,8 @@ TEST(ExecToolTest, JobsConstructorsAndSnapshotsRejectOccupiedOwners)
 	auto *snapshot_owner = snapshot;
 	EXPECT_EQ(exec_jobs_list(jobs, 1, &snapshot), NB_ERR_STATE);
 	EXPECT_EQ(exec_jobs_read(jobs, 1, "missing", &snapshot), NB_ERR_STATE);
-	EXPECT_EQ(exec_jobs_wait(jobs, 1, "turn", nullptr, nullptr, &snapshot), NB_ERR_STATE);
+	EXPECT_EQ(exec_jobs_collect(jobs, 1, "turn", true, nullptr, nullptr, &snapshot, nullptr),
+		  NB_ERR_STATE);
 	EXPECT_EQ(snapshot, snapshot_owner);
 	cJSON_Delete(snapshot);
 	exec_jobs_destroy(jobs);

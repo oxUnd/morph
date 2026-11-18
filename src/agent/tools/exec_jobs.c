@@ -347,50 +347,59 @@ void exec_jobs_observed(struct exec_jobs *jobs, const char *id)
 	nb_mutex_unlock(jobs->lock);
 }
 
-int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
-		   int (*cancelled)(void *), void *cancel_data, cJSON **out)
+int exec_jobs_collect(struct exec_jobs *jobs, int64_t owner, const char *turn_id, bool wait,
+		      int (*cancelled)(void *), void *cancel_data, cJSON **out, bool *pending)
 {
-	cJSON *results;
-
 	if (!jobs || !out)
 		return NB_ERR_INVAL;
 	if (*out)
 		return NB_ERR_STATE;
-	results = cJSON_CreateArray();
+	cJSON *results NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 	if (!results)
 		return NB_ERR_NOMEM;
+	bool unfinished = false;
+	size_t next = 0;
 	int rc = 0;
 	for (;;) {
 		char id[PROCESS_SESSION_ID_MAX] = {0};
 		nb_mutex_lock(jobs->lock);
-		struct exec_job *job;
-		for (size_t _i_ = 0; _i_ < nb_vec_len(&jobs->entries) &&
-				     (job = (struct exec_job *)nb_vec_at(&jobs->entries, _i_));
-		     _i_++) {
+		for (; next < nb_vec_len(&jobs->entries); next++) {
+			const struct exec_job *job = nb_vec_at(&jobs->entries, next);
 			if (job->observed || !job_owned(job->data, owner) ||
 			    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(job->data, "service")) ||
 			    cJSON_IsTrue(
 				    cJSON_GetObjectItemCaseSensitive(job->data, "notify_only")) ||
 			    strcmp(job_string(job->data, "turn_id"), turn_id ? turn_id : ""))
 				continue;
-			snprintf(id, sizeof(id), "%s", job_string(job->data, "session_id"));
+			const char *job_id = job_string(job->data, "session_id");
+			if (!wait) {
+				struct process_snapshot status = {0};
+				rc = process_session_status(jobs->manager, job_id, &status);
+				if (rc)
+					break;
+				if (status.state < PROCESS_EXITED) {
+					unfinished = true;
+					continue;
+				}
+			}
+			snprintf(id, sizeof(id), "%s", job_id);
 			break;
 		}
 		nb_mutex_unlock(jobs->lock);
-		if (!id[0])
+		if (rc || !id[0])
 			break;
-		struct process_snapshot snapshot = {0};
-		const struct process_cursor cursor = {0};
-		exec_jobs_wait_event(jobs, id, 1);
-		rc = process_session_wait(jobs->manager, id, &cursor, 30000, cancelled, cancel_data,
-					  &snapshot);
-		exec_jobs_wait_event(jobs, id, 0);
-		int ended = rc == 0 && snapshot.state >= PROCESS_EXITED;
-		process_snapshot_cleanup(&snapshot);
-		if (rc)
-			break;
-		if (!ended)
-			continue;
+		if (wait) {
+			struct process_snapshot snapshot NB_CLEANUP(process_snapshot_cleanup) = {0};
+			const struct process_cursor cursor = {0};
+			exec_jobs_wait_event(jobs, id, 1);
+			rc = process_session_wait(jobs->manager, id, &cursor, 30000, cancelled,
+						  cancel_data, &snapshot);
+			exec_jobs_wait_event(jobs, id, 0);
+			if (rc)
+				break;
+			if (snapshot.state < PROCESS_EXITED)
+				continue;
+		}
 		cJSON *data = NULL;
 		rc = exec_jobs_read(jobs, owner, id, &data);
 		if (rc)
@@ -401,14 +410,15 @@ int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 			break;
 		}
 		exec_jobs_observed(jobs, id);
+		next++;
 	}
 	if (rc == NB_ERR_CANCELLED && cJSON_GetArraySize(results))
 		rc = 0;
-	if (rc) {
-		cJSON_Delete(results);
+	if (rc)
 		return rc;
-	}
-	*out = results;
+	if (pending)
+		*pending = unfinished;
+	*out = cJSON_StealOwner(&results);
 	return 0;
 }
 

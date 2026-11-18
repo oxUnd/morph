@@ -333,7 +333,7 @@ static int tool_register_unlocked(struct tool_registry *reg, const struct tool_s
 	e->get_environment = spec->get_environment;
 	e->refresh_context = spec->refresh_context;
 	e->background_list = spec->background_list;
-	e->background_wait = spec->background_wait;
+	e->background_collect = spec->background_collect;
 	e->background_cancel = spec->background_cancel;
 	e->user_data = spec->user_data;
 	e->user_data_destroy = spec->user_data_destroy;
@@ -542,7 +542,7 @@ int tool_register_copy(struct tool_registry *out, const struct tool_entry *entry
 		.get_environment = entry->get_environment,
 		.refresh_context = entry->refresh_context,
 		.background_list = entry->background_list,
-		.background_wait = entry->background_wait,
+		.background_collect = entry->background_collect,
 		.background_cancel = entry->background_cancel,
 		.user_data = entry->user_data,
 		.flags = entry->flags,
@@ -622,7 +622,7 @@ int tool_registry_acquire(struct tool_registry *reg, const char *name, struct to
 	if (!out)
 		return NB_ERR_INVAL;
 	if (out->binding || out->permission_context || out->exec || out->get_environment ||
-	    out->refresh_context || out->background_list || out->background_wait ||
+	    out->refresh_context || out->background_list || out->background_collect ||
 	    out->background_cancel || out->user_data)
 		return NB_ERR_STATE;
 	if (!reg || !name)
@@ -645,7 +645,7 @@ int tool_registry_acquire(struct tool_registry *reg, const char *name, struct to
 	out->get_environment = entry->get_environment;
 	out->refresh_context = entry->refresh_context;
 	out->background_list = entry->background_list;
-	out->background_wait = entry->background_wait;
+	out->background_collect = entry->background_collect;
 	out->background_cancel = entry->background_cancel;
 	out->user_data = entry->user_data;
 	out->origin = entry->origin;
