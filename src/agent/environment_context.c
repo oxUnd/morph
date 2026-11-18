@@ -1,6 +1,8 @@
 #include "environment_context.h"
 #include <nb/cleanup.h>
 #include "errors.h"
+#include <nb/file.h>
+#include <nb/str.h>
 #include <nb/utf8.h>
 #include <ctype.h>
 #include <errno.h>
@@ -10,9 +12,14 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
-#ifdef _WIN32
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+#if defined(_WIN32) || defined(__CYGWIN__)
 #include <windows.h>
-#include <direct.h>
+#endif
+#if defined(_WIN32) && !defined(__CYGWIN__)
+#define ENV_NATIVE_WINDOWS 1
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -142,7 +149,14 @@ int environment_context_render(const struct environment_context *ctx, nb_buf *ou
 		{ "cwd", ctx->cwd },
 		{ "shell", shell_name(ctx->shell) },
 		{ "os", normalize_os(ctx->os) },
+		{ "os_version", ctx->os_version },
+		{ "distribution", ctx->distribution },
+		{ "kernel_release", ctx->kernel_release },
 		{ "arch", normalize_arch(ctx->arch) },
+		{ "runtime", ctx->runtime },
+		{ "runtime_version", ctx->runtime_version },
+		{ "host_os", ctx->host_os },
+		{ "path_tools", ctx->path_tools },
 		{ "current_date", ctx->current_date },
 		{ "timezone", ctx->timezone },
 		{ "git_branch", ctx->git_branch },
@@ -162,7 +176,7 @@ struct environment_collector {
 	int error;
 };
 
-#ifdef _WIN32
+#ifdef ENV_NATIVE_WINDOWS
 static void *collect_alloc(struct environment_collector *collector, size_t size)
 {
 	void *result = calloc(1, size);
@@ -185,7 +199,46 @@ static char *copy_value(struct environment_collector *collector, const char *val
 	return copy;
 }
 
-#ifdef _WIN32
+enum environment_wsl environment_wsl_detect(nb_str release, bool have_interop)
+{
+	nb_split_iter parts;
+	nb_str part;
+	bool previous_microsoft = false;
+
+	nb_split_init(&parts, release, '-');
+	while (nb_split_next(&parts, &part)) {
+		if (nb_str_eq_icase(part, NB_STR_LIT("WSL2")) ||
+		    (previous_microsoft && nb_str_eq_icase(part, NB_STR_LIT("standard"))))
+			return ENV_WSL_2;
+		previous_microsoft = nb_str_eq_icase(part, NB_STR_LIT("Microsoft"));
+	}
+	if (previous_microsoft && nb_str_starts_with(release, NB_STR_LIT("4.4.0-")))
+		return ENV_WSL_1;
+	return previous_microsoft || have_interop ? ENV_WSL_UNKNOWN : ENV_WSL_NONE;
+}
+
+#if defined(_WIN32) || defined(__CYGWIN__)
+static char *windows_version(struct environment_collector *collector)
+{
+	/* RtlGetVersion reports the actual build independently of the app manifest. */
+	typedef LONG (WINAPI *windows_version_fn)(OSVERSIONINFOW *);
+	HMODULE module = GetModuleHandleW(L"ntdll.dll");
+	FARPROC symbol = module ? GetProcAddress(module, "RtlGetVersion") : NULL;
+	OSVERSIONINFOW info = {.dwOSVersionInfoSize = sizeof(info)};
+	char version[64];
+
+	if (!symbol)
+		return NULL;
+	windows_version_fn get_version = (windows_version_fn)(void (*)(void))symbol;
+	if (get_version(&info) != 0)
+		return NULL;
+	snprintf(version, sizeof(version), "%lu.%lu.%lu", (unsigned long)info.dwMajorVersion,
+		 (unsigned long)info.dwMinorVersion, (unsigned long)info.dwBuildNumber);
+	return copy_value(collector, version);
+}
+#endif
+
+#ifdef ENV_NATIVE_WINDOWS
 static void wide_cleanup(wchar_t **value)
 {
 	free(*value);
@@ -274,7 +327,7 @@ static int path_kind(struct environment_collector *collector, const char *path)
 {
 	if (!path)
 		return -1;
-#ifdef _WIN32
+#ifdef ENV_NATIVE_WINDOWS
 	wchar_t *wide NB_CLEANUP(wide_cleanup) = wide_path(collector, path);
 	DWORD attributes = wide ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
 
@@ -297,7 +350,7 @@ static char *read_metadata(struct environment_collector *collector, const char *
 {
 	char data[ENV_METADATA_MAX + 1];
 	size_t len;
-#ifdef _WIN32
+#ifdef ENV_NATIVE_WINDOWS
 	if (path_kind(collector, path) != 1)
 		return NULL;
 	wchar_t *wide NB_CLEANUP(wide_cleanup) = wide_path(collector, path);
@@ -318,7 +371,6 @@ static char *read_metadata(struct environment_collector *collector, const char *
 #else
 	struct stat info;
 	int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-	ssize_t result;
 
 	if (fd < 0)
 		return NULL;
@@ -326,11 +378,20 @@ static char *read_metadata(struct environment_collector *collector, const char *
 		close(fd);
 		return NULL;
 	}
-	result = read(fd, data, sizeof(data));
+	len = 0;
+	while (len < sizeof(data)) {
+		ssize_t result = read(fd, data + len, sizeof(data) - len);
+
+		if (result < 0 && errno == EINTR)
+			continue;
+		if (result <= 0) {
+			if (result < 0)
+				len = 0;
+			break;
+		}
+		len += (size_t)result;
+	}
 	close(fd);
-	if (result < 0)
-		return NULL;
-	len = (size_t)result;
 #endif
 	if (!len || len > ENV_METADATA_MAX || memchr(data, '\0', len))
 		return NULL;
@@ -340,9 +401,229 @@ static char *read_metadata(struct environment_collector *collector, const char *
 	return copy_value(collector, data);
 }
 
+#if defined(__linux__)
+static char *os_release_value(struct environment_collector *collector,
+			      const char *metadata, nb_str key)
+{
+	nb_split_iter lines;
+	nb_str line;
+	nb_str value = NB_STR_NULL;
+	nb_buf decoded NB_CLEANUP(nb_buf_cleanup) = {0};
+
+	nb_split_init(&lines, nb_str_from_cstr(metadata), '\n');
+	while (nb_split_next(&lines, &line)) {
+		line = nb_str_trim(line);
+		if (line.len > key.len && line.ptr[key.len] == '=' &&
+		    nb_str_starts_with(line, key))
+			value = nb_str_trim(nb_str_from_parts(line.ptr + key.len + 1,
+							    line.len - key.len - 1));
+	}
+	if (!value.len)
+		return NULL;
+
+	char quote = '\0';
+	if (value.ptr[0] == '"' || value.ptr[0] == '\'') {
+		quote = value.ptr[0];
+		if (value.len < 2 || value.ptr[value.len - 1] != quote)
+			return NULL;
+		value.ptr++;
+		value.len -= 2;
+	}
+	for (size_t i = 0; i < value.len; i++) {
+		char c = value.ptr[i];
+
+		if (c == quote)
+			return NULL;
+		if (c == '\\' && quote != '\'') {
+			if (i + 1 == value.len)
+				return NULL;
+			if (!quote || strchr("\\\"$\x60", value.ptr[i + 1]))
+				c = value.ptr[++i];
+		}
+		if (!nb_buf_append_char(&decoded, c)) {
+			collector->error = nb_buf_status(&decoded);
+			return NULL;
+		}
+	}
+	return copy_value(collector, nb_buf_cstr(&decoded));
+}
+
+static void collect_linux_distribution(struct environment_context *out,
+				       struct environment_collector *collector)
+{
+	const char *primary = "/etc/os-release";
+	char *metadata NB_CLEANUP(nb_charp_cleanup) = read_metadata(collector, primary);
+
+	if (!metadata && path_kind(collector, primary) == 0)
+		metadata = read_metadata(collector, "/usr/lib/os-release");
+	if (!metadata)
+		return;
+	out->distribution = os_release_value(collector, metadata, NB_STR_LIT("NAME"));
+	if (!out->distribution)
+		out->distribution = os_release_value(collector, metadata, NB_STR_LIT("ID"));
+	out->os_version = os_release_value(collector, metadata, NB_STR_LIT("VERSION_ID"));
+	if (!out->os_version)
+		out->os_version = os_release_value(collector, metadata, NB_STR_LIT("VERSION"));
+}
+
+static bool have_wsl_interop(void)
+{
+	nb_str path = nb_str_from_cstr(getenv("WSL_INTEROP"));
+	struct stat info;
+
+	return stat("/proc/sys/fs/binfmt_misc/WSLInterop", &info) == 0 ||
+	       (nb_str_starts_with(path, NB_STR_LIT("/run/WSL/")) &&
+		stat(path.ptr, &info) == 0 && S_ISSOCK(info.st_mode));
+}
+#endif
+
+static void collect_platform(struct environment_context *out,
+			     struct environment_collector *collector)
+{
+#if defined(_WIN32) || defined(__CYGWIN__)
+	out->os = copy_value(collector, "Windows");
+	out->os_version = windows_version(collector);
+	out->kernel_release = copy_value(collector, out->os_version);
+#endif
+#ifdef ENV_NATIVE_WINDOWS
+	SYSTEM_INFO info;
+	const char *arch = NULL;
+
+	GetNativeSystemInfo(&info);
+	switch (info.wProcessorArchitecture) {
+	case PROCESSOR_ARCHITECTURE_AMD64: arch = "x86_64"; break;
+	case PROCESSOR_ARCHITECTURE_ARM64: arch = "arm64"; break;
+	case PROCESSOR_ARCHITECTURE_ARM: arch = "arm"; break;
+	case PROCESSOR_ARCHITECTURE_INTEL: arch = "x86"; break;
+	default: break;
+	}
+	out->arch = copy_value(collector, arch);
+#else
+	struct utsname info;
+#if defined(__CYGWIN__)
+	out->runtime = copy_value(collector, "Cygwin");
+#endif
+	if (uname(&info) != 0)
+		return;
+	out->arch = copy_value(collector, normalize_arch(info.machine));
+#if defined(__CYGWIN__)
+	out->runtime_version = copy_value(collector, info.release);
+#else
+	out->os = copy_value(collector, normalize_os(info.sysname));
+	out->kernel_release = copy_value(collector, info.release);
+#if defined(__APPLE__)
+	char version[64] = {0};
+	size_t size = sizeof(version);
+
+	if (sysctlbyname("kern.osproductversion", version, &size, NULL, 0) == 0 &&
+	    size && size <= sizeof(version) && version[size - 1] == '\0')
+		out->os_version = copy_value(collector, version);
+#elif defined(__linux__)
+	collect_linux_distribution(out, collector);
+	nb_str release = nb_str_from_cstr(info.release);
+	enum environment_wsl runtime = environment_wsl_detect(release, have_wsl_interop());
+
+	if (runtime != ENV_WSL_NONE) {
+		const char *name = "WSL";
+
+		if (runtime == ENV_WSL_1)
+			name = "WSL1";
+		else if (runtime == ENV_WSL_2)
+			name = "WSL2";
+		out->runtime = copy_value(collector, name);
+		out->host_os = copy_value(collector, "Windows");
+	}
+#endif
+#endif
+#endif
+}
+
+static void collect_path_tools(struct environment_context *out,
+			       struct environment_collector *collector)
+{
+	nb_buf found NB_CLEANUP(nb_buf_cleanup) = {0};
+#ifdef ENV_NATIVE_WINDOWS
+	const char *const names[] = {
+		"rg.exe", "fd.exe", "where.exe", "findstr.exe", "cat.exe", "more.com",
+		"sed.exe", "head.exe", "tail.exe", "tee.exe", "patch.exe", "fc.exe",
+		"robocopy.exe", "git.exe",
+	};
+	DWORD size = GetEnvironmentVariableW(L"PATH", NULL, 0);
+	wchar_t *path NB_CLEANUP(wide_cleanup) = NULL;
+
+	if (!size)
+		return;
+	path = collect_alloc(collector, (size_t)size * sizeof(*path));
+	if (!path)
+		return;
+	DWORD written = GetEnvironmentVariableW(L"PATH", path, size);
+	if (!written || written >= size)
+		return;
+#else
+	const char *const names[] = {
+		"rg", "fd", "find", "grep", "cat", "sed", "head", "tail", "tee", "patch", "git",
+	};
+	const char *path = getenv("PATH");
+
+	if (!path)
+		return;
+#endif
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+#ifdef ENV_NATIVE_WINDOWS
+		wchar_t name[32];
+		wchar_t candidate[PATH_MAX];
+		DWORD len;
+
+		if (!MultiByteToWideChar(CP_UTF8, 0, names[i], -1, name,
+					 (int)(sizeof(name) / sizeof(name[0]))))
+			continue;
+		len = SearchPathW(path, name, NULL,
+				  (DWORD)(sizeof(candidate) / sizeof(candidate[0])),
+				  candidate, NULL);
+		if (!len || len >= sizeof(candidate) / sizeof(candidate[0]))
+			continue;
+		DWORD attrs = GetFileAttributesW(candidate);
+		if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY))
+			continue;
+#else
+		nb_split_iter dirs;
+		nb_str dir;
+		bool executable = false;
+
+		nb_split_init(&dirs, nb_str_from_cstr(path), ':');
+		while (nb_split_next(&dirs, &dir)) {
+			char candidate[PATH_MAX];
+			struct stat info;
+			bool absolute = dir.len && dir.ptr[0] == '/';
+
+			if (dir.len >= sizeof(candidate) || (!absolute && !out->cwd))
+				continue;
+			int len = absolute ?
+				snprintf(candidate, sizeof(candidate), "%.*s/%s",
+					 (int)dir.len, dir.ptr, names[i]) :
+				snprintf(candidate, sizeof(candidate), "%s/%.*s/%s",
+					 out->cwd, (int)dir.len, dir.ptr, names[i]);
+			if (len > 0 && (size_t)len < sizeof(candidate) &&
+			    stat(candidate, &info) == 0 && S_ISREG(info.st_mode) &&
+			    access(candidate, X_OK) == 0) {
+				executable = true;
+				break;
+			}
+		}
+		if (!executable)
+			continue;
+#endif
+		if (!nb_buf_printf(&found, "%s%s", found.len ? ", " : "", names[i])) {
+			collector->error = nb_buf_status(&found);
+			return;
+		}
+	}
+	out->path_tools = copy_value(collector, nb_buf_cstr(&found));
+}
+
 static int is_absolute(const char *path)
 {
-#ifdef _WIN32
+#ifdef ENV_NATIVE_WINDOWS
 	return path[0] == '/' || path[0] == '\\' ||
 		(isalpha((unsigned char)path[0]) && path[1] == ':');
 #else
@@ -353,7 +634,7 @@ static int is_absolute(const char *path)
 static void collect_git(struct environment_context *out, struct environment_collector *collector)
 {
 	char *dir NB_CLEANUP(nb_charp_cleanup) = NULL;
-#ifndef _WIN32
+#ifndef ENV_NATIVE_WINDOWS
 	struct stat origin;
 #endif
 
@@ -362,7 +643,7 @@ static void collect_git(struct environment_context *out, struct environment_coll
 	    getenv("GIT_CEILING_DIRECTORIES") || getenv("GIT_COMMON_DIR") ||
 	    getenv("GIT_DISCOVERY_ACROSS_FILESYSTEM"))
 		return;
-#ifndef _WIN32
+#ifndef ENV_NATIVE_WINDOWS
 	if (stat(out->cwd, &origin) != 0)
 		return;
 #endif
@@ -376,7 +657,7 @@ static void collect_git(struct environment_context *out, struct environment_coll
 		const char *gitdir = dotgit;
 		char *slash;
 		int kind;
-#ifndef _WIN32
+#ifndef ENV_NATIVE_WINDOWS
 		struct stat current;
 		if (stat(dir, &current) != 0 || current.st_dev != origin.st_dev)
 			return;
@@ -430,7 +711,7 @@ static void collect_git(struct environment_context *out, struct environment_coll
 		if (kind != 0)
 			return;
 		slash = strrchr(dir, '/');
-#ifdef _WIN32
+#ifdef ENV_NATIVE_WINDOWS
 		char *backslash = strrchr(dir, '\\');
 		if (!slash || (backslash && backslash > slash))
 			slash = backslash;
@@ -444,7 +725,7 @@ static void collect_git(struct environment_context *out, struct environment_coll
 	}
 }
 
-#ifndef _WIN32
+#ifndef ENV_NATIVE_WINDOWS
 static int iana_name(const char *name)
 {
 	if (!name || !*name || *name == '/' || strstr(name, ".."))
@@ -472,7 +753,7 @@ static char *timezone_identity(struct environment_collector *collector)
 			tz++;
 		name = strstr(tz, "/zoneinfo/");
 		name = name ? name + strlen("/zoneinfo/") : tz;
-#ifndef _WIN32
+#ifndef ENV_NATIVE_WINDOWS
 		char *zone_path NB_CLEANUP(nb_charp_cleanup) =
 			join_path(collector, "/usr/share/zoneinfo", name);
 		if (iana_name(name) && path_kind(collector, zone_path) == 1)
@@ -483,7 +764,7 @@ static char *timezone_identity(struct environment_collector *collector)
 #endif
 		return NULL;
 	}
-#ifndef _WIN32
+#ifndef ENV_NATIVE_WINDOWS
 	char path[PATH_MAX];
 	ssize_t len = readlink("/etc/localtime", path, sizeof(path) - 1);
 
@@ -511,7 +792,9 @@ int environment_context_create(struct environment_context *out,
 
 	if (!out)
 		return NB_ERR_INVAL;
-	if (out->cwd || out->shell || out->os || out->arch || out->current_date || out->timezone ||
+	if (out->cwd || out->shell || out->os || out->os_version || out->distribution ||
+	    out->kernel_release || out->arch || out->runtime || out->runtime_version ||
+	    out->host_os || out->path_tools || out->current_date || out->timezone ||
 	    out->git_branch || out->git_root || out->sandbox)
 		return NB_ERR_STATE;
 	memset(out, 0, sizeof(*out));
@@ -522,39 +805,15 @@ int environment_context_create(struct environment_context *out,
 	}
 	out->shell = copy_value(collector, input && input->shell && *input->shell ?
 		input->shell : getenv("SHELL"));
-#ifdef _WIN32
+#ifdef ENV_NATIVE_WINDOWS
 	if (!out->shell)
 		out->shell = copy_value(collector, getenv("COMSPEC"));
 #endif
 	out->sandbox = copy_value(collector, input ? input->sandbox : NULL);
-#ifdef _WIN32
-	SYSTEM_INFO info;
-	GetNativeSystemInfo(&info);
-	out->os = copy_value(collector, "Windows");
-	switch (info.wProcessorArchitecture) {
-	case PROCESSOR_ARCHITECTURE_AMD64:
-		out->arch = copy_value(collector, "x86_64");
-		break;
-	case PROCESSOR_ARCHITECTURE_ARM64:
-		out->arch = copy_value(collector, "arm64");
-		break;
-	case PROCESSOR_ARCHITECTURE_ARM:
-		out->arch = copy_value(collector, "arm");
-		break;
-	case PROCESSOR_ARCHITECTURE_INTEL:
-		out->arch = copy_value(collector, "x86");
-		break;
-	default: break;
-	}
-#else
-	struct utsname info;
-	if (uname(&info) == 0) {
-		out->os = copy_value(collector, normalize_os(info.sysname));
-		out->arch = copy_value(collector, normalize_arch(info.machine));
-	}
-#endif
+	collect_platform(out, collector);
+	collect_path_tools(out, collector);
 	now = time(NULL);
-#ifdef _WIN32
+#ifdef ENV_NATIVE_WINDOWS
 	have_local = now != (time_t)-1 && localtime_s(&local, &now) == 0;
 #else
 	have_local = now != (time_t)-1 && localtime_r(&now, &local) != NULL;
@@ -592,7 +851,14 @@ void environment_context_cleanup(struct environment_context *ctx)
 	free((void *)ctx->cwd);
 	free((void *)ctx->shell);
 	free((void *)ctx->os);
+	free((void *)ctx->os_version);
+	free((void *)ctx->distribution);
+	free((void *)ctx->kernel_release);
 	free((void *)ctx->arch);
+	free((void *)ctx->runtime);
+	free((void *)ctx->runtime_version);
+	free((void *)ctx->host_os);
+	free((void *)ctx->path_tools);
 	free((void *)ctx->current_date);
 	free((void *)ctx->timezone);
 	free((void *)ctx->git_branch);

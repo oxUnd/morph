@@ -4947,6 +4947,9 @@ TEST_F(PromptModeTest, EnvironmentRefreshesWithoutChangingStaticPromptOrHistory)
 	std::string system = capt->system_prompt;
 	EXPECT_EQ(first.find("system:<environment_context>"), 0u);
 	EXPECT_EQ(first.find("<environment_context>"), first.rfind("<environment_context>"));
+	EXPECT_NE(first.find("<os>"), std::string::npos);
+	EXPECT_NE(first.find("<kernel_release>"), std::string::npos);
+	EXPECT_NE(first.find("<arch>"), std::string::npos);
 	EXPECT_EQ(system.find("<environment_context>"), std::string::npos);
 	EXPECT_EQ(ctx->runtime_context, nullptr);
 	free(ctx->workdir);

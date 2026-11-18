@@ -35,6 +35,12 @@ Morph 按各自独立管理的来源组装模型输入：
 Chat Completions 将系统指令作为 system 消息接收；Responses 则通过
 `instructions` 字段接收。旧版纯文本后端不支持带角色的消息，因此会将仅用于当前请求的上下文追加到系统指令字符串中。
 
+环境快照在每轮开始时采集。系统字段包括操作系统、系统版本、Linux 发行版、内核发行版本和架构。
+在 WSL 中，系统字段描述 Linux 环境，`host_os` 记录 Windows，`runtime` 按探测结果记录 `WSL1`、`WSL2` 或 `WSL`。
+Cygwin 记录 Windows 构建版本及独立的 Cygwin 版本。无法取得的字段会省略。
+`path_tools` 列出进程继承的 PATH 中找到的常用命令，POSIX 相对路径按 exec 的工作目录解析。
+清单在启动命令 shell 前生成，反映当时的 PATH。命令执行仍按现有权限策略处理。
+
 ## 指令权限与任务连续性
 
 自定义 prompt 的替换模式始终保留核心要求，包括在开始任务前检查可用技能、

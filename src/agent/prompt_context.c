@@ -6,7 +6,7 @@
 #include <string.h>
 
 int prompt_context_create(const struct prompt_context_provider *providers, size_t count,
-			  const struct prompt_context_input *input, char **out)
+			  char **out)
 {
 	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
@@ -16,8 +16,7 @@ int prompt_context_create(const struct prompt_context_provider *providers, size_
 	if (*out)
 		return NB_ERR_STATE;
 	for (size_t i = 0; i < count; i++) {
-		if (!providers[i].name || !*providers[i].name ||
-		    !providers[i].collect_render)
+		if (!providers[i].name || !*providers[i].name || !providers[i].render)
 			return NB_ERR_INVAL;
 		for (size_t j = 0; j < i; j++) {
 			if (!strcmp(providers[i].name, providers[j].name))
@@ -28,7 +27,7 @@ int prompt_context_create(const struct prompt_context_provider *providers, size_
 	if (rc != 0)
 		return rc;
 	for (size_t i = 0; i < count; i++) {
-		rc = providers[i].collect_render(input, &buf);
+		rc = providers[i].render(providers[i].snapshot, &buf);
 		if (rc != 0)
 			return rc;
 	}
@@ -38,24 +37,18 @@ int prompt_context_create(const struct prompt_context_provider *providers, size_
 	return *out ? 0 : NB_ERR_NOMEM;
 }
 
-static int collect_environment(const struct prompt_context_input *input, nb_buf *out)
+static int render_environment(const void *snapshot, nb_buf *out)
 {
-	struct environment_context ctx NB_CLEANUP(environment_context_cleanup) = {0};
-	int rc = environment_context_create(&ctx, input);
-
-	if (rc != 0)
-		return rc;
-	return environment_context_render(&ctx, out);
+	return environment_context_render(snapshot, out);
 }
 
-int prompt_context_default_create(const struct prompt_context_input *input, char **out)
+int prompt_context_default_create(const struct environment_context *environment, char **out)
 {
-	static const struct prompt_context_provider providers[] = {
-		{ "environment_context", collect_environment },
+	const struct prompt_context_provider providers[] = {
+		{ "environment_context", render_environment, environment },
 	};
 
-	return prompt_context_create(providers, sizeof(providers) / sizeof(providers[0]), input,
-				     out);
+	return prompt_context_create(providers, sizeof(providers) / sizeof(providers[0]), out);
 }
 
 char *prompt_reference_create(const char *content)

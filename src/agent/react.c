@@ -3417,26 +3417,25 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 	}
 
 	struct prompt_context_input environment = {.cwd = ctx->workdir};
+	struct environment_context snapshot NB_CLEANUP(environment_context_cleanup) = {0};
 	struct tool_handle environment_handle = {0};
 	struct tool_handle *exec_tool = react_builtin_acquire(ctx, "exec", &environment_handle);
 
 	if (exec_tool && exec_tool->get_environment)
 		exec_tool->get_environment(exec_tool->user_data, &environment);
-	int context_rc = prompt_context_default_create(&environment, &ctx->runtime_context);
+	int context_rc = environment_context_create(&snapshot, &environment);
+	tool_handle_release(&environment_handle);
+	if (context_rc == 0)
+		context_rc = prompt_context_default_create(&snapshot, &ctx->runtime_context);
 	if (context_rc != 0) {
-		tool_handle_release(&environment_handle);
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, context_rc,
 				 "runtime_context_error");
 		return react_finish_run(ctx);
 	}
 
-	struct environment_context project_environment NB_CLEANUP(environment_context_cleanup) = {
-		0};
 	const char *global_dir = NULL;
 	char *expanded_global = NULL;
 
-	context_rc = environment_context_create(&project_environment, &environment);
-	tool_handle_release(&environment_handle);
 	if (getenv("HOME")) {
 		expanded_global = (nb_path_expand(&file_value_4, "~/.morph", NULL) == NB_OK
 					   ? strdup(nb_buf_cstr(&file_value_4))
@@ -3449,7 +3448,7 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 		size_t guidance_budget = ctx->compress.project_doc_max_bytes > 0
 			? (size_t)ctx->compress.project_doc_max_bytes : PROJECT_CONTEXT_MAX_BYTES;
 		context_rc = project_context_create_with_budget(
-			ctx->logger, &project_environment, global_dir, guidance_budget,
+			ctx->logger, &snapshot, global_dir, guidance_budget,
 			&ctx->project_context);
 	}
 	free(expanded_global);
