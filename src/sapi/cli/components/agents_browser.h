@@ -2,8 +2,7 @@
 #define MORPH_CLI_COMPONENTS_AGENTS_BROWSER_H
 
 #include "agent/agent_control.h"
-#include <nb/buf.h>
-#include <nb/cleanup.h>
+#include <nb/vec.h>
 #include <nothing/tui/models/list_navigation.h>
 
 enum cli_agents_browser_filter {
@@ -19,6 +18,11 @@ enum cli_agents_browser_filter {
 
 struct cli_agents_browser_state {
 	struct nt_list_state selection;
+	nb_vec rows;
+	size_t counts[CLI_AGENTS_BROWSER_FILTER_COUNT];
+	size_t offsets[CLI_AGENTS_BROWSER_FILTER_COUNT];
+	uint64_t revision;
+	int root_running, live_elapsed;
 	enum cli_agents_browser_filter filter;
 	size_t detail_scroll;
 	int detail_focus;
@@ -36,14 +40,14 @@ struct cli_agents_browser_data {
 	int64_t now_ms;
 };
 
-/* Original snapshot index: zero is the main conversation, n+1 is agents[n].
- * SIZE_MAX means the active filter has no matching entries. */
-size_t cli_agents_browser_selected(const struct cli_agents_browser_state *state,
-				   const struct cli_agents_browser_data *data);
-void cli_agents_browser_select(struct cli_agents_browser_state *state,
-			       const struct cli_agents_browser_data *data, size_t index);
-int cli_agents_browser_update(struct cli_agents_browser_state *state,
-			      const struct cli_agents_browser_data *data, int key);
+/* Refresh before syncing a changed snapshot. Zero identifies the main conversation,
+ * n+1 identifies agents[n]. The state owns its grouped row indices. */
+int cli_agents_browser_set_snapshot(struct cli_agents_browser_state *state,
+				    const struct cli_agents_browser_data *data, size_t selected);
+void cli_agents_browser_state_cleanup(struct cli_agents_browser_state *state);
+/* SIZE_MAX means the active filter has no matching entries. */
+size_t cli_agents_browser_selected(const struct cli_agents_browser_state *state);
+int cli_agents_browser_update(struct cli_agents_browser_state *state, int key);
 struct nt_builder;
 struct nt_view;
 struct nt_view *cli_agents_browser_add(struct nt_builder *, struct nt_view *parent);

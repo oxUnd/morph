@@ -6,7 +6,7 @@ extern "C" {
 #include "runtime/recap.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
@@ -54,6 +54,7 @@ TEST(CliRecapPresentationTest, WrapsUnicodeUnderTheSummaryAndSanitizesControls)
 	std::string summary;
 	for (int n = 0; n < 8; n++)
 		summary += "中文🙂 recap preserves the full summary. ";
+
 	summary += "\033[2JEND";
 	for (int columns : {120, 80, 60, 20}) {
 		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
@@ -71,9 +72,11 @@ TEST(CliRecapPresentationTest, WrapsUnicodeUnderTheSummaryAndSanitizesControls)
 			EXPECT_LE(nb_utf8_width_cstr(row.c_str()), static_cast<size_t>(columns - 2));
 			if (start)
 				EXPECT_EQ(row.find("           "), 0u);
+
 			joined += row.substr(start ? 11u : strlen("  ↳ Recap: "));
 			start = end + 1;
 		}
+
 		EXPECT_NE(joined.find("END"), std::string::npos);
 	}
 }
@@ -97,6 +100,7 @@ protected:
 		});
 		if (!ready)
 			return nullptr;
+
 		cJSON *event = cJSON_Parse(recap_events.back().c_str());
 		cJSON *data = cJSON_Duplicate(cJSON_GetObjectItem(event, "data"), 1);
 		cJSON_Delete(event);
@@ -124,6 +128,7 @@ TEST(RecapParser, RequiresBoundedStructuredOutput)
 		EXPECT_EQ(result, nullptr);
 		cJSON_Delete(result);
 	}
+
 	std::string text = "{\"summary\":\"" + std::string(701, 'x') +
 		"\",\"next_action\":null}";
 	EXPECT_EQ(runtime_recap_parse(text.c_str()), nullptr);
@@ -195,6 +200,7 @@ TEST_F(RuntimeFacadeTest, DeferredSessionSkipsRecapPollingAndClearsStaleRetry)
 	testing::internal::CaptureStderr();
 	for (int i = 1; i <= 3; i++)
 		cli_recap_tick(&ctx, i * CLI_RECAP_DELAY_MS);
+
 	std::string diagnostics = testing::internal::GetCapturedStderr();
 	nb_mutex_unlock(instance->context.execution_lock);
 	EXPECT_TRUE(diagnostics.empty()) << diagnostics;
@@ -216,11 +222,13 @@ TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)
 		ASSERT_EQ(message_add(&instance->context.database, id, "assistant",
 			("answer-" + std::to_string(i)).c_str(), 1), 0);
 	}
+
 	ASSERT_EQ(message_add(&instance->context.database, id, "tool", "SECRET_TOOL_OUTPUT", 1), 0);
 	ASSERT_EQ(message_add(&instance->context.database, id, "reasoning", "HIDDEN_REASONING", 1), 0);
 	std::string huge;
 	for (int i = 0; i < 40000; i++)
 		huge += "猫";
+
 	ASSERT_EQ(message_add(&instance->context.database, id, "user", huge.c_str(), 1), 0);
 	int before = message_count(&instance->context.database, id);
 	struct runtime_recap_progress progress{};
@@ -244,6 +252,7 @@ TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)
 		EXPECT_EQ(strstr(content, "HIDDEN_REASONING"), nullptr);
 		EXPECT_EQ(strstr(content, "request-0"), nullptr);
 	}
+
 	EXPECT_LE(bytes, RECAP_PROMPT_MAX_BYTES);
 	cJSON_Delete(body);
 	Release();
@@ -352,6 +361,7 @@ TEST_F(RecapTest, AutomaticRecapCanBeDisabledButManualStillWorks)
 		ASSERT_EQ(message_add(&instance->context.database,
 			instance->context.current_session.id, "assistant", "Done", 1), 0);
 	}
+
 	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.input_status.enabled = 1;
@@ -380,6 +390,7 @@ TEST_F(RecapTest, IdleUnfocusedProgressAutomaticallyRequestsOneRecap)
 		ASSERT_EQ(message_add(&instance->context.database,
 			instance->context.current_session.id, "assistant", "Done", 1), 0);
 	}
+
 	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.input_status.enabled = 1;

@@ -22,8 +22,8 @@
 #include "sapi/cli/commands/input.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/transcript.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/application_internal.h"
@@ -34,7 +34,7 @@
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/pages/approval.h"
 #include "sapi/cli/adapters/input/reader.h"
-#include "sapi/cli/components/banner.h"
+#include "sapi/cli/presentation/banner.h"
 #include "sapi/cli/pages/hooks.h"
 #include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
@@ -50,14 +50,17 @@ int cli_application_present_page(struct nt_application *app,
 
 	if (rc)
 		return rc;
+
 	page->data = data;
 	rc = nt_view_controller_set_tick_interval(page, tick_ms);
 	if (!rc)
 		rc = nt_application_present_view_controller(app, &page);
+
 	if (rc) {
 		page->data = NULL;
 		nt_view_controller_destroy(page);
 	}
+
 	return rc;
 }
 
@@ -78,19 +81,24 @@ int cli_application_show_page(struct cli_application *ctx, const struct nt_view_
 		rc = nt_application_init(&ctx->base, &options);
 		if (rc)
 			return rc;
+
 		rc = nt_application_set_color_profile(
 			&ctx->base, cli_output_color_enabled(ctx) ? NT_COLOR_PROFILE_TRUECOLOR
 								  : NT_COLOR_PROFILE_NONE);
 	}
+
 	if (!rc)
 		rc = cli_application_present_page(&ctx->base, type, data, tick_ms);
+
 	if (!rc) {
 		*accepted = 1;
 		if (standalone)
 			rc = nt_application_run(&ctx->base);
 	}
+
 	if (standalone)
 		nt_application_deinit(&ctx->base);
+
 	return rc;
 }
 
@@ -114,6 +122,7 @@ void cli_application_panel_complete(struct cli_application *ctx, void *data,
 			CMD_ERROR(
 				ctx, "%s",
 				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, result));
+
 		cli_presentation_command_end(ctx);
 	}
 }
@@ -126,12 +135,14 @@ static void cli_application_prepare_termination(struct nt_application *base, int
 	ctx->running = 0;
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
 		(void)cli_event_queue_set_events_enabled(ctx, 0);
+
 	(void)cli_chat_panel_close(ctx, NB_ERR_CANCELLED);
 	(void)cli_event_queue_stop_owner_calls(ctx);
 	if (ctx->input_job && ctx->input_job->active) {
 		runtime_cancel_turn(ctx->runtime);
 		cli_chat_job_finished(ctx->chat, cli_command_job_finish(ctx->input_job));
 	}
+
 	cli_event_queue_attach_app(ctx, NULL);
 }
 
@@ -145,6 +156,7 @@ static int cli_application_copy_selection(void *data, const char *text)
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else if (rc == CLI_CLIPBOARD_REQUESTED)
 		cli_output_printf(ctx, "Copy requested from terminal\n");
+
 	return 0;
 }
 
@@ -158,6 +170,7 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, app_rc));
 		return;
 	}
+
 	struct nt_application_options options = cli_chat_options(page);
 	options.synchronized_output = 1;
 	options.repaint_rows = 1;
@@ -175,13 +188,17 @@ static void cli_application_run_session(struct cli_application *ctx, struct cli_
 		if (!app_rc)
 			app_rc = nt_window_set_selection_handler(nt_application_window(&ctx->base),
 			cli_application_copy_selection, ctx);
+
 		if (!app_rc)
 			app_rc = cli_chat_present(page);
+
 		if (!app_rc)
 			app_rc = nt_application_run(&ctx->base);
+
 		nt_application_deinit(&ctx->base);
 		cli_feed_set_hidden(ctx, 0);
 	}
+
 	cli_chat_destroy(page, app_rc);
 }
 
@@ -195,12 +212,14 @@ static void cli_application_run_interactive(struct cli_application *ctx)
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return;
 	}
+
 	ctx->input_job = &job;
 	ctx->input_status.enabled = 1;
 	if (cli_composer_model_init(&ctx->composer) == 0) {
 		cli_application_run_session(ctx, &job);
 		cli_composer_model_cleanup(&ctx->composer);
 	}
+
 	ctx->input_job = NULL;
 	ctx->input_status.enabled = 0;
 	cli_command_job_cleanup(&job);
@@ -223,6 +242,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 
 	if (!ctx)
 		return NB_ERR_INVAL;
+
 	ctx->presentation_mode = mode;
 	cli_output_set_structured(ctx, mode == CLI_PRESENT_EVENTS_JSON);
 	ctx->event_cb = cli_runtime_events_callback;
@@ -230,17 +250,20 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 	rc = cli_input_init(ctx);
 	if (rc)
 		return rc;
+
 	rc = cli_feed_init(ctx, stdout, STDOUT_FILENO);
 	if (rc) {
 		cli_input_cleanup(ctx);
 		return rc;
 	}
+
 	rc = cli_presentation_init(ctx);
 	if (rc != 0) {
 		cli_feed_cleanup(ctx);
 		cli_input_cleanup(ctx);
 		return rc;
 	}
+
 	rc = cli_event_queue_init(ctx, cli_dispatch_event);
 	if (rc != 0) {
 		cli_subagents_cleanup(ctx);
@@ -249,8 +272,10 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 		cli_input_cleanup(ctx);
 		return rc;
 	}
+
 	if (mode == CLI_PRESENT_INTERACTIVE)
 		(void)cli_event_queue_set_events_enabled(ctx, 0);
+
 	memset(&options, 0, sizeof(options));
 	options.logger = ctx->logger;
 	options.startup_error = &ctx->startup_error;
@@ -293,6 +318,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 		cli_input_cleanup(ctx);
 		return rc;
 	}
+
 	(void)cli_agents_refresh(ctx);
 
 	ctx->session_auto_named = session_name && session_name[0] ? 1 : 0;
@@ -311,6 +337,7 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
 			     "failed to start sync worker: %s",
 			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	return 0;
 }
 
@@ -321,6 +348,7 @@ int cli_application_init(struct cli_application *ctx, struct nb_log *logger,
 {
 	if (!ctx)
 		return NB_ERR_INVAL;
+
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->input_execute = cli_command_input_execute;
 	ctx->logger = logger;
@@ -341,6 +369,7 @@ int cli_application_init(struct cli_application *ctx, struct nb_log *logger,
 			}
 		}
 	}
+
 	return rc;
 }
 
@@ -358,17 +387,20 @@ static void cli_application_run_structured(struct cli_application *ctx)
 	rc = cli_command_job_init(&job);
 	if (rc != 0)
 		return;
+
 	rc = (nb_buf_init(&input), nb_buf_reserve(&input, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0) {
 		cli_command_job_cleanup(&job);
 		return;
 	}
+
 	while (ctx->running || job.active) {
 		if (nb_atomic_int_load(&ctx->terminate_requested)) {
 			ctx->running = 0;
 			if (!job.active)
 				break;
 		}
+
 		struct pollfd fds[2];
 		int wake_fd = cli_event_queue_wake_fd(ctx);
 		int nfds = wake_fd >= 0 ? 2 : 1;
@@ -382,23 +414,28 @@ static void cli_application_run_structured(struct cli_application *ctx)
 			fds[1].events = POLLIN;
 			fds[1].revents = 0;
 		}
+
 		rc = poll(fds, (nfds_t)nfds, poll_timeout);
 		if (rc < 0) {
 			if (errno == EINTR) {
 				nb_atomic_int_store(&ctx->interrupted, 0);
 				continue;
 			}
+
 			break;
 		}
+
 		if ((wake_fd >= 0 && (fds[1].revents & (POLLIN | POLLERR | POLLHUP))) ||
 		    (job.active && rc == 0))
 			(void)cli_event_queue_drain(ctx);
+
 		if (cli_command_job_done(&job)) {
 			int command_rc = cli_command_job_finish(&job);
 
 			(void)cli_event_queue_drain(ctx);
 			cli_turn_finish(ctx, command_rc);
 		}
+
 		if (!job.active && (fds[0].revents & (POLLIN | POLLHUP))) {
 			size_t len;
 			int complete = 0;
@@ -413,27 +450,34 @@ static void cli_application_run_structured(struct cli_application *ctx)
 						ctx->running = 0;
 					else
 						clearerr(stdin);
+
 					break;
 				}
+
 				len = strlen(line);
 				complete = len > 0 && line[len - 1] == '\n';
 				if (complete)
 					line[--len] = '\0';
+
 				if (len > 0 && line[len - 1] == '\r')
 					line[--len] = '\0';
+
 				continuation = complete && len > 0 && line[len - 1] == '\\';
 				if (continuation) {
 					len--;
 					complete = 0;
 				}
+
 				rc = (nb_buf_append(&input, line, len) ? 0 : NB_ERR_NOMEM);
 				if (rc == 0 && continuation)
 					rc = (nb_buf_append_char(&input, '\n') ? 0 : NB_ERR_NOMEM);
+
 				if (rc != 0) {
 					nb_buf_clear(&input);
 					break;
 				}
 			}
+
 			if (input.len > 0 && !cli_interaction_is_frame(nb_buf_cstr(&input))) {
 				cli_turn_begin(ctx);
 				rc = cli_command_job_start(&job, ctx, nb_buf_cstr(&input));
@@ -442,12 +486,14 @@ static void cli_application_run_structured(struct cli_application *ctx)
 			}
 		}
 	}
+
 	if (job.active) {
 		int command_rc = cli_command_job_finish(&job);
 
 		(void)cli_event_queue_drain(ctx);
 		cli_turn_finish(ctx, command_rc);
 	}
+
 	nb_buf_cleanup(&input);
 	cli_command_job_cleanup(&job);
 }
@@ -461,13 +507,16 @@ static void cli_application_run_plain(struct cli_application *ctx)
 
 	if (cli_command_job_init(&job) != 0)
 		return;
+
 	if ((nb_buf_init(&input), nb_buf_reserve(&input, BUFSIZ) ? 0 : NB_ERR_NOMEM) != 0) {
 		cli_command_job_cleanup(&job);
 		return;
 	}
+
 	while (ctx->running) {
 		if (nb_atomic_int_load(&ctx->terminate_requested))
 			break;
+
 		int complete = 0;
 
 		(void)cli_event_queue_drain(ctx);
@@ -481,6 +530,7 @@ static void cli_application_run_plain(struct cli_application *ctx)
 				cli_output_printf(ctx, "%s", input.len == 0 ? "> " : "… ");
 				fflush(stdout);
 			}
+
 			cli_cancel_state_reset(ctx);
 			if (!cli_input_fgets(ctx, line, sizeof(line), stdin)) {
 				if (nb_atomic_int_exchange(&ctx->interrupted, 0)) {
@@ -488,27 +538,34 @@ static void cli_application_run_plain(struct cli_application *ctx)
 					nb_buf_clear(&input);
 					break;
 				}
+
 				if (feof(stdin)) {
 					ctx->running = 0;
 					break;
 				}
+
 				clearerr(stdin);
 				continue;
 			}
+
 			len = strlen(line);
 			has_newline = len > 0 && line[len - 1] == '\n';
 			if (has_newline)
 				line[--len] = '\0';
+
 			if (len > 0 && line[len - 1] == '\r')
 				line[--len] = '\0';
+
 			continuation = has_newline && len > 0 && line[len - 1] == '\\';
 			if (continuation)
 				len--;
+
 			if ((nb_buf_append(&input, line, len) ? 0 : NB_ERR_NOMEM) != 0) {
 				CMD_ERROR(ctx, "input is too large");
 				nb_buf_clear(&input);
 				break;
 			}
+
 			if (continuation) {
 				if ((nb_buf_append_char(&input, '\n') ? 0 : NB_ERR_NOMEM) != 0) {
 					CMD_ERROR(ctx, "input is too large");
@@ -519,6 +576,7 @@ static void cli_application_run_plain(struct cli_application *ctx)
 				complete = 1;
 			}
 		}
+
 		if (input.len > 0) {
 			int turn_rc;
 
@@ -526,11 +584,14 @@ static void cli_application_run_plain(struct cli_application *ctx)
 			turn_rc = cli_command_job_start(&job, ctx, nb_buf_cstr(&input));
 			if (turn_rc == 0)
 				turn_rc = cli_command_job_wait(&job);
+
 			(void)cli_event_queue_drain(ctx);
 			cli_turn_finish(ctx, turn_rc);
 		}
+
 		(void)cli_event_queue_drain(ctx);
 	}
+
 	nb_buf_cleanup(&input);
 	cli_command_job_cleanup(&job);
 }
@@ -548,24 +609,29 @@ void cli_application_run(struct cli_application *ctx)
 
 	if (!ctx)
 		return;
+
 	if (cli_scheduler_start(ctx) != 0)
 		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
 			     "failed to start task scheduler");
+
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		(void)setvbuf(stdin, NULL, _IONBF, 0);
 		cli_application_run_structured(ctx);
 		return;
 	}
+
 	if (plain) {
 		(void)cli_event_queue_set_events_enabled(ctx, 1);
 		cli_output_set_color_enabled(ctx, 0);
 		ctx->presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	}
+
 	config = runtime_config_borrow(ctx->runtime);
 	workdir = runtime_workdir_borrow(ctx->runtime);
 	memset(&directory, 0, sizeof(directory));
 	if ((nb_buf_init(&directory), nb_buf_reserve(&directory, BUFSIZ) ? 0 : NB_ERR_NOMEM) != 0)
 		return;
+
 	home = getenv("HOME");
 	if (workdir && workdir[0] && home && home[0] && strncmp(workdir, home, strlen(home)) == 0 &&
 	    (workdir[strlen(home)] == '\0' || workdir[strlen(home)] == '/')) {
@@ -574,14 +640,17 @@ void cli_application_run(struct cli_application *ctx)
 	} else {
 		(void)nb_buf_append_cstr(&directory, workdir && workdir[0] ? workdir : ".");
 	}
+
 	if (plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
 		cli_banner_print(ctx, config ? config->models.text.model : NULL,
 				 nb_buf_cstr(&directory));
+
 	nb_buf_cleanup(&directory);
 	int hooks_rc = cli_hooks_startup(ctx);
 	if (hooks_rc != 0)
 		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN, "hook trust review failed: %s",
 			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, hooks_rc));
+
 	if (plain && ctx->session_history_pending) {
 		ctx->session_history_pending = 0;
 		int rc = cli_session_history_restore(ctx);
@@ -590,6 +659,7 @@ void cli_application_run(struct cli_application *ctx)
 			CMD_ERROR(ctx, "failed to restore session history: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
+
 	/* The chat controller opens the startup picker on its own controller stack. */
 	if (ctx->resume_requested && standalone_resume) {
 		ctx->resume_requested = 0;
@@ -618,10 +688,12 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 
 	if (runtime_turn_status_copy(ctx->runtime, &status) != 0)
 		return;
+
 	root = cJSON_CreateObject();
 	if (!root) {
 		return;
 	}
+
 	switch (status.state) {
 	case REACT_STATE_DONE:
 		cJSON_AddStringToObject(root, "state", "done");
@@ -636,6 +708,7 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 		cJSON_AddStringToObject(root, "state", "unknown");
 		break;
 	}
+
 	cJSON_AddStringToObject(root, "final_answer",
 				status.final_answer ? status.final_answer : "");
 	cJSON_AddStringToObject(root, "outcome", react_outcome_name(status.outcome));
@@ -645,8 +718,10 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 					nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 						   status.last_error_code));
 	}
+
 	if (status.outcome_reason && status.outcome_reason[0])
 		cJSON_AddStringToObject(root, "reason", status.outcome_reason);
+
 	steps = cJSON_CreateArray();
 	if (steps) {
 		for (int i = 0; i < status.step_count; i++) {
@@ -655,23 +730,30 @@ static void cli_application_emit_trace_json(struct cli_application *ctx, double 
 
 			if (!step)
 				continue;
+
 			cJSON_AddStringToObject(step, "type", react_step_type_name(cur->type));
 			if (cur->content)
 				cJSON_AddStringToObject(step, "content", cur->content);
+
 			if (cur->tool_name)
 				cJSON_AddStringToObject(step, "tool_name", cur->tool_name);
+
 			if (cur->tool_args)
 				cJSON_AddStringToObject(step, "tool_args", cur->tool_args);
+
 			cJSON_AddItemToArray(steps, step);
 		}
+
 		cJSON_AddItemToObject(root, "steps", steps);
 	}
+
 	cJSON_AddNumberToObject(root, "elapsed_seconds", elapsed);
 	json = cJSON_PrintUnformatted(root);
 	if (json) {
 		cli_output_printf(ctx, "%s\n", json);
 		free(json);
 	}
+
 	cJSON_Delete(root);
 }
 
@@ -687,6 +769,7 @@ void cli_application_run_once(struct cli_application *ctx, const char *prompt)
 
 	if (!ctx || !prompt)
 		return;
+
 	started = nb_time_monotonic_ns();
 	cli_cancel_state_reset(ctx);
 
@@ -699,23 +782,28 @@ void cli_application_run_once(struct cli_application *ctx, const char *prompt)
 		if (saved_stdout >= 0)
 			(void)dup2(STDERR_FILENO, STDOUT_FILENO);
 	}
+
 	cli_turn_begin(ctx);
 	job_rc = cli_command_job_init(&job);
 	if (job_rc == 0) {
 		job_initialized = 1;
 		job_rc = cli_command_job_start(&job, ctx, prompt);
 	}
+
 	if (job_rc == 0)
 		job_rc = cli_command_job_wait(&job);
+
 	(void)cli_event_queue_drain(ctx);
 	cli_turn_finish(ctx, job_rc);
 	if (job_initialized)
 		cli_command_job_cleanup(&job);
+
 	if (saved_stdout >= 0) {
 		fflush(stdout);
 		(void)dup2(saved_stdout, STDOUT_FILENO);
 		close(saved_stdout);
 	}
+
 	finished = nb_time_monotonic_ns();
 	elapsed = started > 0 && finished >= started ? (double)(finished - started) / 1e9 : 0.0;
 	if (ctx->trace_json)
@@ -728,10 +816,12 @@ void cli_application_shutdown(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 		(void)cli_event_queue_set_events_enabled(ctx, 0);
 		ctx->presentation_ready = 0;
 	}
+
 	nb_signal_listener_stop(&ctx->signals, NULL);
 	cli_callbacks_cleanup(ctx);
 	runtime_close(ctx->runtime);

@@ -13,6 +13,7 @@ static int cli_work_status_label(nb_buf *out, int styled, int64_t elapsed, int64
 	const char label[] = "Working";
 	if (!styled)
 		return (nb_buf_append_cstr(out, CLI_FEED_RUNNING " Working") ? 0 : NB_ERR_NOMEM);
+
 	int rc = (nb_buf_printf(out, ANSI_RESET "%s" CLI_FEED_RUNNING ANSI_RESET " ",
 				cli_style_running_color(now))
 			  ? 0
@@ -23,12 +24,14 @@ static int cli_work_status_label(nb_buf *out, int styled, int64_t elapsed, int64
 		double distance = ((double)i + 0.5 - position) / 3.0;
 		if (distance < 0.0)
 			distance = -distance;
+
 		double intensity = distance < 1.0 ? 1.0 - distance : 0.0;
 		int shade = 138 + (int)(117.0 * intensity * intensity * (3.0 - 2.0 * intensity));
 		rc = (nb_buf_printf(out, "\033[38;2;%d;%d;%dm%c", shade, shade, shade, label[i])
 			      ? 0
 			      : NB_ERR_NOMEM);
 	}
+
 	return rc ? rc : (nb_buf_append_cstr(out, ANSI_RESET) ? 0 : NB_ERR_NOMEM);
 }
 
@@ -38,6 +41,7 @@ static int cli_work_status_duration(nb_buf *out, int64_t elapsed)
 	int rc = 0;
 	if (seconds >= 60)
 		rc = (nb_buf_printf(out, "%lldm ", (long long)(seconds / 60)) ? 0 : NB_ERR_NOMEM);
+
 	return rc ? rc
 		  : (nb_buf_printf(out, "%llds", (long long)(seconds % 60)) ? 0 : NB_ERR_NOMEM);
 }
@@ -58,6 +62,7 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 {
 	if (!out || columns < 1)
 		return NB_ERR_INVAL;
+
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = cli_work_status_duration(&text, elapsed_ms);
 	int summary = agent_summary && *agent_summary;
@@ -66,23 +71,29 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 					 summary && columns < 76 ? " · esc" : " · esc to interrupt")
 			      ? 0
 			      : NB_ERR_NOMEM);
+
 	if (!rc && summary)
 		rc = (nb_buf_printf(&text, " · %s", agent_summary) ? 0 : NB_ERR_NOMEM);
+
 	if (rc)
 		return rc;
+
 	const char *hint = columns < 76 ? " · Ctrl+T" : " · Ctrl+T transcript";
 	int hint_width = columns >= 45 ? (int)nb_utf8_width_cstr(hint) : 0;
 	rc = cli_work_status_label(out, styled, elapsed_ms, now_ms);
 	if (!rc)
 		rc = (nb_buf_append_cstr(out, styled ? ANSI_DIM " · " : " · ") ? 0 : NB_ERR_NOMEM);
+
 	if (!rc)
 		rc = cli_work_status_text(out, nb_buf_cstr(&text), columns - 12 - hint_width,
 					  styled);
+
 	if (!rc && hint_width)
 		rc = (nb_buf_printf(out, "%s%s%s", styled ? CLI_COMMAND_COLOR : "", hint,
 				    styled ? ANSI_RESET : "")
 			      ? 0
 			      : NB_ERR_NOMEM);
+
 	return rc;
 }
 
@@ -91,6 +102,7 @@ int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, 
 {
 	if (!out || columns < 1)
 		return NB_ERR_INVAL;
+
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_append_cstr(&text, result >= 0			 ? "Worked for "
 					    : result == NB_ERR_CANCELLED ? "Stopped after "
@@ -99,12 +111,14 @@ int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, 
 			  : NB_ERR_NOMEM);
 	if (!rc)
 		rc = cli_work_status_duration(&text, elapsed_ms);
+
 	struct tm finished;
 	if (!rc && localtime_r(&finished_at, &finished)) {
 		char clock[32] = "";
 		(void)strftime(clock, sizeof(clock), "%H:%M", &finished);
 		rc = (nb_buf_printf(&text, " · %s", clock) ? 0 : NB_ERR_NOMEM);
 	}
+
 	return rc ? rc : cli_work_status_text(out, nb_buf_cstr(&text), columns - 2, styled);
 }
 

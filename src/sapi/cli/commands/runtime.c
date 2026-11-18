@@ -25,6 +25,7 @@ static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char 
 	CMD_OK(ctx, "Goodbye!");
 	if (!cli_chat_active(ctx))
 		cli_session_history_print_resume_hint(ctx);
+
 	return 0;
 }
 
@@ -38,11 +39,13 @@ static int cli_runtime_command_help(struct cli_application *ctx, int argc, char 
 			snprintf(full, sizeof(full), "/%s", topic);
 			topic = full;
 		}
+
 		const struct cli_command *e = cli_command_find_borrow(topic);
 			if (!e) {
 				CMD_ERROR(ctx, "unknown command: %s", topic);
 				return NB_ERR_NOT_FOUND;
 			}
+
 			{
 				struct cli_output_segment segments[] = {
 					{.style = CLI_OUTPUT_STYLE_BOLD, .text = e->name},
@@ -57,8 +60,10 @@ static int cli_runtime_command_help(struct cli_application *ctx, int argc, char 
 			if (e->usage && *e->usage)
 				(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_DIM, 2,
 							       "usage: %s", e->usage);
+
 			return 0;
 	}
+
 	cli_print_help(ctx);
 	return 0;
 }
@@ -73,6 +78,7 @@ static int cli_runtime_command_copy(struct cli_application *ctx, int argc, char 
 		CMD_ERROR(ctx, "usage: /copy");
 		return NB_ERR_INVAL;
 	}
+
 	rc = runtime_session_last_answer_copy(ctx->runtime, &answer);
 	if (rc) {
 		if (rc == NB_ERR_NO_DATA)
@@ -80,8 +86,10 @@ static int cli_runtime_command_copy(struct cli_application *ctx, int argc, char 
 		else
 			CMD_ERROR(ctx, "copy failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
+
 	rc = cli_clipboard_copy_text(ctx, answer);
 	free(answer);
 		if (rc == CLI_CLIPBOARD_COPIED)
@@ -99,6 +107,7 @@ static int cli_runtime_command_copy(struct cli_application *ctx, int argc, char 
 			CMD_ERROR(ctx, "copy failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
+
 	return rc;
 }
 
@@ -109,9 +118,11 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 		CMD_ERROR(ctx, "usage: /model [normal|ultra|status|name]");
 		return NB_ERR_INVAL;
 	}
+
 	if (!name && ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
 	    cli_application_tui_borrow(ctx))
 		return cli_model_show(ctx);
+
 	if (name && (!strcmp(name, "normal") || !strcmp(name, "ultra"))) {
 		return cli_model_set_mode(ctx, !strcmp(name, "ultra"));
 	} else if (name && strcmp(name, "status")) {
@@ -121,6 +132,7 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
+
 		CMD_OK(ctx, "model switched to: %s", name);
 	} else {
 		struct session current = {0};
@@ -129,6 +141,7 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 		int rc = runtime_model_get_ultra(ctx->runtime, &ultra);
 		if (rc != 0)
 			return rc;
+
 		if (name)
 			(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
 						       "current model: %s · mode: %s",
@@ -138,6 +151,7 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 			(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
 						       "current model: %s", current.model);
 	}
+
 	return 0;
 }
 
@@ -185,6 +199,7 @@ static void cli_runtime_print_trace_step(struct cli_application *ctx, int number
 			.untrusted_mode = MORPH_TERMINAL_TEXT_SINGLE_LINE,
 		};
 	}
+
 	if (tool_name) {
 		segments[count++] = (struct cli_output_segment){
 			.style = CLI_OUTPUT_STYLE_DIM, .text = " (tool: "};
@@ -193,6 +208,7 @@ static void cli_runtime_print_trace_step(struct cli_application *ctx, int number
 		segments[count++] =
 			(struct cli_output_segment){.style = CLI_OUTPUT_STYLE_DIM, .text = ")"};
 	}
+
 	(void)cli_command_output_segments(ctx, segments, count, 2, 1);
 }
 
@@ -206,6 +222,7 @@ static void cli_runtime_print_trace_steps(struct cli_application *ctx, struct re
 		cur = cur->next;
 		step++;
 	}
+
 	(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_DIM, 0, "state: %s, steps: %d",
 				       state_name ? state_name : "n/a", count);
 }
@@ -218,6 +235,7 @@ static void cli_runtime_print_runtime_trace(struct cli_application *ctx,
 		cli_runtime_print_trace_step(ctx, i + 1, step->type, step->content,
 					     step->tool_name);
 	}
+
 	(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_DIM, 0, "state: %s, steps: %d",
 				       status ? react_state_name(status->state) : "n/a",
 				       status ? status->step_count : 0);
@@ -227,11 +245,13 @@ static struct react_step *cli_runtime_json_to_react_steps(const char *json, int 
 {
 	if (!json)
 		return NULL;
+
 	cJSON *arr = cJSON_Parse(json);
 	if (!cJSON_IsArray(arr)) {
 		cJSON_Delete(arr);
 		return NULL;
 	}
+
 	int count = cJSON_GetArraySize(arr);
 	struct react_step head = {0};
 	struct react_step *tail = &head;
@@ -239,6 +259,7 @@ static struct react_step *cli_runtime_json_to_react_steps(const char *json, int 
 		cJSON *obj = cJSON_GetArrayItem(arr, i);
 		if (!cJSON_IsObject(obj))
 			continue;
+
 		cJSON *type_item = cJSON_GetObjectItem(obj, "type");
 		const char *type_name =
 			cJSON_IsString(type_item) ? type_item->valuestring : "Unknown";
@@ -257,6 +278,7 @@ static struct react_step *cli_runtime_json_to_react_steps(const char *json, int 
 			type = REACT_STEP_REASONING;
 		else if (strcmp(type_name, "Content") == 0)
 			type = REACT_STEP_CONTENT;
+
 		cJSON *content = cJSON_GetObjectItem(obj, "content");
 		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
 		cJSON *tool_args = cJSON_GetObjectItem(obj, "tool_args");
@@ -269,6 +291,7 @@ static struct react_step *cli_runtime_json_to_react_steps(const char *json, int 
 			if (args_buf)
 				snprintf(args_buf, ab_len, "%s(%s)", tn, tool_args->valuestring);
 		}
+
 		struct react_step *s = react_step_create(
 			type, cJSON_IsString(content) ? content->valuestring : NULL,
 			cJSON_IsString(tool_name) ? tool_name->valuestring : NULL,
@@ -278,11 +301,14 @@ static struct react_step *cli_runtime_json_to_react_steps(const char *json, int 
 			tail->next = s;
 			tail = s;
 		}
+
 		free(args_buf);
 	}
+
 	cJSON_Delete(arr);
 	if (out_count)
 		*out_count = count;
+
 	return head.next;
 }
 
@@ -293,6 +319,7 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 		if (strcmp(argv[i], "--from-db") == 0 || strcmp(argv[i], "--all") == 0)
 			from_db = 1;
 	}
+
 	if (from_db) {
 		int round_no = 0, aborted = 0;
 		char *json = runtime_trace_latest_current_copy(ctx->runtime, &round_no, &aborted);
@@ -301,6 +328,7 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 						       "no traces saved in DB for this session");
 			return 0;
 		}
+
 		CMD_HEADER(ctx, "ReAct trace (round %d, %s)", round_no,
 			   aborted ? "aborted" : "completed");
 		int count = 0;
@@ -323,9 +351,11 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 					ctx, segments, sizeof(segments) / sizeof(segments[0]), 2, 1);
 			}
 		}
+
 		free(json);
 		return 0;
 	}
+
 	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {0};
 	struct session current;
 	if (runtime_turn_status_copy(ctx->runtime, &status) != 0 || status.step_count == 0) {
@@ -333,6 +363,7 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 					       "no ReAct trace for current turn");
 		return 0;
 	}
+
 	(void)runtime_session_current(ctx->runtime, &current);
 	CMD_HEADER(ctx, "ReAct trace (%s)", current.name);
 	cli_runtime_print_runtime_trace(ctx, &status);
@@ -355,6 +386,7 @@ static int cli_runtime_command_credits(struct cli_application *ctx, int argc, ch
 	rc = runtime_credit_summary_today_get(ctx->runtime, &today);
 	if (rc != 0)
 		return rc;
+
 	rc = runtime_credit_summary_current_get(ctx->runtime, &session);
 	if (rc != 0)
 		return rc;
@@ -362,9 +394,11 @@ static int cli_runtime_command_credits(struct cli_application *ctx, int argc, ch
 	rc = (nb_buf_init(&head), nb_buf_reserve(&head, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	rc = (nb_buf_init(&tail), nb_buf_reserve(&tail, 160) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	rc = (nb_buf_printf(&head, "credits: %lld", (long long)today.credits) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && config->credits.daily_limit >= 0) {
 		rc = (nb_buf_printf(&head, " / %d today", config->credits.daily_limit)
@@ -374,16 +408,20 @@ static int cli_runtime_command_credits(struct cli_application *ctx, int argc, ch
 	} else if (rc == 0) {
 		rc = (nb_buf_append_cstr(&head, " today") ? 0 : NB_ERR_NOMEM);
 	}
+
 	if (rc == 0)
 		rc = (nb_buf_printf(&tail, " | est. cost: %.6f %s | session: %lld credits",
 				    today.estimated_cost, config->credits.currency,
 				    (long long)session.credits)
 			      ? 0
 			      : NB_ERR_NOMEM);
+
 	if (rc == 0 && session.event_count == 0)
 		rc = (nb_buf_append_cstr(&tail, " | no events") ? 0 : NB_ERR_NOMEM);
+
 	if (rc != 0)
 		return rc;
+
 	{
 		struct cli_output_segment segments[3] = {
 			{.style = CLI_OUTPUT_STYLE_PLAIN, .text = nb_buf_cstr(&head)},
@@ -449,6 +487,7 @@ static int cli_runtime_command_context(struct cli_application *ctx, int argc, ch
 		     nb_buf_reserve(&kinds_line, 128) ? 0 : NB_ERR_NOMEM) == 0) {
 			(void)nb_buf_append_cstr(&kinds_line, "context by kind:");
 		}
+
 		for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
 			int kind_count = 0;
 			int kind_tokens = 0;
@@ -459,13 +498,16 @@ static int cli_runtime_command_context(struct cli_application *ctx, int argc, ch
 					kind_tokens += item->token_count;
 				}
 			}
+
 			if (kind_count > 0 && !nb_buf_status(&kinds_line))
 				(void)nb_buf_printf(&kinds_line, " %s=%d/%dt", kinds[i], kind_count,
 						    kind_tokens);
 		}
+
 		if (!nb_buf_status(&kinds_line))
 			(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0, "%s",
 						       nb_buf_cstr(&kinds_line));
+
 		runtime_session_model_history_free(items);
 	}
 	{
@@ -494,6 +536,7 @@ static int cli_runtime_command_compress(struct cli_application *ctx, int argc, c
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_OK(ctx, "model history compacted atomically: removed %d active items, kept %d",
 	       window_removed, kept);
 	return 0;
@@ -504,6 +547,7 @@ static int cli_runtime_command_save(struct cli_application *ctx, int argc, char 
 	const char *fmt = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!fmt)
 		fmt = "md";
+
 	int count = 0;
 	struct message *msgs = runtime_session_messages_current_copy(ctx->runtime, &count);
 	struct session current;
@@ -520,11 +564,13 @@ static int cli_runtime_command_save(struct cli_application *ctx, int argc, char 
 			fprintf(f, "**%s**: %s\n\n", cur->role, cur->content ? cur->content : "");
 			cur = cur->next;
 		}
+
 		fclose(f);
 		CMD_OK(ctx, "saved %d messages", count);
 	} else {
 		CMD_ERROR(ctx, "failed to open file for writing");
 	}
+
 	runtime_session_messages_free(msgs);
 	return 0;
 }
@@ -717,8 +763,10 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 
 		for (int i = 0; i < config->react.disabled_tools_count; i++)
 			disabled[i] = config->react.disabled_tools[i];
+
 		for (int i = 0; i < config->react.hitl_tools_count; i++)
 			hitl[i] = config->react.hitl_tools[i];
+
 		if (config->react.disabled_tools_count > 0)
 			fields[count++] = (struct cli_output_field){
 				.label = "disabled_tools",
@@ -726,6 +774,7 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 				.items = disabled,
 				.item_count = (size_t)config->react.disabled_tools_count,
 			};
+
 		if (config->react.hitl_tools_count > 0)
 			fields[count++] = (struct cli_output_field){
 				.label = "hitl_tools",
@@ -733,6 +782,7 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 				.items = hitl,
 				.item_count = (size_t)config->react.hitl_tools_count,
 			};
+
 		(void)cli_command_output_fields(ctx, fields, count);
 	}
 	{
@@ -752,6 +802,7 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 				ro++;
 			else
 				rw++;
+
 		snprintf(count_text, sizeof(count_text), " %d registered (", tool_count);
 		snprintf(readonly_text, sizeof(readonly_text), "%d readonly", ro);
 		snprintf(tail_text, sizeof(tail_text), ", %d read-write)", rw);
@@ -771,6 +822,7 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 			    runtime_tool_flags(ctx->runtime, i, &flags) == 0 &&
 			    (flags & TOOL_FLAG_READONLY))
 				readonly_items[readonly_count++] = tool.name;
+
 		{
 			struct cli_output_field field = {
 				.label = "readonly",
@@ -811,6 +863,7 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 			fields[section.field_count++] =
 				(struct cli_output_field){.label = "http_url", .text = s->http_url};
 		}
+
 		fields[section.field_count++] = (struct cli_output_field){
 			.label = "auto_connect",
 			.kind = CLI_OUTPUT_FIELD_INT,
@@ -820,6 +873,7 @@ static int cli_runtime_command_config(struct cli_application *ctx, int argc, cha
 					       "[[mcp.servers.%d]]", i);
 		(void)cli_command_output_sections(ctx, &section, 1);
 	}
+
 	return 0;
 }
 static int cli_runtime_command_export_alias(struct cli_application *ctx, int argc, char **argv)
@@ -848,6 +902,7 @@ static int cli_runtime_command_recap(struct cli_application *ctx, int argc, char
 		CMD_ERROR(ctx, "usage: /recap");
 		return NB_ERR_INVAL;
 	}
+
 	return cli_recap_start(ctx, 0);
 }
 

@@ -93,7 +93,11 @@
   and all execution modes. Keep page controllers in `pages/`, reusable app
   components in `components/`, models in `models/`, use cases in `services/`,
   external integrations in `adapters/`, command actions in `commands/` and
-  formatting in `presentation/`. Every implementation includes its sibling
+  formatting in `presentation/`. Each module in `components/` builds a reusable
+  NT view or a composition of NT controls. Bind view properties to their owning
+  state and handle interaction through NT view events. Shared text formatters,
+  stream writers and presentation policies belong in `presentation/`.
+  Every implementation includes its sibling
   header first and imports other interfaces directly. `application_internal.h`
   owns no function declarations or domain SDK include collection. Run
   `cli_application_layout_conventions` alongside CLI/TUI behavior regressions
@@ -257,6 +261,15 @@ Prefer these over hand-rolled equivalents.
 - Run `source_control_flow_conventions` to check this rule.
 
 ## C Coding Conventions (REQUIREMENTS.md §6.11)
+- Leave one blank line after an `if`, `for`, `while`, `do ... while`, or
+  `switch` when another statement follows at the same level. Apply this to
+  both braced and unbraced bodies. Keep `else` attached to its `if` and
+  the trailing `while` attached to its `do` body.
+- Group statements by purpose. Keep related operations together and leave a
+  blank line when the purpose changes.
+- Keep all `#include` directives at the head of the file, before declarations
+  and definitions. Preserve header guards, required configuration macros,
+  language linkage and platform-specific conditional includes.
 - No `//` comments — `/* */` only.
 - Source strings in English for errors, logs, status, UI, model instructions; keep non-English only as input data/fixtures/examples. Localization lives in a shared i18n layer, not business logic.
 - `sizeof(var)`, not `sizeof(type)`.

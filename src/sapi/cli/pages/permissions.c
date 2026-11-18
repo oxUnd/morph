@@ -14,6 +14,7 @@ static void cli_permissions_apply(struct cli_application *ctx, size_t index)
 	int rc = runtime_permission_preset(cli_permissions_presets[index], &policy);
 	if (!rc)
 		rc = runtime_permission_set_policy(ctx->runtime, &policy);
+
 	if (!rc)
 		CMD_OK(ctx, "permissions: %s", runtime_permission_preset_name(&policy));
 	else
@@ -33,17 +34,20 @@ int cli_permissions_show(struct cli_application *ctx)
 	int rc = runtime_permission_get_policy(ctx->runtime, &policy);
 	if (rc)
 		return rc;
+
 	const char *name = runtime_permission_preset_name(&policy);
 	int current = -1;
 	for (int i = 0; i < 4; i++)
 		if (!strcmp(name, cli_permissions_presets[i]))
 			current = i;
+
 	char custom[128] = "";
 	if (current < 0)
 		snprintf(custom, sizeof(custom), "  Custom: %s / %s / %s",
 			 permission_access_name(policy.access),
 			 permission_approval_name(policy.approval),
 			 permission_reviewer_name(policy.reviewer));
+
 	return cli_selector_show(ctx, "  Update Model Permissions", "", *custom ? custom : NULL,
 				 choices, 4, current, cli_permissions_apply);
 }

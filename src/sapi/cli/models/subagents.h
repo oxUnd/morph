@@ -5,7 +5,6 @@
 #include <nb/vec.h>
 #include <nb/cleanup.h>
 #include <nb/buf.h>
-#include <nb/cleanup.h>
 #include <stdint.h>
 
 struct cli_transcript_model;

@@ -1,7 +1,6 @@
 #ifndef MORPH_CLI_APPLICATION_H
 #define MORPH_CLI_APPLICATION_H
 
-struct nb_log;
 #include "config/config.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/services/recap.h"
@@ -16,6 +15,8 @@ struct nb_log;
 #include "sapi/cli/models/presentation.h"
 #include <stdint.h>
 #include <stdio.h>
+
+struct nb_log;
 
 struct cli_presenter_state;
 struct cli_input_state;

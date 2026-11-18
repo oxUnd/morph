@@ -2,11 +2,13 @@
 #include <nb/err.h>
 
 extern "C" {
+#include "sapi/cli/components/plan.h"
+#include "sapi/cli/components/notice.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/components/tool_call.h"
-#include "sapi/cli/components/transcript.h"
-#include "sapi/cli/components/notice.h"
-#include "sapi/cli/components/plan.h"
+#include "sapi/cli/presentation/transcript.h"
+#include "sapi/cli/presentation/notice.h"
+#include "sapi/cli/presentation/plan.h"
 #include "sapi/cli/components/recap.h"
 #include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/components/composer.h"
@@ -49,8 +51,10 @@ static std::string retained_sgr(const std::string &frame)
 		for (std::sregex_iterator part(parameters.begin(), parameters.end(), operation);
 		     part != end; ++part)
 			result += "\033[" + part->str() + "m";
+
 		start = static_cast<std::size_t>(i->position() + i->length());
 	}
+
 	return result.append(frame, start);
 }
 
@@ -65,15 +69,19 @@ static std::string retained_normalized(const char *text)
 		size_t end = value.find('\n', start);
 		if (end == std::string::npos)
 			end = value.size();
+
 		size_t trim = end;
 		while (trim > start && (value[trim - 1] == ' ' || value[trim - 1] == '\r'))
 			trim--;
+
 		result.append(value, start, trim - start);
 		result.push_back('\n');
 		start = end + 1;
 	}
+
 	while (!result.empty() && result.back() == '\n')
 		result.pop_back();
+
 	return result;
 }
 
@@ -106,6 +114,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			int rc = nt_surface_rows(surface, &rows);
 			if (!rc)
 				self->frame = retained_sgr(nb_buf_cstr(&rows));
+
 			(void)nt_surface_cursor(surface, &self->cursor_x, &self->cursor_y);
 			nb_buf_cleanup(&rows);
 			return rc;
@@ -178,8 +187,10 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		nb_buf_cleanup(&tool.stream);
 		if (input)
 			fclose(input);
+
 		if (output)
 			fclose(output);
+
 		if (master >= 0)
 			close(master);
 	}
@@ -206,6 +217,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 		while (columns_rendered != columns && std::chrono::steady_clock::now() < deadline)
 			ASSERT_EQ(nt_application_step(app, 1), 0);
+
 		ASSERT_EQ(columns_rendered, columns);
 	}
 
@@ -226,6 +238,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			const struct cli_plan_style style = {columns, 1, 1};
 			ASSERT_EQ(cli_plan_append(&expected, plan, &style), 0);
 		}
+
 		EXPECT_EQ(nt_view_frame(component).y, 1);
 		EXPECT_EQ(retained_normalized(frame.c_str()).substr(1),
 			  retained_normalized(nb_buf_cstr(&expected)))
@@ -239,6 +252,7 @@ TEST_F(CliRetainedWidgetsTest, RecapKeepsInlineHeadingHangingIndentAndStylesAcro
 	kind = Recap;
 	for (int n = 0; n < 5; n++)
 		recap_summary += "中文🙂 recap retains completed work and preserves the draft. ";
+
 	recap_next = "Verify the installation.";
 	Present();
 	for (int columns : {120, 80, 60, 120}) {
@@ -260,6 +274,7 @@ TEST_F(CliRetainedWidgetsTest, ToolKeepsLegacyTreePreviewMixedStylesAndResize)
 		Resize(columns);
 		ExpectLegacy(columns);
 	}
+
 	EXPECT_NE(frame.find("\033[1m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[38;5;2m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[2m"), std::string::npos);
@@ -308,6 +323,7 @@ TEST_F(CliRetainedWidgetsTest, PlanKeepsSingleLineClippingAndMarkerOnlyColors)
 		Resize(columns);
 		ExpectLegacy(columns);
 	}
+
 	EXPECT_NE(frame.find("\033[38;5;2m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
 	EXPECT_EQ(nt_view_frame(component).height, 3);
@@ -415,6 +431,7 @@ TEST_F(CliRetainedWidgetsTest, ComposerUltraWavePaintsOnlyTruePaddingAndPreserve
 		EXPECT_EQ(cursor_y, initial_y);
 		EXPECT_STREQ(nt_text_field_text(editor), "draft中文");
 	}
+
 	ASSERT_EQ(cli_composer_update(component, 1990), 0);
 	ASSERT_EQ(nt_application_render(app), 0);
 	EXPECT_FALSE(ctx.composer.mode_transition);
@@ -443,6 +460,7 @@ TEST_F(CliRetainedWidgetsTest, ComposerContinuationRowsMatchOriginalUnindentedIn
 		EXPECT_EQ(cursor_x, 0) << text;
 		EXPECT_EQ(cursor_y, editor_y + 1) << text;
 	}
+
 	for (const char *text : {"12345678\nabcdefghij", "12345678\nabcdefghij\n"}) {
 		ASSERT_EQ(nt_text_field_set_text(editor, text), 0);
 		ASSERT_EQ(nt_application_render(app), 0);
@@ -450,6 +468,7 @@ TEST_F(CliRetainedWidgetsTest, ComposerContinuationRowsMatchOriginalUnindentedIn
 		EXPECT_EQ(cursor_x, 0) << text;
 		EXPECT_EQ(cursor_y, editor_y + 2) << text;
 	}
+
 	ASSERT_EQ(nt_text_field_set_text(editor, "123456中文abcd"), 0);
 	ASSERT_EQ(nt_application_render(app), 0);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("› 123456中\n文abcd"), std::string::npos);
@@ -523,6 +542,7 @@ TEST_F(CliRetainedWidgetsTest, ComposerNoColorKeepsUltraPaddingSteady)
 		EXPECT_EQ(cursor_x, initial_x);
 		EXPECT_EQ(cursor_y, initial_y);
 	}
+
 	EXPECT_EQ(frame.find("\033[48;5;"), std::string::npos);
 }
 
@@ -565,6 +585,7 @@ TEST(CliEditorStateTest, TypedUtf8AndSecretEditingKeepUndoOwnershipSafe)
 	for (unsigned char byte : input)
 		ASSERT_EQ(nt_text_editor_prompt_key(&editor, byte),
 			  NT_NAVIGATION_CHANGED);
+
 	EXPECT_STREQ(editor.text.ptr, "A中");
 	EXPECT_EQ(nt_text_editor_state_undo(&editor), NT_NAVIGATION_CHANGED);
 	EXPECT_STREQ(editor.text.ptr, "A");

@@ -4,7 +4,7 @@
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/components/report.h"
 #include "sapi/cli/presentation/style.h"
-#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/presentation/transcript.h"
 #include <nb/cleanup.h>
 #include <nothing/tui/terminal/text.h>
 #include <nothing/tui/component_state.h>
@@ -35,6 +35,7 @@ static void cli_tool_call_snapshot_cleanup(struct cli_tool_call_snapshot **owner
 		cli_transcript_tool_cleanup(&snapshot->tool);
 		free(snapshot);
 	}
+
 	*owner = NULL;
 }
 
@@ -50,6 +51,7 @@ static int cli_tool_call_snapshot_copy(const struct cli_transcript_tool *source,
 		calloc(1, sizeof(*snapshot));
 	if (!snapshot)
 		return NB_ERR_NOMEM;
+
 	snapshot->references = 1;
 	struct cli_transcript_tool *tool = &snapshot->tool;
 	tool->id = cli_tool_call_string_copy(source->id);
@@ -64,11 +66,13 @@ static int cli_tool_call_snapshot_copy(const struct cli_transcript_tool *source,
 	if (!tool->id || !tool->name || !tool->agent_id || !tool->args || !tool->subject ||
 	    !tool->result || !tool->error || !tool->summary || !tool->patch_preview)
 		return NB_ERR_NOMEM;
+
 	int rc = (nb_buf_append(&tool->stream, nb_buf_cstr(&source->stream), source->stream.len)
 			  ? 0
 			  : NB_ERR_NOMEM);
 	if (rc)
 		return rc;
+
 	tool->state = source->state;
 	tool->timed_out = source->timed_out;
 	tool->historical = source->historical;
@@ -92,14 +96,17 @@ static int cli_tool_call_format(struct cli_report *report, nb_buf *out, int widt
 					    state->details);
 	if (rc)
 		return rc;
+
 	while (out->len && out->ptr[out->len - 1] == '\n')
 		out->ptr[--out->len] = '\0';
+
 	if (out->len && !state->details && cli_transcript_tool_is_running(&state->snapshot->tool)) {
 		char *newline = strchr(out->ptr, '\n');
 		if (newline) {
 			out->len = (size_t)(newline - out->ptr);
 			*newline = '\0';
 		}
+
 		nb_buf live NB_CLEANUP(nb_buf_cleanup) = {0};
 		(void)cli_transcript_tool_live_body(&state->snapshot->tool, &live, columns,
 						    state->styled);
@@ -108,6 +115,7 @@ static int cli_tool_call_format(struct cli_report *report, nb_buf *out, int widt
 		    (!nb_buf_append_char(out, '\n') || !nb_buf_append_str(out, nb_buf_str(&live))))
 			rc = NB_ERR_NOMEM;
 	}
+
 	return rc;
 }
 
@@ -118,6 +126,7 @@ static int cli_tool_call_state_copy(void *to, const void *from, void *data)
 	(void)data;
 	if (source->snapshot->references == UINT_MAX)
 		return NB_ERR_RANGE;
+
 	source->snapshot->references++;
 	*copy = *source;
 	return 0;
@@ -148,17 +157,21 @@ int cli_tool_call_update(struct nt_view *view, const struct cli_transcript_tool 
 {
 	if (!view || view->type != &cli_tool_call_class || !tool)
 		return NB_ERR_INVAL;
+
 	if (!nt_view_is_owner_thread(view))
 		return NB_ERR_NOT_PERMITTED;
+
 	struct cli_tool_call *widget = (struct cli_tool_call *)view;
 	struct cli_tool_call_snapshot *snapshot NB_CLEANUP(cli_tool_call_snapshot_cleanup) = NULL;
 	int rc = cli_tool_call_snapshot_copy(tool, &snapshot);
 	if (rc)
 		return rc;
+
 	struct cli_tool_call_state next = {snapshot, styled, details};
 	rc = nt_component_state_set(widget->state, &next);
 	if (!rc)
 		cli_report_invalidate(&widget->report, styled);
+
 	return rc;
 }
 
@@ -172,6 +185,7 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 		builder, parent, &cli_tool_call_class, &options, styled, cli_tool_call_format);
 	if (!widget)
 		return NULL;
+
 	struct nt_view *view = &widget->report.base;
 	struct cli_tool_call_snapshot *snapshot NB_CLEANUP(cli_tool_call_snapshot_cleanup) = NULL;
 	int rc = tool ? cli_tool_call_snapshot_copy(tool, &snapshot) : NB_ERR_INVAL;
@@ -184,9 +198,11 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 	};
 	if (!rc)
 		rc = nt_view_use_state(view, &options_state, &widget->state);
+
 	if (!rc)
 		rc = nt_view_bind_compute(view, NT_PROP_HIDDEN, cli_tool_call_hidden,
 					  widget->state);
+
 	nt_builder_fail(builder, rc);
 	return view;
 }

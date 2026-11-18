@@ -9,7 +9,7 @@ extern "C" {
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/composer.h"
 #include <nb/file.h>
@@ -73,10 +73,12 @@ static void resume_terminal_pick(struct cli_application *context, const char *ke
 			struct pollfd input{master, POLLIN, 0};
 			if (poll(&input, 1, 100) <= 0)
 				continue;
+
 			char buffer[4096];
 			ssize_t length = read(master, buffer, sizeof(buffer));
 			if (length > 0)
 				output.append(buffer, static_cast<size_t>(length));
+
 			if (!sent && output.find("Cancel") != std::string::npos) {
 				(void)write(master, keys, strlen(keys));
 				sent = true;
@@ -97,6 +99,7 @@ static void resume_terminal_pick(struct cli_application *context, const char *ke
 	close(master);
 	if (term) setenv("TERM", saved_term.c_str(), 1);
 	else unsetenv("TERM");
+
 	EXPECT_TRUE(sent) << output;
 	EXPECT_NE(output.find("\033[?1049h"), std::string::npos);
 	EXPECT_NE(output.find(rows >= 14 ? "Resume a session" : "Sessions"), std::string::npos);
@@ -123,10 +126,13 @@ static std::vector<cJSON *> cli_test_parse_ndjson(const std::string &output)
 
 		if (!line.empty())
 			events.push_back(cJSON_Parse(line.c_str()));
+
 		if (end == std::string::npos)
 			break;
+
 		start = end + 1;
 	}
+
 	return events;
 }
 
@@ -134,6 +140,7 @@ static void cli_test_delete_events(std::vector<cJSON *> &events)
 {
 	for (cJSON *event : events)
 		cJSON_Delete(event);
+
 	events.clear();
 }
 
@@ -155,6 +162,7 @@ static int cli_test_write_png(const char *path)
 
 	if (!file)
 		return -1;
+
 	size_t written = std::fwrite(png, 1, sizeof(png), file);
 	std::fclose(file);
 	return written == sizeof(png) ? 0 : -1;
@@ -313,6 +321,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 		ASSERT_EQ(runtime_session_create_detached(runtime, name.c_str(),
 			&session), 0);
 	}
+
 	struct session *sessions = nullptr;
 	int count = 0;
 	ASSERT_EQ(runtime_session_list_query(runtime, &sessions, &count, 0,
@@ -373,6 +382,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 		ASSERT_EQ(runtime_session_current(runtime, &current), 0);
 		EXPECT_EQ(current.id, expected);
 	}
+
 	resume_terminal_pick(&context, "\033[B\033[A\033[C\033[B\r", arrow_selected, 24);
 	resume_terminal_pick(&context, "\033[B\033[B\033[B\033[A\r", small_selected, 6);
 	resume_terminal_pick(&context, "\033", small_selected, 24);
@@ -493,12 +503,14 @@ TEST(CliListTest, QuitPrintsResumeCommandsOnlyForSavedInteractiveSessions)
 			EXPECT_EQ(output.find("To resume"), std::string::npos);
 			EXPECT_EQ(output.find("morphctl"), std::string::npos);
 		}
+
 		if (mode == CLI_PRESENT_EVENTS_JSON) {
 			auto events = cli_test_parse_ndjson(output);
 			EXPECT_EQ(events.size(), 2u);
 			cli_test_delete_events(events);
 		}
 	}
+
 	runtime_close(runtime);
 	std::error_code error;
 	(void)std::filesystem::remove_all(directory, error);
@@ -689,6 +701,7 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 		  std::string::npos);
 	if (strlen(backups[0].snapshot_id) > (size_t)(cli_list_columns() - 6))
 		EXPECT_NE(backup_output.find("…"), std::string::npos);
+
 	EXPECT_NE(backup_output.find("created"), std::string::npos);
 	std::string restore_command = "/sync restore-db " +
 		std::string(backups[0].snapshot_id) + " --yes";
@@ -800,6 +813,7 @@ TEST(CliListTest, ScheduledTaskCommandsPreserveLongPromptsAndAllArguments)
 	std::string prompt;
 	for (int i = 0; i < 300; i++)
 		prompt += "word-" + std::to_string(i) + " detailed requirement 中文 ";
+
 	prompt += "PROMPT_END_MARKER";
 	ASSERT_GT(prompt.size(), 8192u);
 	for (const char *action : {"add +3600", "every 3600"}) {
@@ -809,6 +823,7 @@ TEST(CliListTest, ScheduledTaskCommandsPreserveLongPromptsAndAllArguments)
 		(void)testing::internal::GetCapturedStdout();
 		ASSERT_EQ(rc, 0);
 	}
+
 	struct scheduled_task *tasks = nullptr;
 	int count = 0;
 	ASSERT_EQ(runtime_task_list(runtime, nullptr, 10, &tasks, &count), 0);
@@ -827,6 +842,7 @@ TEST(CliListTest, ScheduledTaskCommandsPreserveLongPromptsAndAllArguments)
 		EXPECT_LT(strlen(tasks[i].title), static_cast<size_t>(SCHEDULED_TASK_TEXT_MAX));
 		EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(tasks[i].title), NULL), NB_UTF8_OK);
 	}
+
 	tasks_owner.reset();
 	std::string updated = prompt + " UPDATED_END_MARKER";
 	std::string command = "/tasks update " + std::to_string(task_id) + " +7200 " + updated;

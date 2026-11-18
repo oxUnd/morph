@@ -1,5 +1,6 @@
 #include "sapi/cli/pages/jobs.h"
-#include "sapi/cli/presentation/panel_style.h"
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/panel.h"
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/presentation/output.h"
@@ -8,13 +9,12 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/feed_block.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/feed_block.h"
 #include <nb/cleanup.h>
-#include "sapi/cli/components/list.h"
+
 #include "sapi/cli/models/jobs.h"
-#include "sapi/cli/components/jobs.h"
-#include "sapi/cli/components/visibility.h"
+#include "sapi/cli/presentation/jobs.h"
 #include <nothing/tui/controls/list_view.h>
 #include <nothing/tui/views/text_view.h>
 #include <nothing/tui/view_controller.h>
@@ -37,12 +37,14 @@ static int cli_jobs_refresh(struct cli_jobs_snapshot *snapshot, bool detail)
 	int rc = runtime_process_list(snapshot->ctx->runtime, &jobs);
 	if (rc)
 		return rc;
+
 	cJSON *selected = cJSON_GetArrayItem(snapshot->jobs, (int)snapshot->selected);
 	char *selected_id = selected ? strdup(cli_jobs_job_string(selected, "session_id")) : NULL;
 	if (selected && !selected_id) {
 		cJSON_Delete(jobs);
 		return NB_ERR_NOMEM;
 	}
+
 	cJSON_Delete(snapshot->jobs);
 	snapshot->jobs = jobs;
 	if (selected_id) {
@@ -53,10 +55,13 @@ static int cli_jobs_refresh(struct cli_jobs_snapshot *snapshot, bool detail)
 				snapshot->selected = index;
 				break;
 			}
+
 			index++;
 		}
+
 		free(selected_id);
 	}
+
 	snapshot->refreshed = cli_jobs_now();
 	if (detail) {
 		cJSON *job = cJSON_GetArrayItem(jobs, (int)snapshot->selected);
@@ -68,6 +73,7 @@ static int cli_jobs_refresh(struct cli_jobs_snapshot *snapshot, bool detail)
 			snapshot->details = details;
 		}
 	}
+
 	return 0;
 }
 
@@ -82,6 +88,7 @@ static int cli_jobs_document(struct cli_jobs_snapshot *snapshot)
 	const cJSON *exit_code = cJSON_GetObjectItemCaseSensitive(snapshot->details, "exit_code");
 	if (cJSON_IsNumber(exit_code))
 		(void)nb_buf_printf(&snapshot->document, " · exit %d", exit_code->valueint);
+
 	(void)nb_buf_printf(&snapshot->document, "\n\n%s%s",
 			    cli_jobs_job_string(snapshot->details, "stdout"),
 			    cli_jobs_job_string(snapshot->details, "stderr"));
@@ -89,6 +96,7 @@ static int cli_jobs_document(struct cli_jobs_snapshot *snapshot)
 	    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(snapshot->details, "stderr_truncated")))
 		(void)nb_buf_append_cstr(&snapshot->document,
 					 "\n[Output truncated; retained window shown]");
+
 	return nb_buf_status(&snapshot->document);
 }
 
@@ -125,17 +133,20 @@ static int cli_jobs_show_snapshot(struct cli_jobs_view *view)
 	int rc = nt_list_view_set_source(view->list, count, cli_jobs_row, view);
 	if (!rc && count)
 		rc = nt_list_view_select(view->list, selected);
+
 	snapshot->selected = nt_list_view_selected(view->list);
 	if (!rc)
 		rc = nt_label_set_text(
 			view->message,
 			snapshot->message ? snapshot->message
 				      : (!count ? "No background jobs in this session." : ""));
+
 	if (!rc && nt_component_state_get_bool(view->detail) && snapshot->details) {
 		rc = cli_jobs_document(snapshot);
 		if (!rc && strcmp(nt_text_view_text(view->document), nb_buf_cstr(&snapshot->document)))
 			rc = nt_text_view_set_text(view->document, nb_buf_cstr(&snapshot->document));
 	}
+
 	return rc;
 }
 
@@ -154,11 +165,14 @@ static int cli_jobs_controller_action(void *data, const struct nt_view_event *ac
 	view->snapshot->selected = action->index;
 	if (action->type != NT_VIEW_EVENT_ACTIVATE)
 		return 0;
+
 	int rc = cli_jobs_refresh(view->snapshot, true);
 	if (!rc)
 		rc = nt_component_state_set_bool(view->detail, true);
+
 	if (!rc)
 		rc = cli_jobs_focus(view);
+
 	return rc ? rc : cli_jobs_show_snapshot(view);
 }
 
@@ -175,6 +189,7 @@ static void cli_jobs_controller_build(struct nt_view_controller *controller,
 	struct nt_view *root = nt_view_add(builder, NULL, &type, &inset);
 	if (!root)
 		return;
+
 	struct cli_jobs_view *view = (struct cli_jobs_view *)root;
 	view->snapshot = controller->data;
 	nt_builder_fail(builder, nt_view_use_state_bool(root, view->snapshot->details != NULL,
@@ -189,8 +204,8 @@ static void cli_jobs_controller_build(struct nt_view_controller *controller,
 	if (!nt_builder_error(builder)) {
 		nt_builder_fail(builder,
 				nt_text_view_set_wrap_mode(view->document, NT_TEXT_WRAP_CHAR));
-		cli_bind_hidden(builder, view->list, view->detail);
-		cli_bind_visible(builder, view->document, view->detail);
+		cli_panel_hide_when(builder, view->list, view->detail);
+		cli_panel_show_when(builder, view->document, view->detail);
 		nt_builder_fail(builder, nt_view_bind_compute(title, NT_PROP_TEXT, cli_jobs_title,
 							      view->detail));
 		nt_list_view_set_navigation(view->list, 0);
@@ -200,6 +215,7 @@ static void cli_jobs_controller_build(struct nt_view_controller *controller,
 		    !nt_view_on(view->list, NT_VIEW_EVENT_CHANGED, cli_jobs_controller_action,
 				view))
 			nt_builder_fail(builder, NB_ERR_NOMEM);
+
 		nt_builder_fail(builder, cli_jobs_show_snapshot(view));
 		nt_builder_fail(builder, cli_jobs_focus(view));
 	}
@@ -224,6 +240,7 @@ static int cli_jobs_controller_event(struct nt_view_controller *controller,
 			int rc = nt_component_state_set_bool(view->detail, false);
 			if (!rc)
 				rc = cli_jobs_focus(view);
+
 			return rc ? rc : 1;
 		} else if (key == 27 || key == 'q' || key == 3) {
 			int rc = nt_view_controller_dismiss(controller, 0);
@@ -243,9 +260,11 @@ static int cli_jobs_controller_event(struct nt_view_controller *controller,
 			return 0;
 	} else
 		return 0;
+
 	int rc = cli_jobs_refresh(snapshot, detail);
 	if (!rc)
 		rc = cli_jobs_show_snapshot(view);
+
 	return rc ? rc : 1;
 }
 
@@ -279,6 +298,7 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 	struct cli_jobs_snapshot *snapshot = calloc(1, sizeof(*snapshot));
 	if (!snapshot)
 		return NB_ERR_NOMEM;
+
 	snapshot->ctx = ctx;
 	int rc = cli_jobs_refresh(snapshot, false);
 	if (!rc && id) {
@@ -294,17 +314,23 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 					snapshot->details = cJSON_StealOwner(&details);
 					break;
 				}
+
 				index++;
 			}
+
 			if (!snapshot->details)
 				rc = NB_ERR_NOT_FOUND;
 		}
+
 		cJSON_Delete(details);
 	}
+
 	int accepted = 0;
 	if (!rc)
 		rc = cli_application_show_page(ctx, &type, snapshot, 1000, &accepted);
+
 	if (!accepted)
 		cli_jobs_controller_cleanup(snapshot, rc);
+
 	return rc;
 }

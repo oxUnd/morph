@@ -18,19 +18,23 @@ int cli_subagents_thread_create(const char *id, struct cli_subagents_thread **ou
 {
 	if (!id || !out || *out || strlen(id) >= sizeof((*out)->id))
 		return NB_ERR_INVAL;
+
 	struct cli_subagents_thread *thread = calloc(1, sizeof(*thread));
 	if (!thread)
 		return NB_ERR_NOMEM;
+
 	memcpy(thread->id, id, strlen(id) + 1);
 	struct cli_subagents_segment segment = {0};
 	int rc = cli_transcript_model_create(&thread->transcript);
 	if (rc == 0)
 		rc = (nb_vec_init(&thread->segments, sizeof(segment)),
 		      nb_vec_reserve(&thread->segments, 16) ? 0 : NB_ERR_NOMEM);
+
 	if (rc != 0) {
 		cli_subagents_thread_destroy(thread);
 		return rc;
 	}
+
 	*out = thread;
 	return 0;
 }
@@ -39,6 +43,7 @@ void cli_subagents_thread_destroy(struct cli_subagents_thread *thread)
 {
 	if (!thread)
 		return;
+
 	cli_transcript_model_destroy(thread->transcript);
 	struct cli_subagents_segment *segment;
 	for (size_t _i_ = 0;
@@ -46,6 +51,7 @@ void cli_subagents_thread_destroy(struct cli_subagents_thread *thread)
 	     (segment = (struct cli_subagents_segment *)nb_vec_at(&thread->segments, _i_));
 	     _i_++)
 		nb_buf_cleanup(&segment->text);
+
 	nb_vec_cleanup(&thread->segments);
 	free(thread);
 }
@@ -60,6 +66,7 @@ static int cli_subagents_append(struct cli_subagents_thread *thread,
 		segment = nb_vec_push(&thread->segments);
 		if (!segment)
 			return NB_ERR_NOMEM;
+
 		memset(segment, 0, sizeof(*segment));
 		segment->kind = kind;
 		int rc = (nb_buf_init(&segment->text),
@@ -67,6 +74,7 @@ static int cli_subagents_append(struct cli_subagents_thread *thread,
 		if (rc != 0)
 			return rc;
 	}
+
 	return (nb_buf_append_cstr(&segment->text, text) ? 0 : NB_ERR_NOMEM);
 }
 
@@ -74,13 +82,16 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 {
 	if (!thread || !event || !event->name)
 		return NB_ERR_INVAL;
+
 	const char *id = cli_subagents_string(event->data, "agent_id");
 	if (strcmp(id, thread->id))
 		return 0;
+
 	const cJSON *value = cJSON_GetObjectItemCaseSensitive(event->data, "agent_event_sequence");
 	int64_t sequence = cJSON_IsNumber(value) ? (int64_t)value->valuedouble : 0;
 	if (sequence > 0 && sequence <= thread->sequence)
 		return 0;
+
 	const char *text = cli_subagents_string(event->data, "text");
 	const char *name = event->name;
 	int rc = 0;
@@ -102,6 +113,7 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 		if (!last || last->kind != CLI_SUBAGENTS_REASONING ||
 		    strcmp(nb_buf_cstr(&last->text), text))
 			rc = cli_subagents_append(thread, CLI_SUBAGENTS_REASONING, text, 1);
+
 		thread->reasoning_open = 0;
 	} else if (!strcmp(name, "react.reasoning.end")) {
 		thread->reasoning_open = 0;
@@ -117,11 +129,13 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 			thread->content_seen = 1;
 			thread->has_content = 1;
 		}
+
 		thread->content_open = 0;
 	} else if (!strcmp(name, "plan.updated")) {
 		char *state NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(event->data);
 		if (!state)
 			return NB_ERR_NOMEM;
+
 		rc = cli_subagents_append(thread, CLI_SUBAGENTS_PLAN, state, 1);
 		thread->reasoning_open = 0;
 		thread->content_open = 0;
@@ -130,15 +144,18 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 		thread->content_seen = 1;
 		thread->has_content = 1;
 	}
+
 	struct cli_transcript_change change = {0};
 	const cJSON *stamp = cJSON_GetObjectItemCaseSensitive(event->data, "agent_event_time_ms");
 	double timestamp = cJSON_IsNumber(stamp) ? stamp->valuedouble / 1000.0 : 0.0;
 	if (rc == 0)
 		rc = cli_transcript_model_reduce(thread->transcript, event, timestamp, &change);
+
 	if (rc == 0 && change.kind == CLI_TRANSCRIPT_TOOL_STARTED) {
 		struct cli_subagents_segment *segment = nb_vec_push(&thread->segments);
 		if (!segment)
 			return NB_ERR_NOMEM;
+
 		memset(segment, 0, sizeof(*segment));
 		segment->kind = CLI_SUBAGENTS_TOOL;
 		segment->tool_index = change.tool_index;
@@ -146,8 +163,10 @@ int cli_subagents_thread_event(struct cli_subagents_thread *thread, const struct
 		thread->content_seen = 0;
 		thread->reasoning_open = 0;
 	}
+
 	if (rc == 0 && sequence > thread->sequence)
 		thread->sequence = sequence;
+
 	return rc;
 }
 
@@ -156,6 +175,7 @@ int cli_subagents_thread_replay(struct cli_subagents_thread *thread, const char 
 	cJSON *record NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(json);
 	if (!record)
 		return NB_ERR_INVAL;
+
 	struct morph_event event = {
 		.type = MORPH_EVENT_BACKGROUND,
 		.name = cli_subagents_string(record, "name"),
@@ -171,5 +191,6 @@ int cli_subagents_thread_replay(struct cli_subagents_thread *thread, const char 
 			break;
 		}
 	}
+
 	return cli_subagents_thread_event(thread, &event);
 }

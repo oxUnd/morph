@@ -1,7 +1,7 @@
 #include "sapi/cli/presentation/output.h"
 #include <nb/err.h>
 #include "sapi/cli/presentation/presenter.h"
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include "cli_agents_browser_fixture.h"
 #include <nb/cleanup.h>
 #include <morph/tui/terminal/size.h>
@@ -19,17 +19,20 @@ static int advance_recap(void *opaque)
 	struct cli_application *ctx = opaque;
 	if (ctx->turn_active)
 		return 0;
+
 	int64_t now = cli_recap_now();
 	ctx->recap.next_poll = 0;
 	cli_recap_tick(ctx, now);
 	if (!ctx->recap.unfocused_since || ctx->recap.pending)
 		return 0;
+
 	ctx->recap.last_finished = now - CLI_RECAP_DELAY_MS - 1;
 	ctx->recap.unfocused_since = now - CLI_RECAP_DELAY_MS - 1;
 	ctx->recap.next_poll = 0;
 	struct nt_application *app = cli_application_tui_borrow(ctx);
 	if (app)
 		nt_application_schedule(app, 0);
+
 	return 0;
 }
 
@@ -50,6 +53,7 @@ static int replay_feed(const char *path)
 
 	if (!input)
 		return nb_status_from_errno(errno, NULL);
+
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.presentation_ready = 1;
 	ctx.turn_active = 1;
@@ -57,6 +61,7 @@ static int replay_feed(const char *path)
 	rc = cli_feed_init(&ctx, stdout, STDOUT_FILENO);
 	if (rc == 0)
 		rc = cli_presentation_init(&ctx);
+
 	while (rc == 0 && getline(&line, &capacity, input) >= 0) {
 		cJSON *json = cJSON_Parse(line);
 		const cJSON *name = cJSON_GetObjectItemCaseSensitive(json, "name");
@@ -67,6 +72,7 @@ static int replay_feed(const char *path)
 			rc = (NB_ERR_PARSE);
 			break;
 		}
+
 		event.name = name->valuestring;
 		event.type =
 			strncmp(event.name, "tool.", 5) == 0 ? MORPH_EVENT_TOOL : MORPH_EVENT_REACT;
@@ -78,17 +84,20 @@ static int replay_feed(const char *path)
 			 !strncmp(event.name, "agent.", 6) || !strncmp(event.name, "process.", 8) ||
 			 !strncmp(event.name, "background.", 11) || !strncmp(event.name, "history.", 8))
 			event.type = MORPH_EVENT_BACKGROUND;
+
 		const cJSON *phase = cJSON_GetObjectItemCaseSensitive(json, "phase");
 		const cJSON *message = cJSON_GetObjectItemCaseSensitive(json, "message");
 		const cJSON *turn_active = cJSON_GetObjectItemCaseSensitive(json, "turn_active");
 		if (cJSON_IsBool(turn_active))
 			ctx.turn_active = cJSON_IsTrue(turn_active);
+
 		event.phase = cJSON_GetStringValue(phase);
 		event.message = cJSON_GetStringValue(message);
 		event.data = cJSON_GetObjectItemCaseSensitive(json, "data");
 		rc = cli_presentation_event(&ctx, &event);
 		cJSON_Delete(json);
 	}
+
 	free(line);
 	fclose(input);
 	cli_feed_render_frame(&ctx, 1);
@@ -96,6 +105,7 @@ static int replay_feed(const char *path)
 	/* Pause before cleanup so a PTY can inspect the active block. */
 	if (isatty(STDIN_FILENO))
 		(void)getchar();
+
 	cli_presentation_cleanup(&ctx);
 	cli_feed_cleanup(&ctx);
 	return rc;
@@ -127,22 +137,27 @@ static int preview_agents_browser(void)
 		.root_running = 1,
 		.now_ms = 43000,
 	};
-	struct cli_agents_browser_state state = {0};
-	state.selection.index = 1;
+	struct cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {0};
+	int rc = cli_agents_browser_set_snapshot(&state, &data, 1);
+	if (rc)
+		return rc;
+
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = 100;
 	int rows = 24;
 	morph_terminal_dimensions(STDOUT_FILENO, &columns, &rows);
-	int rc = (nb_buf_init(&output), nb_buf_reserve(&output, BUFSIZ) ? 0 : NB_ERR_NOMEM);
-	if (rc == 0)
-		rc = test_agents_browser_render(&output, &state, &data, columns - 1, rows, 1);
+	nb_buf_init(&output);
+	rc = test_agents_browser_render(&output, &state, &data, columns - 1, rows, 1, NULL);
+
 	if (rc == 0) {
 		if (fwrite(output.ptr, 1, output.len, stdout) != output.len || putchar('\n') == EOF)
 			return NB_ERR_IO;
+
 		fflush(stdout);
 		if (isatty(STDIN_FILENO))
 			(void)getchar();
 	}
+
 	return rc;
 }
 
@@ -162,8 +177,10 @@ int main(int argc, char **argv)
 		cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 		return replay_feed(argv[2]) == 0 ? 0 : 1;
 	}
+
 	if (argc != 4)
 		return 2;
+
 	(void)setlocale(LC_ALL, "");
 	nb_signal_listener *recap_clock NB_CLEANUP(nb_signal_listener_cleanup) = NULL;
 	const char *advance = getenv("MORPH_PTY_ADVANCE_RECAP");
@@ -174,6 +191,7 @@ int main(int argc, char **argv)
 		if (rc != NB_OK)
 			return 1;
 	}
+
 	http_init(NULL);
 	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL, NULL,
 				  CLI_PRESENT_INTERACTIVE);

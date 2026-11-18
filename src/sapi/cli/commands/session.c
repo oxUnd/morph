@@ -27,6 +27,7 @@ static int cli_session_command_new(struct cli_application *ctx, int argc, char *
 		snprintf(name_buf, sizeof(name_buf), "new_%lld", (long long)time(NULL));
 		name = name_buf;
 	}
+
 	struct session s;
 	int rc = runtime_session_create_and_select(ctx->runtime, name, &s);
 	if (rc == 0) {
@@ -35,6 +36,7 @@ static int cli_session_command_new(struct cli_application *ctx, int argc, char *
 	} else {
 		CMD_ERROR(ctx, "failed to create session: %s", name);
 	}
+
 	return rc;
 }
 
@@ -59,13 +61,16 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 				CMD_ERROR(ctx, "session not found: %s", name);
 				return NB_ERR_NOT_FOUND;
 			}
+
 			idx = (int)n;
 		}
+
 		struct session *list = NULL;
 		int count = 0;
 		rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
 		if (rc != 0)
 			return rc;
+
 		struct session current;
 		(void)runtime_session_current(ctx->runtime, &current);
 		int picked = 0;
@@ -73,6 +78,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 		for (int i = 0; i < count; i++) {
 			if (list[i].id == current.id)
 				continue;
+
 			picked++;
 			if (picked == idx) {
 				s = list[i];
@@ -80,6 +86,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 				break;
 			}
 		}
+
 		runtime_session_list_free(list);
 	} else {
 		rc = runtime_session_find_ref(ctx->runtime, name, &s);
@@ -89,6 +96,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 		rc = runtime_session_select_existing(ctx->runtime, s.id, &s);
 		if (rc != 0)
 			return rc;
+
 		ctx->session_auto_named = 1;
 		rc = cli_session_history_restore(ctx);
 		if (rc)
@@ -99,6 +107,7 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 	} else {
 		CMD_ERROR(ctx, "session not found: %s", name);
 	}
+
 	return rc;
 }
 
@@ -106,6 +115,7 @@ static int cli_session_command_resume(struct cli_application *ctx, int argc, cha
 {
 	if (argc > 1)
 		return cli_session_command_switch(ctx, argc, argv);
+
 	return cli_resume_show(ctx);
 }
 
@@ -116,6 +126,7 @@ static int cli_session_command_rename(struct cli_application *ctx, int argc, cha
 		CMD_ERROR(ctx, "usage: /rename <new_name>");
 		return NB_ERR_INVAL;
 	}
+
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	int rc = runtime_session_rename_and_update(ctx->runtime, current_id, new_name);
@@ -124,6 +135,7 @@ static int cli_session_command_rename(struct cli_application *ctx, int argc, cha
 	} else {
 		CMD_ERROR(ctx, "failed to rename session");
 	}
+
 	return rc;
 }
 
@@ -134,6 +146,7 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 		CMD_ERROR(ctx, "usage: /delete <name|id>");
 		return NB_ERR_INVAL;
 	}
+
 	int64_t id = -1;
 	struct session s;
 	if (runtime_session_find_ref(ctx->runtime, name, &s) == 0)
@@ -145,22 +158,26 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 		if (*end != '\0' || errno != 0)
 			id = -1;
 	}
+
 	if (id < 0) {
 		CMD_ERROR(ctx, "session not found: %s", name);
 		return NB_ERR_NOT_FOUND;
 	}
+
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	if (id == current_id) {
 		CMD_ERROR(ctx, "cannot delete current session, switch first");
 		return NB_ERR_INVAL;
 	}
+
 	int rc = runtime_session_delete_and_update(ctx->runtime, id);
 	if (rc == 0) {
 		CMD_OK(ctx, "deleted session: %s", name);
 	} else {
 		CMD_ERROR(ctx, "failed to delete session");
 	}
+
 	return rc;
 }
 
@@ -178,6 +195,7 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 		cJSON_Delete(array);
 		return NB_ERR_INVAL;
 	}
+
 	for (struct model_history_item *item = items; item; item = item->next) {
 		cJSON *entry = cJSON_CreateObject();
 
@@ -185,6 +203,7 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 			cJSON_Delete(array);
 			return NB_ERR_NOMEM;
 		}
+
 		cJSON_AddNumberToObject(entry, "sequence_no", (double)item->sequence_no);
 		cJSON_AddStringToObject(entry, "turn_id", item->turn_id ? item->turn_id : "");
 		cJSON_AddStringToObject(entry, "kind", item->kind);
@@ -196,15 +215,18 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 			if (payload)
 				cJSON_AddItemToObject(entry, "payload", payload);
 		}
+
 		cJSON_AddBoolToObject(entry, "active", item->active);
 		cJSON_AddBoolToObject(entry, "truncated", item->truncated);
 		cJSON_AddNumberToObject(entry, "token_count", item->token_count);
 		cJSON_AddItemToArray(array, entry);
 	}
+
 	json = cJSON_Print(array);
 	cJSON_Delete(array);
 	if (!json)
 		return NB_ERR_NOMEM;
+
 	expanded = ((expand_status_1 = nb_path_expand(&file_value_1, path, NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_1))
 			    : NULL);
@@ -212,6 +234,7 @@ static int cli_session_history_export_items(struct model_history_item *items, co
 		free(json);
 		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
 	}
+
 	rc = nb_file_write_all(expanded, json, strlen(json), NULL);
 	free(expanded);
 	free(json);
@@ -251,6 +274,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 
 			if (*value == '#')
 				value++;
+
 			errno = 0;
 			sequence = strtoll(value, &end, 10);
 			if (errno || end == value || *end || sequence <= 0) {
@@ -269,14 +293,17 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 				CMD_ERROR(ctx, "history count must be a positive integer");
 				return NB_ERR_INVAL;
 			}
+
 			n = (int)value;
 		} else {
 			CMD_ERROR(ctx, "unknown or incomplete history option: %s", argv[i]);
 			return NB_ERR_INVAL;
 		}
 	}
+
 	if (n <= 0)
 		n = 20;
+
 	if (diagnose || repair) {
 		struct agent_history_diagnostic report = {0};
 		int changed = 0;
@@ -288,6 +315,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
+
 		if (repair)
 			(void)cli_command_output_linef(
 				ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
@@ -304,8 +332,10 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 				report.active_items, report.dangling_calls,
 				report.orphan_results, report.invalid_payloads,
 				report.token_mismatches);
+
 		return 0;
 	}
+
 	if (export_path) {
 		int count = 0;
 		struct model_history_item *items = runtime_session_model_history_current_copy(
@@ -318,9 +348,11 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
+
 		CMD_OK(ctx, "exported %d model history items to %s", count, export_path);
 		return 0;
 	}
+
 	if (show_model) {
 		int count = 0;
 		struct model_history_item *items = runtime_session_model_history_current_copy(
@@ -334,6 +366,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			   show_all ? "all" : "active last", show, count);
 		for (int i = 0; i < skip && cur; i++)
 			cur = cur->next;
+
 		while (cur) {
 			char prefix[160];
 
@@ -359,13 +392,17 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 				(void)cli_command_output_segments(
 					ctx, segments, sizeof(segments) / sizeof(segments[0]), 0, 1);
 			}
+
 			cur = cur->next;
 		}
+
 		runtime_session_model_history_free(items);
 		return 0;
 	}
+
 	if (last_request)
 		return cli_history_request_print(ctx);
+
 	if (!show_messages) {
 		cJSON *report = NULL;
 		int rc = runtime_session_history_inspect_copy(ctx->runtime, &report);
@@ -378,12 +415,15 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			rc = cli_history_view(ctx, report);
 		else if (rc == 0)
 			cli_history_print(ctx, report, n, show_all);
+
 		cJSON_Delete(report);
 		if (rc != 0)
 			CMD_ERROR(ctx, "history inspection failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
+
 	int count = 0;
 	struct message *msgs = runtime_session_messages_current_copy(ctx->runtime, &count);
 	int show = show_all ? count : (n > count ? count : n);
@@ -394,6 +434,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 	struct message *cur = msgs;
 	for (int i = 0; i < skip && cur; i++)
 		cur = cur->next;
+
 	while (cur) {
 		const char *role = cur->role;
 		const char *label = (strcmp(role, "user") == 0)	       ? "You"
@@ -423,8 +464,10 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			};
 			(void)cli_command_output_segments(ctx, segments, 5, 0, 1);
 		}
+
 		cur = cur->next;
 	}
+
 	runtime_session_messages_free(msgs);
 	return 0;
 }

@@ -28,15 +28,18 @@ int (*cli_callback_getc(struct cli_application *ctx,
 {
 	if (!ctx || !reader || cli_input_init(ctx))
 		return NULL;
+
 	struct cli_callback *binding = ctx->input->callbacks;
 	while (binding && binding->reader != reader)
 		binding = binding->next;
+
 	if (!binding) {
 		binding = calloc(1, sizeof(*binding));
 		if (!binding) {
 			ctx->input->callback_error = NB_ERR_NOMEM;
 			return NULL;
 		}
+
 		binding->ctx = ctx;
 		binding->reader = reader;
 		binding->argument = &ffi_type_pointer;
@@ -48,13 +51,16 @@ int (*cli_callback_getc(struct cli_application *ctx,
 					 binding, binding->code) != FFI_OK) {
 			if (binding->closure)
 				ffi_closure_free(binding->closure);
+
 			free(binding);
 			ctx->input->callback_error = NB_ERR_NOMEM;
 			return NULL;
 		}
+
 		binding->next = ctx->input->callbacks;
 		ctx->input->callbacks = binding;
 	}
+
 	int (*callback)(FILE *);
 	_Static_assert(sizeof(callback) == sizeof(binding->code), "incompatible callback ABI");
 	memcpy(&callback, &binding->code, sizeof(callback));
@@ -65,6 +71,7 @@ void cli_callbacks_cleanup(struct cli_application *ctx)
 {
 	if (!ctx || !ctx->input)
 		return;
+
 	while (ctx->input->callbacks) {
 		struct cli_callback *binding = ctx->input->callbacks;
 
@@ -72,5 +79,6 @@ void cli_callbacks_cleanup(struct cli_application *ctx)
 		ffi_closure_free(binding->closure);
 		free(binding);
 	}
+
 	ctx->input->callback_error = 0;
 }

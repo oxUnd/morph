@@ -23,6 +23,7 @@ static int cli_question_set_ask_user_answers(char ***answers, int *answers_count
 {
 	if (!answers || !answers_count)
 		return NB_ERR_INVAL;
+
 	*answers = NULL;
 	*answers_count = 0;
 	if (values_count <= 0)
@@ -31,15 +32,18 @@ static int cli_question_set_ask_user_answers(char ***answers, int *answers_count
 	char **out = calloc((size_t)values_count, sizeof(char *));
 	if (!out)
 		return NB_ERR_NOMEM;
+
 	for (int i = 0; i < values_count; i++) {
 		out[i] = strdup(values[i] ? values[i] : "");
 		if (!out[i]) {
 			for (int j = 0; j < i; j++)
 				free(out[j]);
+
 			free(out);
 			return NB_ERR_NOMEM;
 		}
 	}
+
 	*answers = out;
 	*answers_count = values_count;
 	return 0;
@@ -52,6 +56,7 @@ static int cli_question_recommended_answers(const char *const *choices,
 	const char *values[ASK_USER_CHOICES_MAX];
 	for (int i = 0; i < options->recommended_count; i++)
 		values[i] = choices[options->recommended_indices[i]];
+
 	return cli_question_set_ask_user_answers(answers, answers_count, values,
 						 options->recommended_count);
 }
@@ -69,6 +74,7 @@ static int cli_question_parse_multi_choice_answer(char *input, const char *const
 		int n = atoi(tok);
 		if (n < 1 || n > choices_count)
 			continue;
+
 		if (!selected[n - 1]) {
 			selected[n - 1] = 1;
 			selected_count++;
@@ -84,6 +90,7 @@ static int cli_question_parse_multi_choice_answer(char *input, const char *const
 		if (selected[i])
 			values[count++] = choices[i];
 	}
+
 	return cli_question_set_ask_user_answers(answers, answers_count, values, count);
 }
 
@@ -101,20 +108,24 @@ static int cli_question_validate_ask_user_response(const cJSON *response_data, v
 
 	if (!validation || !cJSON_IsObject(response_data))
 		return NB_ERR_PROTOCOL;
+
 	answers = cJSON_GetObjectItemCaseSensitive(response_data, "answers");
 	if (!cJSON_IsArray(answers))
 		return NB_ERR_PROTOCOL;
+
 	count = cJSON_GetArraySize(answers);
 	if (count < validation->min_choices || count > 64 ||
 	    (validation->max_choices > 0 && count > validation->max_choices) ||
 	    ((!validation->selection_mode || strcmp(validation->selection_mode, "multi") != 0) &&
 	     count > 1))
 		return NB_ERR_INVAL;
+
 	for (int i = 0; i < count; i++) {
 		cJSON *answer = cJSON_GetArrayItem(answers, i);
 
 		if (!cJSON_IsString(answer) || !answer->valuestring || !answer->valuestring[0])
 			return NB_ERR_PROTOCOL;
+
 		for (int j = 0; j < i; j++) {
 			cJSON *previous = cJSON_GetArrayItem(answers, j);
 
@@ -122,6 +133,7 @@ static int cli_question_validate_ask_user_response(const cJSON *response_data, v
 				return NB_ERR_INVAL;
 		}
 	}
+
 	return 0;
 }
 
@@ -147,6 +159,7 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 		cJSON_Delete(choices_json);
 		return NB_ERR_NOMEM;
 	}
+
 	if (!cJSON_AddStringToObject(request, "question", question ? question : "") ||
 	    !cJSON_AddStringToObject(request, "selection_mode",
 				     selection_mode ? selection_mode : "single") ||
@@ -156,6 +169,7 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 		cJSON_Delete(request);
 		return NB_ERR_NOMEM;
 	}
+
 	for (int i = 0; i < choices_count; i++) {
 		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
 
@@ -164,14 +178,17 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 			cJSON_Delete(request);
 			return NB_ERR_NOMEM;
 		}
+
 		cJSON_AddItemToArray(choices_json, choice);
 	}
+
 	cJSON_AddItemToObject(request, "choices", choices_json);
 	rc = ask_user_options_to_json(request, options);
 	if (rc) {
 		cJSON_Delete(request);
 		return rc;
 	}
+
 	validation = (struct cli_question_ask_user_validation){
 		.selection_mode = selection_mode,
 		.min_choices = min_choices,
@@ -183,10 +200,12 @@ static int cli_question_json_ask_user(struct cli_application *ctx, const char *q
 	cJSON_Delete(request);
 	if (rc != 0)
 		return rc;
+
 	items = cJSON_GetObjectItemCaseSensitive(response, "answers");
 	count = cJSON_GetArraySize(items);
 	for (int i = 0; i < count; i++)
 		values[i] = cJSON_GetStringValue(cJSON_GetArrayItem(items, i));
+
 	rc = cli_question_set_ask_user_answers(answers, answers_count, values, count);
 	cJSON_Delete(response);
 	return rc;
@@ -227,6 +246,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	if (!ctx || !answers || !answers_count || choices_count < 0 || choices_count > 64 ||
 	    min_choices < 0 || max_choices < 0)
 		return NB_ERR_INVAL;
+
 	*answers = NULL;
 	*answers_count = 0;
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
@@ -260,6 +280,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			tty = path ? fopen(path, "r") : NULL;
 			input = tty;
 		}
+
 		if (nt_terminal_available(input, stdout)) {
 			struct nt_selection_model model = {0};
 			struct nt_choice_list_state state = {0};
@@ -270,6 +291,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 				int recommended = 0;
 				for (int j = 0; options && j < options->recommended_count; j++)
 					recommended |= options->recommended_indices[j] == i;
+
 				nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
 				label_rc = (nb_buf_init(&label),
 					    nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
@@ -279,16 +301,19 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 							       recommended ? " (Recommended)" : "")
 							 ? 0
 							 : NB_ERR_NOMEM);
+
 				if (!label_rc) {
 					labels[i] = strdup(nb_buf_cstr(&label));
 					if (!labels[i])
 						label_rc = NB_ERR_NOMEM;
 				}
+
 				nb_buf_cleanup(&label);
 				items[i] = labels[i];
 				if (label_rc)
 					break;
 			}
+
 			const struct nt_choice_prompt_options select_options = {
 				.items = items,
 				.interrupted = &ctx->interrupted,
@@ -316,18 +341,18 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 						(void)nt_selection_model_set_selected(&model, state.list.index, 1);
 					}
 				}
+
 				state.list.index = (size_t)options->recommended_indices[0];
 			}
+
 			if (!rc)
-				rc = cli_chat_prompt_begin(
-					ctx, choices_count > 7 ? 12 : choices_count + 5);
-			if (!rc) {
-				rc = nt_choice_prompt_run(&model, &state, &select_options, input,
-								 stdout, &custom);
-				cli_chat_prompt_end(ctx);
-			}
+				rc = cli_chat_prompt_choice(ctx, choices_count > 7 ? 12 : choices_count + 5,
+							    &model, &state, &select_options,
+							    input, &custom);
+
 			if (rc == NB_ERR_CANCELLED || rc == NB_ERR_INTERRUPTED)
 				cli_request_cancel(ctx);
+
 			if (!rc) {
 				const char *values[64];
 				int count = 0;
@@ -336,8 +361,10 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 					if (nt_selection_model_is_selected(&model, (size_t)i))
 						values[count++] = choices[i];
 				}
+
 				if (custom && count < 64)
 					values[count++] = custom;
+
 				rc = cli_question_set_ask_user_answers(answers, answers_count,
 								       values, count);
 				if (!rc) {
@@ -351,19 +378,24 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 					}
 				}
 			}
+
 			nt_selection_model_deinit(&model);
 			for (int i = 0; i < choices_count; i++)
 				free(labels[i]);
+
 			free(custom);
 			if (tty)
 				fclose(tty);
+
 			if (rc == NB_ERR_TIMEOUT)
 				cli_output_printf(ctx, "  No response; %s.\n",
 				       options->recommended_count
 					       ? "continuing with recommended choices"
 					       : "continuing without input");
+
 			return rc;
 		}
+
 		if (tty)
 			fclose(tty);
 	}
@@ -379,8 +411,10 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 				if (options->recommended_indices[j] == i)
 					cli_output_printf(ctx, " (Recommended)");
 			}
+
 			cli_output_printf(ctx, "\n");
 		}
+
 		if (multi && max_choices > 0) {
 			snprintf(prompt, sizeof(prompt),
 				 "  [" CLI_RL_IGNORE_START ANSI_GREEN CLI_RL_IGNORE_END
@@ -402,6 +436,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	} else {
 		snprintf(prompt, sizeof(prompt), "  > ");
 	}
+
 	{
 		char *input = NULL;
 		const char *readline_prompt = cli_output_is_structured(ctx) ? "" : prompt;
@@ -417,6 +452,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 		} else {
 			input = cli_readline_prompt_copy(ctx, readline_prompt);
 		}
+
 		int timed_out = ctx->input->input_timed_out;
 		ctx->input->input_deadline_ms = previous_deadline;
 		ctx->input->input_timed_out = previous_timed_out;
@@ -424,15 +460,18 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 			free(input);
 			return NB_ERR_TIMEOUT;
 		}
+
 		if (!input) {
 			cli_output_printf(ctx, "\n");
 			return NB_ERR_IO;
 		}
+
 		if (!input[0] && options && options->recommended_count) {
 			free(input);
 			return cli_question_recommended_answers(choices, options, answers,
 								answers_count);
 		}
+
 		cli_reader_remember(input);
 		if (choices && choices_count > 0) {
 			if (multi) {
@@ -442,6 +481,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 				free(input);
 				return rc;
 			}
+
 			int n = atoi(input);
 			if (n >= 1 && n <= choices_count) {
 				const char *values[] = {choices[n - 1]};
@@ -450,6 +490,7 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 									 values, 1);
 			}
 		}
+
 		const char *values[] = {input};
 		int rc = cli_question_set_ask_user_answers(answers, answers_count, values, 1);
 		free(input);
@@ -465,6 +506,7 @@ int cli_question_callback(const char *question, const char *const *choices, int 
 	struct cli_application *ctx = user_data;
 	if (!ctx)
 		return NB_ERR_INVAL;
+
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
 		struct cli_question_ask_user_call call = {
 			ctx,	     question,	  choices, choices_count, selection_mode,
@@ -472,6 +514,7 @@ int cli_question_callback(const char *question, const char *const *choices, int 
 		};
 		return cli_event_queue_call_owner(ctx, cli_question_ask_user_on_owner, &call);
 	}
+
 	const struct nb_cancel *previous = ctx->input->input_cancel_token;
 	ctx->input->input_cancel_token = options ? options->cancel_token : NULL;
 	int rc = cli_question_ask_user_prompt(question, choices, choices_count, selection_mode,

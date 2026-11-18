@@ -31,16 +31,9 @@ struct cli_output_segment {
 	enum morph_terminal_text_mode untrusted_mode;
 };
 
-struct cli_output_line {
-	const struct cli_output_segment *segments;
-	size_t segment_count;
-	unsigned indent;
-};
-
 int cli_command_output_segments(struct cli_application *ctx,
 				const struct cli_output_segment *segments, size_t count,
 				unsigned indent, int newline);
-int cli_command_output_line(struct cli_application *ctx, const struct cli_output_line *line);
 int cli_command_output_linef(struct cli_application *ctx, enum cli_output_style style,
 			     unsigned indent, const char *fmt, ...);
 int cli_command_output_newline(struct cli_application *ctx);
@@ -113,8 +106,7 @@ int cli_command_output_fields(struct cli_application *ctx,
 int cli_command_output_sections(struct cli_application *ctx,
 				const struct cli_output_section *sections, size_t count);
 
-/* Tables pad and align by display width. Markdown helpers escape cells and
-   emit headers; terminal tables only emit a header when requested. */
+/* Markdown tables escape cell contents and use the column alignment in the header. */
 enum cli_output_align {
 	CLI_OUTPUT_ALIGN_LEFT = 0,
 	CLI_OUTPUT_ALIGN_RIGHT,
@@ -122,9 +114,7 @@ enum cli_output_align {
 
 struct cli_output_column {
 	const char *header;
-	int width;
 	enum cli_output_align align;
-	enum cli_output_style style;
 };
 
 struct cli_output_table {
@@ -132,12 +122,8 @@ struct cli_output_table {
 	size_t column_count;
 	const char *const *cells;
 	size_t row_count;
-	const char *indent;
-	const char *gap;
-	int header;
 };
 
-int cli_command_output_table(struct cli_application *ctx, const struct cli_output_table *table);
 int cli_command_output_markdown_heading(nb_buf *buf, unsigned level, const char *text);
 int cli_command_output_markdown_table_header(nb_buf *buf, const struct cli_output_table *table);
 int cli_command_output_markdown_table_row(nb_buf *buf, const struct cli_output_table *table,

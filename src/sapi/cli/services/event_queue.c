@@ -40,6 +40,7 @@ static void cli_event_queue_item_free(struct cli_event_queue_item *item)
 {
 	if (!item)
 		return;
+
 	free(item->name);
 	free(item->phase);
 	free(item->message);
@@ -60,6 +61,7 @@ static void cli_event_queue_complete_owner_call(struct cli_event_queue_owner_cal
 {
 	if (!call)
 		return;
+
 	nb_mutex_lock(call->mutex);
 	call->result = result;
 	call->complete = 1;
@@ -71,12 +73,15 @@ static int cli_event_queue_dup_optional(const char *source, char **out)
 {
 	if (!out)
 		return NB_ERR_INVAL;
+
 	*out = NULL;
 	if (!source)
 		return 0;
+
 	*out = strdup(source);
 	if (!*out)
 		return NB_ERR_NOMEM;
+
 	return 0;
 }
 
@@ -87,13 +92,17 @@ static int cli_event_queue_set_fd_flags(int fd)
 	flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0)
 		return nb_status_from_errno(errno, NULL);
+
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
 		return nb_status_from_errno(errno, NULL);
+
 	flags = fcntl(fd, F_GETFD, 0);
 	if (flags < 0)
 		return nb_status_from_errno(errno, NULL);
+
 	if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0)
 		return nb_status_from_errno(errno, NULL);
+
 	return 0;
 }
 
@@ -101,9 +110,11 @@ static void cli_event_queue_wake(struct cli_event_queue *ui)
 {
 	if (!ui || ui->wake_write < 0)
 		return;
+
 	nb_mutex_lock(ui->mutex);
 	if (ui->application)
 		(void)nt_application_wake(ui->application);
+
 	nb_mutex_unlock(ui->mutex);
 	unsigned char byte = 1;
 	ssize_t count;
@@ -126,6 +137,7 @@ static void cli_event_queue_consume_wake(struct cli_event_queue *ui)
 
 	if (!ui || ui->wake_read < 0)
 		return;
+
 	do {
 		count = read(ui->wake_read, bytes, sizeof(bytes));
 	} while (count > 0 || (count < 0 && errno == EINTR));
@@ -138,6 +150,7 @@ static int cli_event_queue_enqueue_take(struct cli_application *ctx,
 
 	if (!ctx || !ctx->events || !owner || !*owner)
 		return NB_ERR_INVAL;
+
 	struct cli_event_queue_item *item = *owner;
 
 	ui = ctx->events;
@@ -146,6 +159,7 @@ static int cli_event_queue_enqueue_take(struct cli_application *ctx,
 		nb_mutex_unlock(ui->mutex);
 		return NB_ERR_CANCELLED;
 	}
+
 	nb_queue_insert_tail(&ui->pending, &item->link);
 	*owner = NULL;
 	nb_mutex_unlock(ui->mutex);
@@ -162,9 +176,11 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 
 	if (!ctx || !dispatch)
 		return NB_ERR_INVAL;
+
 	ui = calloc(1, sizeof(*ui));
 	if (!ui)
 		return NB_ERR_NOMEM;
+
 	ui->wake_read = -1;
 	ui->wake_write = -1;
 	ui->events_enabled = 1;
@@ -174,6 +190,7 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 		free(ui);
 		return mutex_rc;
 	}
+
 	ui->mutex_initialized = 1;
 	if (pipe(wake_fds) != 0) {
 		rc = nb_status_from_errno(errno, NULL);
@@ -181,9 +198,11 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 		free(ui);
 		return rc;
 	}
+
 	rc = cli_event_queue_set_fd_flags(wake_fds[0]);
 	if (rc == 0)
 		rc = cli_event_queue_set_fd_flags(wake_fds[1]);
+
 	if (rc != 0) {
 		close(wake_fds[0]);
 		close(wake_fds[1]);
@@ -191,6 +210,7 @@ int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_f
 		free(ui);
 		return rc;
 	}
+
 	ui->wake_read = wake_fds[0];
 	ui->wake_write = wake_fds[1];
 	ui->owner = nb_thread_current_id();
@@ -208,6 +228,7 @@ void cli_event_queue_cleanup(struct cli_application *ctx)
 
 	if (!ctx || !ctx->events)
 		return;
+
 	ui = ctx->events;
 	nb_queue_init(&local);
 	if (ui->mutex_initialized) {
@@ -215,6 +236,7 @@ void cli_event_queue_cleanup(struct cli_application *ctx)
 		nb_queue_add(&local, &ui->pending);
 		nb_mutex_unlock(ui->mutex);
 	}
+
 	NB_QUEUE_FOREACH_SAFE(link, next, &local)
 	{
 		struct cli_event_queue_item *item =
@@ -223,14 +245,19 @@ void cli_event_queue_cleanup(struct cli_application *ctx)
 		nb_queue_remove(link);
 		if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			cli_event_queue_complete_owner_call(item->owner_call, NB_ERR_CANCELLED);
+
 		cli_event_queue_item_free(item);
 	}
+
 	if (ui->wake_read >= 0)
 		close(ui->wake_read);
+
 	if (ui->wake_write >= 0)
 		close(ui->wake_write);
+
 	if (ui->mutex_initialized)
 		(nb_mutex_free(ui->mutex), ui->mutex = NULL);
+
 	free(ui);
 	ctx->events = NULL;
 }
@@ -249,6 +276,7 @@ void cli_event_queue_attach_app(struct cli_application *ctx, struct nt_applicati
 {
 	if (!ctx || !ctx->events)
 		return;
+
 	nb_mutex_lock(ctx->events->mutex);
 	ctx->events->application = app;
 	nb_mutex_unlock(ctx->events->mutex);
@@ -263,26 +291,33 @@ int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct m
 
 	if (!ctx || !event)
 		return NB_ERR_INVAL;
+
 	item = calloc(1, sizeof(*item));
 	if (!item)
 		return NB_ERR_NOMEM;
+
 	item->kind = CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT;
 	item->event.type = event->type;
 	rc = cli_event_queue_dup_optional(event->name, &item->name);
 	if (rc == 0)
 		rc = cli_event_queue_dup_optional(event->phase, &item->phase);
+
 	if (rc == 0)
 		rc = cli_event_queue_dup_optional(event->message, &item->message);
+
 	if (rc == 0)
 		rc = cli_event_queue_dup_optional(event->turn_id, &item->turn_id);
+
 	if (rc == 0 && event->data) {
 		item->event.data = cJSON_Duplicate(event->data, 1);
 		if (!item->event.data)
 			rc = NB_ERR_NOMEM;
 	}
+
 	if (rc != 0) {
 		return rc;
 	}
+
 	item->event.name = item->name;
 	item->event.phase = item->phase;
 	item->event.message = item->message;
@@ -291,6 +326,7 @@ int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct m
 	if (rc != 0) {
 		return rc;
 	}
+
 	return 0;
 }
 
@@ -302,9 +338,11 @@ int cli_event_queue_post_notification(struct cli_application *ctx,
 
 	if (!ctx || !notification)
 		return NB_ERR_INVAL;
+
 	item = calloc(1, sizeof(*item));
 	if (!item)
 		return NB_ERR_NOMEM;
+
 	item->kind = CLI_EVENT_QUEUE_UI_ITEM_NOTIFICATION;
 	item->notification_id = notification->id;
 	item->notification_task_id = notification->task_id;
@@ -314,13 +352,16 @@ int cli_event_queue_post_notification(struct cli_application *ctx,
 	rc = cli_event_queue_dup_optional(notification->title, &item->notification_title);
 	if (rc == 0)
 		rc = cli_event_queue_dup_optional(notification->body, &item->notification_body);
+
 	if (rc != 0) {
 		return rc;
 	}
+
 	rc = cli_event_queue_enqueue_take(ctx, &item);
 	if (rc != 0) {
 		return rc;
 	}
+
 	return 0;
 }
 
@@ -334,6 +375,7 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 
 	if (!ctx || !ctx->events || !fn)
 		return NB_ERR_INVAL;
+
 	if (cli_event_queue_is_owner(ctx)) {
 		nb_mutex_lock(ctx->events->mutex);
 		int stopped = ctx->events->owner_calls_stopped;
@@ -341,17 +383,21 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 		nb_mutex_unlock(ctx->events->mutex);
 		if (stopped)
 			return NB_ERR_CANCELLED;
+
 		return fn(data);
 	}
+
 	memset(&call, 0, sizeof(call));
 	mutex_rc = ((call.mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (mutex_rc != 0)
 		return mutex_rc;
+
 	cond_rc = ((call.cond = nb_cond_new()) ? NB_OK : NB_ERR_NOMEM);
 	if (cond_rc != 0) {
 		(nb_mutex_free(call.mutex), call.mutex = NULL);
 		return cond_rc;
 	}
+
 	call.fn = fn;
 	call.data = data;
 	item = calloc(1, sizeof(*item));
@@ -360,6 +406,7 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 		(nb_mutex_free(call.mutex), call.mutex = NULL);
 		return NB_ERR_NOMEM;
 	}
+
 	item->kind = CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL;
 	item->owner_call = &call;
 	rc = cli_event_queue_enqueue_take(ctx, &item);
@@ -368,9 +415,11 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 		(nb_mutex_free(call.mutex), call.mutex = NULL);
 		return rc;
 	}
+
 	nb_mutex_lock(call.mutex);
 	while (!call.complete)
 		nb_cond_wait(call.cond, call.mutex);
+
 	rc = call.result;
 	nb_mutex_unlock(call.mutex);
 	(nb_cond_free(call.cond), call.cond = NULL);
@@ -382,8 +431,10 @@ int cli_event_queue_stop_owner_calls(struct cli_application *ctx)
 {
 	if (!ctx || !ctx->events)
 		return NB_ERR_INVAL;
+
 	if (!cli_event_queue_is_owner(ctx))
 		return NB_ERR_NOT_PERMITTED;
+
 	struct cli_event_queue *ui = ctx->events;
 	nb_queue cancelled;
 	nb_queue *link, *next;
@@ -401,6 +452,7 @@ int cli_event_queue_stop_owner_calls(struct cli_application *ctx)
 			nb_queue_insert_tail(&cancelled, link);
 		}
 	}
+
 	nb_mutex_unlock(ui->mutex);
 	NB_QUEUE_FOREACH_SAFE(link, next, &cancelled)
 	{
@@ -411,6 +463,7 @@ int cli_event_queue_stop_owner_calls(struct cli_application *ctx)
 		cli_event_queue_complete_owner_call(item->owner_call, NB_ERR_CANCELLED);
 		cli_event_queue_item_free(item);
 	}
+
 	return 0;
 }
 
@@ -421,6 +474,7 @@ int cli_event_queue_run_owner_call(struct cli_application *ctx,
 
 	if (!call)
 		return NB_ERR_INVAL;
+
 	result = cli_event_queue_call_owner(ctx, call->fn, call->data);
 	cli_event_queue_complete_owner_call(call, result);
 	return result;
@@ -431,6 +485,7 @@ int cli_event_queue_events_enabled(const struct cli_application *ctx)
 	struct cli_event_queue *ui = ctx ? ctx->events : NULL;
 	if (!ui)
 		return 0;
+
 	nb_mutex_lock(ui->mutex);
 	int enabled = ui->events_enabled;
 	nb_mutex_unlock(ui->mutex);
@@ -441,8 +496,10 @@ int cli_event_queue_set_events_enabled(struct cli_application *ctx, int enabled)
 {
 	if (!ctx || !ctx->events)
 		return NB_ERR_INVAL;
+
 	if (!cli_event_queue_is_owner(ctx))
 		return NB_ERR_NOT_PERMITTED;
+
 	struct cli_event_queue *ui = ctx->events;
 	nb_mutex_lock(ui->mutex);
 	int changed = ui->events_enabled != !!enabled;
@@ -451,6 +508,7 @@ int cli_event_queue_set_events_enabled(struct cli_application *ctx, int enabled)
 	nb_mutex_unlock(ui->mutex);
 	if (changed && enabled && pending)
 		cli_event_queue_wake(ui);
+
 	return 0;
 }
 
@@ -464,6 +522,7 @@ static int cli_event_queue_pending_ready(struct cli_event_queue *ui)
 		if (ui->events_enabled || item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			return 1;
 	}
+
 	return 0;
 }
 
@@ -477,8 +536,10 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 
 	if (!ctx || !ctx->events)
 		return NB_ERR_INVAL;
+
 	if (!cli_event_queue_is_owner(ctx))
 		return NB_ERR_NOT_PERMITTED;
+
 	ui = ctx->events;
 	cli_event_queue_consume_wake(ui);
 	nb_queue_init(&local);
@@ -491,21 +552,26 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 	{
 		if (limit && taken == limit)
 			break;
+
 		struct cli_event_queue_item *item =
 			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 		if (defer_calls && item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			break;
+
 		if (!ui->events_enabled && item->kind != CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			continue;
+
 		nb_queue_remove(link);
 		nb_queue_insert_tail(&local, link);
 		taken++;
 	}
+
 	int remaining = cli_event_queue_pending_ready(ui);
 
 	nb_mutex_unlock(ui->mutex);
 	if (remaining)
 		cli_event_queue_wake(ui);
+
 	NB_QUEUE_FOREACH_SAFE(link, next, &local)
 	{
 		struct cli_event_queue_item *item =
@@ -515,8 +581,10 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 
 		if (first_error == 0 && rc != 0)
 			first_error = rc;
+
 		cli_event_queue_item_free(item);
 	}
+
 	return first_error;
 }
 
@@ -535,6 +603,7 @@ int cli_event_queue_owner_call_pending(struct cli_application *ctx)
 	struct cli_event_queue *ui = ctx ? ctx->events : NULL;
 	if (!ui)
 		return 0;
+
 	int pending = 0;
 	nb_mutex_lock(ui->mutex);
 	nb_queue *link;
@@ -547,6 +616,7 @@ int cli_event_queue_owner_call_pending(struct cli_application *ctx)
 			break;
 		}
 	}
+
 	nb_mutex_unlock(ui->mutex);
 	return pending;
 }

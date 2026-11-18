@@ -15,14 +15,17 @@ int cli_command_input_execute(struct cli_application *ctx, const char *input)
 
 	if (!ctx || !input)
 		return NB_ERR_INVAL;
+
 	cli_turn_prepare(ctx);
 	rc = cli_media_handle_path(ctx, input, &handled);
 	if (handled)
 		return rc;
+
 	if (input[0] == '/') {
 		rc = cli_command_dispatch(ctx, input);
 		cli_scheduler_process_due(ctx);
 		return rc;
 	}
+
 	return cli_turn_execute_prompt(ctx, input);
 }

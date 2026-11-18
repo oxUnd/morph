@@ -1,5 +1,5 @@
 #include "sapi/cli/pages/history.h"
-#include "sapi/cli/presentation/panel_style.h"
+#include "sapi/cli/presentation/panel.h"
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "cJSON.h"
@@ -13,8 +13,7 @@
 #include <nothing/tui/view_controller.h>
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/components/list.h"
-#include "sapi/cli/components/visibility.h"
+#include "sapi/cli/presentation/list.h"
 
 #define CLI_HISTORY_QUERY_MAX 256
 #define CLI_HISTORY_PREVIEW_MAX 240
@@ -59,16 +58,22 @@ static const char *cli_history_label(const cJSON *entry)
 
 	if (strcmp(kind, "user_message") == 0)
 		return "You";
+
 	if (strcmp(kind, "assistant_message") == 0)
 		return "Assistant";
+
 	if (strcmp(kind, "assistant_tool_calls") == 0)
 		return "Tool call";
+
 	if (strcmp(kind, "tool_result") == 0)
 		return "Tool result";
+
 	if (strcmp(kind, "compaction_summary") == 0)
 		return "Summary";
+
 	if (strcmp(kind, "background_receipt") == 0)
 		return "Background";
+
 	return kind;
 }
 
@@ -87,10 +92,12 @@ static int cli_history_contains(const char *text, const char *query)
 
 	if (!length)
 		return 1;
+
 	for (; *text; text++) {
 		if (strncasecmp(text, query, length) == 0)
 			return 1;
 	}
+
 	return 0;
 }
 
@@ -107,6 +114,7 @@ static int cli_history_filter(struct cli_history_view *view)
 			 (long long)cli_history_number(entry, "sequence_no"));
 		if (!cli_history_matches_filter(entry, view->filter))
 			continue;
+
 		if (!cli_history_contains(cli_history_string(entry, "content"), query) &&
 		    !cli_history_contains(cli_history_string(entry, "payload_json"), query) &&
 		    !cli_history_contains(cli_history_string(entry, "tool_name"), query) &&
@@ -114,10 +122,12 @@ static int cli_history_filter(struct cli_history_view *view)
 		    !cli_history_contains(sequence, query) &&
 		    !cli_history_contains(cli_history_label(entry), query))
 			continue;
+
 		cJSON **slot = nb_vec_push(&view->matches);
 
 		if (!slot)
 			return NB_ERR_NOMEM;
+
 		*slot = entry;
 	}
 	return 0;
@@ -145,6 +155,7 @@ static void cli_history_preview(const cJSON *entry, char *preview, size_t capaci
 
 		if (!*arguments)
 			arguments = cli_history_string(first, "input");
+
 		char *short_arguments = nb_utf8_ellipsize_bytes(arguments, CLI_HISTORY_PREVIEW_MAX);
 
 		if (first && short_arguments &&
@@ -154,12 +165,16 @@ static void cli_history_preview(const cJSON *entry, char *preview, size_t capaci
 			if (cJSON_GetArraySize(calls) > 1)
 				(void)nb_buf_printf(&call, " (+%d calls)",
 						    cJSON_GetArraySize(calls) - 1);
+
 			content = nb_buf_cstr(&call);
 		}
+
 		free(short_arguments);
 	}
+
 	if (!*content)
 		content = cli_history_string(entry, "payload_json");
+
 	limited = nb_utf8_ellipsize_bytes(content, CLI_HISTORY_PREVIEW_MAX);
 	cli_list_compact_text(preview, capacity, limited ? limited : "");
 	free(limited);
@@ -174,6 +189,7 @@ static int cli_history_json_text(const cJSON *json, nb_buf *text)
 
 	if (!pretty)
 		return NB_ERR_NOMEM;
+
 	rc = (nb_buf_append_cstr(text, pretty) ? 0 : NB_ERR_NOMEM);
 	free(pretty);
 	return rc;
@@ -190,8 +206,10 @@ static int cli_history_request_document(struct cli_application *ctx, nb_buf *tex
 				      "Snapshots are recorded for new structured model calls.\n")
 				? 0
 				: NB_ERR_NOMEM);
+
 	if (rc != 0)
 		return rc;
+
 	rc = (nb_buf_printf(text,
 			    "Last submitted model input\nModel: %s / %s\n"
 			    "Turn: %s\nCaptured at: %lld (Unix time)\n\n"
@@ -208,6 +226,7 @@ static int cli_history_request_document(struct cli_application *ctx, nb_buf *tex
 
 	if (rc == 0)
 		rc = input ? cli_history_json_text(input, text) : NB_ERR_PARSE;
+
 	cJSON_Delete(input);
 	cJSON_Delete(snapshot);
 	return rc;
@@ -233,6 +252,7 @@ static int cli_history_entry_document(struct cli_application *ctx, const cJSON *
 
 	if (rc != 0)
 		return rc;
+
 	if (stored) {
 		rc = (nb_buf_append_cstr(text, cli_history_string(entry, "content"))
 			      ? 0
@@ -246,10 +266,13 @@ static int cli_history_entry_document(struct cli_application *ctx, const cJSON *
 			if (rc == 0)
 				rc = json ? cli_history_json_text(json, text)
 					  : (nb_buf_append_cstr(text, payload) ? 0 : NB_ERR_NOMEM);
+
 			cJSON_Delete(json);
 		}
+
 		return rc;
 	}
+
 	cJSON *input = NULL;
 
 	rc = runtime_session_history_entry_input_copy(ctx->runtime, sequence, &input);
@@ -262,8 +285,10 @@ static int cli_history_entry_document(struct cli_application *ctx, const cJSON *
 				"LEGACY entries require migration and validation before replay.\n")
 				? 0
 				: NB_ERR_NOMEM);
+
 	if (rc == 0)
 		rc = cli_history_json_text(input, text);
+
 	cJSON_Delete(input);
 	return rc;
 }
@@ -275,25 +300,30 @@ static int cli_history_document(struct cli_history_view *view, enum cli_history_
 
 	if (rc != 0)
 		return rc;
+
 	if (mode == HISTORY_REQUEST)
 		rc = cli_history_request_document(view->ctx, &text);
 	else if (cli_history_selected(view))
 		rc = cli_history_entry_document(view->ctx, cli_history_selected(view), view->stored,
 						&text);
+
 	char *safe = rc == 0 ? morph_terminal_sanitize_dup(nb_buf_cstr(&text), text.len,
 							   MORPH_TERMINAL_TEXT_MULTILINE, NULL)
 			     : NULL;
 
 	if (rc == 0 && !safe)
 		rc = NB_ERR_NOMEM;
+
 	nb_buf_clear(&view->document);
 	if (rc == 0) {
 		for (char *p = safe; *p; p++) {
 			if (*p == '\t')
 				*p = ' ';
 		}
+
 		rc = (nb_buf_append_cstr(&view->document, safe) ? 0 : NB_ERR_NOMEM);
 	}
+
 	free(safe);
 	nb_buf_cleanup(&text);
 	return rc;
@@ -305,6 +335,7 @@ static const char *cli_history_row(void *data, size_t index)
 	cJSON **item = nb_vec_at(&page->matches, index);
 	if (!item)
 		return "";
+
 	char preview[CLI_HISTORY_PREVIEW_MAX + 1];
 	char title[BUFSIZ], clipped[BUFSIZ];
 	cli_history_preview(*item, preview, sizeof(preview));
@@ -328,6 +359,7 @@ static void cli_history_row_style(void *data, size_t index, int selected,
 	*style = (struct nt_text_style){0};
 	if (!cli_output_color_enabled(page->ctx))
 		return;
+
 	cJSON **item = nb_vec_at(&page->matches, index);
 	const char *status = item ? cli_history_string(*item, "status") : "";
 	if (selected) {
@@ -356,10 +388,13 @@ static int cli_history_summary(struct cli_history_view *page)
 		for (int i = 0; i < 4; i++)
 			nb_buf_printf(&names, "  %s%s%s", i == page->filter ? "[" : "", filters[i],
 				      i == page->filter ? "]" : "");
+
 	if (!rc)
 		rc = nb_buf_status(&names);
+
 	if (!rc)
 		rc = nt_label_set_text(page->filters, nb_buf_cstr(&names));
+
 	if (columns < 76)
 		snprintf(text, sizeof(text), "  Next (est): %lld items · %lld tok",
 			 (long long)cli_history_number(page->report, "active_items"),
@@ -369,8 +404,10 @@ static int cli_history_summary(struct cli_history_view *page)
 			 "  Next turn · estimated history: %lld tokens / %lld limit",
 			 (long long)cli_history_number(page->report, "history_tokens"),
 			 (long long)cli_history_number(page->report, "context_limit"));
+
 	if (!rc)
 		rc = nt_label_set_text(page->budget, text);
+
 	if (!rc)
 		rc = nt_label_set_text(
 			page->scope, cJSON_IsTrue(cJSON_GetObjectItem(page->report, "needs_repair"))
@@ -380,10 +417,12 @@ static int cli_history_summary(struct cli_history_view *page)
 					     ? "  History only; prompt/tools are extra."
 					     : "  History only; instructions, tools and new input "
 					       "are additional.");
+
 	snprintf(text, sizeof(text), "  ENTRY / ACTIVITY%*sNEXT TURN",
 		 columns > 37 ? columns - 37 : 0, "");
 	if (!rc)
 		rc = nt_label_set_text(page->heading, text);
+
 	return rc;
 }
 
@@ -393,6 +432,7 @@ static int cli_history_range(struct cli_history_view *page)
 	int rc = nt_document_view_visible_lines(page->document_view, &first, &count, &total);
 	if (rc)
 		return rc;
+
 	char range[128];
 	snprintf(range, sizeof(range), "  Lines %zu–%zu of %zu", first + 1, first + count, total);
 	return nt_label_set_text(page->range, range);
@@ -457,6 +497,7 @@ static int cli_history_focus(struct cli_history_view *page)
 	int rc = nt_view_flush_state(&page->base.base);
 	if (rc || nt_component_state_get_bool(page->small))
 		return rc;
+
 	int64_t mode = nt_component_state_get_int(page->mode);
 	return nt_view_focus(mode == HISTORY_SEARCH  ? page->query
 			     : mode >= HISTORY_ENTRY ? page->document_view
@@ -470,6 +511,7 @@ static int cli_history_set_mode(struct cli_history_view *page, enum cli_history_
 	if (!rc)
 		rc = nt_text_field_set_prompt(page->query,
 					      mode == HISTORY_SEARCH ? "  Search: " : "  / ");
+
 	return rc ? rc : cli_history_focus(page);
 }
 
@@ -478,12 +520,15 @@ static int cli_history_reload(struct cli_history_view *page, size_t selected)
 	int rc = cli_history_filter(page);
 	if (!rc)
 		rc = nt_list_view_set_source(page->list, page->matches.len, cli_history_row, page);
+
 	if (!rc && page->matches.len)
 		rc = nt_list_view_select(page->list, selected < page->matches.len
 							     ? selected
 							     : page->matches.len - 1);
+
 	if (!rc)
 		rc = cli_history_summary(page);
+
 	return rc ? rc : cli_history_focus(page);
 }
 
@@ -492,8 +537,10 @@ static int cli_history_open_document(struct cli_history_view *page, enum cli_his
 	int rc = cli_history_document(page, mode);
 	if (!rc)
 		rc = nt_document_view_set_text(page->document_view, nb_buf_cstr(&page->document));
+
 	if (!rc)
 		rc = cli_history_set_mode(page, mode);
+
 	return rc ? rc : cli_history_range(page);
 }
 
@@ -502,12 +549,16 @@ static int cli_history_action(void *data, const struct nt_view_event *event)
 	struct cli_history_view *page = data;
 	if (event->type == NT_VIEW_EVENT_ACTIVATE)
 		return cli_history_open_document(page, HISTORY_ENTRY);
+
 	if (event->type == NT_VIEW_EVENT_CHANGED)
 		return cli_history_reload(page, 0);
+
 	if (event->type == NT_VIEW_EVENT_SUBMIT)
 		return cli_history_set_mode(page, HISTORY_LIST);
+
 	if (event->type == NT_VIEW_EVENT_SCROLLED || event->type == NT_VIEW_EVENT_SIZE_CHANGED)
 		return cli_history_range(page);
+
 	return 0;
 }
 
@@ -519,12 +570,14 @@ static int cli_history_key(void *data, const struct nt_view_event *key)
 	int value = event->key;
 	if (event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return 0;
+
 	int rc = 0;
 	if (value == 3 || value == 4) {
 		rc = nt_view_controller_dismiss(nt_view_controller(&page->base.base), 0);
 	} else if (mode == HISTORY_SEARCH) {
 		if (value != 27 && value != '\r' && value != '\n')
 			return 0;
+
 		rc = cli_history_set_mode(page, HISTORY_LIST);
 	} else if (value == 27 || value == 'q') {
 		if (mode == HISTORY_LIST)
@@ -543,6 +596,7 @@ static int cli_history_key(void *data, const struct nt_view_event *key)
 		rc = cli_history_reload(page, 0);
 	} else
 		return 0;
+
 	return rc ? rc : NT_VIEW_EVENT_STOP;
 }
 
@@ -551,12 +605,15 @@ static int cli_history_size(void *data, const struct nt_view_event *event)
 	struct cli_history_view *page = data;
 	if (event->target != &page->base.base)
 		return 0;
+
 	int rc = nt_component_state_set_int(page->width, event->rect.width);
 	if (!rc)
 		rc = nt_component_state_set_bool(page->small,
 						 event->rect.width < 32 || event->rect.height < 12);
+
 	if (!rc)
 		rc = cli_history_focus(page);
+
 	return rc ? rc : cli_history_summary(page);
 }
 
@@ -576,6 +633,7 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	struct nt_view *root = nt_view_add(builder, NULL, &type, NULL);
 	if (!root)
 		return;
+
 	struct cli_history_view *page = (struct cli_history_view *)root;
 	struct cli_history_source *source = controller->data;
 	page->ctx = source->ctx;
@@ -620,7 +678,8 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	struct nt_view *detail_help = nt_label_add(builder, reader, "", &dim);
 	if (nt_builder_error(builder))
 		return;
-	cli_bind_visible(builder, narrow, page->small);
+
+	cli_panel_show_when(builder, narrow, page->small);
 	nt_builder_fail(builder, nt_view_bind_compute(page->list, NT_PROP_HIDDEN,
 						      cli_history_list_hidden, page->list));
 	nt_builder_fail(builder, nt_view_bind_compute(empty, NT_PROP_HIDDEN,
@@ -653,6 +712,7 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 		return;
 	}
+
 	nt_builder_fail(builder, cli_history_reload(page, SIZE_MAX));
 }
 
@@ -682,6 +742,7 @@ int cli_history_view(struct cli_application *ctx, cJSON *report)
 	struct cli_history_source *source = calloc(1, sizeof(*source));
 	if (!source)
 		return NB_ERR_NOMEM;
+
 	source->ctx = ctx;
 	source->report = cJSON_Duplicate(report, 1);
 	int accepted = 0;
@@ -689,6 +750,7 @@ int cli_history_view(struct cli_application *ctx, cJSON *report)
 			      : NB_ERR_NOMEM;
 	if (!accepted)
 		cli_history_close(source, rc);
+
 	return rc;
 }
 
@@ -725,10 +787,12 @@ void cli_history_print(struct cli_application *ctx, const cJSON *report, int lim
 			     ? 0
 			     : NB_ERR_NOMEM) != 0)
 			break;
+
 		(void)cli_output_print_untrusted(ctx, nb_buf_cstr(&line),
 						 MORPH_TERMINAL_TEXT_SINGLE_LINE);
 		cli_output_putchar(ctx, '\n');
 	}
+
 	nb_buf_cleanup(&line);
 	cli_output_printf(
 		ctx,
@@ -745,6 +809,7 @@ int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, in
 
 	if (rc != 0)
 		return rc;
+
 	rc = NB_ERR_NOT_FOUND;
 	cJSON_ArrayForEach (entry, cJSON_GetObjectItemCaseSensitive(report, "entries")) {
 		if (cli_history_number(entry, "sequence_no") == sequence) {
@@ -755,8 +820,10 @@ int cli_history_entry_print(struct cli_application *ctx, const cJSON *report, in
 	if (rc == 0)
 		(void)cli_output_print_untrusted(ctx, nb_buf_cstr(&text),
 						 MORPH_TERMINAL_TEXT_MULTILINE);
+
 	if (rc == 0)
 		cli_output_putchar(ctx, '\n');
+
 	nb_buf_cleanup(&text);
 	return rc;
 }
@@ -768,12 +835,15 @@ int cli_history_request_print(struct cli_application *ctx)
 
 	if (rc != 0)
 		return rc;
+
 	rc = cli_history_request_document(ctx, &text);
 	if (rc == 0)
 		(void)cli_output_print_untrusted(ctx, nb_buf_cstr(&text),
 						 MORPH_TERMINAL_TEXT_MULTILINE);
+
 	if (rc == 0)
 		cli_output_putchar(ctx, '\n');
+
 	nb_buf_cleanup(&text);
 	return rc;
 }

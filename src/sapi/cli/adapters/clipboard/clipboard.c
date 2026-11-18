@@ -13,7 +13,7 @@
 #include <nb/random.h>
 #include <nb/encoding.h>
 #include <nb/utf8.h>
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include <morph/tui/terminal/text.h>
 
 #include <fcntl.h>
@@ -40,6 +40,7 @@ static int cli_clipboard_read_backend(const char *const argv[], nb_buf *text, in
 	int rc = nb_process_spawn(&options, &child, NULL);
 	if (rc)
 		return rc;
+
 	int64_t remaining = deadline - nb_time_monotonic_ms();
 	bool truncated = false;
 	nb_process_exchange_options exchange = {
@@ -53,24 +54,32 @@ static int cli_clipboard_read_backend(const char *const argv[], nb_buf *text, in
 	rc = nb_process_exchange(child, NULL, 0, &exchange, &output, &errors, &code, NULL);
 	if (rc)
 		return rc;
+
 	if (code)
 		return code == 127 ? NB_ERR_NOT_FOUND : NB_ERR_IO;
+
 	if (truncated)
 		return NB_ERR_TOO_BIG;
+
 	if (!output.len)
 		return NB_ERR_NO_DATA;
+
 	if (memchr(output.ptr, '\0', output.len) ||
 	    nb_utf8_validate(nb_buf_str(&output), NULL) != NB_UTF8_OK)
 		return NB_ERR_FORMAT;
+
 	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
 		output.ptr, output.len, MORPH_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)
 		return NB_ERR_NOMEM;
+
 	nb_buf_clear(&output);
 	if (!nb_buf_append_cstr(&output, safe))
 		return NB_ERR_NOMEM;
+
 	if (!output.len)
 		return NB_ERR_NO_DATA;
+
 	nb_buf_move(text, &output);
 	return 0;
 }
@@ -79,6 +88,7 @@ int cli_clipboard_read_text(nb_buf *text)
 {
 	if (!text)
 		return NB_ERR_INVAL;
+
 	int64_t deadline = nb_time_monotonic_ms() + CLI_CLIPBOARD_COPY_TIMEOUT_MS;
 #ifdef __APPLE__
 	const char *argv[] = {"pbpaste", "-Prefer", "txt", NULL};
@@ -97,6 +107,7 @@ int cli_clipboard_read_text(nb_buf *text)
 		    nb_time_monotonic_ms() >= deadline)
 			break;
 	}
+
 	return rc;
 #endif
 }
@@ -115,6 +126,7 @@ static int cli_clipboard_write_text(const char *const argv[], const char *text, 
 	int rc = nb_process_spawn(&options, &child, NULL);
 	if (rc != NB_OK)
 		return rc;
+
 	int64_t remaining = deadline - nb_time_monotonic_ms();
 	nb_process_exchange_options exchange = {
 		.timeout_ms = remaining > 0 ? (int)remaining : 1,
@@ -127,6 +139,7 @@ static int cli_clipboard_write_text(const char *const argv[], const char *text, 
 				 NULL);
 	if (rc == NB_OK && code != 0)
 		return code == 127 ? NB_ERR_NOT_FOUND : NB_ERR_IO;
+
 	return rc;
 }
 
@@ -149,6 +162,7 @@ static int cli_clipboard_native_text(const char *text)
 		if (!rc || nb_time_monotonic_ms() >= deadline)
 			break;
 	}
+
 	return rc;
 #endif
 }
@@ -170,11 +184,14 @@ static int cli_clipboard_terminal_text(struct cli_application *ctx, const char *
 
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE || !isatty(STDOUT_FILENO))
 		return NB_ERR_UNSUPPORTED;
+
 	if (strlen(text) > CLI_CLIPBOARD_OSC52_MAX_BYTES)
 		return NB_ERR_TOO_BIG;
+
 	if (nb_base64_encode((const unsigned char *)text, strlen(text), NB_B64_STD, true,
 			     &encoded_bytes, NULL) != NB_OK)
 		return NB_ERR_NOMEM;
+
 	encoded = nb_buf_cstr(&encoded_bytes);
 	rc = (nb_buf_init(&sequence),
 	      nb_buf_reserve(&sequence, strlen(encoded) + 32) ? 0 : NB_ERR_NOMEM);
@@ -191,8 +208,10 @@ static int cli_clipboard_terminal_text(struct cli_application *ctx, const char *
 			    fflush(stdout) != 0)
 				rc = errno ? nb_status_from_errno(errno, NULL) : NB_ERR_IO;
 		}
+
 		nb_buf_cleanup(&sequence);
 	}
+
 	return rc;
 }
 
@@ -200,8 +219,10 @@ int cli_clipboard_copy_text(struct cli_application *ctx, const char *text)
 {
 	if (!ctx || !text)
 		return NB_ERR_INVAL;
+
 	if (!text[0])
 		return NB_ERR_NO_DATA;
+
 	int native = cli_clipboard_native_text(text);
 	int terminal = NB_ERR_UNSUPPORTED;
 
@@ -210,10 +231,13 @@ int cli_clipboard_copy_text(struct cli_application *ctx, const char *text)
 	    cli_clipboard_environment("SSH_CONNECTION") || cli_clipboard_environment("SSH_TTY") ||
 	    cli_clipboard_environment("SSH_CLIENT"))
 		terminal = cli_clipboard_terminal_text(ctx, text);
+
 	if (!native)
 		return CLI_CLIPBOARD_COPIED;
+
 	if (!terminal)
 		return CLI_CLIPBOARD_REQUESTED;
+
 	return terminal == NB_ERR_UNSUPPORTED ? native : terminal;
 }
 
@@ -221,12 +245,14 @@ static int cli_clipboard_run(const char *const argv[], const char *stdout_path)
 {
 	if (!argv || !argv[0])
 		return NB_ERR_INVAL;
+
 	int output_fd = -1;
 	if (stdout_path) {
 		output_fd = open(stdout_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 		if (output_fd < 0)
 			return nb_status_from_errno(errno, NULL);
 	}
+
 	nb_process_options options = {
 		.argv = argv,
 		.search_path = true,
@@ -240,8 +266,10 @@ static int cli_clipboard_run(const char *const argv[], const char *stdout_path)
 	int rc = nb_process_spawn(&options, &child, NULL);
 	if (output_fd >= 0)
 		close(output_fd);
+
 	if (rc != NB_OK)
 		return rc;
+
 	int code = 0;
 	rc = nb_process_wait(child, -1, &code, NULL, NULL);
 	return rc != NB_OK ? rc : code == 0 ? NB_OK : NB_ERR_NOT_FOUND;
@@ -262,13 +290,16 @@ static int cli_clipboard_output_path(struct cli_application *ctx, char **out_pat
 
 	if (!ctx || !ctx->runtime || !out_path)
 		return NB_ERR_INVAL;
+
 	*out_path = NULL;
 	config = runtime_config_borrow(ctx->runtime);
 	if (!config || !config->general.output_dir[0])
 		return MORPH_ERR_NOT_CONFIGURED;
+
 	rc = nb_file_mkdir(config->general.output_dir, true, NULL);
 	if (rc != 0)
 		return rc;
+
 	rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
 				: !(nb_buf_clear(&file_value_1),
 				    nb_buf_append_cstr(&file_value_1, "clipboard_"))
@@ -281,17 +312,20 @@ static int cli_clipboard_output_path(struct cli_application *ctx, char **out_pat
 		      : file_status_1);
 	if (rc != 0)
 		return rc;
+
 	filename = (nb_buf_clear(&file_value_2), nb_buf_printf(&file_value_2, "%s%s", id, ".png")
 							 ? strdup(nb_buf_cstr(&file_value_2))
 							 : NULL);
 	if (!filename)
 		return NB_ERR_NOMEM;
+
 	path = (nb_path_concat(&file_value_3, config->general.output_dir, filename) == NB_OK
 			? strdup(nb_buf_cstr(&file_value_3))
 			: NULL);
 	free(filename);
 	if (!path)
 		return NB_ERR_NOMEM;
+
 	*out_path = path;
 	return 0;
 }
@@ -325,6 +359,7 @@ static int cli_clipboard_save_platform_image(const char *png_path)
 			     : NULL);
 	if (!tiff_path)
 		return NB_ERR_NOMEM;
+
 	osascript_argv[0] = "osascript";
 	osascript_argv[1] = "-e";
 	osascript_argv[2] = script;
@@ -342,10 +377,12 @@ static int cli_clipboard_save_platform_image(const char *png_path)
 		sips_argv[7] = NULL;
 		rc = cli_clipboard_run(sips_argv, "/dev/null");
 	}
+
 	(void)unlink(tiff_path);
 	free(tiff_path);
 	if (rc != 0)
 		return rc;
+
 	return 0;
 }
 
@@ -361,8 +398,10 @@ static int cli_clipboard_save_platform_image(const char *png_path)
 	rc = cli_clipboard_run(wl_paste_argv, png_path);
 	if (rc != 0)
 		rc = cli_clipboard_run(xclip_argv, png_path);
+
 	if (rc != 0)
 		return rc;
+
 	return 0;
 }
 
@@ -378,17 +417,21 @@ int cli_clipboard_save_image(struct cli_application *ctx, char **out_path)
 
 	if (!out_path)
 		return NB_ERR_INVAL;
+
 	if (*out_path)
 		return NB_ERR_EXISTS;
+
 	rc = cli_clipboard_output_path(ctx, &path);
 	if (rc != 0)
 		return rc;
+
 	rc = cli_clipboard_save_platform_image(path);
 	if (rc != 0 || !stbi_info(path, &width, &height, &channels)) {
 		(void)unlink(path);
 		free(path);
 		return rc != 0 ? rc : NB_ERR_FORMAT;
 	}
+
 	*out_path = path;
 	return 0;
 }

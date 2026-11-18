@@ -10,7 +10,7 @@
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 
 static int cli_ext_origin_rank(enum tool_origin origin)
 {
@@ -54,8 +54,10 @@ static int cli_ext_tool_compare(const void *left, const void *right)
 
 	if (a->group != b->group)
 		return a->group - b->group;
+
 	if (a->enabled != b->enabled)
 		return b->enabled - a->enabled;
+
 	return strcmp(a->name, b->name);
 }
 
@@ -63,10 +65,12 @@ static void cli_ext_tool_rows_cleanup(struct cli_tool_list_row *rows, size_t cou
 {
 	if (!rows)
 		return;
+
 	for (size_t i = 0; i < count; i++) {
 		free((char *)rows[i].name);
 		free((char *)rows[i].description);
 	}
+
 	free(rows);
 }
 
@@ -83,9 +87,11 @@ static int cli_ext_collect_tools(struct cli_application *ctx,
 	*enabled_count = 0;
 	if (count <= 0)
 		return 0;
+
 	rows = calloc((size_t)count, sizeof(*rows));
 	if (!rows)
 		return NB_ERR_NOMEM;
+
 	for (int i = 0; i < count; i++) {
 		struct tool_desc desc;
 		enum tool_origin origin;
@@ -94,12 +100,15 @@ static int cli_ext_collect_tools(struct cli_application *ctx,
 		rc = runtime_tool_info_borrow(ctx->runtime, i, &desc);
 		if (rc != 0)
 			break;
+
 		rc = runtime_tool_enabled(ctx->runtime, i, &enabled);
 		if (rc != 0)
 			break;
+
 		rc = runtime_tool_origin(ctx->runtime, i, &origin);
 		if (rc != 0)
 			break;
+
 		rows[i].group = cli_ext_origin_rank(origin);
 		rows[i].enabled = enabled;
 		rows[i].name = strdup(desc.name);
@@ -108,13 +117,16 @@ static int cli_ext_collect_tools(struct cli_application *ctx,
 			rc = NB_ERR_NOMEM;
 			break;
 		}
+
 		if (enabled)
 			(*enabled_count)++;
 	}
+
 	if (rc != 0) {
 		cli_ext_tool_rows_cleanup(rows, (size_t)count);
 		return rc;
 	}
+
 	qsort(rows, (size_t)count, sizeof(*rows), cli_ext_tool_compare);
 	*out = rows;
 	*count_out = (size_t)count;
@@ -136,16 +148,19 @@ static int cli_ext_print_tools(struct cli_application *ctx)
 	rc = cli_ext_collect_tools(ctx, &rows, &row_count, &enabled_count);
 	if (rc != 0)
 		return rc;
+
 	for (size_t i = 0; i < row_count && group_count < 5; i++) {
 		int group = rows[i].group;
 
 		if (group == last_group)
 			continue;
+
 		last_group = group;
 		groups[group_count].name = group_names[group];
 		groups[group_count].id = group;
 		group_count++;
 	}
+
 	rc = cli_tool_list_render(ctx, rows, row_count, groups, group_count, enabled_count);
 	cli_ext_tool_rows_cleanup(rows, row_count);
 	return rc;
@@ -162,11 +177,14 @@ static int cli_ext_find_tool_index(struct cli_application *ctx, const char *name
 		if (runtime_tool_info_borrow(ctx->runtime, i, &desc) != 0 ||
 		    strcmp(desc.name, name) != 0)
 			continue;
+
 		if (runtime_tool_origin(ctx->runtime, i, origin) != 0 ||
 		    runtime_tool_flags(ctx->runtime, i, flags) != 0)
 			return NB_ERR_IO;
+
 		return i;
 	}
+
 	return NB_ERR_NOT_FOUND;
 }
 
@@ -184,11 +202,14 @@ static int cli_ext_print_info(struct cli_application *ctx, const char *name)
 		CMD_ERROR(ctx, "tool not found: %s", name);
 		return NB_ERR_NOT_FOUND;
 	}
+
 	index = cli_ext_find_tool_index(ctx, name, &origin, &flags);
 	if (index < 0)
 		return index;
+
 	if (runtime_tool_enabled(ctx->runtime, index, &enabled) != 0)
 		return NB_ERR_IO;
+
 	CMD_HEADER(ctx, "Tool %s", desc.name);
 	cli_list_value_field(ctx, "Status", enabled ? CLI_FEED_DONE " enabled"
 						 : CLI_FEED_PENDING " disabled", 0, 12, columns);
@@ -201,8 +222,10 @@ static int cli_ext_print_info(struct cli_application *ctx, const char *name)
 	if (desc.input_schema[0])
 		cli_list_json_field(ctx, "Input schema", desc.input_schema, !desc.output_schema[0],
 				    columns);
+
 	if (desc.output_schema[0])
 		cli_list_json_field(ctx, "Output schema", desc.output_schema, 1, columns);
+
 	return 0;
 }
 
@@ -212,14 +235,17 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 	if (sub && strcmp(sub, "list") == 0) {
 		return cli_ext_print_tools(ctx);
 	}
+
 	if (sub && strcmp(sub, "info") == 0) {
 		const char *name = cli_cmd_arg_borrow(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR(ctx, "usage: /ext info <name>");
 			return NB_ERR_INVAL;
 		}
+
 		return cli_ext_print_info(ctx, name);
 	}
+
 	if (sub && strcmp(sub, "install") == 0) {
 		const char *source = cli_cmd_arg_borrow(argc, argv, 2);
 		int yes = 0;
@@ -227,10 +253,12 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 			if (strcmp(argv[i], "--yes") == 0 || strcmp(argv[i], "-y") == 0)
 				yes = 1;
 		}
+
 		if (!source) {
 			CMD_ERROR(ctx, "usage: /ext install <github-source-or-tree-url> [--yes]");
 			return NB_ERR_INVAL;
 		}
+
 		struct ext_install_options opts;
 		memset(&opts, 0, sizeof(opts));
 		const struct config *config = runtime_config_borrow(ctx->runtime);
@@ -245,23 +273,29 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
+
 		CMD_OK(ctx, "installed ext %s to %s", res.name, res.path);
 		if (res.resolved_ref[0])
 			cli_output_printf(ctx, "  resolved_ref: %s\n", res.resolved_ref);
+
 		return 0;
 	}
+
 	if (sub && strcmp(sub, "remove") == 0) {
 		CMD_ERROR(ctx, "ext remove not yet implemented (M4)");
 		return 0;
 	}
+
 	if (sub && strcmp(sub, "enable") == 0) {
 		CMD_ERROR(ctx, "ext enable not yet implemented (M4)");
 		return 0;
 	}
+
 	if (sub && strcmp(sub, "disable") == 0) {
 		CMD_ERROR(ctx, "ext disable not yet implemented (M4)");
 		return 0;
 	}
+
 	return cli_ext_print_tools(ctx);
 }
 

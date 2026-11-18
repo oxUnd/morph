@@ -31,21 +31,25 @@ int cli_media_attach_image(struct cli_application *ctx, const char *path)
 
 	if (!ctx || !path || !path[0])
 		return NB_ERR_INVAL;
+
 	expanded = ((expand_status_1 = nb_path_expand(&file_value_1, path, NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_1))
 			    : NULL);
 	if (!expanded)
 		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
+
 	if (!nb_file_exists(expanded)) {
 		CMD_ERROR(ctx, "file not found: %s", expanded);
 		free(expanded);
 		return NB_ERR_NOT_FOUND;
 	}
+
 	if (!stbi_info(expanded, &w, &h, &ch)) {
 		CMD_ERROR(ctx, "not a valid image file: %s", expanded);
 		free(expanded);
 		return NB_ERR_FORMAT;
 	}
+
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
 	ctx->image_path[sizeof(ctx->image_path) - 1] = '\0';
 	config = runtime_config_borrow(ctx->runtime);
@@ -65,6 +69,7 @@ static int cli_media_command_image(struct cli_application *ctx, int argc, char *
 		CMD_ERROR(ctx, "usage: /image <file_path>");
 		return NB_ERR_INVAL;
 	}
+
 	return cli_media_attach_image(ctx, path);
 }
 
@@ -74,6 +79,7 @@ static int cli_media_path_is_video(const char *path)
 
 	if (!ext)
 		return 0;
+
 	ext++;
 	return strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
 	       strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
@@ -89,6 +95,7 @@ static int cli_media_play_video(struct cli_application *ctx, const char *path)
 		CMD_ERROR(ctx, "failed to play video: %s", path);
 		return NB_ERR_IO;
 	}
+
 	cli_turn_record_media_credits(ctx, "video_input", 0, 1, config->models.video.provider,
 				      config->models.video.model, "{\"estimated\":true}");
 	CMD_OK(ctx, "video loaded: %s", path);
@@ -111,25 +118,30 @@ int cli_media_handle_path(struct cli_application *ctx, const char *input, int *h
 
 	if (!ctx || !input || !handled)
 		return NB_ERR_INVAL;
+
 	*handled = 0;
 	copy = strdup(input);
 	if (!copy)
 		return NB_ERR_NOMEM;
+
 	argc = cli_argv_split(copy, argv, 3);
 	if (argc != 1) {
 		free(copy);
 		return 0;
 	}
+
 	expanded = ((expand_status_2 = nb_path_expand(&file_value_2, argv[0], NULL)) == NB_OK
 			    ? strdup(nb_buf_cstr(&file_value_2))
 			    : NULL);
 	free(copy);
 	if (!expanded)
 		return expand_status_2 != NB_OK ? expand_status_2 : NB_ERR_NOMEM;
+
 	if (!nb_file_exists(expanded)) {
 		free(expanded);
 		return 0;
 	}
+
 	if (stbi_info(expanded, &width, &height, &channels)) {
 		*handled = 1;
 		rc = cli_media_attach_image(ctx, expanded);
@@ -137,9 +149,11 @@ int cli_media_handle_path(struct cli_application *ctx, const char *input, int *h
 		*handled = 1;
 		rc = cli_media_play_video(ctx, expanded);
 	}
+
 	free(expanded);
 	if (rc != 0)
 		return rc;
+
 	return 0;
 }
 static int cli_media_command_render(struct cli_application *ctx, int argc, char **argv)
@@ -153,6 +167,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 		CMD_ERROR(ctx, "usage: /render <file_path>");
 		return NB_ERR_INVAL;
 	}
+
 	char *expanded = (nb_path_expand(&file_value_3, path, NULL) == NB_OK
 				  ? strdup(nb_buf_cstr(&file_value_3))
 				  : NULL);
@@ -161,9 +176,11 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 		free(expanded);
 		return NB_ERR_NOT_FOUND;
 	}
+
 	const char *ext = strrchr(expanded, '.');
 	if (ext)
 		ext++;
+
 	if (ext && (strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
 		    strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
 		    strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0)) {
@@ -174,6 +191,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 			free(expanded);
 			return NB_ERR_IO;
 		}
+
 		CMD_OK(ctx, "video: %s", expanded);
 	} else if (ext && (strcasecmp(ext, "png") == 0 || strcasecmp(ext, "jpg") == 0 ||
 			   strcasecmp(ext, "jpeg") == 0 || strcasecmp(ext, "gif") == 0 ||
@@ -185,6 +203,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 			free(expanded);
 			return NB_ERR_FORMAT;
 		}
+
 		if (cli_chat_active(ctx)) {
 			int rc = cli_chat_media(ctx, "image", expanded);
 			if (rc) {
@@ -195,6 +214,7 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 			(void)cli_output_result_begin(ctx);
 			image_render_terminal(ctx ? ctx->logger : NULL, expanded);
 		}
+
 		CMD_OK(ctx, "image: %s (%dx%d)", expanded, w, h);
 	} else {
 		size_t len = 0;
@@ -211,12 +231,15 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 			free(expanded);
 			return NB_ERR_IO;
 		}
+
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 			cli_output_printf(ctx, "%s", text);
 		else
 			cli_markdown_render_ansi(ctx, text);
+
 		free(text);
 	}
+
 	free(expanded);
 	return 0;
 }

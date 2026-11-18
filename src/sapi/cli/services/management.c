@@ -40,6 +40,7 @@ int cli_management_copy_arg(char *dst, size_t cap, const char *src)
 {
 	if (strlen(src) >= cap)
 		return NB_ERR_TOO_BIG;
+
 	memcpy(dst, src, strlen(src) + 1);
 	return 0;
 }
@@ -64,6 +65,7 @@ int cli_management_run(const char *dir, char *const argv[], nb_buf *output)
 	int rc = nb_process_spawn(&options, &child, NULL);
 	if (rc != NB_OK)
 		return rc;
+
 	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf discarded NB_CLEANUP(nb_buf_destroy) = {0};
 	int code = 0;
@@ -71,6 +73,7 @@ int cli_management_run(const char *dir, char *const argv[], nb_buf *output)
 				 NULL);
 	if (rc != NB_OK)
 		return rc;
+
 	return code == 0 ? NB_OK : MORPH_ERR_PROCESSING;
 }
 
@@ -80,11 +83,13 @@ int cli_management_lock(const char *path)
 
 	if (fd < 0)
 		return nb_status_from_errno(errno, NULL);
+
 	if (flock(fd, LOCK_EX) != 0) {
 		int error = nb_status_from_errno(errno, NULL);
 
 		close(fd);
 		return error;
 	}
+
 	return fd;
 }

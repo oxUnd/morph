@@ -24,6 +24,7 @@ static void cli_renderer_preview_cleanup(char **owner)
 {
 	if (*owner)
 		unlink(*owner);
+
 	nb_charp_cleanup(owner);
 }
 
@@ -32,19 +33,23 @@ int cli_renderer_media_asset_create_copy(const char *type, const char *path,
 {
 	if (!type || !path || !*path || !out || *out)
 		return NB_ERR_INVAL;
+
 	char *preview NB_CLEANUP(cli_renderer_preview_cleanup) = NULL;
 	if (!strcmp(type, "video")) {
 		int rc = video_preview_create_copy(path, &preview);
 		if (rc)
 			return rc;
+
 		path = preview;
 	} else if (strcmp(type, "image"))
 		return NB_ERR_UNSUPPORTED;
+
 	int width = 0, height = 0, channels = 0;
 	unsigned char *pixels NB_CLEANUP(cli_renderer_pixels_cleanup) =
 		image_load_bounded_copy(path, &width, &height, &channels, 4);
 	if (!pixels)
 		return NB_ERR_FORMAT;
+
 	return nt_media_asset_create_rgba(out, pixels, width, height);
 }
 
@@ -63,8 +68,10 @@ void cli_renderer_media(const char *type, const char *path, void *user)
 	if (ctx && ctx->presenter && path && path[0]) {
 		if (nb_map_has_cstr(ctx->presenter->rendered_artifacts, path))
 			return;
+
 		(void)nb_map_put_cstr(ctx->presenter->rendered_artifacts, path, (void *)1, NULL);
 	}
+
 	if (strcmp(type, "image") == 0) {
 		image_render_terminal(ctx ? ctx->logger : NULL, path);
 	} else if (strcmp(type, "video") == 0) {

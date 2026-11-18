@@ -30,6 +30,7 @@ void cli_confirm_prompt_show(struct cli_application *ctx, enum cli_confirm_promp
 				  "project: " ANSI_RESET);
 		break;
 	}
+
 	fflush(stdout);
 }
 

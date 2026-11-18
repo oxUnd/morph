@@ -17,6 +17,7 @@ int cli_tool_patch_preview(const struct cli_transcript_tool *tool, const char *w
 	if (!tool || !preview || !workdir || !*workdir || tool->historical ||
 	    strcmp(tool->name, "apply_patch") != 0)
 		return NB_ERR_NOT_FOUND;
+
 	args = cJSON_Parse(tool->args);
 	input = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "input"));
 	rc = input ? patch_preview(workdir, input, preview, error, sizeof(error)) : NB_ERR_INVAL;

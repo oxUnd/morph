@@ -25,7 +25,7 @@ cli/
     turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
-  components/                   feed, transcript, banner, list and shell styling
+  components/                  NT views for the composer, messages, reports, lists and panels
   commands/                    options, slash actions, registry and management entry points
   services/
     command_job, event_queue   workers, owner calls and wakeup bridge
@@ -73,16 +73,18 @@ Unicode transcript. It also checks that the oldest and newest records remain
 reachable, drafts survive scrolling and resize, and replay does not add records.
 The CI case uses 1,000 turns and has no machine-dependent timing threshold.
 
-`components/feed_block` and the stateless append formatters remain adapters for
-legacy renderers, child transcript documents, fixtures and non-retained consumers.
-Their trailing-newline helper is a text-output compatibility policy, not a View
-layout engine. Keep new interactive feed content on the retained component path.
+`presentation/feed` owns streaming terminal output. `presentation/feed_block`
+formats blocks for child transcripts and other text consumers and routes
+interactive blocks to the chat page. The page mounts NT components, whose
+margin and padding determine layout. Shared banner, list, plan and notice
+formatting lives in `presentation/`.
 Plain and JSON modes retain their separate output contracts.
 
-The full-screen agents browser follows the same boundary: `components/agents_browser`
-owns responsive split/stacked layout, filters, selection and detail scrolling.
-It consumes borrowed snapshots and performs no runtime calls. The subagents page
-owns snapshot refresh, selection identity and navigation to agent conversations.
+The full-screen `components/agents_browser` owns its split and stacked layouts,
+filters, selection and detail scrolling. It indexes the borrowed snapshot once
+per change so the native list can look up a visible row directly. The subagents
+page refreshes snapshots, preserves the selected agent by ID and opens its
+conversation.
 
 ## Execution and teardown
 
@@ -195,7 +197,7 @@ to the primary conversation. Noninteractive `/agents` retains text snapshots.
 Selecting a child replaces the visible feed with that child's full-width
 conversation in an alternate terminal screen; Escape returns directly to the
 primary feed. `pages/subagents` owns navigation and follow-up input,
-`models/subagents` reduces ordered child events, `components/subagents` composes
+`models/subagents` reduces ordered child events, `presentation/subagents` composes
 shared feed messages and tool rows, and `services/agents` enters the runtime
 facade. Snapshot/live sequence frontiers prevent duplicate replay; child events
 never enter the primary reducer. Shared message presentation retains user boxes,

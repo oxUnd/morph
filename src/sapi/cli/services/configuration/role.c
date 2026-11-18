@@ -33,6 +33,7 @@ int cli_setup_role_find(const char *id)
 	for (int i = 0; id && i < CLI_SETUP_ROLE_COUNT; i++)
 		if (strcmp(cli_setup_role_get(i).id, id) == 0)
 			return i;
+
 	return CLI_SETUP_GENERAL;
 }
 
@@ -53,6 +54,7 @@ int cli_setup_role_render_copy(int role, char **out)
 	int rc = morph_data_find(root, sizeof(root), "prompts");
 	if (rc != 0)
 		return rc;
+
 	snprintf(entry, sizeof(entry), "scenarios/%s.txt", selected.id);
 	return morph_prompt_template_render_file(
 		root, entry, variables, sizeof(variables) / sizeof(variables[0]), out, NULL);

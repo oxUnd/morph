@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/presenter.h"
+#include <morph/tui/terminal/report.h>
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/pages/chat.h"
@@ -17,15 +18,15 @@
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/feed_block.h"
-#include "sapi/cli/components/plan.h"
-#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/feed_block.h"
+#include "sapi/cli/presentation/plan.h"
+#include "sapi/cli/presentation/transcript.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/jobs.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 #include "agent/patch.h"
 #include <nothing/tui/view.h>
 
@@ -52,9 +53,11 @@ static char *cli_presenter_safe_dup(const char *text, size_t max_bytes,
 
 	if (!text)
 		return NULL;
+
 	safe = morph_terminal_sanitize_dup(text, strlen(text), mode, NULL);
 	if (!safe)
 		return NULL;
+
 	limited = nb_utf8_ellipsize_bytes(safe, max_bytes);
 	free(safe);
 	return limited;
@@ -68,6 +71,7 @@ static void cli_presenter_print_safe_inline(struct cli_application *ctx, const c
 
 	if (!safe)
 		return;
+
 	cli_output_printf(ctx, "%s", safe);
 	free(safe);
 }
@@ -77,16 +81,20 @@ void cli_presentation_command_input(struct cli_application *ctx, const char *tex
 {
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE || !text || text[0] != '/')
 		return;
+
 	if (cli_chat_active(ctx)) {
 		(void)cli_chat_command_input(ctx, text);
 		ctx->output.command_result_pending = 1;
 		return;
 	}
+
 	if (cli_output_color_enabled(ctx))
 		cli_output_printf(ctx, ANSI_RESET CLI_COMMAND_COLOR);
+
 	cli_presenter_print_safe_inline(ctx, text, SIZE_MAX);
 	if (cli_output_color_enabled(ctx))
 		cli_output_printf(ctx, ANSI_RESET);
+
 	cli_output_putchar(ctx, '\n');
 	ctx->output.command_result_pending = 1;
 }
@@ -96,13 +104,16 @@ void cli_presentation_command_end(struct cli_application *ctx)
 {
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+
 	ctx->output.command_result_pending = 0;
 	if (cli_chat_active(ctx)) {
 		cli_chat_command_end(ctx);
 		return;
 	}
+
 	if (cli_output_color_enabled(ctx))
 		cli_output_printf(ctx, ANSI_RESET);
+
 	cli_output_putchar(ctx, '\n');
 }
 
@@ -111,10 +122,12 @@ void cli_presentation_user_input(struct cli_application *ctx, const char *text)
 {
 	if (!ctx || !text || !*text)
 		return;
+
 	if (cli_chat_active(ctx)) {
 		(void)cli_chat_message(ctx, CLI_MESSAGE_USER, text);
 		return;
 	}
+
 	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct cli_message_style style = {
 		.columns = cli_list_columns(),
@@ -144,6 +157,7 @@ static void cli_presenter_status(struct cli_application *ctx, const char *text)
 {
 	if (!ctx || !text || !text[0])
 		return;
+
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_output_printf(ctx, "status: ");
 		cli_presenter_print_safe_inline(ctx, text, CLI_PRESENTER_EVENT_TEXT_MAX);
@@ -151,8 +165,10 @@ static void cli_presenter_status(struct cli_application *ctx, const char *text)
 		fflush(stdout);
 		return;
 	}
+
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+
 	cli_feed_live_set(ctx, text);
 }
 
@@ -169,6 +185,7 @@ static int cli_presenter_pause_status(struct cli_application *ctx)
 		cli_feed_history_begin(ctx);
 		return 1;
 	}
+
 	cli_presenter_clear_status(ctx);
 	return 0;
 }
@@ -190,6 +207,7 @@ static const char *cli_presenter_event_string(const struct morph_event *ev, cons
 
 	if (!ev || !cJSON_IsObject(ev->data))
 		return NULL;
+
 	item = cJSON_GetObjectItemCaseSensitive(ev->data, name);
 	return cJSON_IsString(item) ? item->valuestring : NULL;
 }
@@ -200,6 +218,7 @@ static int cli_presenter_event_error_code(const struct morph_event *ev)
 
 	if (!ev || !cJSON_IsObject(ev->data))
 		return 0;
+
 	item = cJSON_GetObjectItemCaseSensitive(ev->data, "error_code");
 	return cJSON_IsNumber(item) ? item->valueint : 0;
 }
@@ -210,6 +229,7 @@ static int cli_presenter_event_int(const struct morph_event *ev, const char *nam
 
 	if (!ev || !cJSON_IsObject(ev->data))
 		return 0;
+
 	item = cJSON_GetObjectItemCaseSensitive(ev->data, name);
 	return cJSON_IsNumber(item) ? item->valueint : 0;
 }
@@ -220,9 +240,11 @@ static char *cli_presenter_event_args_json(const struct morph_event *ev)
 
 	if (!ev || !cJSON_IsObject(ev->data))
 		return NULL;
+
 	args = cJSON_GetObjectItemCaseSensitive(ev->data, "args");
 	if (!args)
 		return NULL;
+
 	return cJSON_PrintUnformatted(args);
 }
 
@@ -230,6 +252,7 @@ static cJSON *cli_presenter_event_item(const struct morph_event *ev, const char 
 {
 	if (!ev || !cJSON_IsObject(ev->data))
 		return NULL;
+
 	return cJSON_GetObjectItemCaseSensitive(ev->data, name);
 }
 
@@ -258,10 +281,12 @@ static const char *cli_presenter_tree_wrap_end(const char *text, size_t width, i
 		*has_break = 0;
 		return end;
 	}
+
 	for (const char *p = text; p < end; p++) {
 		if (*p == ' ')
 			space = p;
 	}
+
 	*has_break = space && space > text;
 	return *has_break ? space : end;
 }
@@ -282,14 +307,17 @@ static void cli_presenter_print_tree_string(struct cli_application *ctx, const c
 					 MORPH_TERMINAL_TEXT_SINGLE_LINE);
 	if (!display)
 		return;
+
 	for (char *p = display; *p; p++) {
 		if (*p == '\n' || *p == '\r' || *p == '\t')
 			*p = ' ';
 	}
+
 	label_width = label ? nb_utf8_width_cstr(label) : 0;
 	available = cli_list_columns() - 4 - depth * 2 - (int)label_width - 2;
 	if (available < 8)
 		available = 8;
+
 	line = display;
 	while (*line) {
 		end = cli_presenter_tree_wrap_end(line, (size_t)available, &has_break);
@@ -301,24 +329,29 @@ static void cli_presenter_print_tree_string(struct cli_application *ctx, const c
 								CLI_PRESENTER_TREE_VALUE_MAX);
 				cli_output_printf(ctx, ":" ANSI_RESET " ");
 			}
+
 			first = 0;
 		} else {
 			cli_presenter_print_tree_continuation_prefix(ctx, ancestors_last, depth,
 								     is_last, label_width);
 		}
+
 		if (*end && !has_break)
 			end = morph_terminal_advance_display_width_borrow(line,
 									  (size_t)(available - 1));
+
 		cli_output_printf(ctx, "%.*s", (int)(end - line), line);
 		if (*end && !has_break) {
 			cli_output_printf(ctx, "…\n");
 			break;
 		}
+
 		cli_output_printf(ctx, "\n");
 		line = end;
 		while (*line == ' ')
 			line++;
 	}
+
 	if (first) {
 		cli_presenter_print_tree_prefix(ctx, ancestors_last, depth, is_last);
 		if (label && label[0]) {
@@ -326,8 +359,10 @@ static void cli_presenter_print_tree_string(struct cli_application *ctx, const c
 			cli_presenter_print_safe_inline(ctx, label, CLI_PRESENTER_TREE_VALUE_MAX);
 			cli_output_printf(ctx, ":" ANSI_RESET " ");
 		}
+
 		cli_output_printf(ctx, "\n");
 	}
+
 	free(display);
 }
 
@@ -371,45 +406,53 @@ static void cli_presenter_print_json_tree_node(struct cli_application *ctx, cons
 	if (!cJSON_IsArray(item) && !cJSON_IsObject(item)) {
 		if (cJSON_IsString(item) && depth == embedded_json_depth)
 			embedded = cJSON_Parse(item->valuestring);
+
 		if (cJSON_IsArray(embedded) || cJSON_IsObject(embedded)) {
 			cli_presenter_print_json_tree_node(ctx, embedded, label, depth, is_last,
 							   ancestors_last, collapse_depth, -1);
 			cJSON_Delete(embedded);
 			return;
 		}
+
 		cJSON_Delete(embedded);
 		if (cJSON_IsString(item)) {
 			cli_presenter_print_tree_string(ctx, item->valuestring, label, depth,
 							is_last, ancestors_last);
 			return;
 		}
+
 		cli_presenter_print_tree_prefix(ctx, ancestors_last, depth, is_last);
 		if (label && label[0]) {
 			cli_output_printf(ctx, ANSI_DIM);
 			cli_presenter_print_safe_inline(ctx, label, CLI_PRESENTER_TREE_VALUE_MAX);
 			cli_output_printf(ctx, ":" ANSI_RESET " ");
 		}
+
 		cli_presenter_print_tree_scalar(ctx, item);
 		cli_output_printf(ctx, "\n");
 		return;
 	}
+
 	cli_presenter_print_tree_prefix(ctx, ancestors_last, depth, is_last);
 	if (label && label[0]) {
 		cli_output_printf(ctx, ANSI_DIM);
 		cli_presenter_print_safe_inline(ctx, label, CLI_PRESENTER_TREE_VALUE_MAX);
 		cli_output_printf(ctx, ":" ANSI_RESET);
 	}
+
 	count = cli_presenter_json_child_count(item);
 	if (count == 0) {
 		cli_output_printf(ctx, " %s\n", cJSON_IsArray(item) ? "[]" : "{}");
 		return;
 	}
+
 	if (depth >= collapse_depth) {
 		cli_output_printf(ctx, " ");
 		cli_presenter_print_tree_container_summary(ctx, item);
 		cli_output_printf(ctx, "\n");
 		return;
 	}
+
 	cli_output_printf(ctx, "\n");
 	ancestors_last[depth] = is_last;
 	if (depth + 1 >= CLI_PRESENTER_TREE_DEPTH_MAX) {
@@ -417,6 +460,7 @@ static void cli_presenter_print_json_tree_node(struct cli_application *ctx, cons
 		cli_output_printf(ctx, ANSI_DIM "… nested data" ANSI_RESET "\n");
 		return;
 	}
+
 	shown = count < CLI_PRESENTER_TREE_ITEMS_MAX ? count : CLI_PRESENTER_TREE_ITEMS_MAX;
 	cJSON_ArrayForEach (child, item) {
 		char array_label[32];
@@ -425,18 +469,21 @@ static void cli_presenter_print_json_tree_node(struct cli_application *ctx, cons
 
 		if (index >= shown)
 			break;
+
 		if (cJSON_IsArray(item)) {
 			snprintf(array_label, sizeof(array_label), "[%d]", index);
 			child_label = array_label;
 		} else {
 			child_label = child->string ? child->string : "item";
 		}
+
 		child_last = index == shown - 1 && shown == count;
 		cli_presenter_print_json_tree_node(ctx, child, child_label, depth + 1, child_last,
 						   ancestors_last, collapse_depth,
 						   embedded_json_depth);
 		index++;
 	}
+
 	if (shown < count) {
 		cli_presenter_print_tree_prefix(ctx, ancestors_last, depth + 1, 1);
 		cli_output_printf(ctx, ANSI_DIM "… %d more" ANSI_RESET "\n", count - shown);
@@ -452,6 +499,7 @@ static void cli_presenter_print_json_tree_children(struct cli_application *ctx, 
 
 	if (!cJSON_IsArray(item) && !cJSON_IsObject(item))
 		return;
+
 	count = cli_presenter_json_child_count(item);
 	cJSON_ArrayForEach (child, item) {
 		char array_label[32];
@@ -460,17 +508,20 @@ static void cli_presenter_print_json_tree_children(struct cli_application *ctx, 
 
 		if (index >= CLI_PRESENTER_TREE_ITEMS_MAX)
 			break;
+
 		if (cJSON_IsArray(item)) {
 			snprintf(array_label, sizeof(array_label), "[%d]", index);
 			label = array_label;
 		} else {
 			label = child->string ? child->string : "item";
 		}
+
 		is_last = index == count - 1 && count <= CLI_PRESENTER_TREE_ITEMS_MAX;
 		cli_presenter_print_json_tree_node(ctx, child, label, 0, is_last, ancestors_last,
 						   CLI_PRESENTER_TREE_DEPTH_MAX, -1);
 		index++;
 	}
+
 	if (count > CLI_PRESENTER_TREE_ITEMS_MAX) {
 		cli_presenter_print_tree_prefix(ctx, ancestors_last, 0, 1);
 		cli_output_printf(ctx, ANSI_DIM "… %d more" ANSI_RESET "\n",
@@ -486,10 +537,12 @@ static void cli_presenter_print_indented(struct cli_application *ctx, const char
 
 	if (!content || !content[0])
 		return;
+
 	display = cli_presenter_safe_dup(content, CLI_PRESENTER_EVENT_TEXT_MAX,
 					 MORPH_TERMINAL_TEXT_MULTILINE);
 	if (!display)
 		return;
+
 	line = display;
 	while (line) {
 		const char *end = strchr(line, '\n');
@@ -498,6 +551,7 @@ static void cli_presenter_print_indented(struct cli_application *ctx, const char
 		cli_output_printf(ctx, "%s%.*s\n", prefix, (int)len, line);
 		line = end ? end + 1 : NULL;
 	}
+
 	free(display);
 }
 
@@ -508,14 +562,17 @@ static void cli_presenter_print_plain_labeled(struct cli_application *ctx, const
 
 	if (!content || !content[0])
 		return;
+
 	display = cli_presenter_safe_dup(content, CLI_PRESENTER_EVENT_TEXT_MAX,
 					 MORPH_TERMINAL_TEXT_MULTILINE);
 	if (!display)
 		return;
+
 	if (strchr(display, '\n'))
 		cli_output_printf(ctx, "%s:\n%s\n", label, display);
 	else
 		cli_output_printf(ctx, "%s: %s\n", label, display);
+
 	free(display);
 }
 
@@ -530,6 +587,7 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 
 	if (!ctx || ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_NONE)
 		return;
+
 	reasoning_streamed = ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_REASONING &&
 			     ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
 	already_streamed =
@@ -537,6 +595,7 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 		ctx->presenter->markdown_stream_kind == ctx->presenter->event_stream_kind;
 	if (already_streamed)
 		cli_markdown_stream_reset(ctx, 1);
+
 	cli_presenter_clear_status(ctx);
 	(void)morph_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
 					   &ctx->presenter->event_stream, NULL, 0, 1);
@@ -558,8 +617,10 @@ static void cli_presenter_print_stream(struct cli_application *ctx)
 				ctx, content, 2, cli_renderer_media, ctx);
 		}
 	}
+
 	if (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_CONTENT)
 		ctx->presenter->native_content_visible = 1;
+
 	nb_buf_clear(&ctx->presenter->event_stream);
 	morph_terminal_sanitizer_reset(&ctx->presenter->event_stream_sanitizer);
 	ctx->presenter->event_stream_kind = CLI_PRESENTER_STREAM_NONE;
@@ -573,6 +634,7 @@ static void cli_presenter_discard_stream(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+
 	cli_markdown_stream_reset(ctx, 1);
 	nb_buf_clear(&ctx->presenter->event_stream);
 	morph_terminal_sanitizer_reset(&ctx->presenter->event_stream_sanitizer);
@@ -589,8 +651,10 @@ static void cli_presenter_plain_content(struct cli_application *ctx, const char 
 
 	if (ctx->presentation_mode != CLI_PRESENT_ONCE_PLAIN)
 		return;
+
 	if (!text || !*text)
 		text = nb_buf_cstr(&ctx->presenter->native_content);
+
 	if (text && *text) {
 		safe = cli_presenter_safe_dup(text, SIZE_MAX, MORPH_TERMINAL_TEXT_MULTILINE);
 		if (safe) {
@@ -598,9 +662,11 @@ static void cli_presenter_plain_content(struct cli_application *ctx, const char 
 				cli_output_printf(ctx, "content:\n%s\n", safe);
 			else
 				cli_output_printf(ctx, "content: %s\n", safe);
+
 			free(safe);
 		}
 	}
+
 	nb_buf_clear(&ctx->presenter->native_content);
 }
 
@@ -634,36 +700,46 @@ static int cli_presenter_append_stream(struct cli_application *ctx, int kind, co
 
 	if (!ctx || !text)
 		return 0;
+
 	if (appended_text)
 		*appended_text = "";
+
 	if (ctx->presenter->event_stream_kind != CLI_PRESENTER_STREAM_NONE &&
 	    ctx->presenter->event_stream_kind != kind)
 		cli_presenter_print_stream(ctx);
+
 	if (ctx->presenter->event_stream_kind == CLI_PRESENTER_STREAM_NONE) {
 		ctx->presenter->event_stream_kind = kind;
 		morph_terminal_sanitizer_init(&ctx->presenter->event_stream_sanitizer,
 					      MORPH_TERMINAL_TEXT_MULTILINE);
 	}
+
 	if (!is_delta && ctx->presenter->event_stream_has_delta) {
 		rc = morph_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
 						  &ctx->presenter->event_stream, NULL, 0, 1);
 		if (rc != 0)
 			return rc;
+
 		ctx->presenter->event_stream_complete = is_complete;
 		return 0;
 	}
+
 	offset = ctx->presenter->event_stream.len;
 	rc = morph_terminal_sanitize_feed(&ctx->presenter->event_stream_sanitizer,
 					  &ctx->presenter->event_stream, text, strlen(text),
 					  !is_delta);
 	if (rc != 0)
 		return rc;
+
 	if (appended_text)
 		*appended_text = nb_buf_cstr(&ctx->presenter->event_stream) + offset;
+
 	if (is_delta)
 		ctx->presenter->event_stream_has_delta = 1;
+
 	if (is_complete)
 		ctx->presenter->event_stream_complete = 1;
+
 	return 0;
 }
 
@@ -690,20 +766,25 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return;
 		}
+
 		ctx->presenter->reasoning_stream_offset = ctx->presenter->event_stream.len;
 		ctx->presenter->event_stream_visible = 1;
 	}
+
 	start = content + strspn(content, " \t\r\n");
 	if (!*start ||
 	    (nb_buf_init(&preview), nb_buf_reserve(&preview, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return;
+
 	newline = strchr(start, '\n');
 	end = morph_terminal_advance_display_width_borrow(start, width - 1u);
 	if (newline && newline < end)
 		end = newline;
+
 	(void)nb_buf_append(&preview, start, (size_t)(end - start));
 	if (*end)
 		(void)nb_buf_append_cstr(&preview, "…");
+
 	if (finish) {
 		cli_presenter_clear_status(ctx);
 		/* Commit one quiet narration line between tool blocks. */
@@ -715,6 +796,7 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 	} else if (isatty(STDOUT_FILENO)) {
 		cli_feed_reasoning_set(ctx, nb_buf_cstr(&preview));
 	}
+
 	nb_buf_cleanup(&preview);
 }
 
@@ -722,8 +804,10 @@ static const char *cli_presenter_workdir(struct cli_application *ctx)
 {
 	if (!ctx)
 		return NULL;
+
 	if (ctx->workdir[0])
 		return ctx->workdir;
+
 	return runtime_workdir_borrow(ctx->runtime);
 }
 
@@ -733,14 +817,19 @@ static const char *cli_presenter_patch_style(const char *line)
 	    strncmp(line, "*** Update File: ", 17) == 0 ||
 	    strncmp(line, "*** Delete File: ", 17) == 0 || strncmp(line, "*** Move to: ", 13) == 0)
 		return ANSI_BOLD ANSI_CYAN;
+
 	if (strncmp(line, "@@", 2) == 0)
 		return ANSI_CYAN;
+
 	if (line[0] == '+')
 		return ANSI_GREEN;
+
 	if (line[0] == '-')
 		return ANSI_RED;
+
 	if (strncmp(line, "*** Begin Patch", 15) == 0 || strncmp(line, "*** End Patch", 13) == 0)
 		return ANSI_DIM;
+
 	return "";
 }
 
@@ -772,11 +861,13 @@ static void cli_presenter_print_patch_line(struct cli_application *ctx, const ch
 			(*new_line)++;
 		}
 	}
+
 	if (number[0]) {
 		cli_output_printf(ctx, "  │ " ANSI_DIM "%5s " ANSI_RESET "%s%.*s" ANSI_RESET "\n", number,
 		       style, (int)len, line);
 		return;
 	}
+
 	cli_output_printf(ctx, "  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
 }
 
@@ -799,6 +890,7 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 
 	if (!input || !input[0])
 		return;
+
 	if (workdir && workdir[0]) {
 		memset(&preview, 0, sizeof(preview));
 		if ((nb_buf_init(&preview), nb_buf_reserve(&preview, 256) ? 0 : NB_ERR_NOMEM) ==
@@ -812,13 +904,16 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 			}
 		}
 	}
+
 	input_len = strlen(text);
 	display = malloc(CLI_PRESENTER_PATCH_BYTES_MAX + 1);
 	if (!display) {
 		if (preview_ready)
 			nb_buf_cleanup(&preview);
+
 		return;
 	}
+
 	{
 		char *safe = cli_presenter_safe_dup(text, CLI_PRESENTER_PATCH_BYTES_MAX,
 						    MORPH_TERMINAL_TEXT_MULTILINE);
@@ -827,8 +922,10 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 			free(display);
 			if (preview_ready)
 				nb_buf_cleanup(&preview);
+
 			return;
 		}
+
 		display_len = strlen(safe);
 		memcpy(display, safe, display_len + 1);
 		free(safe);
@@ -840,6 +937,7 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 		if ((ch < 0x20 && ch != '\n' && ch != '\t') || ch == 0x7f)
 			*p = '?';
 	}
+
 	line = display;
 	while (*line && lines < CLI_PRESENTER_PATCH_LINES_MAX) {
 		char *end = strchr(line, '\n');
@@ -850,6 +948,7 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 			in_hunk = 1;
 		else if (strncmp(line, "*** ", 4) == 0)
 			in_hunk = 0;
+
 		cli_presenter_print_patch_line(ctx, line, len, style, in_hunk, &old_line,
 					       &new_line);
 		lines++;
@@ -857,13 +956,17 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 			line += len;
 			break;
 		}
+
 		line = end + 1;
 	}
+
 	if (*line)
 		truncated = 1;
+
 	if (truncated)
 		cli_output_printf(ctx, "  %s" ANSI_DIM "… patch display truncated" ANSI_RESET "\n",
 		       morph_terminal_tree_branch(1, 0));
+
 	free(display);
 	if (preview_ready)
 		nb_buf_cleanup(&preview);
@@ -885,31 +988,39 @@ static void cli_presenter_tool_call(struct cli_application *ctx, const struct mo
 	cli_presenter_print_stream(ctx);
 	if (!tool || !tool[0])
 		tool = "tool";
+
 	if (!title || !title[0])
 		title = tool;
+
 	safe_tool = cli_presenter_safe_dup(tool, TOOL_NAME_MAX, MORPH_TERMINAL_TEXT_SINGLE_LINE);
 	safe_title = cli_presenter_safe_dup(title, CLI_PRESENTER_EVENT_TEXT_MAX,
 					    MORPH_TERMINAL_TEXT_SINGLE_LINE);
 	if (safe_tool)
 		tool = safe_tool;
+
 	if (safe_title)
 		title = safe_title;
+
 	if (strcmp(tool, "apply_patch") == 0 && cJSON_IsObject(args_item)) {
 		input_item = cJSON_GetObjectItemCaseSensitive(args_item, "input");
 		if (cJSON_IsString(input_item))
 			patch_input = input_item->valuestring;
 	}
+
 	if (!patch_input)
 		args = cli_presenter_event_args_json(ev);
+
 	display[0] = '\0';
 	if (args && strcmp(args, "{}") != 0) {
 		morph_terminal_copy_sanitized_display_width(display, sizeof(display), args,
 							    CLI_PRESENTER_EVENT_ARGS_MAX);
 	}
+
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_output_printf(ctx, "tool: %s", tool);
 		if (display[0])
 			cli_output_printf(ctx, " %s", display);
+
 		cli_output_printf(ctx, "\n");
 		if (patch_input)
 			cli_presentation_patch_diff(ctx, cli_presenter_workdir(ctx), patch_input);
@@ -921,8 +1032,10 @@ static void cli_presenter_tool_call(struct cli_application *ctx, const struct mo
 			cli_presentation_patch_diff(ctx, cli_presenter_workdir(ctx), patch_input);
 		else
 			cli_presenter_print_json_tree_children(ctx, args_item);
+
 		cli_presenter_status(ctx, "Running tool…");
 	}
+
 	free(args);
 	free(safe_tool);
 	free(safe_title);
@@ -938,6 +1051,7 @@ static void cli_presenter_tool_end(struct cli_application *ctx, const struct mor
 	cli_presenter_clear_status(ctx);
 	if (!title || !title[0])
 		title = tool && tool[0] ? tool : "Tool";
+
 	failed = !ev->name || strcmp(ev->name, "tool.result") != 0;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_output_printf(ctx, "status: ");
@@ -945,6 +1059,7 @@ static void cli_presenter_tool_end(struct cli_application *ctx, const struct mor
 		cli_output_printf(ctx, " %s\n", failed ? "failed" : "completed");
 		return;
 	}
+
 	if (failed) {
 		cli_output_printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED " ");
 		cli_presenter_print_safe_inline(ctx, title, CLI_PRESENTER_EVENT_TEXT_MAX);
@@ -954,6 +1069,7 @@ static void cli_presenter_tool_end(struct cli_application *ctx, const struct mor
 			cli_presenter_print_safe_inline(ctx, error, CLI_PRESENTER_EVENT_TEXT_MAX);
 			cli_output_printf(ctx, ANSI_RESET);
 		}
+
 		cli_output_printf(ctx, "\n");
 	} else {
 		cli_output_printf(ctx, ANSI_GREEN CLI_FEED_DONE " ");
@@ -966,17 +1082,22 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 {
 	if (!ev || !cJSON_IsObject(ev->data))
 		return 0;
+
 	const cJSON *state = ev->data;
 	if (!ev->name || strcmp(ev->name, "plan.updated")) {
 		const char *tool = cli_presenter_event_string(ev, "tool");
 		if (!tool || strcmp(tool, "plan"))
 			return 0;
+
 		state = cJSON_GetObjectItemCaseSensitive(ev->data, "data");
 	}
+
 	if (!cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(state, "plans")))
 		return 0;
+
 	if (!cli_plan_renders(state))
 		return 0;
+
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		nb_buf body NB_CLEANUP(nb_buf_cleanup) = {0};
 		struct cli_plan_style style = {.columns = BUFSIZ};
@@ -988,6 +1109,7 @@ static int cli_presenter_plan(struct cli_application *ctx, const struct morph_ev
 		};
 		(void)cli_feed_block_write(ctx, &block);
 	}
+
 	return 1;
 }
 
@@ -1001,6 +1123,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 	cli_presenter_print_stream(ctx);
 	if (!text || !text[0])
 		return;
+
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_presenter_print_plain_labeled(ctx, "observation", text);
 	} else if (cli_presenter_plan(ctx, ev)) {
@@ -1016,6 +1139,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 	} else {
 		if (!cJSON_IsArray(structured) && !cJSON_IsObject(structured))
 			parsed = cJSON_Parse(text);
+
 		if (cJSON_IsArray(structured) || cJSON_IsObject(structured)) {
 			int ancestors_last[CLI_PRESENTER_TREE_DEPTH_MAX] = {0};
 
@@ -1039,6 +1163,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 				nb_buf_cleanup(&prefix);
 			}
 		}
+
 		cJSON_Delete(parsed);
 	}
 }
@@ -1081,8 +1206,10 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 			cli_presenter_print_stream(ctx);
 			cli_feed_activity_set(ctx, "Compacting context…");
 		}
+
 		return;
 	}
+
 	cli_presenter_clear_status(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		if (failed) {
@@ -1093,11 +1220,14 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 		} else {
 			cli_output_printf(ctx, "context: compacted %d -> %d tokens\n", before, after);
 		}
+
 		fflush(stdout);
 		return;
 	}
+
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+
 	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (failed) {
 		(void)nb_buf_printf(&title, "Context compression failed · %s",
@@ -1110,8 +1240,10 @@ static void cli_presenter_compaction(struct cli_application *ctx, const struct m
 		(void)nb_buf_printf(&title, "Context compacted  %s → %s", before_label,
 				    after_label);
 	}
+
 	if (elapsed >= 0)
 		(void)nb_buf_printf(&title, " · %llds", (long long)(elapsed / 1000));
+
 	(void)cli_feed_notice_write(ctx, failed ? CLI_NOTICE_FAILED : CLI_NOTICE_DONE,
 				    nb_buf_cstr(&title), NULL, NULL);
 	fflush(stdout);
@@ -1138,6 +1270,7 @@ static void cli_presenter_final(struct cli_application *ctx, const struct morph_
 		cli_presenter_discard_stream(ctx);
 	else
 		cli_presenter_print_stream(ctx);
+
 	cli_markdown_stream_reset(ctx, 1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_output_printf(ctx, "final:\n");
@@ -1155,14 +1288,17 @@ static void cli_presenter_final(struct cli_application *ctx, const struct morph_
 			cli_presenter_block_gap(ctx);
 			cli_output_printf(ctx, ANSI_BOLD CLI_FEED_MESSAGE ANSI_RESET " ");
 		}
+
 		if (!had_stream && text && text[0]) {
 			cli_markdown_render_final(ctx, text);
 		} else if (!had_stream) {
 			cli_output_printf(ctx, "\n");
 			ctx->presenter->markdown_output.trailing_newlines = 1;
 		}
+
 		cli_markdown_finish_final(ctx);
 	}
+
 	ctx->presenter->final_rendered = 1;
 }
 
@@ -1174,8 +1310,10 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 
 	if (!ev->phase || strcmp(ev->phase, "end") == 0)
 		return;
+
 	if (ctx->presenter->final_rendered)
 		return;
+
 	cli_presenter_plain_content(ctx, NULL);
 	cli_presenter_clear_status(ctx);
 	cli_presenter_print_stream(ctx);
@@ -1188,9 +1326,11 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 			cli_output_printf(ctx, "cancelled\n");
 		else
 			(void)cli_feed_notice_write(ctx, CLI_NOTICE_CANCELLED, "Cancelled", NULL, NULL);
+
 		ctx->presenter->final_rendered = 1;
 		return;
 	}
+
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_output_printf(ctx, "error: ");
 		cli_presenter_print_safe_inline(ctx,
@@ -1201,6 +1341,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 			cli_presenter_print_safe_inline(ctx, detail, CLI_PRESENTER_EVENT_TEXT_MAX);
 			cli_output_printf(ctx, ")");
 		}
+
 		cli_output_printf(ctx, "\n");
 	} else {
 		nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -1209,6 +1350,7 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 		(void)cli_feed_notice_write(ctx, CLI_NOTICE_FAILED, nb_buf_cstr(&title), detail,
 					    NULL);
 	}
+
 	ctx->presenter->final_rendered = 1;
 }
 
@@ -1223,6 +1365,7 @@ static void cli_presenter_auth(struct cli_application *ctx, const struct morph_e
 	cli_presenter_print_stream(ctx);
 	if (!backend)
 		backend = "configured";
+
 	config = ctx->runtime ? runtime_config_borrow(ctx->runtime) : NULL;
 	if ((!env_name || !env_name[0]) && config) {
 		if (strcmp(backend, "image") == 0)
@@ -1232,6 +1375,7 @@ static void cli_presenter_auth(struct cli_application *ctx, const struct morph_e
 		else
 			env_name = config->models.text.api_key_env;
 	}
+
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		cli_output_printf(ctx, "error: authentication required for ");
 		cli_presenter_print_safe_inline(ctx, backend, CLI_PRESENTER_EVENT_TEXT_MAX);
@@ -1239,11 +1383,13 @@ static void cli_presenter_auth(struct cli_application *ctx, const struct morph_e
 			cli_output_printf(ctx, " tool ");
 			cli_presenter_print_safe_inline(ctx, tool, TOOL_NAME_MAX);
 		}
+
 		if (env_name && env_name[0]) {
 			cli_output_printf(ctx, "; export ");
 			cli_presenter_print_safe_inline(ctx, env_name,
 							CLI_PRESENTER_EVENT_TEXT_MAX);
 		}
+
 		cli_output_printf(ctx, "\n");
 	} else {
 		nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -1251,8 +1397,10 @@ static void cli_presenter_auth(struct cli_application *ctx, const struct morph_e
 		(void)nb_buf_printf(&title, "Authentication required for %s", backend);
 		if (tool && *tool)
 			(void)nb_buf_printf(&title, " tool %s", tool);
+
 		if (env_name && *env_name)
 			(void)nb_buf_printf(&detail, "export %s", env_name);
+
 		(void)cli_feed_notice_write(ctx, CLI_NOTICE_QUESTION, nb_buf_cstr(&title),
 					    nb_buf_cstr(&detail), NULL);
 	}
@@ -1266,8 +1414,10 @@ static void cli_presenter_artifact(struct cli_application *ctx, const struct mor
 
 	if (!ev->name || strcmp(ev->name, "artifact.ready") != 0 || !path || !path[0])
 		return;
+
 	if (nb_map_has_cstr(ctx->presenter->announced_artifacts, path))
 		return;
+
 	status_paused = cli_presenter_pause_status(ctx);
 	(void)nb_map_put_cstr(ctx->presenter->announced_artifacts, path, (void *)1, NULL);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
@@ -1280,6 +1430,7 @@ static void cli_presenter_artifact(struct cli_application *ctx, const struct mor
 		cli_presenter_resume_status(ctx, status_paused);
 		return;
 	}
+
 	cli_list_tree_prefix(ctx, NULL, 0, 1, 0);
 	cli_output_printf(ctx, ANSI_DIM);
 	cli_presenter_print_safe_inline(ctx, kind ? kind : "artifact",
@@ -1294,10 +1445,12 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 {
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+
 	const char *server = cli_presenter_event_string(ev, "server");
 	const char *error = cli_presenter_event_string(ev, "error");
 	if (!server || !*server)
 		server = "server";
+
 	int paused = cli_presenter_pause_status(ctx);
 	if (!ctx->presenter->mcp_tree_active || strcmp(ctx->presenter->mcp_tree_server, server)) {
 		nb_buf root NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -1308,6 +1461,7 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 		ctx->presenter->mcp_tree_server[sizeof(ctx->presenter->mcp_tree_server) - 1] = '\0';
 		ctx->presenter->mcp_tree_active = 1;
 	}
+
 	int failed = ev->name && !strcmp(ev->name, "mcp.failed");
 	int ready = ev->name && !strcmp(ev->name, "mcp.ready");
 	int disconnected = ev->name && !strcmp(ev->name, "mcp.disconnected");
@@ -1321,6 +1475,7 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 	(void)nb_buf_append_cstr(&title, label);
 	if (failed && error && *error)
 		(void)nb_buf_printf(&title, " · %s", error);
+
 	if (ready && cJSON_IsNumber(cli_presenter_event_item(ev, "tools")) &&
 	    cJSON_IsNumber(cli_presenter_event_item(ev, "resources")) &&
 	    cJSON_IsNumber(cli_presenter_event_item(ev, "prompts")))
@@ -1328,6 +1483,7 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 				    cli_presenter_event_int(ev, "tools"),
 				    cli_presenter_event_int(ev, "resources"),
 				    cli_presenter_event_int(ev, "prompts"));
+
 	struct cli_notice notice = {
 		.status = failed	       ? CLI_NOTICE_FAILED
 			  : disconnected       ? CLI_NOTICE_CANCELLED
@@ -1344,6 +1500,7 @@ static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_ev
 		ctx->presenter->mcp_tree_active = 0;
 		ctx->presenter->mcp_tree_server[0] = '\0';
 	}
+
 	cli_presenter_resume_status(ctx, paused);
 }
 
@@ -1354,6 +1511,7 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 
 	if (!ctx->presentation_ready || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+
 	if (ev->type == MORPH_EVENT_TASK && ev->name) {
 		if (strcmp(ev->name, "task.notification") == 0 ||
 		    (ctx->input_status.enabled &&
@@ -1363,12 +1521,14 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		      cJSON_IsNumber(cli_presenter_event_item(ev, "notification_id")))))
 			return;
 	}
+
 	/* Foreground task mutations are already reported by the tool result. */
 	if (ev->type == MORPH_EVENT_TASK && ctx->turn_active && ev->name &&
 	    cli_presenter_event_error_code(ev) >= 0 &&
 	    (strcmp(ev->name, "task.created") == 0 || strcmp(ev->name, "task.updated") == 0 ||
 	     strcmp(ev->name, "task.cancelled") == 0))
 		return;
+
 	if (ev->type == MORPH_EVENT_BACKGROUND) {
 		if ((ev->name && strstr(ev->name, "failed")) ||
 		    cli_presenter_event_error_code(ev) < 0) {
@@ -1387,8 +1547,10 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 		} else if (!ctx->turn_active) {
 			cli_presenter_clear_status(ctx);
 		}
+
 		return;
 	}
+
 	if (ev->type == MORPH_EVENT_MCP) {
 		if (!cJSON_IsTrue(cli_presenter_event_item(ev, "background")) ||
 		    !ctx->input_status.enabled) {
@@ -1404,14 +1566,17 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 						    error, NULL);
 			cli_presenter_resume_status(ctx, status_paused);
 		}
+
 		return;
 	}
+
 	if (ev->type == MORPH_EVENT_TASK)
 		prefix = "Task";
 	else if (ev->type == MORPH_EVENT_ERROR)
 		prefix = "Error";
 	else
 		return;
+
 	status_paused = cli_presenter_pause_status(ctx);
 	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
 	(void)nb_buf_printf(&title, "%s · %s", prefix,
@@ -1432,36 +1597,45 @@ int cli_presentation_init(struct cli_application *ctx)
 
 	if (!ctx)
 		return NB_ERR_INVAL;
+
 	if (ctx->presenter)
 		return NB_ERR_STATE;
+
 	ctx->presenter = calloc(1, sizeof(*ctx->presenter));
 	if (!ctx->presenter)
 		return NB_ERR_NOMEM;
+
 	rc = cli_agents_model_init(&ctx->agents);
 	if (!rc)
 		rc = (nb_buf_init(&ctx->presenter->event_stream),
 		      nb_buf_reserve(&ctx->presenter->event_stream, BUFSIZ) ? 0 : NB_ERR_NOMEM);
+
 	if (!rc)
 		rc = (nb_buf_init(&ctx->presenter->markdown_stream_text),
 		      nb_buf_reserve(&ctx->presenter->markdown_stream_text, BUFSIZ) ? 0
 										    : NB_ERR_NOMEM);
+
 	if (!rc)
 		rc = (nb_buf_init(&ctx->presenter->native_content),
 		      nb_buf_reserve(&ctx->presenter->native_content, BUFSIZ) ? 0 : NB_ERR_NOMEM);
+
 	if (!rc) {
 		ctx->presenter->rendered_artifacts = nb_map_new_with_cap(16);
 		if (!ctx->presenter->rendered_artifacts)
 			rc = NB_ERR_NOMEM;
 	}
+
 	if (!rc) {
 		ctx->presenter->announced_artifacts = nb_map_new_with_cap(16);
 		if (!ctx->presenter->announced_artifacts)
 			rc = NB_ERR_NOMEM;
 	}
+
 	if (rc) {
 		cli_presentation_cleanup(ctx);
 		return rc;
 	}
+
 	morph_terminal_sanitizer_init(&ctx->presenter->event_stream_sanitizer,
 				      MORPH_TERMINAL_TEXT_MULTILINE);
 	morph_terminal_sanitizer_init(&ctx->presenter->markdown_stream_sanitizer,
@@ -1474,6 +1648,7 @@ void cli_presentation_reset(struct cli_application *ctx)
 {
 	if (!ctx || !ctx->presenter)
 		return;
+
 	cli_transcript_reset(ctx);
 	nb_buf_clear(&ctx->presenter->native_content);
 	ctx->presenter->native_content_started = 0;
@@ -1510,11 +1685,14 @@ void cli_presentation_cleanup(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+
 	cli_recap_set_renderer(ctx, NULL);
 	if (!ctx->presenter)
 		return;
+
 	if (cli_turn_details_is_open(ctx))
 		cli_turn_details_toggle(ctx);
+
 	cli_turn_details_cleanup(ctx);
 	cli_transcript_reset(ctx);
 	cli_presenter_clear_status(ctx);
@@ -1537,21 +1715,26 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 
 	if (!ctx || !ev)
 		return NB_ERR_INVAL;
+
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
 		    strcmp(ev->name, "session.recap") == 0)
 			cli_recap_event(ctx, ev);
+
 		char *json = morph_event_json_text_copy(ev);
 
 		if (!json)
 			return NB_ERR_NOMEM;
+
 		int rc = cli_output_write_json(json);
 
 		free(json);
 		return rc;
 	}
+
 	if (!ctx->presentation_ready)
 		return 0;
+
 	if (ev->name && !strcmp(ev->name, "plan.updated")) {
 		int paused = cli_presenter_pause_status(ctx);
 		cli_presenter_print_stream(ctx);
@@ -1559,6 +1742,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		cli_presenter_resume_status(ctx, paused);
 		return 0;
 	}
+
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name && strncmp(ev->name, "hook.", 5) == 0) {
 		if (strcmp(ev->name, "hook.progress") == 0) {
 			cli_presenter_status(ctx, ev->message ? ev->message : "Running hooks");
@@ -1594,13 +1778,17 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 					cli_presenter_print_safe_inline(
 						ctx, error, CLI_PRESENTER_EVENT_TEXT_MAX);
 				}
+
 				cli_output_printf(ctx, ANSI_RESET "\n");
 				}
+
 				cli_presenter_resume_status(ctx, paused);
 			}
 		}
+
 		return 0;
 	}
+
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->phase && strcmp(ev->phase, "warning") == 0) {
 		int paused = cli_presenter_pause_status(ctx);
 
@@ -1616,20 +1804,25 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 						CLI_PRESENTER_EVENT_TEXT_MAX);
 		cli_output_printf(ctx, ANSI_RESET "\n");
 		}
+
 		cli_presenter_resume_status(ctx, paused);
 		return 0;
 	}
+
 	int agents_rc = cli_presentation_agents_event(ctx, ev);
 	if (agents_rc)
 		return agents_rc < 0 ? agents_rc : 0;
+
 	int jobs_rc = cli_jobs_event(ctx, ev);
 	if (jobs_rc)
 		return jobs_rc < 0 ? jobs_rc : 0;
+
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
 	    strcmp(ev->name, "session.recap") == 0) {
 		cli_recap_event(ctx, ev);
 		return 0;
 	}
+
 	/* Background metadata belongs in the footer, never in the conversation. */
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
 	    strcmp(ev->name, "session.title") == 0) {
@@ -1638,11 +1831,14 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		else if (ev->phase && strcmp(ev->phase, "end") == 0 &&
 			 ctx->input_status.session_titles_pending > 0)
 			ctx->input_status.session_titles_pending--;
+
 		return 0;
 	}
+
 	if (!ctx->turn_active && (ev->type == MORPH_EVENT_REACT || ev->type == MORPH_EVENT_TOOL ||
 				  ev->type == MORPH_EVENT_HITL || ev->type == MORPH_EVENT_ARTIFACT))
 		return 0;
+
 	if (ctx->turn_active) {
 		int handled = cli_transcript_event(ctx, ev);
 
@@ -1653,29 +1849,36 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 	int chat_rc = cli_chat_react_event(ctx, ev);
 	if (chat_rc)
 		return chat_rc < 0 ? chat_rc : 0;
+
 	if (ev->type == MORPH_EVENT_REACT && ev->name) {
 		text = cli_presenter_event_string(ev, "text");
 		if (strcmp(ev->name, "react.agents.wait.begin") == 0) {
 			cli_presenter_status(ctx, "Waiting for agents");
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.agents.wait.end") == 0) {
 			cli_presenter_clear_status(ctx);
 			return 0;
 		}
+
 		if (strncmp(ev->name, "react.compaction.", sizeof("react.compaction.") - 1) == 0) {
 			cli_presenter_compaction(ctx, ev);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.turn.begin") == 0) {
 			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
 				cli_feed_render_frame(ctx, 1);
+
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.hook.continue") == 0) {
 			cli_presentation_hook_prompt(ctx, text);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.user.steer") == 0) {
 			nb_buf_clear(&ctx->presenter->native_content);
 			ctx->presenter->native_content_started = 0;
@@ -1690,13 +1893,16 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			} else {
 				cli_output_printf(ctx, ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
 			}
+
 			cli_presenter_model_wait(ctx);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.thinking") == 0) {
 			cli_presenter_model_wait(ctx);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.content.delta") == 0) {
 			ctx->presenter->native_content_started = 1;
 			if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
@@ -1705,6 +1911,7 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 						       ? 0
 						       : NB_ERR_NOMEM)
 					    : 0;
+
 			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_CONTENT,
 							     text, 1, 0, NULL);
 			if (rc == 0) {
@@ -1712,8 +1919,10 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 				rc = cli_markdown_stream_append(ctx, text,
 								CLI_PRESENTER_STREAM_CONTENT);
 			}
+
 			return rc;
 		}
+
 		if (strcmp(ev->name, "react.content.end") == 0) {
 			if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 				cli_presenter_plain_content(ctx, text);
@@ -1727,13 +1936,16 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 					if (rc != 0)
 						return rc;
 				}
+
 				cli_presenter_print_stream(ctx);
 			}
+
 			ctx->presenter->native_content_started = 0;
 			ctx->presenter->native_content_visible = 0;
 			cli_presentation_agents_flush(ctx);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.thought.delta") == 0) {
 			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_THOUGHT,
 							     text, 1, 0, NULL);
@@ -1743,8 +1955,10 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 				rc = cli_markdown_stream_append(ctx, text,
 								CLI_PRESENTER_STREAM_THOUGHT);
 			}
+
 			return rc;
 		}
+
 		if (strcmp(ev->name, "react.thought.end") == 0) {
 			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_THOUGHT, text,
 				0, 1, NULL);
@@ -1753,66 +1967,83 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 				cli_markdown_stream_reset(ctx, 1);
 				cli_presentation_agents_flush(ctx);
 			}
+
 			return rc;
 		}
+
 		if (strcmp(ev->name, "react.reasoning.delta") == 0) {
 			int rc = cli_presenter_append_stream(ctx, CLI_PRESENTER_STREAM_REASONING,
 							     text, 1, 0, NULL);
 
 			if (rc == 0 && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
 				cli_presenter_reasoning_flush(ctx, 0);
+
 			return rc;
 		}
+
 		if (strcmp(ev->name, "react.final.delta") == 0) {
 			if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 				return 0;
+
 			cli_presenter_clear_status(ctx);
 			if (ctx->presenter->event_stream_kind != CLI_PRESENTER_STREAM_NONE)
 				cli_presenter_print_stream(ctx);
+
 			return cli_markdown_stream_append(ctx, text, CLI_PRESENTER_STREAM_FINAL);
 		}
+
 		if (strcmp(ev->name, "react.observation") == 0) {
 			cli_presenter_observation(ctx, ev);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.reflection") == 0) {
 			cli_presenter_reflection(ctx, ev);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.final") == 0) {
 			cli_presenter_final(ctx, ev);
 			cli_presentation_agents_flush(ctx);
 			return 0;
 		}
+
 		if (strcmp(ev->name, "react.turn.end") == 0) {
 			cli_presenter_turn_end(ctx, ev);
 			cli_presentation_agents_flush(ctx);
 			return 0;
 		}
+
 		return 0;
 	}
+
 	if (ev->type == MORPH_EVENT_TOOL && ev->name && strcmp(ev->name, "tool.call") == 0) {
 		cli_presenter_tool_call(ctx, ev);
 		return 0;
 	}
+
 	if (ev->type == MORPH_EVENT_TOOL && ev->name && strcmp(ev->name, "tool.running") == 0) {
 		cli_presenter_status(ctx, "Running tool…");
 		return 0;
 	}
+
 	if (ev->type == MORPH_EVENT_TOOL && ev->name &&
 	    (strcmp(ev->name, "tool.result") == 0 || strcmp(ev->name, "tool.failed") == 0 ||
 	     strcmp(ev->name, "tool.cancelled") == 0)) {
 		cli_presenter_tool_end(ctx, ev);
 		return 0;
 	}
+
 	if (ev->type == MORPH_EVENT_HITL && ev->name && strcmp(ev->name, "auth.required") == 0) {
 		cli_presenter_auth(ctx, ev);
 		return 0;
 	}
+
 	if (ev->type == MORPH_EVENT_ARTIFACT) {
 		cli_presenter_artifact(ctx, ev);
 		return 0;
 	}
+
 	cli_presenter_auxiliary(ctx, ev);
 	fflush(stdout);
 	return 0;

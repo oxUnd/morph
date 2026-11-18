@@ -13,7 +13,7 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "sapi/cli/services/command_job.h"
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "agent/tool_context.h"
 #include "agent/tools/ask_user.h"
@@ -115,6 +115,7 @@ TEST_F(CliUiTest, TaskMutationsAvoidDuplicateToolOutput)
 		EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 		EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
 	}
+
 	event.name = "task.failed";
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
@@ -245,6 +246,7 @@ TEST_F(CliUiTest, BoundedDrainYieldsAndKeepsQueuedEventsOrderedAndSignaled)
 	event.phase = "begin";
 	for (int i = 0; i < 130; i++)
 		ASSERT_EQ(cli_event_queue_post_morph_event(&ctx, &event), 0);
+
 	event.phase = "end";
 	ASSERT_EQ(cli_event_queue_post_morph_event(&ctx, &event), 0);
 	ASSERT_EQ(cli_event_queue_drain_batch(&ctx), 0);
@@ -275,6 +277,7 @@ TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 		EXPECT_EQ(cli_runtime_events_callback(&event, &ctx), 0);
 		EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
 	}
+
 	cJSON_DeleteItemFromObject(event.data, "notification_id");
 	event.name = "task.failed";
 	testing::internal::CaptureStdout();
@@ -406,8 +409,10 @@ TEST_F(CliUiTest, ConcurrentProducersPreserveEveryNotification)
 			}
 		});
 	}
+
 	for (auto &worker : workers)
 		worker.join();
+
 	for (int rc : results)
 		ASSERT_EQ(rc, 0);
 
@@ -420,6 +425,7 @@ TEST_F(CliUiTest, ConcurrentProducersPreserveEveryNotification)
 		found++;
 		offset += sizeof("queued-item-") - 1;
 	}
+
 	EXPECT_EQ(found, worker_count * events_per_worker);
 }
 
@@ -524,12 +530,14 @@ static std::string run_structured_interaction(struct cli_application *ctx, const
 
 	if (pipe(input_pipe) != 0)
 		return {};
+
 	saved_stdin = dup(STDIN_FILENO);
 	if (saved_stdin < 0) {
 		close(input_pipe[0]);
 		close(input_pipe[1]);
 		return {};
 	}
+
 	if (write(input_pipe[1], input.data(), input.size()) !=
 	    static_cast<ssize_t>(input.size())) {
 		close(input_pipe[0]);
@@ -537,6 +545,7 @@ static std::string run_structured_interaction(struct cli_application *ctx, const
 		close(saved_stdin);
 		return {};
 	}
+
 	std::thread feeder;
 	if (feed) {
 		feeder = std::thread([fd = input_pipe[1], feed] {
@@ -546,11 +555,13 @@ static std::string run_structured_interaction(struct cli_application *ctx, const
 	} else {
 		close(input_pipe[1]);
 	}
+
 	if (dup2(input_pipe[0], STDIN_FILENO) < 0) {
 		close(input_pipe[0]);
 		close(saved_stdin);
 		return {};
 	}
+
 	close(input_pipe[0]);
 	clearerr(stdin);
 
@@ -564,6 +575,7 @@ static std::string run_structured_interaction(struct cli_application *ctx, const
 	worker.join();
 	if (feeder.joinable())
 		feeder.join();
+
 	std::string output = testing::internal::GetCapturedStdout();
 
 	(void)dup2(saved_stdin, STDIN_FILENO);
@@ -587,12 +599,16 @@ static cJSON *find_json_event(const std::string &output, const char *name)
 			if (cJSON_IsString(event_name) && event_name->valuestring &&
 			    std::strcmp(event_name->valuestring, name) == 0)
 				return event;
+
 			cJSON_Delete(event);
 		}
+
 		if (end == std::string::npos)
 			break;
+
 		offset = end + 1;
 	}
+
 	return nullptr;
 }
 
@@ -652,6 +668,7 @@ TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
 	cJSON_Delete(event);
 	for (int i = 0; i < answers_count; i++)
 		free(answers[i]);
+
 	free(answers);
 }
 
@@ -681,6 +698,7 @@ TEST_F(CliUiTest, StructuredAskUserAllowsCustomAnswersButChecksLimitsAndDuplicat
 	EXPECT_NE(output.find("interaction.invalid_response"), std::string::npos);
 	for (int i = 0; i < count; i++)
 		free(answers[i]);
+
 	free(answers);
 }
 
@@ -770,6 +788,7 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	/* Grow the queue while the consumer still owns the previous payload. */
 	for (int i = 0; i < 100; i++)
 		ASSERT_EQ(cli_command_job_prompt(&job, "tail", nullptr), 0);
+
 	EXPECT_EQ(delivered, borrowed);
 	char *pending = cli_command_job_take_prompt(&job, nullptr);
 	ASSERT_NE(pending, nullptr);
@@ -781,6 +800,7 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 		EXPECT_STREQ(pending, "tail");
 		free(pending);
 	}
+
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
 	EXPECT_EQ(cli_command_job_take_prompt(&job, nullptr), nullptr);
 	EXPECT_EQ(cli_command_job_expedite_prompts(&job), 0);
@@ -805,6 +825,39 @@ TEST(CliCommandPrompts, DrainingExpeditedQueueResetsInterruption)
 	ASSERT_EQ(cli_command_job_prompt(&job, "next", nullptr), 0);
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
 	cli_command_job_cleanup(&job);
+}
+
+TEST(CliCommandPrompts, SnapshotRevisionTracksReplacementsAndBothConsumers)
+{
+	struct cli_command_job job NB_CLEANUP(cli_command_job_cleanup) = {};
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	int64_t revision = 0;
+	char *item NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	size_t total = 0;
+	auto snapshot = [&]() {
+		nb_charp_cleanup(&item);
+		return cli_command_job_prompts_copy_since(&job, &item, 1, &total, &revision);
+	};
+
+	EXPECT_EQ(snapshot(), NB_ERR_AGAIN);
+	ASSERT_EQ(cli_command_job_prompt(&job, "first", nullptr), 0);
+	ASSERT_EQ(snapshot(), 0);
+	EXPECT_EQ(total, 1U);
+	EXPECT_STREQ(item, "first");
+	EXPECT_EQ(snapshot(), NB_ERR_AGAIN);
+	EXPECT_EQ(item, nullptr);
+
+	struct react_action action{};
+	ASSERT_EQ(cli_command_job_drain(&job, &action, 0), 1);
+	ASSERT_EQ(cli_command_job_prompt(&job, "second payload", "second"), 0);
+	ASSERT_EQ(snapshot(), 0);
+	EXPECT_EQ(total, 1U);
+	EXPECT_STREQ(item, "second");
+	char *pending NB_CLEANUP(nb_charp_cleanup) = cli_command_job_take_prompt(&job, nullptr);
+	ASSERT_STREQ(pending, "second payload");
+	EXPECT_EQ(snapshot(), 0);
+	EXPECT_EQ(total, 0U);
+	EXPECT_EQ(snapshot(), NB_ERR_AGAIN);
 }
 
 TEST(CliCommandPrompts, CopyRejectsOccupiedSlotsAndPreservesTheirOwners)

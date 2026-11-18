@@ -1,9 +1,9 @@
 #include "sapi/cli/pages/memory.h"
-#include "sapi/cli/presentation/panel_style.h"
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/panel.h"
 
 #include "sapi/cli/application.h"
-#include "sapi/cli/components/list.h"
-#include "sapi/cli/components/visibility.h"
+
 #include "runtime/services.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
@@ -92,10 +92,13 @@ static const char *cli_memory_record_label(const cJSON *entry)
 {
 	if (cli_memory_record_visible(entry, 2))
 		return "Saved fact";
+
 	if (cli_memory_record_visible(entry, 3))
 		return "Reusable tip";
+
 	if (cli_memory_record_visible(entry, 4))
 		return "Past task";
+
 	return "Not applied";
 }
 
@@ -111,6 +114,7 @@ static const char *cli_memory_row(void *data, size_t index)
 			 *nt_component_state_get_string(page->query) ? " matching" : "");
 	else
 		snprintf(page->row, sizeof(page->row), "%s", name);
+
 	return page->row;
 }
 
@@ -145,6 +149,7 @@ static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 				cli_memory_section_count(page, index),
 				*nt_component_state_get_string(page->query) ? " matching" : "");
 		}
+
 		(void)nb_buf_printf(
 			document,
 			"\nYour active preferences\n%s\n"
@@ -160,12 +165,14 @@ static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 		cJSON_ArrayForEach (entry, entries) {
 			if (strcmp(cli_memory_string(entry, "kind"), "summary"))
 				continue;
+
 			summaries++;
 			(void)nb_buf_printf(document, "\n%s\n%s\nSources: %s\n",
 					    cli_memory_string(entry, "key"),
 					    cli_memory_string(entry, "value"),
 					    cli_memory_string(entry, "details"));
 		}
+
 		if (!summaries)
 			(void)nb_buf_append_cstr(document, "No saved summary yet. Available notes "
 							   "remain in the memory directory.\n");
@@ -199,6 +206,7 @@ static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 		cJSON_ArrayForEach (entry, entries) {
 			if (!cli_memory_record_visible(entry, section))
 				continue;
+
 			shown++;
 			time_t updated = (time_t)cJSON_GetNumberValue(
 				cJSON_GetObjectItemCaseSensitive(entry, "updated_at"));
@@ -207,6 +215,7 @@ static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 
 			if (localtime_r(&updated, &local))
 				(void)strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", &local);
+
 			(void)nb_buf_printf(document,
 					    "[%s #%lld] %s\n%s\n\nSource: %s\n"
 					    "Session: %s\nUpdated: %s\nDetails: %s\n\n",
@@ -219,10 +228,12 @@ static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 					    cli_memory_string(entry, "session"), date,
 					    cli_memory_string(entry, "details"));
 		}
+
 		if (!shown)
 			(void)nb_buf_append_cstr(document,
 						 "No matching memories in this section.\n");
 	}
+
 	return nb_buf_status(document);
 }
 
@@ -233,6 +244,7 @@ static int cli_memory_title(void *data, struct nt_value *value)
 	if (nt_component_state_get_bool(page->detail))
 		snprintf(title, sizeof(title), "morph / memory / %s",
 			 cli_memory_section_name((int)nt_list_view_selected(page->list)));
+
 	return nt_value_set_string(value, title);
 }
 
@@ -284,6 +296,7 @@ static int cli_memory_refresh(struct cli_memory_page *page)
 
 	if (rc != 0)
 		return rc;
+
 	cJSON_Delete(page->report);
 	page->report = cJSON_StealOwner(&report);
 	nt_view_invalidate(page->list, 0);
@@ -299,13 +312,17 @@ static int cli_memory_action(void *data,
 		int rc = cli_memory_show_document(page);
 		if (!rc)
 			rc = nt_component_state_set_bool(page->detail, true);
+
 		return rc ? rc : cli_memory_focus(page);
 	}
+
 	int rc = nt_component_state_set_string(page->query, action->text ? action->text : "");
 	if (!rc)
 		rc = nt_component_state_set_bool(page->searching, false);
+
 	if (!rc)
 		rc = cli_memory_focus(page);
+
 	return rc ? rc : cli_memory_refresh(page);
 }
 
@@ -334,9 +351,9 @@ static void cli_memory_build(struct nt_view_controller *controller, struct nt_bu
 		nt_builder_fail(builder, nt_view_use_state_string(root, "", &page->query));
 		nt_builder_fail(builder, nt_view_use_state_bool(root, false, &page->detail));
 		nt_builder_fail(builder, nt_view_use_state_bool(root, false, &page->searching));
-		cli_bind_hidden(builder, page->list, page->detail);
-		cli_bind_visible(builder, page->document, page->detail);
-		cli_bind_visible(builder, page->search, page->searching);
+		cli_panel_hide_when(builder, page->list, page->detail);
+		cli_panel_show_when(builder, page->document, page->detail);
+		cli_panel_show_when(builder, page->search, page->searching);
 		nt_builder_fail(builder,
 				nt_view_bind_compute(title, NT_PROP_TEXT, cli_memory_title, page));
 		nt_builder_fail(builder, nt_view_bind_compute(description, NT_PROP_TEXT,
@@ -352,6 +369,7 @@ static void cli_memory_build(struct nt_view_controller *controller, struct nt_bu
 		if (!nt_view_on(page->list, NT_VIEW_EVENT_ACTIVATE, cli_memory_action, page) ||
 		    !nt_view_on(page->search, NT_VIEW_EVENT_SUBMIT, cli_memory_action, page))
 			nt_builder_fail(builder, NB_ERR_NOMEM);
+
 		nt_builder_fail(builder, cli_memory_refresh(page));
 		nt_builder_fail(builder, cli_memory_focus(page));
 	}
@@ -364,9 +382,11 @@ static int cli_memory_event(struct nt_view_controller *controller, const struct 
 
 	if (event->type != NT_EVENT_KEY && event->type != NT_EVENT_TEXT)
 		return 0;
+
 	if (nt_component_state_get_bool(page->searching)) {
 		if (event->key != 27)
 			return 0;
+
 		rc = nt_component_state_set_bool(page->searching, false);
 	} else if ((event->key == 27 || event->key == 'q') &&
 		   nt_component_state_get_bool(page->detail))
@@ -384,8 +404,10 @@ static int cli_memory_event(struct nt_view_controller *controller, const struct 
 		return rc ? rc : 1;
 	} else
 		return 0;
+
 	if (!rc)
 		rc = cli_memory_focus(page);
+
 	return rc ? rc : 1;
 }
 

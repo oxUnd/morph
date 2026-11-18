@@ -15,6 +15,7 @@ static int cli_share_command_share(struct cli_application *ctx, int argc, char *
 		CMD_ERROR(ctx, "usage: /share");
 		return NB_ERR_INVAL;
 	}
+
 	cJSON *document = NULL;
 	int rc = runtime_session_share_current(ctx->runtime, &document);
 	if (rc != 0) {
@@ -23,8 +24,10 @@ static int cli_share_command_share(struct cli_application *ctx, int argc, char *
 		else
 			CMD_ERROR(ctx, "share failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
+
 	char *path = NULL;
 	rc = cli_share_store_save(document, &path);
 	cJSON_Delete(document);
@@ -33,6 +36,7 @@ static int cli_share_command_share(struct cli_application *ctx, int argc, char *
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else
 		CMD_OK(ctx, "saved conversation to %s", path);
+
 	free(path);
 	return rc;
 }

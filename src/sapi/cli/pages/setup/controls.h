@@ -1,9 +1,10 @@
 #ifndef MORPH_CLI_PAGES_SETUP_CONTROLS_H
 #define MORPH_CLI_PAGES_SETUP_CONTROLS_H
 
+#include <stdio.h>
+
 struct cli_application;
 struct cli_setup_state;
-#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {

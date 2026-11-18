@@ -1,11 +1,12 @@
 #ifndef MORPH_CLI_SERVICES_SKILL_STORE_H
 #define MORPH_CLI_SERVICES_SKILL_STORE_H
 
-struct nb_log;
 #include "skill/skill.h"
 #include <nb/vec.h>
 #include <nb/cleanup.h>
 #include "cJSON.h"
+
+struct nb_log;
 
 #define CLI_SKILL_STORE_INSTALL_METADATA ".morph-install.json"
 #define CLI_SKILL_STORE_DIGEST_MAX 65

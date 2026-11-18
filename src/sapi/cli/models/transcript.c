@@ -5,7 +5,6 @@
 /* Database model-history API (src/session_history.h); the CLI restore service
  * lives in services/session_restore.h and no longer shares this name. */
 #include "session_history.h"
-#include "cJSON.h"
 #include <string.h>
 
 #include <stdlib.h>
@@ -33,6 +32,7 @@ static int cli_transcript_tool_push_take(struct cli_transcript_model *model,
 
 	if (!slot)
 		return NB_ERR_NOMEM;
+
 	*slot = *source;
 	memset(source, 0, sizeof(*source));
 	model->revision++;
@@ -48,20 +48,25 @@ int cli_transcript_model_create(struct cli_transcript_model **out)
 
 	if (!out)
 		return NB_ERR_INVAL;
+
 	if (*out)
 		return NB_ERR_EXISTS;
+
 	model = calloc(1, sizeof(*model));
 	if (!model)
 		return NB_ERR_NOMEM;
+
 	rc = (nb_vec_init(&model->tools, sizeof(tool)),
 	      nb_vec_reserve(&model->tools, 16) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = (nb_vec_init(&model->reasoning, sizeof(reasoning)),
 		      nb_vec_reserve(&model->reasoning, 16) ? 0 : NB_ERR_NOMEM);
+
 	if (rc) {
 		cli_transcript_model_destroy(model);
 		return rc;
 	}
+
 	*out = model;
 	return 0;
 }
@@ -72,14 +77,17 @@ void cli_transcript_model_destroy(struct cli_transcript_model *model)
 
 	if (!model)
 		return;
+
 	for (size_t _i_ = 0;
 	     _i_ < nb_vec_len(&model->reasoning) &&
 	     (reasoning = (struct cli_transcript_reasoning *)nb_vec_at(&model->reasoning, _i_));
 	     _i_++)
 		nb_buf_cleanup(&reasoning->text);
+
 	nb_vec_cleanup(&model->reasoning);
 	for (size_t i = 0; i < model->tools.len; i++)
 		cli_transcript_tool_cleanup(nb_vec_at(&model->tools, i));
+
 	nb_vec_cleanup(&model->tools);
 	free(model);
 }
@@ -99,6 +107,7 @@ static void cli_transcript_set_text(struct cli_transcript_model *tr, char **fiel
 		tr->allocation_failed = 1;
 		return;
 	}
+
 	free(*field);
 	*field = copy;
 	tr->revision++;
@@ -116,6 +125,7 @@ static struct cli_transcript_tool *cli_transcript_find_tool(struct cli_transcrip
 		if (id[0] ? strcmp(id, tool->id) == 0 : (!name[0] || strcmp(name, tool->name) == 0))
 			return tool;
 	}
+
 	return NULL;
 }
 
@@ -130,15 +140,18 @@ static const char *cli_transcript_find_process_command(struct cli_transcript_mod
 
 		if (strcmp(candidate->name, "exec") != 0 || !candidate->result[0])
 			continue;
+
 		json = cJSON_Parse(candidate->result);
 		data = cJSON_GetObjectItemCaseSensitive(json, "data");
 		if (!cJSON_IsObject(data))
 			data = json;
+
 		candidate_id = cli_transcript_json_string(data, "session_id");
 		if (strcmp(candidate_id, session_id) == 0) {
 			return candidate->subject;
 		}
 	}
+
 	return "";
 }
 
@@ -150,10 +163,12 @@ int cli_transcript_model_reasoning_append(struct cli_transcript_model *tr, const
 
 	if (!tr || (!text && len))
 		return NB_ERR_INVAL;
+
 	if (begin || !tr->reasoning.len) {
 		reasoning = nb_vec_push(&tr->reasoning);
 		if (!reasoning)
 			return NB_ERR_NOMEM;
+
 		memset(reasoning, 0, sizeof(*reasoning));
 		reasoning->after_tools = tr->tools.len;
 		rc = (nb_buf_init(&reasoning->text),
@@ -165,8 +180,10 @@ int cli_transcript_model_reasoning_append(struct cli_transcript_model *tr, const
 	} else {
 		reasoning = nb_vec_at(&tr->reasoning, tr->reasoning.len - 1);
 	}
+
 	if (!nb_buf_append(&reasoning->text, text, len))
 		return NB_ERR_NOMEM;
+
 	tr->revision++;
 	return 0;
 }
@@ -191,9 +208,11 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 		if (subject[0])
 			break;
 	}
+
 	/* Older transcripts may contain the removed exec parameter alias. */
 	if (!subject[0] && strcmp(tool->name, "exec") == 0)
 		subject = cli_transcript_json_string(args, "cmd");
+
 	cli_transcript_set_text(tr, &tool->subject, subject);
 	cli_transcript_set_text(tr, &tool->result, "");
 	cli_transcript_set_text(tr, &tool->error, "");
@@ -201,10 +220,12 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 	cli_transcript_set_text(tr, &tool->patch_preview, "");
 	if (tr->allocation_failed)
 		return NB_ERR_NOMEM;
+
 	if (strcmp(tool->name, "activate_skill") == 0) {
 		cli_transcript_set_text(tr, &tool->subject,
 					cli_transcript_json_string(args, "name"));
 	}
+
 	/* Deprecated process name is display-only compatibility, never a tool alias. */
 	int background = strcmp(tool->name, "background") == 0 ||
 			 strcmp(tool->name, "process") == 0;
@@ -224,6 +245,7 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 			cli_transcript_set_text(tr, &tool->subject, nb_buf_cstr(&fallback));
 		}
 	}
+
 	if (strcmp(tool->name, "apply_patch") == 0) {
 		const char *input = cli_transcript_json_string(args, "input");
 		const char *path = strstr(input, " File: ");
@@ -237,24 +259,29 @@ static int cli_transcript_add_tool(struct cli_transcript_model *tr, const cJSON 
 				(void)nb_buf_append(&patch, path, strcspn(path, "\r\n"));
 				cli_transcript_set_text(tr, &tool->subject, nb_buf_cstr(&patch));
 			}
+
 			for (const char *p = input; *p; p++) {
 				if (p == input || p[-1] == '\n') {
 					added += *p == '+';
 					removed += *p == '-';
 				}
 			}
+
 			nb_buf_clear(&patch);
 			(void)nb_buf_printf(&patch, "+%zu -%zu", added, removed);
 			cli_transcript_set_text(tr, &tool->summary, nb_buf_cstr(&patch));
 		}
 	}
+
 	tool->started = now;
 	morph_terminal_sanitizer_init(&tool->sanitizer, MORPH_TERMINAL_TEXT_MULTILINE);
 	if ((nb_buf_init(&tool->stream), nb_buf_reserve(&tool->stream, 128) ? 0 : NB_ERR_NOMEM) !=
 	    0)
 		return NB_ERR_NOMEM;
+
 	if (tr->allocation_failed)
 		return NB_ERR_NOMEM;
+
 	return cli_transcript_tool_push_take(tr, &pending);
 }
 
@@ -269,11 +296,14 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 
 	if (!json)
 		return;
+
 	if (!cJSON_IsObject(data))
 		data = json;
+
 	if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(json, "ok")) || cJSON_IsObject(error) ||
 	    cJSON_IsString(error))
 		tool->state = -1;
+
 	if (cJSON_IsObject(error)) {
 		const char *message = cli_transcript_json_string(error, "message");
 
@@ -282,18 +312,22 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 	} else if (cJSON_IsString(error)) {
 		cli_transcript_set_text(tr, &tool->error, error->valuestring);
 	}
+
 	if ((nb_buf_init(&summary), nb_buf_reserve(&summary, 64) ? 0 : NB_ERR_NOMEM) != 0) {
 		return;
 	}
+
 	value = cJSON_GetObjectItemCaseSensitive(data, "duration_ms");
 	if (tool->shell && cJSON_IsNumber(value) && value->valuedouble >= 0)
 		tool->started = tool->ended - value->valuedouble / 1000.0;
+
 	tool->process_running = tool->process_poll &&
 				strcmp(cli_transcript_json_string(data, "status"), "running") == 0;
 	tool->timed_out = strcmp(cli_transcript_json_string(data, "status"), "timed_out") == 0 ||
 			  cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out"));
 	if (tool->timed_out)
 		tool->state = -1;
+
 	const char *status = cli_transcript_json_string(data, "status");
 	if (!strcmp(status, "killed") || !strcmp(status, "cancelled") ||
 	    !strcmp(status, "interrupted")) {
@@ -302,6 +336,7 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 	} else if (!strcmp(status, "signaled") || !strcmp(status, "failed")) {
 		tool->state = -1;
 	}
+
 	value = cJSON_GetObjectItemCaseSensitive(data, "exit_code");
 	if (cJSON_IsNumber(value)) {
 		(void)nb_buf_printf(&summary, "exit %d", value->valueint);
@@ -320,8 +355,10 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 	} else if (cJSON_IsArray(value = cJSON_GetObjectItemCaseSensitive(data, "entries"))) {
 		(void)nb_buf_printf(&summary, "%d entries", cJSON_GetArraySize(value));
 	}
+
 	if (tool->state > 0 && strcmp(tool->name, "activate_skill") == 0)
 		(void)nb_buf_append_cstr(&summary, "loaded");
+
 	if (strcmp(tool->name, "tasks") == 0) {
 		const cJSON *id = cJSON_GetObjectItemCaseSensitive(data, "id");
 		const cJSON *tasks = cJSON_GetObjectItemCaseSensitive(data, "tasks");
@@ -337,6 +374,7 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 			cli_transcript_set_text(tr, &tool->subject, nb_buf_cstr(&subject));
 		}
 	}
+
 	if (summary.len)
 		cli_transcript_set_text(tr, &tool->summary, nb_buf_cstr(&summary));
 }
@@ -354,9 +392,11 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 
 	if (!tr || !tool_index)
 		return NB_ERR_INVAL;
+
 	*tool_index = SIZE_MAX;
 	if (!name[0])
 		return 0;
+
 	data = cJSON_CreateObject();
 	args = cJSON_Parse(arguments);
 	if (!args) {
@@ -365,18 +405,22 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 			cJSON_DeleteOwner(&args);
 		}
 	}
+
 	if (!data || !args || !cJSON_AddStringToObject(data, "tool", name) ||
 	    !cJSON_AddStringToObject(data, "tool_call_id", id)) {
 		return NB_ERR_NOMEM;
 	}
+
 	if ((cJSON_AddItemToObject(data, "args", args) ? (args = NULL, NB_OK) : NB_ERR_NOMEM) !=
 	    0) {
 		return NB_ERR_NOMEM;
 	}
+
 	/* No patch previews against today's files, and no synthetic live timing. */
 	rc = cli_transcript_add_tool(tr, data, 0);
 	if (rc)
 		return rc;
+
 	struct cli_transcript_tool *tool = nb_vec_at(&tr->tools, tr->tools.len - 1);
 
 	tool->historical = 1;
@@ -407,6 +451,7 @@ int cli_transcript_model_restore(struct cli_transcript_model *tr, const cJSON *c
 								   code->valueint));
 		}
 	}
+
 	*tool_index = tr->tools.len - 1;
 	return tr->allocation_failed ? NB_ERR_NOMEM : 0;
 }
@@ -420,6 +465,7 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 
 	if (!tr || !event || !change)
 		return NB_ERR_INVAL;
+
 	*change = (struct cli_transcript_change){0};
 	name = event->name ? event->name : "";
 	if (strcmp(name, "react.observation") == 0 &&
@@ -433,28 +479,35 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 						cli_transcript_json_string(event->data, "text"));
 			change->observation_added = 1;
 		}
+
 		return tr->allocation_failed ? NB_ERR_NOMEM : 0;
 	}
+
 	if (event->type != MORPH_EVENT_TOOL)
 		return 0;
+
 	if (strcmp(name, "tool.call") == 0) {
 		rc = cli_transcript_add_tool(tr, event->data, now);
 		if (rc != 0)
 			return rc;
 	}
+
 	tool = cli_transcript_find_tool(tr, event->data);
 	if (!tool)
 		return 0;
+
 	change->tool_index =
 		(size_t)(tool - (struct cli_transcript_tool *)((void *)tr->tools.data));
 	if (strcmp(name, "tool.call") == 0) {
 		change->kind = CLI_TRANSCRIPT_TOOL_STARTED;
 		return 0;
 	}
+
 	if (strcmp(name, "tool.running") == 0) {
 		change->kind = CLI_TRANSCRIPT_TOOL_RUNNING;
 		return 0;
 	}
+
 	if (strcmp(name, "tool.stream.delta") == 0) {
 		const char *text = cli_transcript_json_string(event->data, "text");
 
@@ -464,11 +517,14 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 						  strlen(text), 0);
 		if (!rc)
 			tr->revision++;
+
 		return rc;
 	}
+
 	if (strcmp(name, "tool.result") != 0 && strcmp(name, "tool.failed") != 0 &&
 	    strcmp(name, "tool.cancelled") != 0)
 		return 0;
+
 	change->kind = CLI_TRANSCRIPT_TOOL_FINISHED;
 	tool->state = strcmp(name, "tool.result") == 0 ? 1 : -1;
 	tool->interrupted = strcmp(name, "tool.cancelled") == 0;
@@ -479,6 +535,7 @@ int cli_transcript_model_reduce(struct cli_transcript_model *tr, const struct mo
 	rc = morph_terminal_sanitize_feed(&tool->sanitizer, &tool->stream, NULL, 0, 1);
 	if (rc != 0)
 		return rc;
+
 	cli_transcript_summarize_result(tr, tool);
 	return tr->allocation_failed ? NB_ERR_NOMEM : 0;
 }
@@ -490,9 +547,11 @@ int cli_transcript_model_set_preview(struct cli_transcript_model *tr, size_t ind
 
 	if (!tr || !preview)
 		return NB_ERR_INVAL;
+
 	tool = nb_vec_at(&tr->tools, index);
 	if (!tool)
 		return NB_ERR_NOT_FOUND;
+
 	cli_transcript_set_text(tr, &tool->patch_preview, preview);
 	return tr->allocation_failed ? NB_ERR_NOMEM : 0;
 }
@@ -503,6 +562,7 @@ void cli_transcript_model_finish(struct cli_transcript_model *tr, double now)
 
 	if (!tr || tr->finished)
 		return;
+
 	for (size_t _i_ = 0; _i_ < nb_vec_len(&tr->tools) &&
 			     (tool = (struct cli_transcript_tool *)nb_vec_at(&tr->tools, _i_));
 	     _i_++) {
@@ -514,6 +574,7 @@ void cli_transcript_model_finish(struct cli_transcript_model *tr, double now)
 						"Interrupted before a result was received");
 		}
 	}
+
 	tr->finished = 1;
 	tr->revision++;
 }
@@ -523,12 +584,14 @@ cli_transcript_model_active_borrow(const struct cli_transcript_model *tr)
 {
 	if (!tr)
 		return NULL;
+
 	for (size_t i = tr->tools.len; i > 0; i--) {
 		const struct cli_transcript_tool *tool = nb_vec_at(&tr->tools, i - 1);
 
 		if (!tool->state)
 			return tool;
 	}
+
 	return NULL;
 }
 

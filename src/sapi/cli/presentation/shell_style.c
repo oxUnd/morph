@@ -1,4 +1,4 @@
-#include "sapi/cli/components/shell_style.h"
+#include "sapi/cli/presentation/shell_style.h"
 #include <nothing/tui/terminal/text.h>
 #include <nb/err.h>
 #include "sapi/cli/application.h"
@@ -19,23 +19,29 @@ const char *cli_shell_summary_borrow(const char *text, const char *workdir)
 
 	while (*p == ' ' || *p == '\t')
 		p++;
+
 	if (strncmp(p, "cd", 2) != 0 || (p[2] != ' ' && p[2] != '\t'))
 		return text;
+
 	p += 2;
 	while (*p == ' ' || *p == '\t')
 		p++;
+
 	if (strncmp(p, "-- ", 3) == 0) {
 		p += 3;
 		while (*p == ' ' || *p == '\t')
 			p++;
 	}
+
 	if ((nb_buf_init(&path), nb_buf_reserve(&path, 128) ? 0 : NB_ERR_NOMEM) != 0)
 		return text;
+
 	while (*p) {
 		char ch = *p;
 
 		if (!quote && (isspace((unsigned char)ch) || cli_shell_style_shell_operator(ch)))
 			break;
+
 		p++;
 		if (ch == quote) {
 			quote = 0;
@@ -48,19 +54,23 @@ const char *cli_shell_summary_borrow(const char *text, const char *workdir)
 			(void)nb_buf_append_char(&path, ch);
 		}
 	}
+
 	valid = valid && !quote && !nb_buf_status(&path) && path.len &&
 		(strcmp(path.ptr, workdir) == 0 || strcmp(path.ptr, ".") == 0);
 	nb_buf_cleanup(&path);
 	while (*p == ' ' || *p == '\t')
 		p++;
+
 	if (valid && strncmp(p, "&&", 2) == 0)
 		p += 2;
 	else if (valid && *p == ';' && p[1] != ';' && p[1] != '&')
 		p++;
 	else
 		return text;
+
 	while (isspace((unsigned char)*p))
 		p++;
+
 	return *p ? p : text;
 }
 
@@ -70,8 +80,10 @@ static int cli_shell_style_shell_assignment(const char *text, size_t len)
 
 	if (!len || !(isalpha((unsigned char)text[0]) || text[0] == '_'))
 		return 0;
+
 	while (i < len && (isalnum((unsigned char)text[i]) || text[i] == '_'))
 		i++;
+
 	return i < len && text[i] == '=';
 }
 
@@ -88,10 +100,12 @@ static void cli_shell_style_shell_span(nb_buf *out, const char *start, const cha
 		p = nb_utf8_next_cstr(p, &cp);
 		span_width += nb_utf8_width_cp((unsigned)cp);
 	}
+
 	if (width > 0 && *column > 0 && span_width <= width && *column + span_width > width) {
 		(void)nb_buf_append_cstr(out, "\n    ");
 		*column = 0;
 	}
+
 	(void)nb_buf_append_cstr(out, color);
 	while (start < end) {
 		int32_t cp;
@@ -103,12 +117,15 @@ static void cli_shell_style_shell_span(nb_buf *out, const char *start, const cha
 			(void)nb_buf_append_cstr(out, color);
 			*column = 0;
 		}
+
 		if (cp != '\n') {
 			(void)nb_buf_append(out, start, (size_t)(next - start));
 			*column += columns;
 		}
+
 		start = next;
 	}
+
 	if (color[0])
 		(void)nb_buf_append_cstr(out, ANSI_RESET);
 }
@@ -124,6 +141,7 @@ int cli_shell_style(nb_buf *out, const char *text, int width)
 
 	if (!safe)
 		return NB_ERR_NOMEM;
+
 	while (*p) {
 		const char *start = p;
 		const char *color = "";
@@ -132,6 +150,7 @@ int cli_shell_style(nb_buf *out, const char *text, int width)
 			do {
 				if (*p == '\n')
 					command = 1;
+
 				p++;
 			} while (*p && isspace((unsigned char)*p));
 		} else if (*p == '#') {
@@ -142,6 +161,7 @@ int cli_shell_style(nb_buf *out, const char *text, int width)
 			redirect = *p == '<' || *p == '>';
 			if (!redirect)
 				command = 1;
+
 			p++;
 			if (*p == start[0] || (redirect && *p == '&'))
 				p++;
@@ -158,28 +178,36 @@ int cli_shell_style(nb_buf *out, const char *text, int width)
 					while (*p && *p != quote) {
 						if (quote == '"' && *p == '\\' && p[1])
 							p++;
+
 						p++;
 					}
+
 					if (*p)
 						p++;
 				} else {
 					p++;
 				}
 			}
+
 			if (*start == '\'' || *start == '"')
 				color = ANSI_GREEN;
 			else if (command && !redirect &&
 				 !cli_shell_style_shell_assignment(start, (size_t)(p - start)))
 				color = ANSI_CYAN;
+
 			if (!redirect &&
 			    !cli_shell_style_shell_assignment(start, (size_t)(p - start)))
 				command = 0;
+
 			redirect = 0;
 		}
+
 		cli_shell_style_shell_span(out, start, p, color, width, &column);
 	}
+
 	free(safe);
 	if (nb_buf_status(out))
 		return nb_buf_status(out);
+
 	return 0;
 }

@@ -25,6 +25,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 
 	if (rc != 0)
 		return rc;
+
 	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
 	    cli_setup_controls_available(stdin, stdout) &&
 	    ((argc <= 2 && strcmp(action, "list") == 0) ||
@@ -36,6 +37,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		cJSON_Delete(rows);
 		return rc;
 	}
+
 	if (strcmp(action, "project") == 0) {
 		const char *cwd = runtime_workdir_borrow(ctx->runtime);
 		char digest[65];
@@ -58,6 +60,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 				cli_output_printf(ctx, "  unavailable: %s\n",
 				       cli_hooks_hook_field(row, "diagnostic"));
 		}
+
 		cli_output_printf(ctx, "Review: /hooks review <id>\nWorkspace review: /hooks project\n");
 		if (cJSON_GetArraySize(rows) > 0) {
 			const char *digest =
@@ -72,6 +75,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 		cJSON_ArrayForEach (row, rows) {
 			if (strcmp(cli_hooks_hook_field(row, "id"), argv[2]) != 0)
 				continue;
+
 			cli_output_printf(ctx,
 			       "Source: %s\nCwd: %s\nState: %s\n"
 			       "Previous definition:\n%s\nCurrent definition:\n%s\n"
@@ -86,6 +90,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 			if (*cli_hooks_hook_field(row, "diagnostic"))
 				cli_output_printf(ctx, "Unavailable: %s\n",
 				       cli_hooks_hook_field(row, "diagnostic"));
+
 			const cJSON *last = cJSON_GetObjectItem(row, "last_run");
 			if (last) {
 				char *text = cJSON_Print(last);
@@ -94,6 +99,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 					free(text);
 				}
 			}
+
 			rc = 0;
 		}
 	} else if (argc == 4) {
@@ -105,6 +111,7 @@ static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char *
 			    "trust|enable|disable|revoke <id> <digest>]\n");
 		rc = NB_ERR_INVAL;
 	}
+
 	cJSON_Delete(rows);
 	return rc;
 }

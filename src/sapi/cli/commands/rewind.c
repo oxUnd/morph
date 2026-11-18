@@ -9,7 +9,7 @@
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/services/session_restore.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 #include "runtime/checkpoint.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
@@ -51,23 +51,29 @@ static int cli_rewind_restore(struct cli_application *ctx, int64_t id,
 		else
 			CMD_ERROR(ctx, "rewind failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "code_restored")))
 			cli_output_printf(ctx, "  Code was restored before this error.\n");
+
 		if (conversation_restored)
 			cli_output_printf(ctx, "  Conversation was restored before this error.\n");
+
 		if (display_rc)
 			cli_output_printf(ctx, "  History display refresh failed: %s\n",
 					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 						     display_rc));
+
 		cli_rewind_report_print(ctx, report);
 		return rc;
 	}
+
 	if (display_rc) {
 		CMD_ERROR(ctx, "rewind completed; history display failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, display_rc));
 		cli_rewind_report_print(ctx, report);
 		return display_rc;
 	}
+
 	CMD_OK(ctx, "rewound %s to checkpoint %lld",
 	       mode == RUNTIME_REWIND_CODE	     ? "code"
 	       : mode == RUNTIME_REWIND_CONVERSATION ? "conversation"
@@ -75,6 +81,7 @@ static int cli_rewind_restore(struct cli_application *ctx, int64_t id,
 	       (long long)id);
 	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "cleanup_incomplete")))
 		cli_rewind_report_print(ctx, report);
+
 	return 0;
 }
 
@@ -85,10 +92,12 @@ static int cli_rewind_id(const char *text, int64_t *id)
 
 	if (!text || !*text || *text < '0' || *text > '9')
 		return NB_ERR_INVAL;
+
 	errno = 0;
 	value = strtoll(text, &end, 10);
 	if (errno || *end || value <= 0 || value > INT64_MAX)
 		return NB_ERR_INVAL;
+
 	*id = (int64_t)value;
 	return 0;
 }
@@ -99,10 +108,12 @@ static int cli_rewind_list(struct cli_application *ctx, int interactive)
 	int rc = runtime_checkpoint_list_copy(ctx->runtime, &report);
 	if (rc)
 		return rc;
+
 	cJSON *entries = cJSON_GetObjectItemCaseSensitive(report, "checkpoints");
 	if (interactive && cJSON_GetArraySize(entries) > 0 &&
 	    cli_setup_controls_available(stdin, stdout))
 		return cli_rewind_show_take(ctx, &report, cli_rewind_restore);
+
 	CMD_HEADER(ctx, "rewind checkpoints");
 	const cJSON *entry;
 	cJSON_ArrayForEach (entry, entries) {
@@ -117,10 +128,13 @@ static int cli_rewind_list(struct cli_application *ctx, int interactive)
 			       cJSON_GetObjectItemCaseSensitive(entry, "id")),
 		       prompt, count);
 	}
+
 	if (!cJSON_GetArraySize(entries))
 		cli_output_printf(ctx, "  No checkpoints in this session.\n");
+
 	if (interactive)
 		cli_rewind_help(ctx);
+
 	return 0;
 }
 
@@ -131,12 +145,15 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 		cli_rewind_help(ctx);
 		return 0;
 	}
+
 	if (!ctx || !ctx->runtime)
 		return NB_ERR_INVAL;
+
 	if (ctx->turn_active || (ctx->input_job && ctx->input_job->active)) {
 		CMD_ERROR(ctx, "wait for the active turn before rewinding");
 		return NB_ERR_BUSY;
 	}
+
 	int rc;
 	if (argc == 1 || (argc == 2 && !strcmp(argv[1], "list"))) {
 		rc = cli_rewind_list(ctx, argc == 1 && ctx->presentation_mode ==
@@ -147,6 +164,7 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 			cli_rewind_help(ctx);
 			return NB_ERR_INVAL;
 		}
+
 		if (!strcmp(argv[1], "preview")) {
 			cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 			rc = runtime_checkpoint_preview_copy(ctx->runtime, id, &report);
@@ -167,12 +185,15 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 				cli_rewind_help(ctx);
 				return NB_ERR_INVAL;
 			}
+
 			return cli_rewind_restore(ctx, id, mode);
 		}
 	}
+
 	if (rc)
 		CMD_ERROR(ctx, "rewind failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	return rc;
 }
 

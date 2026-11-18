@@ -24,17 +24,20 @@ static int cli_options_emit_option_event(const char *name, const char *phase, co
 		cJSON_Delete(args);
 		return NB_ERR_NOMEM;
 	}
+
 	if (!cJSON_AddStringToObject(data, "command", command) ||
 	    !cJSON_AddStringToObject(data, "input", command)) {
 		cJSON_Delete(args);
 		cJSON_Delete(data);
 		return NB_ERR_NOMEM;
 	}
+
 	cJSON_AddItemToObject(data, "args", args);
 	if (output && !cJSON_AddStringToObject(data, "output", output)) {
 		cJSON_Delete(data);
 		return NB_ERR_NOMEM;
 	}
+
 	event = (struct morph_event){
 		.type = MORPH_EVENT_COMMAND,
 		.name = name,
@@ -47,6 +50,7 @@ static int cli_options_emit_option_event(const char *name, const char *phase, co
 	cJSON_Delete(data);
 	if (!json)
 		return NB_ERR_NOMEM;
+
 	rc = cli_output_write_json(json);
 	free(json);
 	return rc;
@@ -58,6 +62,7 @@ int cli_options_emit_result(const char *command, const char *output)
 
 	if (rc != 0)
 		return rc;
+
 	return cli_options_emit_option_event("command.completed", "end", command, output);
 }
 
@@ -106,6 +111,7 @@ static int cli_options_parse_events_mode(struct cli_options *options, const char
 		fprintf(stderr, "morph: invalid --events mode: %s (expected json)\n", mode);
 		return 2;
 	}
+
 	options->events_json = 1;
 	return 0;
 }
@@ -122,15 +128,18 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 		if (option == -1) {
 			if (optind == argc)
 				break;
+
 			if (!options->resume && strcmp(argv[optind], "resume") == 0) {
 				options->resume = 1;
 				optind++;
 				continue;
 			}
+
 			if (options->resume && !options->resume_ref) {
 				options->resume_ref = argv[optind++];
 				continue;
 			}
+
 			if (!options->resume &&
 			    (strcmp(argv[optind], "setup") == 0 ||
 			     strcmp(argv[optind], "mcp") == 0 ||
@@ -139,9 +148,11 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 				options->command_index = optind;
 				return 0;
 			}
+
 			fprintf(stderr, "morph: unexpected argument: %s\n", argv[optind]);
 			return 2;
 		}
+
 		switch (option) {
 		case 'c':
 			options->config_path = optarg;
@@ -170,6 +181,7 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 		case CLI_OPTIONS_OPTION_EVENTS:
 			if (cli_options_parse_events_mode(options, optarg) != 0)
 				return 2;
+
 			break;
 		case ':':
 			fprintf(stderr, "morph: option requires an argument: %s\n",
@@ -181,12 +193,14 @@ int cli_options_parse(int argc, char **argv, struct cli_options *options)
 			return 2;
 		}
 	}
+
 	if (options->resume && (options->one_shot_prompt || options->session_name ||
 			       options->events_json || options->show_version)) {
 		fprintf(stderr, "morph: resume cannot be combined with --prompt, --session, "
 				"--events or --version\n");
 		return 2;
 	}
+
 	return 0;
 }
 
@@ -194,8 +208,10 @@ enum cli_presentation_mode cli_options_presentation_mode(const struct cli_option
 {
 	if (options->events_json)
 		return CLI_PRESENT_EVENTS_JSON;
+
 	if (options->one_shot_prompt)
 		return CLI_PRESENT_ONCE_PLAIN;
+
 	return CLI_PRESENT_INTERACTIVE;
 }
 
@@ -203,6 +219,7 @@ int cli_options_print_usage(const struct cli_options *options)
 {
 	if (options->events_json)
 		return cli_options_emit_result("--help", cli_options_usage_text) == 0 ? 0 : 1;
+
 	fputs(cli_options_usage_text, stdout);
 	return 0;
 }

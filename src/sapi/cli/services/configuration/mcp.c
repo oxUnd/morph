@@ -32,8 +32,10 @@ const char *cli_setup_mcp_summary(int role)
 #ifdef __APPLE__
 	if (role == CLI_SETUP_DEVELOPER)
 		return "MCP: Exa, Playwright, Computer Use.";
+
 	if (role == CLI_SETUP_DESIGNER)
 		return "MCP: Exa, Computer Use, Figma (manual).";
+
 	if (cli_mcp_desktop_role(role))
 		return "MCP: Exa, Computer Use.";
 #else
@@ -42,6 +44,7 @@ const char *cli_setup_mcp_summary(int role)
 #endif
 	if (cli_mcp_browser_role(role))
 		return "MCP: Exa, Playwright.";
+
 	return "MCP: Exa search and webpage reading.";
 }
 
@@ -50,10 +53,12 @@ static int cli_mcp_program_available(const char *name)
 	const char *search = getenv("PATH");
 	if (!search)
 		return 0;
+
 	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_init(&path), nb_buf_reserve(&path, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	for (const char *part = search;;) {
 		const char *colon = strchr(part, ':');
 		size_t len = colon ? (size_t)(colon - part) : strlen(part);
@@ -62,18 +67,23 @@ static int cli_mcp_program_available(const char *name)
 			 : (nb_buf_append_char(&path, '.') ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
 			rc = (nb_buf_printf(&path, "/%s", name) ? 0 : NB_ERR_NOMEM);
+
 		if (rc != 0)
 			break;
+
 		struct stat st;
 		if (stat(nb_buf_cstr(&path), &st) == 0 && S_ISREG(st.st_mode) &&
 		    access(nb_buf_cstr(&path), X_OK) == 0) {
 			rc = 1;
 			break;
 		}
+
 		if (!colon)
 			break;
+
 		part = colon + 1;
 	}
+
 	nb_buf_cleanup(&path);
 	return rc;
 }
@@ -84,6 +94,7 @@ static int cli_mcp_add_server(char **text, const char *server)
 	int rc = cli_setup_config_mcp_add_copy(*text, server, &next);
 	if (rc != 0)
 		return rc;
+
 	free(*text);
 	*text = next;
 	return 0;
@@ -96,6 +107,7 @@ static int cli_mcp_add_desktop(char **text)
 	int uvx = cli_mcp_program_available("uvx");
 	if (python < 0 || uvx < 0)
 		return python < 0 ? python : uvx;
+
 	char adapter[PATH_MAX];
 	int found = morph_data_find(adapter, sizeof(adapter), "scripts/macos_mcp_adapter.py") == 0;
 	nb_buf server NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -106,6 +118,7 @@ static int cli_mcp_add_desktop(char **text)
 			      "[[mcp.servers]]\nname = 'macos-computer-use'\ntransport = 'stdio'\n")
 			      ? 0
 			      : NB_ERR_NOMEM);
+
 	if (rc == 0 && found) {
 		cJSON *value = cJSON_CreateString(adapter);
 		char *encoded = value ? cJSON_PrintUnformatted(value) : NULL;
@@ -125,13 +138,16 @@ static int cli_mcp_add_desktop(char **text)
 			      ? 0
 			      : NB_ERR_NOMEM);
 	}
+
 	if (rc == 0)
 		rc = (nb_buf_printf(&server, "auto_connect = %s\nconnect_timeout = 120\n",
 				    uvx && (!found || python) ? "true" : "false")
 			      ? 0
 			      : NB_ERR_NOMEM);
+
 	if (rc == 0)
 		rc = cli_mcp_add_server(text, nb_buf_cstr(&server));
+
 	nb_buf_cleanup(&server);
 	return rc;
 }
@@ -141,13 +157,17 @@ int cli_setup_mcp_apply_copy(const char *text, int role, char **out)
 {
 	if (!out)
 		return NB_ERR_INVAL;
+
 	if (*out)
 		return NB_ERR_EXISTS;
+
 	if (!text)
 		return NB_ERR_INVAL;
+
 	char *current = strdup(text);
 	if (!current)
 		return NB_ERR_NOMEM;
+
 	int rc = cli_mcp_add_server(
 		&current,
 		"[[mcp.servers]]\nname = 'exa'\ntransport = 'http'\n"
@@ -177,10 +197,12 @@ int cli_setup_mcp_apply_copy(const char *text, int role, char **out)
 					"[[mcp.servers]]\nname='figma-desktop'\ntransport='http'\n"
 					"url='http://127.0.0.1:3845/"
 					"mcp'\nauto_connect=false\nconnect_timeout=10\n");
+
 	if (rc == 0)
 		*out = current;
 	else
 		free(current);
+
 	return rc;
 }
 
@@ -195,8 +217,10 @@ int cli_setup_mcp_notes(int role, nb_buf *output)
 		nb_buf_printf(
 			output,
 			"Computer Use needs macOS Accessibility and Screen Recording access.\n");
+
 	if (cli_mcp_desktop_role(role) && cli_mcp_program_available("uvx") == 0)
 		nb_buf_printf(output, "Install uvx, then /mcp connect macos-computer-use.\n");
+
 	if (cli_mcp_desktop_role(role) && cli_mcp_program_available("python3") == 0)
 		nb_buf_printf(output, "Install Python 3 to use the Computer Use launch adapter.\n");
 #endif
@@ -204,5 +228,6 @@ int cli_setup_mcp_notes(int role, nb_buf *output)
 		nb_buf_printf(
 			output,
 			"Enable Figma's desktop MCP server, then /mcp connect figma-desktop.\n");
+
 	return nb_buf_status(output);
 }

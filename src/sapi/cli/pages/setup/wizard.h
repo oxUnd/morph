@@ -1,8 +1,9 @@
 #ifndef MORPH_CLI_PAGES_SETUP_WIZARD_H
 #define MORPH_CLI_PAGES_SETUP_WIZARD_H
 
-struct cli_application;
 #include <stdio.h>
+
+struct cli_application;
 
 #ifdef __cplusplus
 extern "C" {

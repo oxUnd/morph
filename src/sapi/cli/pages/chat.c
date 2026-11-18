@@ -1,4 +1,8 @@
 #include "sapi/cli/pages/chat.h"
+#include <nothing/tui/choice_prompt.h>
+#include "sapi/cli/components/list.h"
+#include "sapi/cli/components/plan.h"
+#include "sapi/cli/components/notice.h"
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
@@ -17,11 +21,11 @@
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/components/banner.h"
 #include "sapi/cli/components/composer.h"
-#include "sapi/cli/components/visibility.h"
-#include "sapi/cli/components/agents.h"
-#include "sapi/cli/components/jobs.h"
-#include "sapi/cli/components/list.h"
-#include "sapi/cli/components/notice.h"
+#include "sapi/cli/presentation/panel.h"
+#include "sapi/cli/presentation/agents.h"
+#include "sapi/cli/presentation/jobs.h"
+
+
 #include "sapi/cli/components/recap.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/presenter_state.h"
@@ -42,9 +46,9 @@
 #include "sapi/cli/components/media.h"
 #include "sapi/cli/components/mcp_tree.h"
 #include "sapi/cli/components/tool_call.h"
-#include "sapi/cli/components/feed_block.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/plan.h"
+#include "sapi/cli/presentation/feed_block.h"
+#include "sapi/cli/presentation/feed.h"
+
 #include "sapi/cli/components/report.h"
 #include "sapi/cli/components/skill_tree.h"
 #include "sapi/cli/application_internal.h"
@@ -78,7 +82,11 @@ struct cli_chat_page {
 	char *last_assistant_text;
 	char *footer_text;
 	char *activity_text;
-	nb_buf stream, output;
+	nb_buf stream, output, agent_summary;
+	int64_t queue_revision;
+	uint64_t jobs_revision, agents_revision;
+	int activity_columns, activity_styled, status_ultra;
+	int64_t next_jobs_update, next_status_update;
 	nb_map *tools;
 	nb_vec history;
 	char *draft;
@@ -99,11 +107,6 @@ int cli_chat_active(const struct cli_application *ctx)
 	return ctx && ctx->chat && ctx->chat->ready;
 }
 
-int cli_chat_flush(struct cli_application *ctx)
-{
-	return cli_chat_active(ctx) ? nt_application_render(&ctx->base) : 0;
-}
-
 int cli_chat_yield_input(struct cli_application *ctx)
 {
 	return cli_chat_active(ctx) ? nt_text_field_reset_input(ctx->chat->editor) : 0;
@@ -119,6 +122,7 @@ static int cli_chat_switch_input(struct cli_chat_page *page, struct nt_view *foc
 	int rc = nt_component_state_set_bool(page->modal, page->panel || page->prompt_rows);
 	if (!rc)
 		rc = nt_view_flush_state(nt_view_controller_root_view(page->controller));
+
 	return rc || !focus ? rc : nt_view_focus(focus);
 }
 
@@ -137,40 +141,42 @@ static int cli_chat_queue_hidden(void *data, struct nt_value *value)
 						!nt_list_view_count(page->queue));
 }
 
-int cli_chat_prompt_begin(struct cli_application *ctx, int rows)
+int cli_chat_prompt_choice(struct cli_application *ctx, int rows, struct nt_selection_model *model,
+			   struct nt_choice_list_state *state,
+			   const struct nt_choice_prompt_options *options, FILE *input,
+			   char **custom)
 {
 	if (!cli_chat_active(ctx))
-		return 0;
+		return nt_choice_prompt_run(model, state, options, input, stdout, custom);
+
 	struct cli_chat_page *page = ctx->chat;
 	if (rows < 1 || page->panel || page->prompt_rows)
 		return NB_ERR_INVAL;
+
 	page->prompt_rows = rows;
 	int rc = cli_chat_switch_input(page, NULL);
 	if (!rc)
-		rc = cli_chat_flush(ctx);
-	if (rc) {
-		cli_chat_prompt_end(ctx);
-		return rc;
-	}
-	struct nt_view_rect frame = nt_view_frame(page->panel_host);
-	/* The synchronous widget owns this reserved region until prompt_end. */
-	rc = nt_terminal_clear_below(stdout, frame.y + 2, frame.x + 1);
-	if (rc) {
-		cli_chat_prompt_end(ctx);
-		return rc;
-	}
-	return 0;
-}
+		rc = nt_application_render(&ctx->base);
 
-void cli_chat_prompt_end(struct cli_application *ctx)
-{
-	if (!cli_chat_active(ctx) || !ctx->chat->prompt_rows)
-		return;
-	struct cli_chat_page *page = ctx->chat;
+	if (!rc) {
+		struct nt_view_rect frame = nt_view_frame(page->panel_host);
+		rc = nt_terminal_clear_below(stdout, frame.y + 2, frame.x + 1);
+	}
+
+	if (!rc)
+		rc = nt_choice_prompt_run(model, state, options, input, stdout, custom);
+
 	page->prompt_rows = 0;
-	(void)cli_chat_switch_input(page, page->editor);
-	(void)nt_application_restore_terminal(&ctx->base);
-	(void)cli_chat_flush(ctx);
+	int focus_rc = cli_chat_switch_input(page, page->editor);
+	int terminal_rc = nt_application_restore_terminal(&ctx->base);
+	int render_rc = nt_application_render(&ctx->base);
+	if (rc)
+		return rc;
+
+	if (focus_rc)
+		return focus_rc;
+
+	return terminal_rc ? terminal_rc : render_rc;
 }
 
 int cli_chat_panel_mount(struct cli_application *ctx, cli_chat_panel_build_fn build,
@@ -178,23 +184,29 @@ int cli_chat_panel_mount(struct cli_application *ctx, cli_chat_panel_build_fn bu
 {
 	if (!cli_chat_active(ctx) || !build || !complete)
 		return NB_ERR_INVAL;
+
 	if (!ctx->running)
 		return NB_ERR_CANCELLED;
+
 	struct cli_chat_page *page = ctx->chat;
 	if (page->panel)
 		return NB_ERR_BUSY;
+
 	page->panel = build(page->builder, page->panel_host, data);
 	int rc = nt_builder_error(page->builder);
 	if (!rc && !page->panel)
 		rc = NB_ERR_NOMEM;
+
 	if (!rc)
 		rc = cli_chat_switch_input(page, page->panel);
+
 	if (rc) {
 		page->panel = NULL;
 		(void)nt_view_clear_children(page->panel_host);
 		(void)cli_chat_switch_input(page, page->editor);
 		return rc;
 	}
+
 	page->panel_data = data;
 	page->panel_complete = complete;
 	return 0;
@@ -211,11 +223,13 @@ static int cli_chat_panel_remove(struct cli_application *ctx, struct nt_view *pa
 {
 	if (!cli_chat_panel_active(ctx) || ctx->chat->panel != panel)
 		return NB_ERR_INVAL;
+
 	struct cli_chat_page *page = ctx->chat;
 	page->panel = NULL;
 	int rc = cli_chat_switch_input(page, page->editor);
 	if (!rc)
 		rc = nt_view_clear_children(page->panel_host);
+
 	return rc;
 }
 
@@ -223,6 +237,7 @@ int cli_chat_panel_close(struct cli_application *ctx, int result)
 {
 	if (!cli_chat_panel_active(ctx))
 		return 0;
+
 	struct cli_chat_page *page = ctx->chat;
 	void *data = page->panel_data;
 	void (*complete)(void *, int) = page->panel_complete;
@@ -238,6 +253,7 @@ int cli_chat_reset(struct cli_application *ctx)
 {
 	if (!cli_chat_active(ctx))
 		return 0;
+
 	struct cli_chat_page *page = ctx->chat;
 	page->stream_view = NULL;
 	page->output_view = NULL;
@@ -255,6 +271,7 @@ int cli_chat_reset(struct cli_application *ctx)
 	int rc = nt_view_clear_children(page->feed);
 	if (!rc)
 		rc = nt_scroll_view_follow(page->scroll, 1);
+
 	return rc;
 }
 
@@ -277,6 +294,7 @@ void cli_chat_transcript_reset(struct cli_application *ctx)
 {
 	if (!cli_chat_active(ctx))
 		return;
+
 	cli_chat_page_boundary(ctx->chat);
 	nb_map_clear(ctx->chat->tools);
 	ctx->chat->last_assistant = NULL;
@@ -288,6 +306,7 @@ int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
 {
 	if (!cli_chat_active(ctx))
 		return 0;
+
 	struct cli_chat_page *page = ctx->chat;
 	cli_chat_page_boundary(page);
 	page->last_assistant = NULL;
@@ -297,6 +316,7 @@ int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
 	if (view && kind == CLI_MESSAGE_USER)
 		nt_builder_fail(page->builder,
 			cli_message_set_ultra(view, ctx->composer.ultra));
+
 	return cli_chat_page_error(page);
 }
 
@@ -304,6 +324,7 @@ int cli_chat_media(struct cli_application *ctx, const char *type, const char *pa
 {
 	if (!cli_chat_active(ctx) || !type || !path)
 		return NB_ERR_INVAL;
+
 	struct cli_chat_page *page = ctx->chat;
 	cli_chat_page_boundary(page);
 	const struct nt_view_options options = {
@@ -318,6 +339,7 @@ static struct nt_view *cli_chat_page_report_parent(struct cli_chat_page *page)
 	cli_chat_page_boundary(page);
 	if (page->command_group)
 		return page->command_group;
+
 	return nt_stack_view_add(page->builder, page->feed, NT_STACK_VIEW_VERTICAL, 0,
 				 &(struct nt_view_options){.margin = {.top = 1}});
 }
@@ -331,6 +353,7 @@ int cli_chat_skills(struct cli_application *ctx, const struct cli_skill_list_row
 	cli_chat_page_boundary(page);
 	if (!group)
 		group = cli_chat_page_report_parent(page);
+
 	cli_skill_tree_add(page->builder, group, skills, count);
 	return cli_chat_page_error(page);
 }
@@ -340,6 +363,7 @@ int cli_chat_mcp_servers(struct cli_application *ctx, const struct runtime_mcp_s
 {
 	if (!cli_chat_active(ctx))
 		return NB_ERR_INVAL;
+
 	struct cli_chat_page *page = ctx->chat;
 	struct nt_view *parent = cli_chat_page_report_parent(page);
 	cli_mcp_tree_servers_add_borrow(page->builder, parent, servers, count,
@@ -352,6 +376,7 @@ int cli_chat_mcp_items(struct cli_application *ctx, const char *kind, const char
 {
 	if (!cli_chat_active(ctx))
 		return NB_ERR_INVAL;
+
 	struct cli_chat_page *page = ctx->chat;
 	struct nt_view *parent = cli_chat_page_report_parent(page);
 	cli_mcp_tree_items_add_borrow(page->builder, parent, kind, server, items, count,
@@ -363,6 +388,7 @@ int cli_chat_command_input(struct cli_application *ctx, const char *text)
 {
 	if (!cli_chat_active(ctx) || !text)
 		return NB_ERR_INVAL;
+
 	struct cli_chat_page *page = ctx->chat;
 	cli_chat_page_boundary(page);
 	page->command_group = nt_stack_view_add(
@@ -372,9 +398,11 @@ int cli_chat_command_input(struct cli_application *ctx, const char *text)
 	struct nt_view_options style = {0};
 	if (cli_output_color_enabled(ctx))
 		style.style.foreground = (struct nt_color){NT_COLOR_INDEXED, 141};
+
 	struct nt_view *label = nt_label_add(page->builder, page->command_group, text, &style);
 	if (label)
 		nt_builder_fail(page->builder, nt_label_set_wrap_mode(label, NT_TEXT_WRAP_NONE));
+
 	return cli_chat_page_error(page);
 }
 
@@ -382,6 +410,7 @@ void cli_chat_command_end(struct cli_application *ctx)
 {
 	if (!cli_chat_active(ctx))
 		return;
+
 	ctx->chat->command_group = NULL;
 	cli_chat_page_boundary(ctx->chat);
 }
@@ -390,6 +419,7 @@ int cli_chat_output(struct cli_application *ctx, const char *text)
 {
 	if (!cli_chat_active(ctx) || !text || !*text)
 		return 0;
+
 	struct cli_chat_page *page = ctx->chat;
 	if (!page->output_view) {
 		const struct nt_view_options options = {
@@ -402,11 +432,13 @@ int cli_chat_output(struct cli_application *ctx, const char *text)
 		if (!page->output_view)
 			return cli_chat_page_error(page);
 	}
+
 	int rc = (nb_buf_append_cstr(&page->output, text) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = cli_rich_document_set_rendered_copy(page->output_view,
 							 nb_buf_cstr(&page->output),
 							 cli_output_color_enabled(ctx));
+
 	return rc == NB_ERR_AGAIN ? 0 : rc;
 }
 
@@ -414,15 +446,30 @@ void cli_chat_activity(struct cli_application *ctx, const char *text)
 {
 	if (cli_chat_active(ctx)) {
 		struct cli_chat_page *page = ctx->chat;
+		if (text && *text && page->activity_text && !strcmp(text, page->activity_text))
+			return;
+
+		if ((!text || !*text) && !page->activity_text &&
+		    (ctx->turn_active || !*nt_text_view_text(page->status)))
+			return;
+
+		page->next_status_update = 0;
 		char *copy = text && *text ? strdup(text) : NULL;
 		if (text && *text && !copy) {
 			nt_builder_fail(page->builder, NB_ERR_NOMEM);
 			return;
 		}
+
+		int rc = cli_messages_set_rendered_view(page->status, text ? text : "",
+							cli_output_color_enabled(ctx));
+		if (rc) {
+			free(copy);
+			nt_builder_fail(page->builder, rc);
+			return;
+		}
+
 		free(page->activity_text);
 		page->activity_text = copy;
-		(void)cli_messages_set_rendered_view(page->status, text ? text : "",
-						     cli_output_color_enabled(ctx));
 	}
 }
 
@@ -430,9 +477,11 @@ void cli_chat_turn_begin(struct cli_application *ctx)
 {
 	if (!cli_chat_active(ctx))
 		return;
+
 	cli_chat_page_boundary(ctx->chat);
 	ctx->chat->agents_waiting = 0;
 	ctx->chat->turn_started = cli_chat_now();
+	ctx->chat->next_status_update = 0;
 	cli_chat_activity(ctx, "");
 }
 
@@ -440,6 +489,7 @@ void cli_chat_turn_end(struct cli_application *ctx, int result)
 {
 	if (!cli_chat_active(ctx))
 		return;
+
 	struct cli_chat_page *page = ctx->chat;
 	page->agents_waiting = 0;
 	cli_chat_page_boundary(page);
@@ -459,6 +509,7 @@ void cli_chat_turn_end(struct cli_application *ctx, int result)
 							       cli_output_color_enabled(ctx)));
 		}
 	}
+
 	cli_chat_activity(ctx, "");
 }
 
@@ -466,6 +517,7 @@ int cli_chat_tool_changed(struct cli_application *ctx, const struct cli_transcri
 {
 	if (!cli_chat_active(ctx))
 		return 0;
+
 	struct cli_chat_page *page = ctx->chat;
 	struct nt_view *view = nb_map_get_cstr(page->tools, tool->id);
 	int rc;
@@ -476,10 +528,12 @@ int cli_chat_tool_changed(struct cli_application *ctx, const struct cli_transcri
 						cli_output_color_enabled(ctx), ctx->tool_details);
 		if (!view || cli_chat_page_error(page))
 			return cli_chat_page_error(page);
+
 		rc = nb_map_put_cstr(page->tools, tool->id, view, NULL) ? 0 : NB_ERR_NOMEM;
 	} else
 		rc = cli_tool_call_update(view, tool, cli_output_color_enabled(ctx),
 					  ctx->tool_details);
+
 	return rc;
 }
 
@@ -487,10 +541,13 @@ int cli_chat_block(struct cli_application *ctx, const struct cli_feed_block *blo
 {
 	if (!cli_chat_active(ctx) || !block)
 		return 0;
+
 	if (block->kind == CLI_FEED_BLOCK_TOOL)
 		return cli_chat_tool_changed(ctx, block->content.tool);
+
 	if (block->kind == CLI_FEED_BLOCK_REASONING)
 		return cli_chat_message(ctx, CLI_MESSAGE_REASONING, block->content.reasoning);
+
 	struct cli_chat_page *page = ctx->chat;
 	cli_chat_page_boundary(page);
 	if (block->kind == CLI_FEED_BLOCK_NOTICE) {
@@ -498,25 +555,30 @@ int cli_chat_block(struct cli_application *ctx, const struct cli_feed_block *blo
 				      cli_output_color_enabled(ctx));
 		return cli_chat_page_error(page);
 	}
+
 	if (block->kind == CLI_FEED_BLOCK_RECAP) {
 		cli_recap_add_borrow(page->builder, page->feed, block->content.recap.summary,
 			block->content.recap.next, cli_output_color_enabled(ctx));
 		return cli_chat_page_error(page);
 	}
+
 	if (block->kind == CLI_FEED_BLOCK_PLAN) {
 		cli_plan_add_borrow(page->builder, page->feed, block->content.plan,
 				    cli_output_color_enabled(ctx));
 		return cli_chat_page_error(page);
 	}
+
 	if (block->kind == CLI_FEED_BLOCK_AGENT_RECEIPT) {
 		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc = cli_agents_receipt_append(&text, block->content.agent.id,
 			block->content.agent.status, page->columns, cli_output_color_enabled(ctx));
 		if (!rc)
 			rc = cli_chat_output(ctx, nb_buf_cstr(&text));
+
 		cli_chat_page_boundary(page);
 		return rc;
 	}
+
 	return 0;
 }
 
@@ -531,19 +593,24 @@ static int cli_chat_page_stream(struct cli_chat_page *page, int kind, const char
 		if (!page->stream_view)
 			return cli_chat_page_error(page);
 	}
+
 	if (!delta)
 		nb_buf_clear(&page->stream);
+
 	int rc = (nb_buf_append_cstr(&page->stream, text ? text : "") ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = cli_message_set_text_copy(page->stream_view, nb_buf_cstr(&page->stream));
+
 	if (!rc && kind == CLI_MESSAGE_ASSISTANT) {
 		char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&page->stream));
 		if (!copy)
 			return NB_ERR_NOMEM;
+
 		free(page->last_assistant_text);
 		page->last_assistant_text = nb_charp_steal(&copy);
 		page->last_assistant = page->stream_view;
 	}
+
 	return rc;
 }
 
@@ -551,6 +618,7 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 {
 	if (!cli_chat_active(ctx) || event->type != MORPH_EVENT_REACT || !event->name)
 		return 0;
+
 	struct cli_chat_page *page = ctx->chat;
 	const char *name = event->name;
 	const char *text =
@@ -569,12 +637,14 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 	} else if (!strcmp(name, "react.content.end") || !strcmp(name, "react.thought.end")) {
 		if (text && *text)
 			rc = cli_chat_page_stream(page, CLI_MESSAGE_ASSISTANT, text, 0);
+
 		cli_chat_page_boundary(page);
 	} else if (!strcmp(name, "react.final")) {
 		if (text && *text &&
 		    !(page->last_assistant && page->last_assistant_text &&
 		      !strcmp(page->last_assistant_text, text)))
 			rc = cli_chat_page_stream(page, CLI_MESSAGE_ASSISTANT, text, 0);
+
 		ctx->presenter->final_rendered = 1;
 		cli_chat_page_boundary(page);
 		cli_chat_activity(ctx, "");
@@ -590,10 +660,12 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 	} else if (!strcmp(name, "react.agents.wait.begin") ||
 		   !strcmp(name, "react.agents.wait.end")) {
 		page->agents_waiting = !strcmp(name, "react.agents.wait.begin");
+		page->next_status_update = 0;
 	} else if (!strcmp(name, "react.turn.begin") || !strcmp(name, "react.turn.end")) {
 		/* The turn service owns lifecycle and the completion receipt. */
 	} else
 		return 0;
+
 	return rc ? rc : 1;
 }
 
@@ -603,25 +675,31 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 	struct nt_application *app = &ctx->base;
 	if (!text || !*text)
 		return 0;
+
 	if (nb_str_is_empty(nb_str_trim(nb_str_from_cstr(text))))
 		return nt_text_field_set_text(page->editor, "");
+
 	char *input NB_CLEANUP(nb_charp_cleanup) = strdup(text);
 	if (!input)
 		return NB_ERR_NOMEM;
+
 	char **remembered = nb_vec_push(&page->history);
 	if (!remembered)
 		return NB_ERR_NOMEM;
+
 	*remembered = strdup(text);
 	if (!*remembered) {
 		nb_vec_pop(&page->history);
 		return NB_ERR_NOMEM;
 	}
+
 	page->history_index = page->history.len;
 	free(page->draft);
 	page->draft = NULL;
 	int rc = nt_text_field_set_text(page->editor, "");
 	if (rc)
 		return rc;
+
 	cli_chat_page_boundary(page);
 	if (input[0] == '/') {
 		cli_presentation_command_input(ctx, input);
@@ -640,6 +718,7 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 			(void)cli_recap_start(ctx, 0);
 		else
 			(void)ctx->input_execute(ctx, input);
+
 		(void)cli_event_queue_drain(ctx);
 		if (page->panel || nt_application_transition_pending(app))
 			ctx->application_command = 1;
@@ -651,14 +730,17 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 			cli_composer_service_convert_paths_copy(&ctx->composer, input, &converted);
 		if (converted_count < 0)
 			return converted_count;
+
 		if (converted_count > 0) {
 			free(input);
 			input = nb_charp_steal(&converted);
 		}
+
 		char *expanded NB_CLEANUP(nb_charp_cleanup) =
 			cli_composer_model_expand_copy(&ctx->composer, input);
 		if (!expanded)
 			return NB_ERR_NOMEM;
+
 		cli_turn_record_input_images(ctx, input);
 		if (page->job->active)
 			rc = cli_command_job_prompt(page->job, expanded, input);
@@ -674,10 +756,12 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 			}
 		}
 	}
+
 	cli_chat_page_boundary(page);
 	nt_scroll_view_follow(page->scroll, 1);
 	if (!ctx->running)
 		nt_application_stop(app, 0);
+
 	return rc;
 }
 
@@ -687,34 +771,43 @@ static int cli_chat_page_complete(struct cli_chat_page *page,
 	const char *input = action->text;
 	if (!input || input[0] != '/' || action->index != strlen(input) || strchr(input, ' '))
 		return 0;
+
 	char *candidate NB_CLEANUP(nb_charp_cleanup) = cli_command_completion_generator(input, 0);
 	if (!candidate)
 		return 0;
+
 	nb_buf choices NB_CLEANUP(nb_buf_cleanup) = {0};
 	char *common NB_CLEANUP(nb_charp_cleanup) = strdup(candidate);
 	if (!common)
 		return NB_ERR_NOMEM;
+
 	int count = 0, rc = 0;
 	while (candidate && !rc) {
 		count++;
 		if (choices.len)
 			rc = (nb_buf_append_cstr(&choices, "  ") ? 0 : NB_ERR_NOMEM);
+
 		if (!rc)
 			rc = (nb_buf_append_cstr(&choices, candidate) ? 0 : NB_ERR_NOMEM);
+
 		size_t length = 0;
 		while (common[length] && common[length] == candidate[length])
 			length++;
+
 		common[length] = '\0';
 		free(candidate);
 		candidate = cli_command_completion_generator(input, count);
 	}
+
 	if (rc)
 		return rc;
+
 	if (count == 1 || strlen(common) > strlen(input)) {
 		nb_buf suffix NB_CLEANUP(nb_buf_cleanup) = {0};
 		rc = (nb_buf_append_cstr(&suffix, common + strlen(input)) ? 0 : NB_ERR_NOMEM);
 		if (!rc && count == 1)
 			rc = (nb_buf_append_char(&suffix, ' ') ? 0 : NB_ERR_NOMEM);
+
 		if (!rc)
 			rc = nt_text_field_insert_text(page->editor,
 									  nb_buf_cstr(&suffix));
@@ -723,6 +816,7 @@ static int cli_chat_page_complete(struct cli_chat_page *page,
 		rc = cli_chat_output(page->ctx, nb_buf_cstr(&choices));
 		cli_chat_page_boundary(page);
 	}
+
 	return rc;
 }
 
@@ -732,8 +826,10 @@ static int cli_chat_page_action(void *data,
 	struct cli_chat_page *page = data;
 	if (action->type == NT_VIEW_EVENT_SUBMIT)
 		return cli_chat_page_submit(page, action->text);
+
 	if (action->type == NT_VIEW_EVENT_COMPLETE)
 		return cli_chat_page_complete(page, action);
+
 	if (action->type == NT_VIEW_EVENT_CHANGED && action->text &&
 	    (strchr(action->text, '/') || strchr(action->text, '~')) &&
 	    !(action->text[0] == '/' && cli_command_find_input_borrow(action->text))) {
@@ -742,15 +838,18 @@ static int cli_chat_page_action(void *data,
 			if (!slash || slash >= action->text + strcspn(action->text, " \t\r\n"))
 				return 0;
 		}
+
 		char *converted NB_CLEANUP(nb_charp_cleanup) = NULL;
 		int rc = cli_composer_service_convert_paths_copy(&page->ctx->composer,
 			action->text, &converted);
 		if (rc < 0)
 			return rc;
+
 		if (rc > 0)
 			return nt_text_field_replace_range(page->editor,
 				0, strlen(action->text), converted);
 	}
+
 	return 0;
 }
 
@@ -761,15 +860,18 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 	struct cli_application *ctx = page->ctx;
 	if (event->type != NT_EVENT_KEY || event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return 0;
+
 	int key = event->key;
 	if (page->panel)
 		return key == 27 || key == NT_KEY_ESCAPE || key == 3 || key == 4
 			       ? cli_chat_panel_close(ctx, NB_ERR_CANCELLED)
 			       : 1;
+
 	if (key == NT_KEY_FOCUS_IN || key == NT_KEY_FOCUS_OUT) {
 		cli_recap_focus(ctx, key == NT_KEY_FOCUS_IN, cli_recap_now());
 		return 1;
 	}
+
 	unsigned mods = event->modifiers & ~(unsigned)(NT_MOD_CAPS_LOCK | NT_MOD_NUM_LOCK);
 	int paste_letter = key == 22 || key == 'v' || key == 'V';
 	int image = paste_letter && mods == (NT_MOD_CTRL | NT_MOD_SUPER);
@@ -789,84 +891,107 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 							page->editor)};
 					rc = cli_chat_page_action(page, &action);
 				}
+
 				if (rc)
 					CMD_ERROR(ctx, "Paste failed: %s", nb_err_str(
 						morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 				return 1;
 			}
+
 			if (rc == NB_ERR_TOO_BIG || rc == NB_ERR_FORMAT || rc == NB_ERR_TIMEOUT) {
 				CMD_ERROR(ctx, "Paste failed: %s", nb_err_str(
 					morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 				return 1;
 			}
 		}
+
 		char *path NB_CLEANUP(nb_charp_cleanup) = NULL;
 		const char *label = NULL;
 		int rc = cli_clipboard_save_image(ctx, &path);
 		if (!rc)
 			rc = cli_composer_service_add_image(&ctx->composer, path, &label);
+
 		if (!rc)
 			rc = nt_text_field_insert_text(page->editor, label);
+
 		if (rc) {
 			if (path)
 				(void)unlink(path);
+
 			CMD_ERROR(ctx, "%s", image
 				? "clipboard does not contain a supported image"
 				: "clipboard does not contain supported text or an image");
 		}
+
 		return 1;
 	}
+
 	if (key == NT_KEY_PAGE_UP || key == NT_KEY_PAGE_DOWN || key == NT_KEY_WHEEL_UP ||
 	    key == NT_KEY_WHEEL_DOWN) {
 		int rc = nt_scroll_view_handle_key(page->scroll, key);
 		return rc < 0 ? rc : 1;
 	}
+
 	if (key == NT_KEY_UP || key == NT_KEY_DOWN) {
 		if (!page->history.len)
 			return 1;
+
 		if (page->history_index == page->history.len) {
 			char *draft NB_CLEANUP(nb_charp_cleanup) =
 				strdup(nt_text_field_text(page->editor));
 			if (!draft)
 				return NB_ERR_NOMEM;
+
 			free(page->draft);
 			page->draft = nb_charp_steal(&draft);
 		}
+
 		if (key == NT_KEY_UP && page->history_index)
 			page->history_index--;
+
 		if (key == NT_KEY_DOWN && page->history_index < page->history.len)
 			page->history_index++;
+
 		const char *value = page->draft ? page->draft : "";
 		if (page->history_index < page->history.len)
 			value = *(char **)nb_vec_at(&page->history, page->history_index);
+
 		int rc = nt_text_field_set_text(page->editor, value);
 		return rc ? rc : 1;
 	}
+
 	if (key == 20) {
 		cli_turn_details_toggle(ctx);
 		return 1;
 	}
+
 	if (key == 3 || key == 27) {
 		if (page->job->active) {
 			if (key == 27 && cli_command_job_expedite_prompts(page->job))
 				return 1;
+
 			if (key == 27 && cli_jobs_model_waiting(ctx->jobs))
 				runtime_interrupt_background_wait(ctx->runtime);
 			else
 				runtime_cancel_turn(ctx->runtime);
 		}
+
 		if (key == 3) {
 			int rc = nt_text_field_set_text(page->editor, "");
 			if (rc)
 				return rc;
 		}
+
 		return 1;
 	}
+
 	if (key == 4) {
 		ctx->running = 0;
 		nt_application_stop(&ctx->base, 0);
 		return 1;
 	}
+
 	return 0;
 }
 
@@ -875,23 +1000,203 @@ struct cli_chat_view {
 	struct cli_chat_page *page;
 };
 
+static int cli_chat_update_queue(struct cli_chat_page *page)
+{
+	char *prompts[3] = {0};
+	int64_t revision = page->queue_revision;
+	size_t total = 0;
+	int rc = cli_command_job_prompts_copy_since(page->job, prompts, 3, &total, &revision);
+	if (rc == NB_ERR_AGAIN)
+		return 0;
+
+	if (rc)
+		return rc;
+
+	size_t shown = total < 3 ? total : 3;
+	nb_buf rows[4] = {0};
+	const char *items[4] = {0};
+	for (size_t i = 0; i < shown; i++) {
+		if (!nb_buf_printf(&rows[i], "%s%s", i + 1 < total ? "├ " : "└ ", prompts[i]))
+			rc = nb_buf_status(&rows[i]);
+
+		items[i] = nb_buf_cstr(&rows[i]);
+		free(prompts[i]);
+	}
+
+	if (total > shown) {
+		if (!nb_buf_printf(&rows[shown], "└ +%zu more queued", total - shown))
+			rc = nb_buf_status(&rows[shown]);
+
+		items[shown] = nb_buf_cstr(&rows[shown]);
+		shown++;
+	}
+
+	if (!rc)
+		rc = nt_list_view_set_items(page->queue, items, shown);
+
+	for (size_t i = 0; i < shown; i++)
+		nb_buf_cleanup(&rows[i]);
+
+	if (!rc)
+		page->queue_revision = revision;
+
+	return rc;
+}
+
+static int cli_chat_update_agents(struct cli_chat_page *page, int columns, int styled, int resized)
+{
+	const struct cli_agents_model *model = &page->ctx->agents;
+	if (!resized && page->agents_revision == model->activity_revision)
+		return 0;
+
+	nb_buf summary NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = cli_agents_summary(&summary, model->items, model->count, columns);
+	if (!rc) {
+		int count = cli_agents_rows(&rows, model->items, model->count, columns, 3, styled);
+		if (count < 0)
+			return count;
+	}
+
+	if (!rc && (rows.len || *nt_text_view_text(page->agents)))
+		rc = cli_messages_set_rendered_view(page->agents, nb_buf_cstr(&rows), styled);
+
+	if (!rc) {
+		nb_buf_move(&page->agent_summary, &summary);
+		page->agents_revision = model->activity_revision;
+	}
+
+	return rc;
+}
+
+static int cli_chat_update_jobs(struct cli_chat_page *page, int columns, int styled, int resized,
+				int64_t now)
+{
+	const struct cli_jobs *model = page->ctx->jobs;
+	uint64_t revision = model ? model->revision : 0;
+	if (!resized && revision == page->jobs_revision && now < page->next_jobs_update)
+		return 0;
+
+	nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {0};
+	int count = cli_jobs_render(model, &rows, columns, styled, now);
+	if (count < 0)
+		return count;
+
+	int rc = 0;
+	if (rows.len || *nt_text_view_text(page->jobs))
+		rc = cli_messages_set_rendered_view(page->jobs, nb_buf_cstr(&rows), styled);
+
+	if (rc)
+		return rc;
+
+	page->jobs_revision = revision;
+	page->next_jobs_update = INT64_MAX;
+	if (rows.len && styled)
+		page->next_jobs_update = now + cli_style_running_interval_ms(now);
+
+	if (rows.len && cli_jobs_model_waiting(model)) {
+		int64_t elapsed = cli_jobs_model_wait_elapsed(model, now);
+		int64_t next_second = now + 1000 - elapsed % 1000;
+		if (next_second < page->next_jobs_update)
+			page->next_jobs_update = next_second;
+	}
+
+	return 0;
+}
+
+static int cli_chat_update_status(struct cli_chat_page *page, int columns, int styled,
+				  int changed, int64_t now)
+{
+	struct cli_application *ctx = page->ctx;
+	if (changed)
+		page->next_status_update = 0;
+
+	if (cli_jobs_model_waiting(ctx->jobs)) {
+		page->next_status_update = 0;
+		return *nt_text_view_text(page->status) ? nt_text_view_set_text(page->status, "") : 0;
+	}
+
+	if (!ctx->turn_active || now < page->next_status_update)
+		return 0;
+
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	const char *agents = ctx->agents.count || ctx->composer.ultra ?
+		nb_buf_cstr(&page->agent_summary) : "";
+	int64_t elapsed = now - page->turn_started;
+	int64_t next = INT64_MAX;
+	int rc;
+	if (page->activity_text) {
+		rc = nb_buf_append_cstr(&text, page->activity_text) ? 0 : nb_buf_status(&text);
+	} else if (page->agents_waiting) {
+		rc = nb_buf_printf(&text, "%s" CLI_FEED_RUNNING "%s Waiting for agents",
+				   styled ? cli_style_running_color(now) : "",
+				   styled ? ANSI_RESET : "") ? 0 : nb_buf_status(&text);
+		if (!rc && *agents && !nb_buf_printf(&text, " · %s", agents))
+			rc = nb_buf_status(&text);
+
+		if (styled)
+			next = now + cli_style_running_interval_ms(now);
+	} else {
+		rc = cli_work_status_running(&text, columns, styled, elapsed, now, agents);
+		next = now + (styled ? cli_work_status_interval_ms(elapsed, now) :
+			      1000 - elapsed % 1000);
+	}
+
+	if (!rc)
+		rc = cli_messages_set_rendered_view(page->status, nb_buf_cstr(&text), styled);
+
+	if (!rc)
+		page->next_status_update = next;
+
+	return rc;
+}
+
+static int cli_chat_update_activity(struct cli_chat_page *page, int columns, int64_t now)
+{
+	if (columns <= 0)
+		return 0;
+
+	int styled = cli_output_color_enabled(page->ctx);
+	int resized = columns != page->activity_columns || styled != page->activity_styled;
+	int status_changed = resized || page->agents_revision != page->ctx->agents.activity_revision ||
+			     page->status_ultra != page->ctx->composer.ultra;
+	int rc = cli_chat_update_agents(page, columns, styled, resized);
+	if (!rc)
+		rc = cli_chat_update_jobs(page, columns, styled, resized, now);
+
+	if (!rc)
+		rc = cli_chat_update_status(page, columns, styled, status_changed, now);
+
+	if (!rc) {
+		page->status_ultra = page->ctx->composer.ultra;
+		page->activity_columns = columns;
+		page->activity_styled = styled;
+	}
+
+	return rc;
+}
+
 static int cli_chat_page_footer(struct cli_chat_page *page, int columns)
 {
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 128) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = cli_composer_footer_render(page->ctx, columns, &text);
+
 	if (rc || (page->footer_text && !strcmp(page->footer_text, nb_buf_cstr(&text))))
 		return rc;
+
 	char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&text));
 	if (!copy)
 		return NB_ERR_NOMEM;
+
 	rc = cli_messages_set_rendered_view(page->footer, nb_buf_cstr(&text),
 					    cli_output_color_enabled(page->ctx));
 	if (!rc) {
 		free(page->footer_text);
 		page->footer_text = nb_charp_steal(&copy);
 	}
+
 	return rc;
 }
 
@@ -901,10 +1206,15 @@ static int cli_chat_page_layout(struct nt_view *view)
 	struct nt_view_rect content = nt_view_content_rect(view);
 	if (page->columns != content.width) {
 		int rc = cli_chat_page_footer(page, content.width);
+		if (!rc)
+			rc = cli_chat_update_activity(page, content.width, cli_chat_now());
+
 		if (rc)
 			return rc;
+
 		page->columns = content.width;
 	}
+
 	struct nt_view_size editor = {0}, footer = {0}, composer;
 	int modal = page->panel || page->prompt_rows;
 	struct nt_view *input_view = modal ? page->panel_host : page->editor;
@@ -913,10 +1223,13 @@ static int cli_chat_page_layout(struct nt_view *view)
 		editor.height = page->prompt_rows;
 	else
 		rc = nt_view_measure(input_view, content.width, &editor);
+
 	if (!rc && !modal)
 		rc = nt_view_measure(page->footer, content.width, &footer);
+
 	if (rc)
 		return rc;
+
 	/* Input owns the scarce rows. Optional controls may use the space left
 	 * after editable text and one component-painted bottom padding row. */
 	int input = editor.height < content.height ? editor.height : content.height;
@@ -929,14 +1242,17 @@ static int cli_chat_page_layout(struct nt_view *view)
 		if (nt_view_is_hidden(child) || child == page->composer || child == page->panel_host ||
 		    child == page->footer)
 			continue;
+
 		struct nt_view_size size;
 		rc = nt_view_measure(child, content.width, &size);
 		if (rc)
 			return rc;
+
 		int rows = size.height < remaining ? size.height : remaining;
 		auxiliary_rows += rows;
 		remaining -= rows;
 	}
+
 	int composer_space = content.height - footer_rows - auxiliary_rows;
 	if (modal)
 		composer = editor;
@@ -949,25 +1265,30 @@ static int cli_chat_page_layout(struct nt_view *view)
 		if (!rc)
 			rc = nt_view_measure(page->composer, content.width, &composer);
 	}
+
 	if (rc)
 		return rc;
+
 	int composer_rows = composer.height < composer_space ? composer.height : composer_space;
 	int controls = footer_rows + auxiliary_rows + composer_rows;
 	struct nt_view_size feed;
 	rc = nt_view_measure(page->feed, content.width, &feed);
 	if (rc)
 		return rc;
+
 	/* Follow the original document flow until the composer reaches the
 	 * bottom. Retain allocated feed space when a live preview shrinks. */
 	int available = content.height > controls ? content.height - controls : 0;
 	if (modal || feed.height > page->feed_rows)
 		page->feed_rows = feed.height;
+
 	int rows = page->feed_rows < available ? page->feed_rows : available;
 	int offset = 0;
 	for (size_t i = 0; i < nt_view_child_count(view); i++) {
 		struct nt_view *child = nt_view_child(view, i);
 		if (nt_view_is_hidden(child))
 			continue;
+
 		int height = rows;
 		if (child == page->composer || child == page->panel_host)
 			height = composer_rows;
@@ -978,17 +1299,22 @@ static int cli_chat_page_layout(struct nt_view *view)
 			rc = nt_view_measure(child, content.width, &size);
 			if (rc)
 				return rc;
+
 			height = size.height < auxiliary_rows ? size.height : auxiliary_rows;
 			auxiliary_rows -= height;
 		}
+
 		if (height > content.height - offset)
 			height = content.height - offset;
+
 		rc = nt_view_arrange(child, (struct nt_view_rect){
 			content.x, content.y + offset, content.width, height});
 		if (rc)
 			return rc;
+
 		offset += height;
 	}
+
 	return 0;
 }
 
@@ -1000,6 +1326,7 @@ static int cli_chat_panel_cursor(struct nt_view *view, struct nt_canvas *canvas)
 		struct nt_view_rect root = nt_view_content_rect(view);
 		nt_canvas_cursor(canvas, panel.x - root.x, panel.y - root.y);
 	}
+
 	return 0;
 }
 
@@ -1022,6 +1349,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 		(struct cli_chat_view *)nt_view_add(builder, NULL, &cli_chat_layout_class, NULL);
 	if (!layout)
 		return;
+
 	layout->page = page;
 	struct nt_view *root = &layout->base;
 	page->scroll = nt_scroll_view_add(builder, root, NULL);
@@ -1051,15 +1379,17 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 
 	if (nt_builder_error(builder))
 		return;
+
 	nt_builder_fail(builder, nt_view_use_state_bool(root, false, &page->modal));
-	cli_bind_visible(builder, page->panel_host, page->modal);
-	cli_bind_hidden(builder, page->composer, page->modal);
-	cli_bind_hidden(builder, page->footer, page->modal);
+	cli_panel_show_when(builder, page->panel_host, page->modal);
+	cli_panel_hide_when(builder, page->composer, page->modal);
+	cli_panel_hide_when(builder, page->footer, page->modal);
 	struct nt_view *activity[] = {page->status, page->jobs, page->agents};
 	for (size_t i = 0; i < sizeof(activity) / sizeof(activity[0]); i++)
 		nt_builder_fail(builder,
 				nt_view_bind_compute(activity[i], NT_PROP_HIDDEN,
 						     cli_chat_activity_hidden, activity[i]));
+
 	nt_builder_fail(builder, nt_view_bind_compute(page->queue, NT_PROP_HIDDEN,
 						      cli_chat_queue_hidden, page));
 	nt_builder_fail(builder, nt_view_bind_compute(queue_title, NT_PROP_HIDDEN,
@@ -1077,6 +1407,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 			nt_builder_fail(builder, NB_ERR_NOMEM);
 			return;
 		}
+
 		page->ready = 1;
 		nt_view_focus(page->editor);
 	}
@@ -1090,16 +1421,19 @@ static int cli_chat_page_resume(struct nt_view_controller *controller)
 	int delivery_rc = cli_event_queue_set_events_enabled(page->ctx, 1);
 	if (delivery_rc)
 		return delivery_rc;
+
 	if (page->ctx->session_history_pending) {
 		page->ctx->session_history_pending = 0;
 		int rc = cli_session_history_restore(page->ctx);
 		if (rc)
 			return rc;
 	}
+
 	if (page->ctx->application_command && !page->panel) {
 		page->ctx->application_command = 0;
 		cli_presentation_command_end(page->ctx);
 	}
+
 	int rc = cli_chat_page_refresh(page);
 	return rc ? rc : nt_view_focus(page->panel ? page->panel : page->editor);
 }
@@ -1116,9 +1450,11 @@ static void cli_chat_page_closed(struct nt_view_controller *controller)
 	struct cli_chat_page *page = controller->data;
 	if (!page)
 		return;
+
 	page->ready = 0;
 	if (page->panel_complete)
 		page->panel_complete(page->panel_data, NB_ERR_CANCELLED);
+
 	page->panel = NULL;
 	page->panel_complete = NULL;
 	page->controller = NULL;
@@ -1147,6 +1483,7 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 	struct cli_application *ctx = page->ctx;
 	if (!page->ready)
 		return 0;
+
 	int64_t now = cli_chat_now();
 	if (ctx->jobs) {
 		int64_t session = 0;
@@ -1154,53 +1491,29 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 		if (!runtime_session_current_id(ctx->runtime, &session))
 			cli_jobs_model_set_session(ctx->jobs, session);
 	}
-	if (ctx->turn_active && !cli_jobs_model_waiting(ctx->jobs)) {
-		nb_buf activity NB_CLEANUP(nb_buf_cleanup) = {0};
-		nb_buf agents NB_CLEANUP(nb_buf_cleanup) = {0};
-		int rc = (ctx->agents.count || ctx->composer.ultra) ?
-			cli_agents_summary(&agents, ctx->agents.items, ctx->agents.count,
-					   page->columns) : 0;
-		if (rc)
-			return rc;
-		if (page->activity_text)
-			rc = nb_buf_append_cstr(&activity, page->activity_text) ? 0 : NB_ERR_NOMEM;
-		else if (page->agents_waiting) {
-			int styled = cli_output_color_enabled(ctx);
 
-			rc = (nb_buf_printf(&activity,
-					    "%s" CLI_FEED_RUNNING "%s Waiting for agents",
-					    styled ? cli_style_running_color(now) : "",
-					    styled ? ANSI_RESET : "")
-				      ? 0
-				      : NB_ERR_NOMEM);
-			if (!rc && agents.len)
-				rc = (nb_buf_printf(&activity, " · %s", agents.ptr) ? 0
-										    : NB_ERR_NOMEM);
-		} else
-			rc = cli_work_status_running(
-				&activity, page->columns, cli_output_color_enabled(ctx),
-				now - page->turn_started, now, nb_buf_cstr(&agents));
-		if (!rc)
-			rc = cli_messages_set_rendered_view(page->status, nb_buf_cstr(&activity),
-							    cli_output_color_enabled(ctx));
-		if (rc)
-			return rc;
-	}
+	int rc = cli_chat_update_activity(page, page->columns, now);
+	if (rc)
+		return rc;
+
 	if (now / 1000 != ctx->input_status.updated) {
 		struct permission_policy policy;
 		if (!runtime_permission_get_policy(ctx->runtime, &policy)) {
 			ctx->input_status.permissions = policy;
 			ctx->input_status.permissions_ready = 1;
 		}
+
 		(void)runtime_session_model_context_stats(ctx->runtime, NULL,
 							  &ctx->input_status.tokens, NULL, NULL,
 							  &ctx->input_status.limit);
 		if (ctx->input_status.limit <= 0)
 			ctx->input_status.limit =
 				runtime_config_borrow(ctx->runtime)->models.text.context_limit;
+
 		struct credit_summary credits = {0};
 		if (!runtime_credit_summary_current_get(ctx->runtime, &credits))
 			ctx->input_status.credits = credits.credits;
+
 		ctx->input_status.updated = now / 1000;
 		int ultra = 0;
 		if (!runtime_model_get_ultra(ctx->runtime, &ultra)) {
@@ -1215,71 +1528,30 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 					ultra ? CLI_INPUT_ULTRA_INDEX : CLI_INPUT_MARKER_INDEX};
 				prompt.attributes = ultra ? NT_STYLE_BOLD : 0;
 			}
+
 			nt_text_field_set_prompt_style(page->editor, prompt);
 		}
-		int rc = cli_chat_page_footer(page, page->columns);
+
+		rc = cli_chat_page_footer(page, page->columns);
 		if (rc)
 			return rc;
 	}
+
 	int animation_rc = cli_composer_update(page->composer, now);
 	if (animation_rc)
 		return animation_rc;
-	int timeout = ctx->composer.mode_transition ? 33 :
-		ctx->turn_active ? cli_work_status_interval_ms(now - page->turn_started, now) : 100;
+
+	int timeout = ctx->composer.mode_transition ? 33 : 100;
+	int64_t next = page->next_jobs_update;
+	if (ctx->turn_active && page->next_status_update > now && page->next_status_update < next)
+		next = page->next_status_update;
+
+	if (next > now && next - now < timeout)
+		timeout = (int)(next - now);
+
 	nt_application_schedule(&ctx->base, timeout);
-	char *items[4] = {0};
-	size_t total = 0;
-	int rc = cli_command_job_prompts_copy(page->job, items, 3, &total);
-	if (rc)
-		return rc;
-	size_t shown = total < 3 ? total : 3;
-	for (size_t i = 0; !rc && i < shown; i++) {
-		nb_buf row NB_CLEANUP(nb_buf_cleanup) = {0};
-		rc = (nb_buf_printf(&row, "%s%s", i + 1 < total ? "├ " : "└ ", items[i])
-			      ? 0
-			      : NB_ERR_NOMEM);
-		if (!rc) {
-			free(items[i]);
-			items[i] = (nb_buf_ok(&row) ? strdup(nb_buf_cstr(&row)) : NULL);
-			if (!items[i])
-				rc = NB_ERR_NOMEM;
-		}
-	}
-	if (!rc && total > shown) {
-		nb_buf row NB_CLEANUP(nb_buf_cleanup) = {0};
-		rc = (nb_buf_printf(&row, "└ +%zu more queued", total - shown) ? 0 : NB_ERR_NOMEM);
-		if (!rc) {
-			items[shown] = strdup(nb_buf_cstr(&row));
-			if (!items[shown])
-				rc = NB_ERR_NOMEM;
-			else
-				shown++;
-		}
-	}
-	if (!rc)
-		rc = nt_list_view_set_items(page->queue, (const char *const *)items,
-							  shown);
-	for (size_t i = 0; i < shown; i++)
-		free(items[i]);
-	nb_buf jobs NB_CLEANUP(nb_buf_cleanup) = {0};
-	if (ctx->jobs)
-		(void)cli_jobs_render(ctx->jobs, &jobs, page->columns,
-				      cli_output_color_enabled(ctx), now);
-	if (!rc)
-		rc = nb_buf_status(&jobs);
-	if (!rc)
-		rc = cli_messages_set_rendered_view(page->jobs, jobs.ptr ? jobs.ptr : "",
-						    cli_output_color_enabled(ctx));
-	if (!rc && cli_jobs_model_waiting(ctx->jobs))
-		rc = nt_text_view_set_text(page->status, "");
-	nb_buf agents NB_CLEANUP(nb_buf_cleanup) = {0};
-	(void)cli_agents_rows(&agents, ctx->agents.items, ctx->agents.count,
-		page->columns, 3, cli_output_color_enabled(ctx));
-	if (!rc)
-		rc = nb_buf_status(&agents);
-	if (!rc)
-		rc = cli_messages_set_rendered_view(page->agents, agents.ptr ? agents.ptr : "",
-						    cli_output_color_enabled(ctx));
+	rc = cli_chat_update_queue(page);
+
 	return rc ? rc : cli_chat_page_error(page);
 }
 
@@ -1294,6 +1566,7 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 		nt_application_stop(app, 0);
 		return 1;
 	}
+
 	int modal = page->panel || nt_application_depth(app) > 1;
 	if (cli_application_prompt_deferred(ctx) && cli_event_queue_owner_call_pending(ctx)) {
 		if (page->panel)
@@ -1302,20 +1575,25 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 			(void)nt_view_controller_dismiss(
 				nt_view_controller(nt_window_root_view(nt_application_window(app))),
 				0);
+
 		(void)nt_application_wake(app);
 		return 0;
 	}
+
 	if (event->type == NT_EVENT_WAKE || event->type == NT_EVENT_TICK) {
 		int rc = cli_event_queue_drain_batch(ctx);
 		if (rc)
 			return rc;
 	}
+
 	if (!modal && cli_command_job_done(page->job))
 		cli_chat_page_finish_job(page);
+
 	if (!modal && ctx->resume_requested && !nt_application_transition_pending(app)) {
 		ctx->resume_requested = 0;
 		(void)cli_resume_show(ctx);
 	}
+
 	if (nb_atomic_int_exchange(&ctx->interrupted, 0)) {
 		if (page->panel)
 			(void)cli_chat_panel_close(ctx, NB_ERR_CANCELLED);
@@ -1325,16 +1603,20 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 		else if (page->job->active)
 			runtime_cancel_turn(ctx->runtime);
 	}
+
 	if (nb_atomic_int_exchange(&ctx->resized, 0))
 		nt_application_invalidate(app, NT_INVALIDATE_LAYOUT);
+
 	if (!ctx->running)
 		nt_application_stop(app, 0);
+
 	if (page->panel_refresh && (event->type == NT_EVENT_TICK || event->type == NT_EVENT_WAKE ||
 				    event->type == NT_EVENT_RESIZE)) {
 		int rc = page->panel_refresh(page->panel_data, event);
 		if (rc < 0)
 			return rc;
 	}
+
 	return cli_chat_page_refresh(page);
 }
 
@@ -1358,9 +1640,11 @@ int cli_chat_create(struct cli_application *ctx, struct cli_command_job *job,
 {
 	if (!ctx || !job || !out || *out || ctx->chat)
 		return NB_ERR_INVAL;
+
 	struct cli_chat_page *page NB_CLEANUP(cli_chat_page_cleanup) = calloc(1, sizeof(*page));
 	if (!page)
 		return NB_ERR_NOMEM;
+
 	page->ctx = ctx;
 	page->job = job;
 	int rc =
@@ -1368,17 +1652,21 @@ int cli_chat_create(struct cli_application *ctx, struct cli_command_job *job,
 	if (!rc)
 		rc = (nb_buf_init(&page->output),
 		      nb_buf_reserve(&page->output, 128) ? 0 : NB_ERR_NOMEM);
+
 	if (!rc) {
 		page->tools = nb_map_new_with_cap(16);
 		if (!page->tools)
 			rc = NB_ERR_NOMEM;
 	}
+
 	char *entry = NULL;
 	if (!rc)
 		rc = (nb_vec_init(&page->history, sizeof(entry)),
 		      nb_vec_reserve(&page->history, 16) ? 0 : NB_ERR_NOMEM);
+
 	if (rc)
 		return rc;
+
 	ctx->chat = page;
 	cli_feed_set_hidden(ctx, 1);
 	*out = cli_chat_page_steal(&page);
@@ -1418,23 +1706,27 @@ void cli_chat_destroy(struct cli_chat_page *page, int result)
 {
 	if (!page)
 		return;
+
 	struct cli_application *ctx = page->ctx;
 	char **entry;
 	for (size_t _i_ = 0;
 	     _i_ < nb_vec_len(&page->history) && (entry = (char **)nb_vec_at(&page->history, _i_));
 	     _i_++)
 		free(*entry);
+
 	nb_vec_cleanup(&page->history);
 	nb_map_free(page->tools);
 	page->tools = NULL;
 	nb_buf_cleanup(&page->stream);
 	nb_buf_cleanup(&page->output);
+	nb_buf_cleanup(&page->agent_summary);
 	free(page->draft);
 	free(page->last_assistant_text);
 	free(page->footer_text);
 	free(page->activity_text);
 	if (page->ctx->chat == page)
 		page->ctx->chat = NULL;
+
 	free(page);
 	if (result < 0)
 		CMD_ERROR(ctx, "Application failed: %s",

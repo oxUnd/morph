@@ -63,6 +63,7 @@ cli_model_find_token_limits(const struct config_model_entry *entry)
 		if (strcmp(entry->provider, cli_model_token_limits[i].provider) == 0 &&
 		    strcmp(entry->model, cli_model_token_limits[i].model) == 0)
 			return &cli_model_token_limits[i];
+
 	return NULL;
 }
 
@@ -72,8 +73,10 @@ static int cli_model_recommended_output(const struct config_model_entry *entry)
 
 	if (!limits)
 		return 16384;
+
 	if (!limits->thinking_output || !cli_setup_thinking_enabled(entry))
 		return limits->recommended_output;
+
 	cJSON *body = cJSON_Parse(entry->extra_body_json);
 	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(body, "reasoning_effort");
 	int maximum_effort = cJSON_IsString(effort) && strcmp(effort->valuestring, "max") == 0;
@@ -114,9 +117,11 @@ void cli_setup_model_defaults(int kind, int selected, struct config_model_entry 
 			"{\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"high\"}" :
 			"{\"thinking\":{\"type\":\"disabled\"}}");
 	}
+
 	/* Chat-compatible replay does not preserve Ark's encrypted thinking blocks. */
 	if ((kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION) && !custom && index == 2)
 		strcpy(entry->extra_body_json, "{\"thinking\":{\"type\":\"disabled\"}}");
+
 	if (kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION) {
 		cli_setup_reset_token_limits(entry);
 		entry->timeout_seconds = kind == CLI_SETUP_TEXT ? 600 : 300;
@@ -140,6 +145,7 @@ int cli_setup_thinking_enabled(const struct config_model_entry *entry)
 
 	if (cJSON_IsString(effort))
 		enabled = strcmp(effort->valuestring, "none") != 0;
+
 	if (cJSON_IsString(type))
 		enabled = strcmp(type->valuestring, "enabled") == 0;
 
@@ -156,6 +162,7 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 
 	if (strcmp(entry->adapter, "deepseek") != 0)
 		return NB_ERR_INVAL;
+
 	int previous_output = cli_model_recommended_output(entry);
 	if (entry->extra_body_json[0]) {
 		root = cJSON_ParseWithOpts(entry->extra_body_json, NULL, 1);
@@ -168,20 +175,24 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 		if (!root)
 			return NB_ERR_NOMEM;
 	}
+
 	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
 	if (!cJSON_IsObject(thinking)) {
 		cJSON_DeleteItemFromObjectCaseSensitive(root, "thinking");
 		thinking = cJSON_AddObjectToObject(root, "thinking");
 	}
+
 	if (!thinking) {
 		cJSON_Delete(root);
 		return NB_ERR_NOMEM;
 	}
+
 	cJSON_DeleteItemFromObjectCaseSensitive(thinking, "type");
 	if (!cJSON_AddStringToObject(thinking, "type", enabled ? "enabled" : "disabled")) {
 		cJSON_Delete(root);
 		return NB_ERR_NOMEM;
 	}
+
 	const cJSON *effort = cJSON_GetObjectItemCaseSensitive(root, "reasoning_effort");
 	if (enabled && (!cJSON_IsString(effort) || strcmp(effort->valuestring, "none") == 0)) {
 		cJSON_DeleteItemFromObjectCaseSensitive(root, "reasoning_effort");
@@ -190,14 +201,17 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 			return NB_ERR_NOMEM;
 		}
 	}
+
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
 		return NB_ERR_NOMEM;
+
 	if (strlen(json) >= sizeof(entry->extra_body_json))
 		rc = (NB_ERR_TOO_BIG);
 	else
 		strcpy(entry->extra_body_json, json);
+
 	free(json);
 	/* Follow mode defaults only while the user has not customized the budget. */
 	if (rc == 0 && entry->max_tokens == previous_output) {
@@ -206,6 +220,7 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 		if (recommended < entry->context_limit)
 			entry->max_tokens = recommended;
 	}
+
 	return rc;
 }
 
@@ -227,13 +242,16 @@ int cli_setup_parse_token_count(const char *text, int minimum, int maximum, int 
 {
 	if (!text || !*text || !value)
 		return NB_ERR_INVAL;
+
 	for (const char *p = text; *p; p++)
 		if (*p < '0' || *p > '9')
 			return NB_ERR_INVAL;
+
 	errno = 0;
 	long parsed = strtol(text, NULL, 10);
 	if (errno == ERANGE || parsed < minimum || parsed > maximum)
 		return NB_ERR_RANGE;
+
 	*value = (int)parsed;
 	return 0;
 }
@@ -242,12 +260,15 @@ int cli_setup_provider_choice(int kind, const struct config_model_entry *entry)
 {
 	if (strcmp(entry->provider, "openai") == 0 || !entry->provider[0])
 		return 1;
+
 	if (kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION)
 		return strcmp(entry->provider, "deepseek") == 0	    ? 2
 		       : strcmp(entry->provider, "volcengine") == 0 ? 3
 								    : 4;
+
 	if (kind == CLI_SETUP_IMAGE)
 		return strcmp(entry->provider, "volcengine") == 0 ? 2 : 3;
+
 	return strcmp(entry->provider, "volcengine") == 0 ? 1 : 2;
 }
 
@@ -280,6 +301,7 @@ void cli_setup_role_defaults(struct cli_setup_state *state)
 		struct config_model_entry *entry = &state->entries[i];
 		if (!cli_setup_role_requires(state->role, i) || entry->provider[0])
 			continue;
+
 		cli_setup_prepare_model(state, i);
 	}
 }
@@ -289,15 +311,18 @@ void cli_setup_share_credentials(struct cli_setup_state *state, int kind, const 
 	const struct config_model_entry *source = &state->entries[kind];
 	if (!previous_env || !*previous_env)
 		return;
+
 	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++) {
 		struct config_model_entry *target = &state->entries[i];
 		if (i == kind || !target->model[0] || target->api_key[0] ||
 		    strcmp(target->provider, source->provider) != 0 ||
 		    strcmp(target->api_key_env, previous_env) != 0)
 			continue;
+
 		const char *exported = getenv(target->api_key_env);
 		if (exported && *exported)
 			continue;
+
 		strcpy(target->api_key, source->api_key);
 		strcpy(target->api_key_env, source->api_key_env);
 	}
@@ -307,13 +332,16 @@ int cli_setup_model_complete(int kind, const struct config_model_entry *entry)
 {
 	if (!entry->model[0] || !entry->api_base[0])
 		return 0;
+
 	if (!((strncmp(entry->api_base, "https://", 8) == 0 && entry->api_base[8]) ||
 	      (strncmp(entry->api_base, "http://", 7) == 0 && entry->api_base[7])))
 		return 0;
+
 	if (kind == CLI_SETUP_TEXT || kind == CLI_SETUP_VISION)
 		return entry->context_limit >= 2 && entry->max_tokens >= 1 &&
 		       entry->max_tokens < entry->context_limit &&
 		       entry->context_limit <= cli_setup_token_ceiling(entry, 0) &&
 		       entry->max_tokens <= cli_setup_token_ceiling(entry, 1);
+
 	return 1;
 }

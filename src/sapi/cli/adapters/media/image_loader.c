@@ -27,9 +27,11 @@ static size_t cli_image_loader_receive(char *data, size_t size, size_t count, vo
 
 	if (size && count > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES / size)
 		return 0;
+
 	bytes = size * count;
 	if (bytes > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES - buffer->len)
 		return 0;
+
 	return (nb_buf_append(buffer, data, bytes) ? 0 : NB_ERR_NOMEM) == 0 ? bytes : 0;
 }
 
@@ -41,6 +43,7 @@ static int cli_image_loader_fetch(const char *url, nb_buf *buffer)
 
 	if (!curl)
 		return NB_ERR_NOMEM;
+
 	http_apply_ca_env(curl);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
@@ -57,8 +60,10 @@ static int cli_image_loader_fetch(const char *url, nb_buf *buffer)
 	curl_easy_cleanup(curl);
 	if (result != CURLE_OK)
 		return MORPH_ERR_NETWORK;
+
 	if (status < 200 || status >= 300)
 		return MORPH_ERR_API;
+
 	return 0;
 }
 
@@ -73,21 +78,27 @@ static int cli_image_loader_read(const char *url, nb_buf *buffer)
 
 	if (strncmp(url, "https://", 8) == 0 || strncmp(url, "http://", 7) == 0)
 		return cli_image_loader_fetch(url, buffer);
+
 	if (stat(path, &info) != 0)
 		return nb_status_from_errno(errno, NULL);
+
 	if (!S_ISREG(info.st_mode) || info.st_size > CLI_IMAGE_LOADER_IMAGE_MAX_BYTES)
 		return NB_ERR_TOO_BIG;
+
 	file = fopen(path, "rb");
 	if (!file)
 		return nb_status_from_errno(errno, NULL);
+
 	while ((count = fread(bytes, 1, sizeof(bytes), file)) > 0) {
 		if (cli_image_loader_receive(bytes, 1, count, buffer) != count) {
 			rc = (NB_ERR_TOO_BIG);
 			break;
 		}
 	}
+
 	if (ferror(file))
 		rc = (NB_ERR_IO);
+
 	fclose(file);
 	return rc;
 }
@@ -102,17 +113,22 @@ static unsigned char *cli_image_loader_decode(const nb_buf *buffer, int *w, int 
 
 	if (!webp && !stbi_info_from_memory(data, (int)buffer->len, w, h, &channels))
 		return NULL;
+
 	if (image_pixel_bytes(*w, *h, 4, &bytes) != 0)
 		return NULL;
+
 	if (!webp)
 		return stbi_load_from_memory(data, (int)buffer->len, w, h, &channels, 4);
+
 	pixels = malloc(bytes);
 	if (!pixels)
 		return NULL;
+
 	if (!WebPDecodeRGBAInto(data, buffer->len, pixels, bytes, *w * 4)) {
 		free(pixels);
 		return NULL;
 	}
+
 	return pixels;
 }
 
@@ -126,30 +142,37 @@ int cli_image_loader_load(const char *url, char **path, void *user)
 	(void)user;
 	if (!url || !path)
 		return NB_ERR_INVAL;
+
 	if (*path)
 		return NB_ERR_EXISTS;
+
 	rc = (nb_buf_init(&buffer), nb_buf_reserve(&buffer, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	rc = cli_image_loader_read(url, &buffer);
 	pixels = rc == 0 ? cli_image_loader_decode(&buffer, &w, &h) : NULL;
 	nb_buf_cleanup(&buffer);
 	if (!pixels)
 		return rc != 0 ? rc : NB_ERR_FORMAT;
+
 	rc = nb_file_temp_in(&temporary_path, "/tmp", NULL, NULL);
 	if (rc != NB_OK) {
 		free(pixels);
 		return rc;
 	}
+
 	const char *temporary = nb_buf_cstr(&temporary_path);
 	rc = stbi_write_png(temporary, w, h, 4, pixels, w * 4);
 	free(pixels);
 	if (rc)
 		*path = strdup(temporary);
+
 	if (!*path) {
 		unlink(temporary);
 		return rc ? NB_ERR_NOMEM : NB_ERR_IO;
 	}
+
 	return 0;
 }
 

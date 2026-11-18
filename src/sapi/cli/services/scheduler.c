@@ -22,12 +22,15 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 
 	if (!ctx || !task || !result)
 		return NB_ERR_INVAL;
+
 	task_prompt = runtime_scheduled_task_prompt_copy(task);
 	if (!task_prompt)
 		return NB_ERR_INVAL;
+
 	if ((nb_buf_init(&prompt), nb_buf_reserve(&prompt, 1024) ? 0 : NB_ERR_NOMEM) != 0) {
 		return NB_ERR_NOMEM;
 	}
+
 	(void)nb_buf_printf(&prompt,
 			    "Run this scheduled task now.\n\nTask title: %s\n\n"
 			    "Task prompt:\n%s\n\nReturn the result as a concise notification. "
@@ -39,6 +42,7 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 	rc = runtime_session_create_detached(ctx->runtime, session_name, &session);
 	if (rc != 0)
 		return rc;
+
 	memset(&request, 0, sizeof(request));
 	request.session_id = session.id;
 	request.model_input = nb_buf_cstr(&prompt);
@@ -53,8 +57,10 @@ int cli_scheduler_run_task(const struct scheduled_task *task,
 			turn.final_text && turn.final_text[0]
 				? turn.final_text
 				: nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	if ((rc == 0 && !result->body) || (rc != 0 && !result->error))
 		rc = NB_ERR_NOMEM;
+
 	return rc;
 }
 
@@ -64,6 +70,7 @@ static void cli_scheduler_task_notification(const struct notification *notificat
 	struct cli_application *ctx = user_data;
 	if (!notification)
 		return;
+
 	if (ctx && cli_event_queue_post_notification(ctx, notification) != 0)
 		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_WARN,
 			     "failed to queue task notification");
@@ -74,6 +81,7 @@ void cli_scheduler_process_due(struct cli_application *ctx)
 	int rc;
 	if (!ctx || runtime_task_scheduler_running(ctx->runtime))
 		return;
+
 	rc = runtime_tasks_run_due_for_runtime(ctx->runtime, 50, cli_scheduler_run_task, ctx,
 					       cli_scheduler_task_notification, ctx);
 	if (rc < 0)
@@ -86,6 +94,7 @@ int cli_scheduler_start(struct cli_application *ctx)
 {
 	if (!ctx)
 		return NB_ERR_INVAL;
+
 	return runtime_task_scheduler_start(ctx->runtime, cli_scheduler_run_task, ctx,
 					    cli_scheduler_task_notification, ctx, 50);
 }

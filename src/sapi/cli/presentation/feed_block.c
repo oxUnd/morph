@@ -1,4 +1,4 @@
-#include "sapi/cli/components/feed_block.h"
+#include "sapi/cli/presentation/feed_block.h"
 #include <nb/err.h>
 
 #include "sapi/cli/application.h"
@@ -6,28 +6,25 @@
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/components/agents.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/transcript.h"
-#include "sapi/cli/components/plan.h"
-#include "sapi/cli/components/notice.h"
+#include "sapi/cli/presentation/agents.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/transcript.h"
+#include "sapi/cli/presentation/plan.h"
+#include "sapi/cli/presentation/notice.h"
 #include <nb/cleanup.h>
 #include <errno.h>
-
-int cli_feed_block_leading_rows(struct nt_view_insets margin, int trailing_newlines)
-{
-	return cli_output_block_gap_margin(margin, trailing_newlines);
-}
 
 int cli_feed_block_append(nb_buf *out, const struct cli_feed_block *block,
 			  struct cli_feed_block_style *style)
 {
 	if (!out || !block || !style)
 		return NB_ERR_INVAL;
+
 	nb_buf body NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_init(&body), nb_buf_reserve(&body, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	switch (block->kind) {
 	case CLI_FEED_BLOCK_REASONING: {
 		struct cli_message_style message = {
@@ -63,14 +60,17 @@ int cli_feed_block_append(nb_buf *out, const struct cli_feed_block *block,
 	default:
 		return NB_ERR_INVAL;
 	}
+
 	if (rc != 0 || !body.len)
 		return rc;
+
 	struct nt_view_insets margin = block->margin;
 
 	if (block->join_previous)
 		margin = (struct nt_view_insets){0};
 	else if (!margin.top && !margin.right && !margin.bottom && !margin.left)
 		margin.top = 1;
+
 	return cli_output_block_append(out, nb_buf_cstr(&body), margin, &style->trailing_newlines);
 }
 
@@ -78,8 +78,10 @@ int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_bloc
 {
 	if (!ctx)
 		return NB_ERR_INVAL;
+
 	if (cli_chat_active(ctx))
 		return cli_chat_block(ctx, block);
+
 	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct cli_feed_block_style style = {
 		.columns = cli_feed_columns(ctx), .styled = cli_output_color_enabled(ctx),
@@ -89,8 +91,10 @@ int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_bloc
 	int rc = (nb_buf_init(&document), nb_buf_reserve(&document, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = cli_feed_block_append(&document, block, &style);
+
 	if (rc == 0 && document.len)
 		rc = cli_output_printf(ctx, "%s", nb_buf_cstr(&document));
+
 	return rc < 0 ? rc : 0;
 }
 

@@ -17,6 +17,7 @@ struct cli_agents_model {
 	struct agent_info *items;
 	int count;
 	int64_t session_id;
+	uint64_t activity_revision;
 	nb_vec receipts;
 };
 

@@ -9,7 +9,9 @@ int cli_media_image_probe_info(const char *absolute_path, int *width, int *heigh
 
 	if (!absolute_path || !width || !height)
 		return NB_ERR_INVAL;
+
 	if (!stbi_info(absolute_path, width, height, &channels))
 		return NB_ERR_FORMAT;
+
 	return 0;
 }

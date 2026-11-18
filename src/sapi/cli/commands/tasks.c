@@ -12,9 +12,8 @@
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/components/list.h"
+
 #include <nb/utf8.h>
-#include "cJSON.h"
 
 static int cli_tasks_parse_task_time_arg(const char *arg, int64_t *out)
 {
@@ -23,16 +22,20 @@ static int cli_tasks_parse_task_time_arg(const char *arg, int64_t *out)
 
 	if (!arg || !out || !arg[0])
 		return NB_ERR_INVAL;
+
 	if (arg[0] == '+') {
 		val = strtoll(arg + 1, &end, 10);
 		if (!end || *end != '\0' || val < 0)
 			return NB_ERR_INVAL;
+
 		*out = (int64_t)time(NULL) + (int64_t)val;
 		return 0;
 	}
+
 	val = strtoll(arg, &end, 10);
 	if (!end || *end != '\0' || val < 0)
 		return NB_ERR_INVAL;
+
 	*out = (int64_t)val;
 	return 0;
 }
@@ -45,16 +48,19 @@ static char *cli_tasks_task_join_title(int argc, char **argv, int start)
 	rc = (nb_buf_init(&title), nb_buf_reserve(&title, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return NULL;
+
 	for (int i = start; i < argc; i++) {
 		if (title.len > 0) {
 			rc = (nb_buf_append_char(&title, ' ') ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return NULL;
 		}
+
 		rc = (nb_buf_append_cstr(&title, argv[i]) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return NULL;
 	}
+
 	return (nb_buf_ok(&title) ? strdup(nb_buf_cstr(&title)) : NULL);
 }
 
@@ -82,28 +88,36 @@ static int cli_tasks_prompt_create(int argc, char **argv, int start, struct cli_
 	value.text = cli_tasks_task_join_title(argc, argv, start);
 	if (!value.text)
 		return NB_ERR_NOMEM;
+
 	if (!value.text[0] || nb_utf8_validate(nb_str_from_cstr(value.text), NULL))
 		return NB_ERR_INVAL;
+
 	rc = (nb_buf_init(&title),
 	      nb_buf_reserve(&title, SCHEDULED_TASK_TEXT_MAX) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	size_t bytes = strlen(value.text);
 	int shortened = bytes >= SCHEDULED_TASK_TEXT_MAX;
 	if (shortened)
 		bytes = nb_utf8_clamp_bytes(value.text, SCHEDULED_TASK_TEXT_MAX - sizeof("…"));
+
 	rc = (nb_buf_append(&title, value.text, bytes) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && shortened)
 		rc = (nb_buf_append_cstr(&title, "…") ? 0 : NB_ERR_NOMEM);
+
 	if (rc != 0)
 		return rc;
+
 	value.title = (nb_buf_ok(&title) ? strdup(nb_buf_cstr(&title)) : NULL);
 	payload = cJSON_CreateObject();
 	if (!payload || !cJSON_AddStringToObject(payload, "prompt", value.text))
 		return NB_ERR_NOMEM;
+
 	value.json = cJSON_PrintUnformatted(payload);
 	if (!value.json)
 		return NB_ERR_NOMEM;
+
 	*out = value;
 	value = (struct cli_tasks_prompt){0};
 	return 0;
@@ -126,11 +140,13 @@ static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, ch
 		CMD_ERROR(ctx, "usage: /tasks add <unix_time|+seconds> <title>");
 		return NB_ERR_INVAL;
 	}
+
 	rc = cli_tasks_parse_task_time_arg(argv[2], &next_run_at);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "invalid time: %s", argv[2]);
 		return rc;
 	}
+
 	rc = cli_tasks_prompt_create(argc, argv, 3, &prompt);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "Invalid task prompt: %s",
@@ -154,6 +170,7 @@ static int cli_tasks_command_tasks_add(struct cli_application *ctx, int argc, ch
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_OK(ctx, "task created: #%lld", (long long)task.id);
 	scheduled_task_cleanup(&task);
 	return 0;
@@ -173,11 +190,13 @@ static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, 
 		CMD_ERROR(ctx, "usage: /tasks every <seconds> <prompt>");
 		return NB_ERR_INVAL;
 	}
+
 	interval = strtol(argv[2], &end, 10);
 	if (!end || *end != '\0' || interval <= 0 || interval > INT_MAX) {
 		CMD_ERROR(ctx, "invalid interval seconds: %s", argv[2]);
 		return NB_ERR_INVAL;
 	}
+
 	rc = cli_tasks_prompt_create(argc, argv, 3, &prompt);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "Invalid task prompt: %s",
@@ -202,6 +221,7 @@ static int cli_tasks_command_tasks_every(struct cli_application *ctx, int argc, 
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_OK(ctx, "recurring task created: #%lld", (long long)task.id);
 	scheduled_task_cleanup(&task);
 	return 0;
@@ -222,16 +242,19 @@ static int cli_tasks_command_tasks_update(struct cli_application *ctx, int argc,
 		CMD_ERROR(ctx, "usage: /tasks update <id> <unix_time|+seconds> <title>");
 		return NB_ERR_INVAL;
 	}
+
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
 		CMD_ERROR(ctx, "invalid task id: %s", argv[2]);
 		return NB_ERR_INVAL;
 	}
+
 	rc = cli_tasks_parse_task_time_arg(argv[3], &next_run_at);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "invalid time: %s", argv[3]);
 		return rc;
 	}
+
 	rc = cli_tasks_prompt_create(argc, argv, 4, &prompt);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "Invalid task prompt: %s",
@@ -255,6 +278,7 @@ static int cli_tasks_command_tasks_update(struct cli_application *ctx, int argc,
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_OK(ctx, "task updated: #%lld", (long long)task.id);
 	scheduled_task_cleanup(&task);
 	return 0;
@@ -269,17 +293,20 @@ static int cli_tasks_command_tasks_list(struct cli_application *ctx, int argc, c
 
 	if (argc > 2)
 		status = argv[2];
+
 	rc = runtime_task_list(ctx->runtime, status, 50, &tasks, &count);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to list tasks: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_HEADER(ctx, "scheduled tasks (%d)", count);
 	if (count == 0)
 		cli_command_print_tree_note(ctx, "no tasks");
 	else
 		rc = cli_tasks_print_task_list_tree(ctx, tasks, count);
+
 	scheduled_task_free_list(tasks, count);
 	return rc;
 }
@@ -296,11 +323,13 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 		CMD_ERROR(ctx, "usage: /tasks show <id>");
 		return NB_ERR_INVAL;
 	}
+
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
 		CMD_ERROR(ctx, "invalid task id: %s", argv[2]);
 		return NB_ERR_INVAL;
 	}
+
 	memset(&task, 0, sizeof(task));
 	rc = runtime_task_copy(ctx->runtime, (int64_t)id, &task);
 	if (rc != 0) {
@@ -308,13 +337,16 @@ static int cli_tasks_command_tasks_show(struct cli_application *ctx, int argc, c
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_HEADER(ctx, "task");
 	rc = (nb_buf_init(&md), nb_buf_reserve(&md, 2048) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	rc = cli_tasks_append_task_show_markdown(&md, &task);
 	if (rc == 0)
 		rc = cli_command_output_markdown_render(ctx, nb_buf_cstr(&md));
+
 	return rc;
 }
 
@@ -328,17 +360,20 @@ static int cli_tasks_command_tasks_cancel(struct cli_application *ctx, int argc,
 		CMD_ERROR(ctx, "usage: /tasks cancel <id>");
 		return NB_ERR_INVAL;
 	}
+
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
 		CMD_ERROR(ctx, "invalid task id: %s", argv[2]);
 		return NB_ERR_INVAL;
 	}
+
 	rc = runtime_task_cancel(ctx->runtime, (int64_t)id);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to cancel task: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_OK(ctx, "task cancelled: #%lld", id);
 	return 0;
 }
@@ -351,17 +386,20 @@ static int cli_tasks_command_tasks_run(struct cli_application *ctx, int argc, ch
 
 	if (argc > 2)
 		limit = atoi(argv[2]);
+
 	rc = runtime_tasks_run_due_for_runtime(ctx->runtime, limit, cli_scheduler_run_task, ctx,
 					       NULL, NULL);
 	if (rc >= 0) {
 		ran = rc;
 		rc = 0;
 	}
+
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to run due tasks: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_OK(ctx, "processed due tasks: %d", ran);
 	return 0;
 }
@@ -372,16 +410,22 @@ static int cli_tasks_command_tasks(struct cli_application *ctx, int argc, char *
 
 	if (strcmp(sub, "add") == 0)
 		return cli_tasks_command_tasks_add(ctx, argc, argv);
+
 	if (strcmp(sub, "every") == 0)
 		return cli_tasks_command_tasks_every(ctx, argc, argv);
+
 	if (strcmp(sub, "update") == 0 || strcmp(sub, "edit") == 0)
 		return cli_tasks_command_tasks_update(ctx, argc, argv);
+
 	if (strcmp(sub, "list") == 0 || strcmp(sub, "ls") == 0)
 		return cli_tasks_command_tasks_list(ctx, argc, argv);
+
 	if (strcmp(sub, "show") == 0 || strcmp(sub, "info") == 0)
 		return cli_tasks_command_tasks_show(ctx, argc, argv);
+
 	if (strcmp(sub, "cancel") == 0 || strcmp(sub, "rm") == 0)
 		return cli_tasks_command_tasks_cancel(ctx, argc, argv);
+
 	if (strcmp(sub, "run") == 0 || strcmp(sub, "due") == 0)
 		return cli_tasks_command_tasks_run(ctx, argc, argv);
 
@@ -398,14 +442,17 @@ static void cli_tasks_notification_time_string(int64_t ts, char *buf, size_t buf
 
 	if (!buf || buf_len == 0)
 		return;
+
 	if (ts <= 0) {
 		snprintf(buf, buf_len, "-");
 		return;
 	}
+
 	if (!localtime_r(&t, &tm_local)) {
 		snprintf(buf, buf_len, "%lld", (long long)ts);
 		return;
 	}
+
 	if (strftime(buf, buf_len, "%Y-%m-%d %H:%M:%S", &tm_local) == 0)
 		snprintf(buf, buf_len, "%lld", (long long)ts);
 }
@@ -417,10 +464,12 @@ static const char *cli_tasks_task_prompt_from_payload(cJSON **payload,
 
 	if (!payload || !task)
 		return "";
+
 	*payload = task->payload_json ? cJSON_Parse(task->payload_json) : NULL;
 	prompt_json = *payload ? cJSON_GetObjectItem(*payload, "prompt") : NULL;
 	if (cJSON_IsString(prompt_json) && prompt_json->valuestring[0])
 		return prompt_json->valuestring;
+
 	return task->title[0] ? task->title : "";
 }
 
@@ -434,14 +483,19 @@ static enum cli_output_status cli_tasks_task_status(const char *status)
 {
 	if (!status)
 		return CLI_OUTPUT_STATUS_PENDING;
+
 	if (strcmp(status, "completed") == 0)
 		return CLI_OUTPUT_STATUS_DONE;
+
 	if (strcmp(status, "failed") == 0)
 		return CLI_OUTPUT_STATUS_FAILED;
+
 	if (strcmp(status, "cancelled") == 0)
 		return CLI_OUTPUT_STATUS_CANCELLED;
+
 	if (strcmp(status, "running") == 0)
 		return CLI_OUTPUT_STATUS_RUNNING;
+
 	return CLI_OUTPUT_STATUS_PENDING;
 }
 
@@ -468,11 +522,13 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 
 	if (!task)
 		return NB_ERR_INVAL;
+
 	cli_tasks_notification_time_string(task->next_run_at, due, sizeof(due));
 	if (task->max_attempts > 0)
 		snprintf(attempts, sizeof(attempts), "%d/%d", task->attempts, task->max_attempts);
 	else
 		snprintf(attempts, sizeof(attempts), "%d/∞", task->attempts);
+
 	cli_tasks_task_list_schedule(task, schedule, sizeof(schedule));
 	prompt = cli_tasks_task_prompt_from_payload(&payload, task);
 	rc = (nb_buf_init(&summary), nb_buf_reserve(&summary, 128) ? 0 : NB_ERR_NOMEM);
@@ -480,6 +536,7 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 		cJSON_Delete(payload);
 		return rc;
 	}
+
 	rc = (nb_buf_printf(&summary, "#%lld  %s · %s · next %s · %s", (long long)task->id,
 			    task->status, schedule, due, attempts)
 		      ? 0
@@ -497,6 +554,7 @@ static int cli_tasks_print_active_task(struct cli_application *ctx,
 
 		rc = cli_command_output_status_rows(ctx, &row, 1);
 	}
+
 	nb_buf_cleanup(&summary);
 	cJSON_Delete(payload);
 	return rc;
@@ -531,34 +589,40 @@ static int cli_tasks_print_task_list_tree(struct cli_application *ctx,
 
 	if (!tasks || count <= 0)
 		return NB_ERR_INVAL;
+
 	for (int i = 0; i < count; i++) {
 		if (cli_tasks_task_status_is_terminal(tasks[i].status))
 			history_count++;
 		else
 			active_count++;
 	}
+
 	if (active_count > 0) {
 		(void)cli_command_output_group(ctx, "active", active_count,
 					       history_count == 0);
 		for (int i = 0; rc == 0 && i < count; i++) {
 			if (cli_tasks_task_status_is_terminal(tasks[i].status))
 				continue;
+
 			active_index++;
 			rc = cli_tasks_print_active_task(
 					ctx, &tasks[i], history_count == 0,
 					active_index == active_count);
 		}
 	}
+
 	if (rc == 0 && history_count > 0) {
 		(void)cli_command_output_group(ctx, "history", history_count, 1);
 		for (int i = 0; i < count; i++) {
 			if (!cli_tasks_task_status_is_terminal(tasks[i].status))
 				continue;
+
 			history_index++;
 			cli_tasks_print_historical_task(ctx, &tasks[i],
 							history_index == history_count);
 		}
 	}
+
 	return rc;
 }
 
@@ -588,6 +652,7 @@ static int cli_tasks_append_task_show_markdown(nb_buf *buf, const struct schedul
 
 	if (!buf || !task)
 		return NB_ERR_INVAL;
+
 	cli_tasks_notification_time_string(task->next_run_at, due, sizeof(due));
 	cli_tasks_notification_time_string(task->created_at, created, sizeof(created));
 	cli_tasks_notification_time_string(task->updated_at, updated, sizeof(updated));
@@ -597,10 +662,12 @@ static int cli_tasks_append_task_show_markdown(nb_buf *buf, const struct schedul
 		snprintf(attempts, sizeof(attempts), "%d/%d", task->attempts, task->max_attempts);
 	else
 		snprintf(attempts, sizeof(attempts), "%d/∞", task->attempts);
+
 	if (task->interval_seconds > 0)
 		snprintf(schedule, sizeof(schedule), "every %d seconds", task->interval_seconds);
 	else
 		snprintf(schedule, sizeof(schedule), "once");
+
 	prompt = cli_tasks_task_prompt_from_payload(&payload, task);
 	cells[rows * 2] = "ID";
 	cells[rows++ * 2 + 1] = id;
@@ -618,6 +685,7 @@ static int cli_tasks_append_task_show_markdown(nb_buf *buf, const struct schedul
 		cells[rows * 2] = "Last error";
 		cells[rows++ * 2 + 1] = task->last_error;
 	}
+
 	cells[rows * 2] = "Created";
 	cells[rows++ * 2 + 1] = created;
 	cells[rows * 2] = "Updated";
@@ -626,10 +694,13 @@ static int cli_tasks_append_task_show_markdown(nb_buf *buf, const struct schedul
 	rc = cli_command_output_markdown_heading(buf, 2, heading);
 	if (rc == 0)
 		rc = cli_command_output_markdown_table(buf, &table);
+
 	if (rc == 0)
 		rc = cli_command_output_markdown_heading(buf, 3, "Prompt");
+
 	if (rc == 0)
 		rc = cli_command_output_markdown_block(buf, prompt);
+
 	cJSON_Delete(payload);
 	return rc;
 }
@@ -658,9 +729,11 @@ static int cli_tasks_render_inbox(struct cli_application *ctx,
 					       "No unread notifications.");
 		return 0;
 	}
+
 	rc = (nb_buf_init(&md), nb_buf_reserve(&md, 1024) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	rc = cli_command_output_markdown_table_header(&md, &table);
 	for (int i = 0; rc == 0 && i < count; i++) {
 		char id[32];
@@ -683,8 +756,10 @@ static int cli_tasks_render_inbox(struct cli_application *ctx,
 						   sizeof(created));
 		rc = cli_command_output_markdown_table_row(&md, &table, cells);
 	}
+
 	if (rc == 0)
 		rc = cli_command_output_markdown_render(ctx, nb_buf_cstr(&md));
+
 	return rc;
 }
 static int cli_tasks_command_inbox_list(struct cli_application *ctx, int argc, char **argv)
@@ -696,12 +771,14 @@ static int cli_tasks_command_inbox_list(struct cli_application *ctx, int argc, c
 
 	if (argc > 2)
 		limit = atoi(argv[2]);
+
 	rc = runtime_notification_list(ctx->runtime, limit, &notifications, &count);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to list inbox: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	rc = cli_tasks_render_inbox(ctx, notifications, count);
 	notification_free_list(notifications, count);
 	return rc;
@@ -717,17 +794,20 @@ static int cli_tasks_command_inbox_read(struct cli_application *ctx, int argc, c
 		CMD_ERROR(ctx, "usage: /inbox read <id>");
 		return NB_ERR_INVAL;
 	}
+
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
 		CMD_ERROR(ctx, "invalid notification id: %s", argv[2]);
 		return NB_ERR_INVAL;
 	}
+
 	rc = runtime_notification_mark_read(ctx->runtime, (int64_t)id);
 	if (rc != 0) {
 		CMD_ERROR(ctx, "failed to mark notification read: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	CMD_OK(ctx, "notification marked read: #%lld", id);
 	return 0;
 }
@@ -738,8 +818,10 @@ static int cli_tasks_command_inbox(struct cli_application *ctx, int argc, char *
 
 	if (strcmp(sub, "list") == 0 || strcmp(sub, "ls") == 0)
 		return cli_tasks_command_inbox_list(ctx, argc, argv);
+
 	if (strcmp(sub, "read") == 0)
 		return cli_tasks_command_inbox_read(ctx, argc, argv);
+
 	CMD_ERROR(ctx, "usage: /inbox [list [limit]|read <id>]");
 	return NB_ERR_INVAL;
 }

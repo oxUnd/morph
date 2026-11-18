@@ -75,6 +75,7 @@ int cli_setup_print(FILE *output, const char *format, ...)
 		va_end(args);
 		return written < 0 ? NB_ERR_IO : 0;
 	}
+
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct nt_text_layout view;
@@ -82,32 +83,40 @@ int cli_setup_print(FILE *output, const char *format, ...)
 	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
 		rc = (nb_buf_vprintf(&text, format, args) ? 0 : NB_ERR_NOMEM);
+
 	va_end(args);
 	char *safe = rc == 0 ? morph_terminal_sanitize_dup(nb_buf_cstr(&text), text.len,
 							   MORPH_TERMINAL_TEXT_MULTILINE, NULL)
 			     : NULL;
 	if (rc == 0 && !safe)
 		rc = NB_ERR_NOMEM;
+
 	int columns, rows;
 	nt_terminal_dimensions(fileno(output), &columns, &rows);
 	size_t width = columns > 4 ? (size_t)columns - 4 : 1;
 	if (rc == 0)
 		rc = nt_text_layout_build(&view, safe, width, NT_TEXT_WRAP_CHAR);
+
 	if (rc == 0)
 		rc = (nb_buf_init(&rendered), nb_buf_reserve(&rendered, 4096) ? 0 : NB_ERR_NOMEM);
+
 	for (size_t i = 0; rc == 0 && i < view.lines.len; i++) {
 		const struct nt_text_line *row = nb_vec_at(&view.lines, i);
 		if (row->length)
 			rc = (nb_buf_append_cstr(&rendered, "  ") ? 0 : NB_ERR_NOMEM);
+
 		if (rc == 0)
 			rc = (nb_buf_append(&rendered, safe + row->offset, row->length)
 				      ? 0
 				      : NB_ERR_NOMEM);
+
 		if (rc == 0)
 			rc = (nb_buf_append_cstr(&rendered, "\r\n") ? 0 : NB_ERR_NOMEM);
 	}
+
 	if (rc == 0)
 		rc = nt_draw_write(output, &rendered);
+
 	nt_text_layout_deinit(&view);
 	nb_buf_cleanup(&rendered);
 	nb_buf_cleanup(&text);
@@ -131,14 +140,19 @@ static int cli_controls_read_key(struct cli_controls_setup_ui *ui)
 
 		if (nb_atomic_int_load(&ui->interrupted))
 			return NB_ERR_CANCELLED;
+
 		if (rc == NB_ERR_INTERRUPTED)
 			continue;
+
 		if (rc != 0)
 			return rc;
+
 		if (event.type == NT_EVENT_EOF)
 			return NB_ERR_CANCELLED;
+
 		if (event.type == NT_EVENT_RESIZE)
 			return 0;
+
 		if (event.type == NT_EVENT_KEY)
 			return event.key;
 	}
@@ -155,6 +169,7 @@ static int cli_controls_record_answer(struct cli_controls_setup_ui *ui, const ch
 	int rc = (nb_buf_init(&frame), nb_buf_reserve(&frame, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
+
 	cli_controls_dimensions(ui);
 	const char *names[] = {"Text", "Vision", "Images", "Video", "Review"};
 	char safe[BUFSIZ];
@@ -169,24 +184,30 @@ static int cli_controls_record_answer(struct cli_controls_setup_ui *ui, const ch
 			      ui->step < 0 ? "Role" : names[ui->step], ui->color ? ANSI_RESET : "")
 			      ? 0
 			      : NB_ERR_NOMEM);
+
 	if (rc == 0 && !view.lines.len)
 		rc = (nb_buf_append_cstr(&frame, "\r\n") ? 0 : NB_ERR_NOMEM);
+
 	for (size_t i = 0; rc == 0 && i < view.lines.len; i++) {
 		const struct nt_text_line *row = nb_vec_at(&view.lines, i);
 		if (i)
 			rc = (nb_buf_append_cstr(&frame, "           ") ? 0 : NB_ERR_NOMEM);
+
 		if (rc == 0)
 			rc = (nb_buf_append(&frame, safe + row->offset, row->length)
 				      ? 0
 				      : NB_ERR_NOMEM);
+
 		if (rc == 0)
 			rc = (nb_buf_append_cstr(&frame, "\r\n") ? 0 : NB_ERR_NOMEM);
 	}
+
 	nt_text_layout_deinit(&view);
 	if (rc != 0) {
 		nb_buf_cleanup(&frame);
 		return rc;
 	}
+
 	/* Committed rows are not owned by a subsequent editable frame. */
 	return nt_inline_region_commit(&ui->region, ui->output, &frame, ui->columns, ui->rows);
 }
@@ -202,14 +223,17 @@ static int cli_controls_prompt_create(struct cli_controls_setup_ui *ui,
 	options->confirmed = ui->role_confirmed || ui->state->existing_config;
 	if (ui->phase == CLI_CONTROLS_SETUP_START)
 		options->summary = cli_setup_mcp_summary(ui->state->role);
+
 	if (ui->step >= 0 && ui->step < CLI_SETUP_MODEL_COUNT) {
 		const struct config_model_entry *entry = &ui->entries[ui->step];
 		if (!nb_buf_printf(scope, "%s · %s / %s", cli_setup_model_label(ui->step),
 				   *entry->provider ? entry->provider : "No provider",
 				   *entry->model ? entry->model : "Not configured"))
 			return NB_ERR_NOMEM;
+
 		options->scope = nb_buf_cstr(scope);
 	}
+
 	return cli_setup_prompt_create(options, out);
 }
 
@@ -236,17 +260,22 @@ static int cli_controls_select_menu(struct cli_controls_setup_ui *ui, const char
 					      ui->rows, NULL);
 		if (rc)
 			return rc;
+
 		int key = cli_controls_read_key(ui);
 		if (key < 0)
 			return key;
+
 		int result = nt_menu_state_update(&menu, key);
 		if (result == NT_NAVIGATION_CANCEL)
 			return NB_ERR_CANCELLED;
+
 		if (result == NT_NAVIGATION_BACK)
 			return CLI_CONTROLS_SETUP_BACK;
+
 		if (result == NT_NAVIGATION_SUBMIT)
 			return (int)menu.list.index;
 	}
+
 	return rc;
 }
 
@@ -263,6 +292,7 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 	int rc = nt_text_editor_state_init(&editor, secret ? "" : value, capacity, secret);
 	if (rc)
 		return rc;
+
 	nb_buf scope NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct cli_setup_prompt *prompt NB_CLEANUP(cli_setup_prompt_cleanup) = NULL;
 	struct cli_setup_prompt_options options = {
@@ -275,30 +305,36 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 					      ui->rows, validation);
 		if (rc)
 			break;
+
 		int key = cli_controls_read_key(ui);
 
 		if (key < 0) {
 			rc = key;
 			break;
 		}
+
 		if (key == 4 && !editor.pasting) {
 			rc = NB_ERR_CANCELLED;
 			break;
 		}
+
 		int result = nt_text_editor_prompt_key(&editor, key);
 
 		if (result < 0) {
 			rc = result;
 			break;
 		}
+
 		if (result == NT_NAVIGATION_CANCEL) {
 			rc = NB_ERR_CANCELLED;
 			break;
 		}
+
 		if (result == NT_NAVIGATION_BACK) {
 			rc = CLI_CONTROLS_SETUP_BACK;
 			break;
 		}
+
 		if (result == NT_NAVIGATION_SUBMIT) {
 			if ((editor.text.len && !editor.overflow && !editor.utf8_pending_len)) {
 				memcpy(value, editor.text.ptr, editor.text.len + 1);
@@ -306,12 +342,14 @@ static int cli_controls_edit(struct cli_controls_setup_ui *ui, const char *title
 					ui, secret ? "API key entered (hidden)" : value);
 				break;
 			}
+
 			validation = editor.text.len ? "Enter valid UTF-8 text."
 						     : "Enter a value, or press Esc to go back.";
 		} else if (result == NT_NAVIGATION_CHANGED) {
 			validation = NULL;
 		}
 	}
+
 	nt_text_editor_state_deinit(&editor);
 	return rc;
 }
@@ -321,9 +359,11 @@ static int cli_controls_has_key(struct cli_controls_setup_ui *ui, struct config_
 	(void)ui;
 	if (entry->api_key[0])
 		return 2;
+
 	const char *env = getenv(entry->api_key_env);
 	if (env && *env)
 		return 1;
+
 	return 0;
 }
 
@@ -344,10 +384,12 @@ static int cli_controls_credentials(struct cli_controls_setup_ui *ui,
 			3, 0);
 		if (selected < 0)
 			return selected;
+
 		if (selected == 2) {
 			ui->deferred[ui->step] = 1;
 			return cli_controls_record_answer(ui, "Account · Set up later");
 		}
+
 		if (selected == 0) {
 			int rc = cli_controls_edit(
 				ui, "Paste your API key",
@@ -355,10 +397,13 @@ static int cli_controls_credentials(struct cli_controls_setup_ui *ui,
 				entry->api_key, sizeof(entry->api_key), 1);
 			if (rc == CLI_CONTROLS_SETUP_BACK)
 				continue;
+
 			if (rc == 0)
 				memset(entry->api_key_env, 0, sizeof(entry->api_key_env));
+
 			return rc;
 		}
+
 		char name[sizeof(entry->api_key_env)];
 		strcpy(name, entry->api_key_env);
 		const char *hint =
@@ -370,13 +415,17 @@ static int cli_controls_credentials(struct cli_controls_setup_ui *ui,
 			if (rc < 0 || (nb_str_is_alnum(nb_str_from_cstr(name), "_") &&
 				       !((name)[0] >= '0' && (name)[0] <= '9')))
 				break;
+
 			hint = "Start with a letter or underscore; use letters, digits and "
 			       "underscores.";
 		}
+
 		if (rc == CLI_CONTROLS_SETUP_BACK)
 			continue;
+
 		if (rc < 0)
 			return rc;
+
 		if ((nb_str_is_alnum(nb_str_from_cstr(name), "_") &&
 		     !((name)[0] >= '0' && (name)[0] <= '9'))) {
 			memset(entry->api_key, 0, sizeof(entry->api_key));
@@ -394,28 +443,34 @@ static int cli_controls_edit_token_count(struct cli_controls_setup_ui *ui,
 	int ceiling = cli_setup_token_ceiling(entry, output);
 	if (output && ceiling >= entry->context_limit)
 		ceiling = entry->context_limit - 1;
+
 	char text[CLI_SETUP_TOKEN_INPUT_MAX] = "";
 	if (*value > 0)
 		snprintf(text, sizeof(text), "%d", *value);
+
 	nb_buf hint NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_init(&hint), nb_buf_reserve(&hint, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc < 0)
 		return rc;
+
 	nb_buf_printf(&hint, "Enter %d-%d tokens from your model's documentation.", output ? 1 : 2,
 		      ceiling);
 	if (nb_buf_status(&hint)) {
 		nb_buf_cleanup(&hint);
 		return NB_ERR_NOMEM;
 	}
+
 	for (;;) {
 		rc = cli_controls_edit(ui,
 				       output ? "Max output (tokens)" : "Context window (tokens)",
 				       nb_buf_cstr(&hint), text, sizeof(text), 0);
 		if (rc < 0)
 			break;
+
 		rc = cli_setup_parse_token_count(text, output ? 1 : 2, ceiling, value);
 		if (rc == 0)
 			break;
+
 		nb_buf_clear(&hint);
 		nb_buf_printf(&hint, "Invalid token count. Enter a whole number from %d to %d.",
 			      output ? 1 : 2, ceiling);
@@ -424,11 +479,14 @@ static int cli_controls_edit_token_count(struct cli_controls_setup_ui *ui,
 			break;
 		}
 	}
+
 	nb_buf_cleanup(&hint);
 	if (rc < 0)
 		return rc;
+
 	if (!output && entry->max_tokens >= entry->context_limit)
 		entry->max_tokens = 0;
+
 	return 0;
 }
 
@@ -440,8 +498,10 @@ static int cli_controls_ensure_token_limits(struct cli_controls_setup_ui *ui,
 		if (rc < 0)
 			return rc;
 	}
+
 	if (entry->max_tokens <= 0)
 		return cli_controls_edit_token_count(ui, entry, 1);
+
 	return 0;
 }
 
@@ -459,10 +519,12 @@ static int cli_controls_choose_thinking(struct cli_controls_setup_ui *ui,
 
 	if (selected < 0)
 		return selected;
+
 	rc = cli_setup_set_thinking(entry, selected);
 	if (rc == 0) {
 		rc = cli_controls_record_answer(ui, selected ? "Thinking · On" : "Thinking · Off");
 	}
+
 	return rc;
 }
 
@@ -478,6 +540,7 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 		int rc = (nb_buf_init(&labels), nb_buf_reserve(&labels, 4096) ? 0 : NB_ERR_NOMEM);
 		if (rc < 0)
 			return rc;
+
 		/* Store offsets until the buffer stops growing. */
 		size_t offsets[5];
 		offsets[0] = labels.len;
@@ -498,6 +561,7 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 			nb_buf_printf(&labels, "API key  %s (not exported)", entry->api_key_env);
 		else
 			nb_buf_append_cstr(&labels, "API key  Not set yet");
+
 		nb_buf_append_char(&labels, '\0');
 		for (int i = 3; i < 5; i++) {
 			offsets[i] = labels.len;
@@ -507,12 +571,15 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 				nb_buf_printf(&labels, "%d tokens", tokens);
 			else
 				nb_buf_append_cstr(&labels, "Required for this model");
+
 			nb_buf_append_char(&labels, '\0');
 		}
+
 		if (nb_buf_status(&labels)) {
 			nb_buf_cleanup(&labels);
 			return NB_ERR_NOMEM;
 		}
+
 		const char *items[] = {"Done",
 				       labels.ptr + offsets[0],
 				       labels.ptr + offsets[1],
@@ -526,6 +593,7 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 		nb_buf_cleanup(&labels);
 		if (selected < 0)
 			return selected;
+
 		if (selected == 0) {
 			if (!entry->model[0])
 				selected = 1;
@@ -535,10 +603,12 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 				rc = cli_controls_ensure_token_limits(ui, entry);
 				if (rc == CLI_CONTROLS_SETUP_BACK)
 					continue;
+
 				return rc;
 			} else
 				return 0;
 		}
+
 		if (selected == 1) {
 			char previous[sizeof(entry->model)];
 			strcpy(previous, entry->model);
@@ -556,11 +626,13 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 						       0);
 				if (rc < 0)
 					break;
+
 				if ((strncmp(url, "https://", 8) == 0 && url[8]) ||
 				    (strncmp(url, "http://", 7) == 0 && url[7])) {
 					strcpy(entry->api_base, url);
 					break;
 				}
+
 				hint = "Enter a URL starting with http:// or https://.";
 			}
 		} else if (selected >= 4) {
@@ -568,12 +640,15 @@ static int cli_controls_advanced_settings(struct cli_controls_setup_ui *ui,
 				rc = cli_controls_edit_token_count(ui, entry, 0);
 				if (rc == CLI_CONTROLS_SETUP_BACK)
 					continue;
+
 				if (rc < 0)
 					return rc;
 			}
+
 			rc = cli_controls_edit_token_count(ui, entry, selected == 5);
 		} else
 			rc = cli_controls_credentials(ui, entry);
+
 		if (rc < 0 && rc != CLI_CONTROLS_SETUP_BACK)
 			return rc;
 	}
@@ -599,10 +674,12 @@ static int cli_controls_choose_provider(struct cli_controls_setup_ui *ui,
 				  previous - 1);
 	if (selected < 0)
 		return selected;
+
 	if (!entry->provider[0] || selected + 1 != previous) {
 		cli_setup_model_defaults(kind, selected + 1, entry);
 		ui->deferred[kind] = 0;
 	}
+
 	return 0;
 }
 
@@ -617,10 +694,13 @@ static int cli_controls_configure_model_ui(struct cli_controls_setup_ui *ui)
 					  "Optional. Enable only if you need it.", items, 2, 0);
 		if (selected < 0)
 			return selected == CLI_CONTROLS_SETUP_BACK ? 0 : selected;
+
 		if (selected == 1)
 			return 0;
+
 		cli_setup_prepare_model(ui->state, ui->step);
 	}
+
 	for (;;) {
 		int thinking = strcmp(entry->adapter, "deepseek") == 0;
 		int optional = !cli_setup_role_requires(ui->state->role, ui->step);
@@ -635,15 +715,19 @@ static int cli_controls_configure_model_ui(struct cli_controls_setup_ui *ui)
 		if (thinking)
 			items[count++] = cli_setup_thinking_enabled(entry) ? "Thinking · On"
 									   : "Thinking · Off";
+
 		if (optional)
 			items[count++] = "Disable this model";
+
 		int selected = cli_controls_menu(
 			ui, "Model settings", "Edit only what you need; Done returns to overview.",
 			items, count, 0);
 		if (selected == CLI_CONTROLS_SETUP_BACK || selected == 0)
 			return 0;
+
 		if (selected < 0)
 			return selected;
+
 		int rc;
 		if (selected == 1)
 			rc = cli_controls_choose_provider(ui, entry);
@@ -674,6 +758,7 @@ static int cli_controls_configure_model_ui(struct cli_controls_setup_ui *ui)
 			memset(entry, 0, sizeof(*entry));
 			return 0;
 		}
+
 		if (rc < 0 && rc != CLI_CONTROLS_SETUP_BACK)
 			return rc;
 	}
@@ -685,6 +770,7 @@ static int cli_controls_review(struct cli_controls_setup_ui *ui)
 	int rc = (nb_buf_init(&labels), nb_buf_reserve(&labels, 4096) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	int ready = 1;
 	int complete = 1;
 	size_t offsets[CLI_SETUP_MODEL_COUNT + 1];
@@ -695,8 +781,10 @@ static int cli_controls_review(struct cli_controls_setup_ui *ui)
 		int valid = !active || cli_setup_model_complete(i, entry);
 		if (!valid)
 			complete = 0;
+
 		if (!valid || (active && !cli_controls_has_key(ui, entry)))
 			ready = 0;
+
 		offsets[i] = labels.len;
 		nb_buf_printf(&labels, "%s · %s%s%s", cli_setup_model_label(i),
 			      active ? entry->model[0] ? entry->model : "Model required" : "Off",
@@ -706,6 +794,7 @@ static int cli_controls_review(struct cli_controls_setup_ui *ui)
 			      required ? "" : " (optional)");
 		nb_buf_append_char(&labels, '\0');
 	}
+
 	offsets[CLI_SETUP_MODEL_COUNT] = labels.len;
 	nb_buf_printf(&labels, "Instructions · %s",
 		      ui->state->replace_prompt	   ? "Use role prompt"
@@ -715,12 +804,14 @@ static int cli_controls_review(struct cli_controls_setup_ui *ui)
 		nb_buf_cleanup(&labels);
 		return NB_ERR_NOMEM;
 	}
+
 	const char *items[CLI_CONTROLS_SETUP_ACTION_COUNT] = {
 		!complete ? "Complete required settings →"
 		: ready	  ? "Save and exit →"
 			  : "Connect accounts and save →"};
 	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++)
 		items[i + 1] = labels.ptr + offsets[i];
+
 	items[CLI_CONTROLS_SETUP_CHANGE_ROLE] = "Change role";
 	items[CLI_CONTROLS_SETUP_INSTRUCTIONS] = labels.ptr + offsets[CLI_SETUP_MODEL_COUNT];
 	items[CLI_CONTROLS_SETUP_SAVE_LATER] = "Save for later (without connecting)";
@@ -741,27 +832,33 @@ static int cli_controls_finish_setup(struct cli_controls_setup_ui *ui, int conne
 		if ((!cli_setup_role_requires(ui->state->role, i) && !entry->provider[0]) ||
 		    cli_setup_model_complete(i, entry))
 			continue;
+
 		ui->step = i;
 		ui->phase = CLI_CONTROLS_SETUP_PREFERENCES;
 		int rc = cli_controls_advanced_settings(ui, entry);
 		return rc < 0 && rc != CLI_CONTROLS_SETUP_BACK ? rc : 1;
 	}
+
 	for (int i = 0; connect && i < CLI_SETUP_MODEL_COUNT; i++) {
 		struct config_model_entry *entry = &ui->entries[i];
 		if (!entry->model[0] || cli_controls_has_key(ui, entry))
 			continue;
+
 		ui->step = i;
 		char previous_env[sizeof(entry->api_key_env)];
 		strcpy(previous_env, entry->api_key_env);
 		int rc = cli_controls_credentials(ui, entry);
 		if (rc == CLI_CONTROLS_SETUP_BACK)
 			return 1;
+
 		if (rc != 0)
 			return rc;
+
 		cli_setup_share_credentials(ui->state, i, previous_env);
 		if (!cli_controls_has_key(ui, entry))
 			break;
 	}
+
 	ui->step = CLI_SETUP_MODEL_COUNT;
 	return cli_controls_record_answer(ui, "Configuration confirmed");
 }
@@ -783,6 +880,7 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 
 	if (signal_rc != 0)
 		return signal_rc;
+
 	int enter_rc = nt_screen_open(&ui.screen, input, output,
 				      NT_TERMINAL_PASTE | (ui.color ? 0 : NT_TERMINAL_NO_SGR));
 
@@ -791,6 +889,7 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 		nb_signal_listener_stop(&ui.signals, NULL);
 		return enter_rc;
 	}
+
 	fputs("\r\n  morph  /  Setup\r\n\r\n", output);
 	(void)path;
 	int rc = 0;
@@ -803,6 +902,7 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 				items[i] = role.label;
 				descriptions[i] = role.description;
 			}
+
 			ui.phase = CLI_CONTROLS_SETUP_ROLE;
 			rc = cli_controls_select_menu(
 				&ui, ui.role_confirmed ? "Change your role" : "Choose your role",
@@ -811,15 +911,19 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 				ui.step = CLI_SETUP_MODEL_COUNT;
 				continue;
 			}
+
 			if (rc < 0) {
 				if (rc == CLI_CONTROLS_SETUP_BACK)
 					rc = NB_ERR_CANCELLED;
+
 				break;
 			}
+
 			int changed = !ui.role_confirmed || state->role != rc;
 			state->role = rc;
 			if (!ui.role_confirmed)
 				state->replace_prompt = !state->existing_prompt;
+
 			cli_setup_role_defaults(state);
 			ui.role_confirmed = 1;
 			rc = changed ? cli_controls_record_answer(
@@ -827,19 +931,24 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 				     : 0;
 			if (rc < 0)
 				break;
+
 			ui.step = CLI_SETUP_MODEL_COUNT;
 		}
+
 		rc = cli_controls_review(&ui);
 		if (rc == CLI_CONTROLS_SETUP_BACK || rc == CLI_CONTROLS_SETUP_CHANGE_ROLE) {
 			ui.step = -1;
 			continue;
 		}
+
 		if (rc < 0)
 			break;
+
 		if (rc == CLI_CONTROLS_SETUP_CANCEL) {
 			rc = NB_ERR_CANCELLED;
 			break;
 		}
+
 		if (rc == CLI_CONTROLS_SETUP_SAVE || rc == CLI_CONTROLS_SETUP_SAVE_LATER) {
 			rc = cli_controls_finish_setup(&ui, rc == CLI_CONTROLS_SETUP_SAVE);
 			if (rc <= 0)
@@ -857,22 +966,28 @@ int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FI
 			ui.step = rc - 1;
 			rc = cli_controls_configure_model_ui(&ui);
 		}
+
 		if (rc < 0 && rc != CLI_CONTROLS_SETUP_BACK)
 			break;
+
 		ui.step = CLI_SETUP_MODEL_COUNT;
 	}
+
 	cli_controls_dimensions(&ui);
 	int ending_rc = nt_inline_region_commit(&ui.region, ui.output, NULL, ui.columns, ui.rows);
 	if (rc == 0 && ending_rc < 0)
 		rc = ending_rc;
+
 	int leave_rc = nt_screen_close(&ui.screen);
 	if (!leave_rc && fputc('\r', output) == EOF)
 		leave_rc = NB_ERR_IO;
 
 	if (rc == 0)
 		rc = leave_rc;
+
 	nb_signal_listener_stop(&ui.signals, NULL);
 	if (rc < 0)
 		return rc;
+
 	return 0;
 }

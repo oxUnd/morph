@@ -49,6 +49,7 @@ static void cli_rich_document_images_cleanup(struct cli_rich_document_images *im
 		nt_media_asset_release(image->asset);
 		nb_buf_cleanup(&image->encoded);
 	}
+
 	nb_vec_cleanup(&images->items);
 }
 
@@ -65,6 +66,7 @@ static int cli_rich_document_layout(struct nt_view *view)
 	int rc = nt_view_arrange(document->text, content);
 	if (!rc && document->media)
 		rc = nt_view_arrange(document->media, content);
+
 	struct cli_rich_document_image *image;
 	for (size_t _i_ = 0;
 	     _i_ < nb_vec_len(&document->images.items) &&
@@ -72,9 +74,11 @@ static int cli_rich_document_layout(struct nt_view *view)
 	     _i_++) {
 		if (rc || !image->view)
 			continue;
+
 		rc = nt_view_arrange(image->view, (struct nt_view_rect){
 			content.x + image->x, content.y + image->y, image->columns, image->rows});
 	}
+
 	return rc;
 }
 
@@ -97,15 +101,19 @@ static unsigned cli_rich_document_parameter(const char *header, size_t length, c
 	for (size_t i = 0; i + 2 < length; i++) {
 		if ((i && header[i - 1] != ',') || header[i] != key || header[i + 1] != '=')
 			continue;
+
 		unsigned value = 0;
 		for (size_t n = i + 2; n < length && header[n] >= '0' && header[n] <= '9'; n++) {
 			unsigned digit = (unsigned)(header[n] - '0');
 			if (value > (UINT_MAX - digit) / 10u)
 				return 0;
+
 			value = value * 10u + digit;
 		}
+
 		return value;
 	}
+
 	return 0;
 }
 
@@ -118,6 +126,7 @@ static int cli_rich_document_transfer(struct cli_rich_document *document,
 		struct cli_rich_document_image *slot = nb_vec_push(&images->items);
 		if (!slot)
 			return NB_ERR_NOMEM;
+
 		*slot = (struct cli_rich_document_image){0};
 		slot->id = id;
 		slot->format = cli_rich_document_parameter(header, header_length, 'f');
@@ -127,26 +136,33 @@ static int cli_rich_document_transfer(struct cli_rich_document *document,
 		unsigned rows = cli_rich_document_parameter(header, header_length, 'r');
 		if (!columns || columns > INT_MAX || !rows || rows > INT_MAX)
 			return NB_ERR_INVAL;
+
 		slot->columns = (int)columns;
 		slot->rows = (int)rows;
 	}
+
 	if (!images->items.len)
 		return NB_ERR_INVAL;
+
 	struct cli_rich_document_image *image = nb_vec_at(&images->items, images->items.len - 1);
 	if (image->encoded.len > MORPH_MEDIA_MAX_FILE_BYTES * 2u ||
 	    length > MORPH_MEDIA_MAX_FILE_BYTES * 2u - image->encoded.len)
 		return NB_ERR_TOO_BIG;
+
 	int rc = (nb_buf_append(&image->encoded, payload, length) ? 0 : NB_ERR_NOMEM);
 	if (rc || cli_rich_document_parameter(header, header_length, 'm'))
 		return rc;
+
 	nb_buf decoded_bytes NB_CLEANUP(nb_buf_destroy) = {0};
 	if (nb_base64_decode(nb_str_from_cstr(nb_buf_cstr(&image->encoded)), NB_B64_STD,
 			     &decoded_bytes, NULL) != NB_OK)
 		return NB_ERR_FORMAT;
+
 	size_t decoded_length = nb_buf_len(&decoded_bytes);
 	const unsigned char *decoded = (const unsigned char *)nb_buf_cstr(&decoded_bytes);
 	if (decoded_length > MORPH_MEDIA_MAX_FILE_BYTES)
 		return NB_ERR_TOO_BIG;
+
 	struct nb_sha256_ctx hash;
 	nb_sha256_init(&hash);
 	nb_sha256_update(&hash, decoded, decoded_length);
@@ -165,14 +181,17 @@ static int cli_rich_document_transfer(struct cli_rich_document *document,
 			return 0;
 		}
 	}
+
 	if (image->format == 100)
 		return cli_media_asset_from_png(&image->asset, decoded,
 			decoded_length);
+
 	if (image->format != 32 || !image->pixel_width || !image->pixel_height ||
 	    image->pixel_width > INT_MAX || image->pixel_height > INT_MAX ||
 	    (size_t)image->pixel_width > decoded_length / 4u / image->pixel_height ||
 	    (size_t)image->pixel_width * image->pixel_height * 4u != decoded_length)
 		return NB_ERR_FORMAT;
+
 	return nt_media_asset_create_rgba(&image->asset, decoded,
 		(int)image->pixel_width, (int)image->pixel_height);
 }
@@ -193,10 +212,12 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 				const char *end = strstr(source + i + 3, "\033\\");
 				if (!end)
 					return NB_ERR_AGAIN;
+
 				const char *separator = memchr(source + i + 3, ';',
 					(size_t)(end - (source + i + 3)));
 				if (!separator)
 					return NB_ERR_FORMAT;
+
 				rc = cli_rich_document_transfer(document, images, source + i + 3,
 					(size_t)(separator - (source + i + 3)), separator + 1,
 					(size_t)(end - separator - 1));
@@ -217,6 +238,7 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 								 saved.ptr ? saved.ptr : "\033[0m")
 						      ? 0
 						      : NB_ERR_NOMEM);
+
 				i += 2;
 			} else if (source[i + 1] == '[') {
 				size_t end = i + 2;
@@ -224,8 +246,10 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 				       ((unsigned char)source[end] < 0x40u ||
 					(unsigned char)source[end] > 0x7eu))
 					end++;
+
 				if (end == length)
 					return NB_ERR_AGAIN;
+
 				if (source[end] == 'm') {
 					unsigned r, g, b;
 					if ((sscanf(source + i,
@@ -234,16 +258,19 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 						"\033[38:2:%u:%u:%um", &r, &g, &b) == 3) &&
 					    r <= 255u && g <= 255u && b <= 255u)
 						foreground = r * 65536u + g * 256u + b;
+
 					rc = (nb_buf_append(text, source + i, end - i + 1)
 						      ? 0
 						      : NB_ERR_NOMEM);
 					if (end - i == 3 && !memcmp(source + i, "\033[0m", 4))
 						nb_buf_clear(&style);
+
 					if (!rc)
 						rc = (nb_buf_append(&style, source + i, end - i + 1)
 							      ? 0
 							      : NB_ERR_NOMEM);
 				}
+
 				i = end + 1;
 			} else if (source[i + 1] == ']') {
 				size_t end = i + 2;
@@ -251,21 +278,27 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 				       !(source[end] == '\033' && end + 1 < length &&
 					 source[end + 1] == '\\'))
 					end++;
+
 				if (end == length)
 					return NB_ERR_AGAIN;
+
 				end += source[end] == '\a' ? 1 : 2;
 				rc = (nb_buf_append(text, source + i, end - i) ? 0 : NB_ERR_NOMEM);
 				i = end;
 			} else
 				i += 2;
+
 			if (rc)
 				return rc;
+
 			continue;
 		}
+
 		unsigned cp;
 		size_t bytes;
 		if (!nb_utf8_read(source + i, length - i, &cp, &bytes))
 			return NB_ERR_FORMAT;
+
 		if (cp == 0x10eeeeu) {
 			struct cli_rich_document_image *image;
 			int found = 0;
@@ -279,10 +312,12 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 						image->y = y;
 						image->placed = 1;
 					}
+
 					found = 1;
 					break;
 				}
 			}
+
 			int written = found ? nb_buf_append_char(text, ' ')
 					    : nb_buf_append(text, source + i, bytes);
 			rc = written ? 0 : NB_ERR_NOMEM;
@@ -299,10 +334,13 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 			} else if (cp != '\r')
 				x += nb_utf8_width_cp(cp) > 0 ? nb_utf8_width_cp(cp) : 0;
 		}
+
 		if (rc)
 			return rc;
+
 		i += bytes;
 	}
+
 	return 0;
 }
 
@@ -315,6 +353,7 @@ static int cli_rich_document_leading_rows(const char *text)
 			while (text[i] && ((unsigned char)text[i] < 0x40u ||
 				(unsigned char)text[i] > 0x7eu))
 				i++;
+
 			if (text[i])
 				i++;
 		} else if (text[i] == '\n' || text[i] == '\r') {
@@ -322,6 +361,7 @@ static int cli_rich_document_leading_rows(const char *text)
 		} else
 			break;
 	}
+
 	return rows;
 }
 
@@ -329,8 +369,10 @@ int cli_rich_document_set_rendered_copy(struct nt_view *view, const char *source
 {
 	if (!view || view->type != &cli_rich_document_class || !source)
 		return NB_ERR_INVAL;
+
 	if (!nt_view_is_owner_thread(view))
 		return NB_ERR_NOT_PERMITTED;
+
 	struct cli_rich_document *document = (struct cli_rich_document *)view;
 	struct cli_rich_document_images images NB_CLEANUP(cli_rich_document_images_cleanup) = {0};
 	struct cli_rich_document_image image;
@@ -339,19 +381,24 @@ int cli_rich_document_set_rendered_copy(struct nt_view *view, const char *source
 		  nb_vec_reserve(&images.items, 4) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
 		rc = (nb_buf_init(&text), nb_buf_reserve(&text, 256) ? 0 : NB_ERR_NOMEM);
+
 	if (!rc)
 		rc = cli_rich_document_parse(document, &images, &text, source);
+
 	if (rc)
 		return rc;
+
 	/* Keep text controls stable: replacing each one would scan the owning
 	 * controller's entire View scope once per restored message. */
 	rc = cli_messages_set_rendered_view(document->text, nb_buf_cstr(&text), styled);
 	if (rc)
 		return rc;
+
 	if (document->media && nt_view_child_count(document->media)) {
 		rc = nt_view_clear_children(document->media);
 		if (rc)
 			return rc;
+
 		struct cli_rich_document_image *old;
 		for (size_t _i_ = 0; _i_ < nb_vec_len(&document->images.items) &&
 				     (old = (struct cli_rich_document_image *)nb_vec_at(
@@ -359,6 +406,7 @@ int cli_rich_document_set_rendered_copy(struct nt_view *view, const char *source
 		     _i_++)
 			old->view = NULL;
 	}
+
 	struct cli_rich_document_image *entry;
 	int leading = cli_rich_document_leading_rows(nb_buf_cstr(&text));
 	for (size_t _i_ = 0;
@@ -367,25 +415,30 @@ int cli_rich_document_set_rendered_copy(struct nt_view *view, const char *source
 	     _i_++) {
 		if (!entry->asset || !entry->placed)
 			continue;
+
 		if (!document->media) {
 			struct nt_view *media = nt_view_add(
 				document->builder, view, &nt_view_base_class, NULL);
 			if (!media)
 				return nt_builder_error(document->builder);
+
 			document->media = media;
 		}
+
 		const struct nt_view_options options = {
 			.width = entry->columns, .height = entry->rows};
 		entry->y = entry->y > leading ? entry->y - leading : 0;
 		entry->view = nt_image_view_add(document->builder, document->media,
 			entry->asset, &options);
 	}
+
 	if (document->media) {
 		rc = nt_view_set_hidden(document->media,
 			!nt_view_child_count(document->media));
 		if (rc)
 			return rc;
 	}
+
 	cli_rich_document_images_cleanup(&document->images);
 	nb_vec_move(&document->images.items, &images.items);
 	nt_view_invalidate(view, 1);
@@ -400,6 +453,7 @@ struct nt_view *cli_rich_document_add_borrow(struct nt_builder *builder,
 			builder, parent, &cli_rich_document_class, NULL);
 	if (!document)
 		return NULL;
+
 	document->builder = builder;
 	document->text = cli_report_text_add(builder, &document->base, NULL);
 	return &document->base;

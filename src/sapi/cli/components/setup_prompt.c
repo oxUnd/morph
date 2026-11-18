@@ -34,10 +34,12 @@ static struct nt_text_style cli_setup_prompt_style(int styled, unsigned attribut
 		if (fg >= 0)
 			style.foreground = (struct nt_color){
 				fg < 16 ? NT_COLOR_ANSI : NT_COLOR_INDEXED, (unsigned)fg};
+
 		if (bg >= 0)
 			style.background = (struct nt_color){
 				bg < 16 ? NT_COLOR_ANSI : NT_COLOR_INDEXED, (unsigned)bg};
 	}
+
 	return style;
 }
 
@@ -64,6 +66,7 @@ static const char *cli_setup_prompt_item(void *data, size_t index)
 		nb_buf_printf(&p->row, "%s %zu  %s%s", marker, index + 1, state->items[index], tag);
 	} else
 		nb_buf_printf(&p->row, "%s %s", marker, state->items[index]);
+
 	return nb_buf_cstr(&p->row);
 }
 
@@ -77,6 +80,7 @@ static int cli_setup_prompt_draw_row(void *data, struct nt_canvas *canvas, size_
 		nt_sanitize_dup(label, strlen(label), NT_TEXT_SINGLE_LINE, NULL);
 	if (!clean)
 		return NB_ERR_NOMEM;
+
 	struct nt_text_style style =
 		cli_setup_prompt_style(p->state.styled && selected, NT_STYLE_BOLD, 0, 6);
 	return nt_canvas_text_styled(canvas, 0, 0, clean, &style);
@@ -134,6 +138,7 @@ static void cli_setup_prompt_build(struct nt_view_controller *controller,
 									   s->descriptions[i], dim);
 			}
 		}
+
 		if (s->roles) {
 			p->gap = cli_setup_prompt_label(builder, p->root, "", dim);
 			for (size_t i = 0; i < 3; i++) {
@@ -145,6 +150,7 @@ static void cli_setup_prompt_build(struct nt_view_controller *controller,
 			}
 		}
 	}
+
 	p->hint = cli_setup_prompt_label(builder, p->root, "", dim);
 }
 
@@ -158,23 +164,28 @@ int cli_setup_prompt_create(const struct cli_setup_prompt_options *state,
 	struct cli_setup_prompt *p NB_CLEANUP(cli_setup_prompt_cleanup) = calloc(1, sizeof(*p));
 	if (!p)
 		return NB_ERR_NOMEM;
+
 	p->state = *state;
 	if (state->descriptions && !state->roles) {
 		p->card = calloc((size_t)state->count, sizeof(*p->card));
 		if (!p->card)
 			return NB_ERR_NOMEM;
 	}
+
 	int rc = nt_surface_create(&p->surface);
 	if (!rc)
 		rc = nt_view_controller_create(&type, &p->controller);
+
 	if (!rc) {
 		p->controller->data = p;
 		rc = nt_view_controller_load(p->controller);
 	}
+
 	if (!rc) {
 		*out = p;
 		p = NULL;
 	}
+
 	return rc;
 }
 
@@ -199,6 +210,7 @@ static int cli_setup_prompt_height(struct nt_view *view, int rows)
 		o.height = rows;
 		rc = nt_view_set_options(view, &o);
 	}
+
 	return rc;
 }
 
@@ -212,8 +224,10 @@ static int cli_setup_prompt_preview(struct cli_setup_prompt *p, int columns, int
 	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++)
 		if (cli_setup_role_requires(role, i))
 			nb_buf_printf(&models, "%s%s", used++ ? " + " : "", names[i]);
+
 	if (!nb_buf_ok(&models))
 		return NB_ERR_NOMEM;
+
 	const char *lines[] = {cli_setup_role_get(role).description, nb_buf_cstr(&models),
 			       cli_setup_mcp_summary(role)};
 	const int priority[] = {1, 0, 2};
@@ -227,19 +241,24 @@ static int cli_setup_prompt_preview(struct cli_setup_prompt *p, int columns, int
 						      NT_TEXT_WRAP_CHAR);
 			if (rc)
 				return rc;
+
 			if (wrap.lines.len <= (size_t)budget)
 				visible = (int)wrap.lines.len;
 			else if (i == 1)
 				visible = budget;
 		}
+
 		int rc = nt_text_view_set_text(p->preview[i], lines[i]);
 		if (!rc)
 			rc = cli_setup_prompt_height(p->preview[i], visible);
+
 		if (rc)
 			return rc;
+
 		budget -= visible;
 		total += visible;
 	}
+
 	int gap = rows >= 20 && budget > 0 && total > 0;
 	*available -= total + gap;
 	return nt_view_set_hidden(p->gap, !gap);
@@ -253,15 +272,20 @@ static int cli_setup_prompt_choices(struct cli_setup_prompt *p, int width, int r
 	int visible = cards ? available / 4 : available;
 	if (visible < 1)
 		visible = 1;
+
 	if (visible > s->count)
 		visible = s->count;
+
 	nt_list_state_layout(&s->menu->list, (size_t)s->count, (size_t)visible);
 	if (!rc)
 		rc = cli_setup_prompt_height(p->list, cards ? 0 : visible);
+
 	if (!rc)
 		rc = nt_list_view_select(p->list, s->menu->list.index);
+
 	if (!rc && p->cards)
 		rc = nt_view_set_hidden(p->cards, !cards);
+
 	for (int i = 0; !rc && cards && i < s->count; i++) {
 		struct cli_setup_prompt_card *card = &p->card[i];
 		int selected = (size_t)i == s->menu->list.index;
@@ -276,21 +300,26 @@ static int cli_setup_prompt_choices(struct cli_setup_prompt *p, int width, int r
 		card->second = cli_setup_prompt_style(s->styled, NT_STYLE_DIM, fg, bg);
 		if (!rc)
 			rc = nt_label_set_text(card->label, cli_setup_prompt_item(p, (size_t)i));
+
 		if (!rc)
 			rc = nt_view_set_style(card->label, style);
+
 		if (!rc)
 			rc = nt_view_set_style(
 				card->description,
 				cli_setup_prompt_style(s->styled, NT_STYLE_DIM, fg, bg));
 	}
+
 	const char *hint = s->roles	? (width < 46 ? "↑↓ Move  Enter OK  Esc"
 						      : "↑↓ Move · 1–8 Jump · Enter Select · Esc Back")
 			   : width < 56 ? "↑↓ Move  Enter OK  Esc Back"
 					: "↑↓ Choose · Enter Select · Esc Back · Ctrl+C Exit";
 	if (!rc)
 		rc = nt_label_set_text(p->hint, hint);
+
 	if (!rc)
 		rc = nt_view_set_hidden(p->hint, rows < 4);
+
 	return rc;
 }
 
@@ -314,8 +343,10 @@ int cli_setup_prompt_present(struct cli_setup_prompt *p, struct nt_inline_region
 		rc = nt_view_set_hidden(views[i], !visible[i]);
 		header += visible[i];
 	}
+
 	if (!rc)
 		rc = nt_label_set_text(p->detail, detail ? detail : "");
+
 	int width = columns > 4 ? columns - 4 : 1;
 	int x = -1, y = -1;
 	if (!rc && s->editor) {
@@ -324,29 +355,37 @@ int cli_setup_prompt_present(struct cli_setup_prompt *p, struct nt_inline_region
 		rc = nt_text_editor_prompt_line(s->editor, &input, (size_t)width, &caret);
 		if (!rc)
 			rc = nt_label_set_text(p->input, nb_buf_cstr(&input));
+
 		if (!rc)
 			rc = nt_label_set_text(
 				p->hint,
 				columns < 60
 					? "Enter OK  Esc Back  ^U Clear"
 					: "Enter Continue · Esc Back · Ctrl+U Clear · Ctrl+C Exit");
+
 		x = (int)caret + 2;
 		y = header;
 	} else if (!rc)
 		rc = cli_setup_prompt_choices(p, width, rows, rows - header - 2);
+
 	struct nt_view_size size = {0};
 	if (!rc)
 		rc = nt_view_measure(p->root, columns, &size);
+
 	if (!rc)
 		rc = nt_surface_resize(p->surface, columns, size.height);
+
 	if (!rc) {
 		nt_surface_clear(p->surface);
 		rc = nt_view_arrange(p->root, (struct nt_view_rect){0, 0, columns, size.height});
 	}
+
 	if (!rc)
 		rc = nt_view_render(p->root, p->surface);
+
 	if (!rc)
 		rc = nt_inline_region_present(region, output, p->surface, columns, rows, x, y,
 					      s->styled);
+
 	return rc;
 }

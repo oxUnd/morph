@@ -5,6 +5,7 @@
 #include <nb/err.h>
 #include <nb/vec.h>
 #include <nb/cleanup.h>
+#include <stdint.h>
 
 struct react_action;
 
@@ -22,6 +23,7 @@ struct cli_command_job {
 	int done;
 	int result;
 	nb_vec prompts;
+	nb_atomic_i64 prompts_revision;
 	char *delivered_prompt;
 	int expedite_prompts;
 };
@@ -42,6 +44,10 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text, const 
  * every created slot is NULL and total is zero; occupied slots return NB_ERR_EXISTS. */
 int cli_command_job_prompts_copy(struct cli_command_job *job, char **items, size_t capacity,
 				 size_t *total);
+/* An unchanged revision returns NB_ERR_AGAIN without copying. A successful
+ * copy publishes its revision from the same locked snapshot as the items. */
+int cli_command_job_prompts_copy_since(struct cli_command_job *job, char **items,
+				       size_t capacity, size_t *total, int64_t *revision);
 char *cli_command_job_take_prompt(struct cli_command_job *job, char **display_text);
 int cli_command_job_drain(void *opaque, struct react_action *out, int timeout);
 int cli_command_job_wait(struct cli_command_job *job);

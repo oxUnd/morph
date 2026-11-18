@@ -1,10 +1,10 @@
-#ifndef MORPH_CLI_COMPONENTS_FEED_BLOCK_H
-#define MORPH_CLI_COMPONENTS_FEED_BLOCK_H
+#ifndef MORPH_CLI_PRESENTATION_FEED_BLOCK_H
+#define MORPH_CLI_PRESENTATION_FEED_BLOCK_H
 
 #include "agent/agent_control.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
-#include "sapi/cli/components/notice.h"
+#include "sapi/cli/presentation/notice.h"
 #include <nothing/tui/view.h>
 
 struct cli_application;
@@ -48,7 +48,6 @@ struct cli_feed_block_style {
 	int trailing_newlines;
 };
 
-int cli_feed_block_leading_rows(struct nt_view_insets margin, int trailing_newlines);
 int cli_feed_block_append(nb_buf *out, const struct cli_feed_block *block,
 			  struct cli_feed_block_style *style);
 int cli_feed_block_write(struct cli_application *ctx, const struct cli_feed_block *block);

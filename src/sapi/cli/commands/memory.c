@@ -29,23 +29,28 @@ static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *sco
 {
 	if (!scope)
 		return NB_ERR_INVAL;
+
 	if (!name || strcmp(name, "all") == 0) {
 		*scope = MEMORY_CLEAR_ALL;
 		return 0;
 	}
+
 	if (strcmp(name, "facts") == 0) {
 		*scope = MEMORY_CLEAR_FACTS;
 		return 0;
 	}
+
 	if (strcmp(name, "past_tasks") == 0 || strcmp(name, "episodes") == 0) {
 		*scope = MEMORY_CLEAR_TASKS;
 		return 0;
 	}
+
 	if (strcmp(name, "tips") == 0 || strcmp(name, "procedures") == 0 ||
 	    strcmp(name, "rules") == 0) {
 		*scope = MEMORY_CLEAR_TIPS;
 		return 0;
 	}
+
 	return NB_ERR_INVAL;
 }
 
@@ -60,6 +65,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		if (rc != 0)
 			CMD_ERROR(ctx, "Failed to open memory panel: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
 
@@ -71,6 +77,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		else
 			CMD_OK(ctx, "Memory update retry requested.");
+
 		return rc;
 	}
 
@@ -79,6 +86,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 
 		if (!jobs)
 			return MORPH_ERR_DB;
+
 		CMD_HEADER(ctx, "Background jobs: queued = pending; completed = finished");
 		(void)cli_output_print_untrusted(ctx, jobs, MORPH_TERMINAL_TEXT_MULTILINE);
 		free(jobs);
@@ -97,12 +105,14 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 				       "; /memory unset <key> [personal|project|session]");
 			return NB_ERR_INVAL;
 		}
+
 		rc = runtime_preference_set(ctx->runtime, scope ? scope : "personal", key, value);
 		if (rc != 0) {
 			CMD_ERROR(ctx, "Failed to update preference: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
+
 		if (setting)
 			CMD_OK(ctx, "Preference saved (%s); effective from the next model request.",
 			       scope ? scope : "personal");
@@ -111,6 +121,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			       "Preference unset (%s); inheritance restored for the next model "
 			       "request.",
 			       scope ? scope : "personal");
+
 		{
 			char *effective = runtime_preferences_render_copy(ctx->runtime, 0);
 
@@ -120,6 +131,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		}
 		return 0;
 	}
+
 	if (sub && (!strcmp(sub, "history") || !strcmp(sub, "explain"))) {
 		char *history = runtime_preferences_render_copy(ctx->runtime, 1);
 		char *effective = runtime_preferences_render_copy(ctx->runtime, 0);
@@ -130,6 +142,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			CMD_ERROR(ctx, "Failed to read preferences");
 			return MORPH_ERR_DB;
 		}
+
 		CMD_HEADER(ctx, "Effective preferences (session > project > personal; "
 				"explicit settings override legacy records)");
 		(void)cli_output_print_untrusted(ctx, effective, MORPH_TERMINAL_TEXT_MULTILINE);
@@ -164,10 +177,12 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			CMD_ERROR(ctx, "usage: /memory clear [all|facts|past_tasks|tips]");
 			return NB_ERR_INVAL;
 		}
+
 		if (runtime_memory_clear_current(ctx->runtime, scope) != 0) {
 			CMD_ERROR(ctx, "failed to clear memory");
 			return NB_ERR_IO;
 		}
+
 		CMD_OK(ctx,
 		       "cleared %s memory for session: %s (personal/project preferences retained)",
 		       cli_memory_scope_display(scope),

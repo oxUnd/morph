@@ -11,7 +11,7 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "runtime/runtime.h"
 #include <stdarg.h>
@@ -24,6 +24,7 @@ void cli_turn_record_media_credits(struct cli_application *ctx, const char *kind
 {
 	if (!ctx || !kind)
 		return;
+
 	(void)runtime_credit_record_media(ctx->runtime, kind, image_units, video_seconds, provider,
 					  model, metadata_json);
 }
@@ -47,6 +48,7 @@ void cli_turn_prepare(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+
 	(void)runtime_turn_prepare_tools(ctx->runtime, (int64_t)time(NULL));
 	cli_scheduler_process_due(ctx);
 }
@@ -57,6 +59,7 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 
 	if (!ctx || !input)
 		return NB_ERR_INVAL;
+
 	nb_buf input_buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *effective_input = input;
 	int has_input_buf = 0;
@@ -68,6 +71,7 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 
 		if (rc != 0)
 			return rc;
+
 		has_input_buf = 1;
 		rc = (nb_buf_printf(
 			      &input_buf,
@@ -81,6 +85,7 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 			nb_buf_cleanup(&input_buf);
 			return rc;
 		}
+
 		effective_input = nb_buf_cstr(&input_buf);
 		ctx->image_path[0] = '\0';
 	}
@@ -89,8 +94,10 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 		cli_turn_begin(ctx);
 		owns_turn = 1;
 	}
+
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && !ctx->input_job)
 		ctx->cancel_monitor = cli_cancel_monitor_start(ctx, STDIN_FILENO);
+
 	struct session current;
 	(void)runtime_session_current(ctx->runtime, &current);
 	struct runtime_request request = {
@@ -111,13 +118,16 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 	int react_rc = runtime_execute_turn(ctx->runtime, &request, &runtime_result);
 	if (react_rc != NB_ERR_BUSY)
 		ctx->session_auto_named = 1;
+
 	if (has_input_buf)
 		nb_buf_cleanup(&input_buf);
+
 	struct cli_cancel_monitor *cancel_monitor = ctx->cancel_monitor;
 	ctx->cancel_monitor = NULL;
 	cli_cancel_monitor_stop(cancel_monitor);
 	if (owns_turn)
 		cli_turn_finish(ctx, react_rc);
+
 	if (react_rc == NB_ERR_BUSY)
 		return react_rc;
 
@@ -129,6 +139,7 @@ void cli_turn_begin(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+
 	(void)cli_agents_refresh(ctx);
 	cli_cancel_state_reset(ctx);
 	cli_presentation_reset(ctx);
@@ -142,6 +153,7 @@ void cli_turn_finish(struct cli_application *ctx, int turn_rc)
 {
 	if (!ctx)
 		return;
+
 	(void)cli_agents_refresh(ctx);
 	cli_cancel_state_reset(ctx);
 	cli_presentation_finish(ctx);
@@ -151,6 +163,7 @@ void cli_turn_finish(struct cli_application *ctx, int turn_rc)
 	if (turn_rc >= 0 || cli_presentation_final_visible(ctx) ||
 	    ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
+
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 		cli_output_printf(
 			ctx, "error: %s\n",

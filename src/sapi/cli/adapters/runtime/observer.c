@@ -5,8 +5,8 @@
 #include "sapi/cli/application_internal.h"
 #include "credits.h"
 #include "sapi/cli/services/event_queue.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/feed_block.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/feed_block.h"
 #include <nb/cleanup.h>
 
 void cli_runtime_observer_pause(void *user_data)
@@ -44,6 +44,7 @@ static int cli_runtime_observer_credit_warning_on_owner(void *opaque)
 	cli_output_printf(ctx, ANSI_YELLOW "credits warning: %lld / %d today" ANSI_RESET "\n",
 	       (long long)warning->credits, warning->daily_limit);
 	}
+
 	cli_feed_history_end(warning->ctx);
 	return 0;
 }
@@ -57,9 +58,11 @@ void cli_runtime_observer_usage(const struct model_usage *usage, void *user_data
 	(void)usage;
 	if (!ctx || !ctx->runtime || ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
+
 	config = runtime_config_borrow(ctx->runtime);
 	if (!config || config->credits.daily_limit < 0)
 		return;
+
 	if (runtime_credit_summary_today_get(ctx->runtime, &today) == 0 &&
 	    today.credits > config->credits.daily_limit) {
 		struct cli_runtime_observer_credit_warning warning = {

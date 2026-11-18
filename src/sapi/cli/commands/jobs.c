@@ -17,21 +17,26 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 			CMD_ERROR(ctx, "usage: /jobs stop <id>");
 			return NB_ERR_INVAL;
 		}
+
 		int rc = runtime_process_stop(ctx->runtime, id);
 		if (!rc)
 			CMD_OK(ctx, "stop requested: %s", id);
 		else
 			CMD_ERROR(ctx, "%s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
+
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && isatty(STDIN_FILENO)) {
 		int rc = cli_jobs_view(ctx, id);
 		if (rc)
 			CMD_ERROR(ctx, "%s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
+
 	cJSON *data = NULL;
 	int rc = id ? runtime_process_read(ctx->runtime, id, &data)
 		    : runtime_process_list(ctx->runtime, &data);
@@ -44,9 +49,11 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 			free(json);
 		}
 	}
+
 	cJSON_Delete(data);
 	if (rc)
 		CMD_ERROR(ctx, "%s", nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	return rc;
 }
 

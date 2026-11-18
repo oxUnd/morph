@@ -23,10 +23,12 @@ static int cli_share_escape(nb_buf *html, const char *text)
 {
 	if (nb_buf_status(html))
 		return nb_buf_status(html);
+
 	char *safe = morph_terminal_sanitize_dup(text, strlen(text), MORPH_TERMINAL_TEXT_MULTILINE,
 						 NULL);
 	if (!safe)
 		return NB_ERR_NOMEM;
+
 	for (const char *p = safe; *p; p++) {
 		switch (*p) {
 		case '&':
@@ -49,6 +51,7 @@ static int cli_share_escape(nb_buf *html, const char *text)
 			break;
 		}
 	}
+
 	free(safe);
 	return nb_buf_status(html);
 }
@@ -71,6 +74,7 @@ static int cli_share_resolve_resource(const struct morph_md_html_resource *resou
 	} else {
 		*out_url = "";
 	}
+
 	return 0;
 }
 
@@ -80,6 +84,7 @@ static int cli_share_markdown(nb_buf *html, const char *text)
 	int rc = morph_data_find(font, sizeof(font), "fonts/STIXTwoMath-Regular.ttf");
 	if (rc)
 		return rc;
+
 	struct morph_md_engine_options engine_options = {
 		.features = MORPH_MD_FEATURE_GFM | MORPH_MD_FEATURE_MATH,
 		.html_policy = MORPH_MD_HTML_STRIP,
@@ -96,10 +101,13 @@ static int cli_share_markdown(nb_buf *html, const char *text)
 	rc = morph_md_engine_create(&engine_options, &engine);
 	if (!rc)
 		rc = morph_md_engine_append(engine, text, strlen(text), 1);
+
 	if (!rc)
 		rc = morph_md_engine_snapshot(engine, &document);
+
 	if (!rc)
 		rc = morph_md_doc_to_html(document, &html_options, &fragment);
+
 	if (rc) {
 		if (rc != NB_ERR_NOMEM && rc != NB_ERR_INVAL)
 			rc = (NB_ERR_FORMAT);
@@ -111,6 +119,7 @@ static int cli_share_markdown(nb_buf *html, const char *text)
 				      ? 0
 				      : NB_ERR_NOMEM);
 	}
+
 	morph_md_free(fragment);
 	morph_md_doc_release(document);
 	morph_md_engine_destroy(engine);
@@ -127,8 +136,10 @@ static int cli_share_questions(const cJSON *questions, nb_buf *html)
 					  cJSON_IsString(question) ? question->valuestring : "");
 		if (rc)
 			return rc;
+
 		nb_buf_append_cstr(html, "</div>");
 	}
+
 	nb_buf_append_cstr(html, "</section>");
 	return nb_buf_status(html);
 }
@@ -139,19 +150,23 @@ static int cli_share_step_html(const cJSON *step, nb_buf *html)
 	int rc = cli_share_escape(html, cli_share_text(step, "name"));
 	if (rc)
 		return rc;
+
 	nb_buf_append_cstr(html, "<span class=status>");
 	rc = cli_share_escape(html, cli_share_text(step, "status"));
 	if (rc)
 		return rc;
+
 	nb_buf_append_cstr(html, "</span></div><details class=tool-output>"
 				 "<summary>View result</summary><pre>");
 	rc = cli_share_escape(html, cli_share_text(step, "content"));
 	if (rc)
 		return rc;
+
 	nb_buf_append_cstr(html, "</pre>");
 	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(step, "truncated")))
 		nb_buf_append_cstr(html, "<p class=note>This result was shortened "
 					 "before it was stored.</p>");
+
 	nb_buf_append_cstr(html, "</details></li>");
 	return nb_buf_status(html);
 }
@@ -161,6 +176,7 @@ static int cli_share_process(const cJSON *steps, nb_buf *html)
 	int count = cJSON_GetArraySize(steps);
 	if (count == 0)
 		return 0;
+
 	nb_buf_printf(html,
 		      "<details class=process><summary>Execution process · "
 		      "%d step%s</summary><ol class=steps>",
@@ -171,6 +187,7 @@ static int cli_share_process(const cJSON *steps, nb_buf *html)
 		if (rc)
 			return rc;
 	}
+
 	nb_buf_append_cstr(html, "</ol></details>");
 	return nb_buf_status(html);
 }
@@ -180,13 +197,16 @@ static int cli_share_asset(const char *relative, nb_buf *html)
 {
 	if (nb_buf_status(html))
 		return nb_buf_status(html);
+
 	char path[PATH_MAX];
 	int rc = morph_data_find(path, sizeof(path), relative);
 	if (rc)
 		return rc;
+
 	FILE *input = fopen(path, "rb");
 	if (!input)
 		return nb_status_from_errno(errno, NULL);
+
 	char chunk[BUFSIZ];
 	while (!rc) {
 		errno = 0;
@@ -196,11 +216,14 @@ static int cli_share_asset(const char *relative, nb_buf *html)
 		rc = (nb_buf_append(html, chunk, size) ? 0 : NB_ERR_NOMEM);
 		if (!rc && read_error)
 			rc = (read_error);
+
 		if (size < sizeof(chunk))
 			break;
 	}
+
 	if (fclose(input) != 0 && !rc)
 		rc = nb_status_from_errno(errno, NULL);
+
 	return rc;
 }
 
@@ -216,19 +239,23 @@ static int cli_share_header(nb_buf *html)
 	int rc = cli_share_asset("share/share.css", html);
 	if (rc)
 		return rc;
+
 	nb_buf_append_cstr(html, "</style><script nonce=morph-share>");
 	rc = cli_share_asset("share/share.js", html);
 	if (rc)
 		return rc;
+
 	char path[PATH_MAX];
 	rc = morph_data_find(path, sizeof(path), "morph-logo.png");
 	if (rc)
 		return rc;
+
 	char *icon = NULL;
 	rc = image_file_payload_copy(path, "data:image/png;base64,", MORPH_MEDIA_MAX_FILE_BYTES,
 				     &icon);
 	if (rc)
 		return rc;
+
 	nb_buf_printf(html,
 		      "</script></head><body><main><header><div class=brand>"
 		      "<img alt=\"\" src=\"%s\">morph</div>"
@@ -251,31 +278,39 @@ int cli_share_html(const cJSON *document, time_t shared_at, nb_buf *html)
 	    !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(document, "questions")) ||
 	    !cli_share_text(document, "answer")[0])
 		return NB_ERR_INVAL;
+
 	if (nb_buf_status(html))
 		return nb_buf_status(html);
+
 	struct tm local;
 	char stamp[80];
 	if (!localtime_r(&shared_at, &local) ||
 	    !strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S UTC%z", &local))
 		return NB_ERR_INVAL;
+
 	int rc = cli_share_header(html);
 	if (rc)
 		return rc;
+
 	rc = cli_share_questions(cJSON_GetObjectItemCaseSensitive(document, "questions"), html);
 	if (rc)
 		return rc;
+
 	rc = cli_share_process(cJSON_GetObjectItemCaseSensitive(document, "steps"), html);
 	if (rc)
 		return rc;
+
 	nb_buf_append_cstr(html, "<section><h2 class=label>MORPH</h2><article class=answer>");
 	rc = cli_share_markdown(html, cli_share_text(document, "answer"));
 	if (rc)
 		return rc;
+
 	nb_buf_append_cstr(html, "</article></section><footer><span>Shared from morph</span>"
 				 "<span>Shared at <time>");
 	rc = cli_share_escape(html, stamp);
 	if (rc)
 		return rc;
+
 	nb_buf_append_cstr(html, "</time></span></footer></main></body></html>");
 	return nb_buf_status(html);
 }

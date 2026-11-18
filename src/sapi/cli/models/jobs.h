@@ -15,14 +15,19 @@ struct cli_jobs_job {
 struct cli_jobs {
 	nb_vec entries;
 	int64_t session_id;
+	uint64_t revision;
+	int running;
+	size_t waiting_index;
 };
 
 int cli_jobs_model_create(struct cli_jobs **jobs);
 void cli_jobs_model_cleanup(struct cli_jobs *jobs);
 int cli_jobs_model_remember(struct cli_jobs *jobs, const cJSON *data);
 void cli_jobs_model_set_session(struct cli_jobs *jobs, int64_t session_id);
+void cli_jobs_model_note_wait(struct cli_jobs *jobs, const char *id, int begin);
+int64_t cli_jobs_model_wait_elapsed(const struct cli_jobs *jobs, int64_t now);
 int cli_jobs_model_visible(const struct cli_jobs *jobs);
-int cli_jobs_model_waiting(const struct cli_jobs *jobs);
+const struct cli_jobs_job *cli_jobs_model_waiting(const struct cli_jobs *jobs);
 int cli_jobs_model_count(const struct cli_jobs *jobs);
 
 int64_t cli_jobs_now(void);

@@ -65,6 +65,9 @@ def main():
     owners = {}
     for header in sorted(CLI.rglob('*.h')):
         text = code_only(header.read_text())
+        self_include = '#include "' + header.relative_to(ROOT / 'src').as_posix() + '"'
+        if self_include in header.read_text().splitlines():
+            errors.append(f'{header}: header includes itself')
         headers[header] = set(re.findall(r'\b(cli_[a-z_0-9]+)\s*\(', text))
         for name in headers[header]:
             if name in owners:
@@ -73,6 +76,11 @@ def main():
         if header.name != 'application_internal.h' and 'sapi/cli/application_internal.h' in header.read_text():
             errors.append(f'{header}: module interface imports the common implementation header')
 
+    view_factories = {
+        name for path in (CLI / 'components').glob('*.h')
+        for name in re.findall(r'\bstruct (?:nt_view|cli_report)\s*\*\s*(cli_\w+)\s*\(',
+                               code_only(path.read_text()))
+    }
     cmake = (CLI / 'CMakeLists.txt').read_text()
     private_functions = re.compile(
         r'^static\s+(?:[A-Za-z_]\w*[ \t*]+)+?([A-Za-z_]\w*)'
@@ -93,6 +101,10 @@ def main():
         relative = source.relative_to(CLI).as_posix()
         if len(re.findall(r'(?<![\w/])' + re.escape(relative) + r'(?![\w.])', cmake)) != 1:
             errors.append(f'{source}: source must appear exactly once in CMake')
+        if source.parent == CLI / 'components':
+            calls = set(re.findall(r'\b(cli_\w+)\s*\(', code)) - headers[header]
+            if not (calls & view_factories or re.search(r'\bnt_\w+_add\s*\(', code)):
+                errors.append(f'{source}: a component must construct or compose views')
         module = MODULE_NAMES.get(relative, source.stem)
         prefix = 'cli_' + module + '_'
         for name in private_functions.findall(code):
@@ -145,20 +157,20 @@ def main():
     if re.search(r'^#include [<"](?:readline/|sapi/cli/(?:pages|components|presentation|adapters)/)',
                  queue, re.M):
         errors.append('services/event_queue.c: transport imports UI dispatch or presentation')
-    transcript = (CLI / 'components/transcript.c').read_text()
+    transcript = (CLI / 'presentation/transcript.c').read_text()
     if '\\033[?1049' in transcript or 'previous_frame' in transcript:
-        errors.append('components/transcript.c: modal terminal/frame ownership belongs to the page')
+        errors.append('presentation/transcript.c: modal terminal/frame ownership belongs to the page')
     if re.search(r'\b(?:morph_array_push_borrow|utf8_terminal_sanitize_feed|patch_preview)\s*\(',
                  code_only(transcript)):
-        errors.append('components/transcript.c: state reduction and workspace reads belong outside rendering')
+        errors.append('presentation/transcript.c: state reduction and workspace reads belong outside rendering')
     if '#include "sapi/cli/application_internal.h"' in transcript:
-        errors.append('components/transcript.c: rendering must import its actual interfaces')
+        errors.append('presentation/transcript.c: rendering must import its actual interfaces')
     model = (CLI / 'models/transcript.c').read_text()
     if re.search(r'^#include [<"](?:agent/patch|util/file|sapi/cli/presentation)', model, re.M):
         errors.append('models/transcript.c: projection updates must not render or read workspace files')
-    feed = code_only((CLI / 'components/feed.c').read_text())
+    feed = code_only((CLI / 'presentation/feed.c').read_text())
     if re.search(r'\b(?:ioctl|TIOCGWINSZ|winsize)\b', feed):
-        errors.append('components/feed.c: terminal dimensions belong to the shared size helper')
+        errors.append('presentation/feed.c: terminal dimensions belong to the shared size helper')
     chat = code_only((CLI / 'pages/chat.c').read_text())
     if 'cli_application_present_page' not in chat:
         errors.append('pages/chat.c: chat must present a retained ViewController')
@@ -184,6 +196,17 @@ def main():
         raw = source.read_text()
         code = code_only(raw)
         relative = source.relative_to(CLI).as_posix()
+        # Feature macros and conditional linkage may precede an include.
+        prefix = re.sub(r'/\*[\s\S]*?\*/|//[^\n]*', '', raw)
+        prefix = re.sub(r'\\\r?\n', '', prefix)
+        declaration_seen = False
+        for line in prefix.splitlines():
+            line = line.strip()
+            if declaration_seen and re.match(r'#\s*include\b', line):
+                errors.append(f'{source}: place includes before declarations and definitions')
+                break
+            if line and not line.startswith('#') and line != 'extern "C" {':
+                declaration_seen = True
         for target in re.findall(r'^#include [<"]([^>"]+)', raw, re.M):
             if target.startswith(('sapi/cli/ui/', 'sapi/cli/setup/')):
                 errors.append(f'{source}: obsolete application include {target}')

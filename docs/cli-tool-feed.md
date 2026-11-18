@@ -115,7 +115,7 @@ Image attachment and clipboard ingestion still use the existing composer model.
 
 ## Compatibility adapters
 
-`widgets/feed_block`, `widgets/transcript` append functions and the old live-feed
+`presentation/feed_block`, `presentation/transcript` append functions and the old live-feed
 renderer remain available to stateless document renderers, child transcript
 views, replay fixtures and compatibility tests. Their text-output newline policy
 is not the retained View box model. New primary interactive content uses the

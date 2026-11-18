@@ -180,13 +180,17 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 		for (int i = 0; i < skills.count && i < 5; i++) {
 			if (i > 0)
 				cli_output_printf(ctx, ", ");
+
 			cli_output_printf(ctx, "%s", skill_entry_borrow_at(&skills,
 			(size_t)i)->fm.name);
 		}
+
 		if (skills.count > 5)
 			cli_output_printf(ctx, ", …");
+
 		cli_output_printf(ctx, ")" ANSI_RESET);
 	}
+
 	cli_output_printf(ctx, "\n");
 
 	cli_output_printf(ctx,
@@ -198,12 +202,16 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 		for (int i = 0; i < ext_count && i < 5; i++) {
 			if (i > 0)
 				cli_output_printf(ctx, ", ");
+
 			cli_output_printf(ctx, "%s", nb_dir_listing_name(&ext_dirs, (size_t)(i)));
 		}
+
 		if (ext_count > 5)
 			cli_output_printf(ctx, ", …");
+
 		cli_output_printf(ctx, ")" ANSI_RESET);
 	}
+
 	cli_output_printf(ctx, "\n");
 
 	cli_output_printf(ctx,
@@ -213,6 +221,7 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 	if (cfg.mcp.server_count > 0)
 		cli_output_printf(ctx, " " ANSI_DIM "(stdio:%d, http:%d)" ANSI_RESET, mcp_stdio,
 				  mcp_http);
+
 	cli_output_printf(ctx, "\n");
 
 	cli_output_printf(ctx,
@@ -223,6 +232,7 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 
 	if (ext_dirs.initialized)
 		nb_dir_listing_destroy(&ext_dirs);
+
 	skill_registry_cleanup(&skills);
 	free(cfg_path);
 	return 0;

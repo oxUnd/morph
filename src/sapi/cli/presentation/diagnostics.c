@@ -17,14 +17,18 @@ cli_diagnostics_config_diagnostic_reason(const struct config_validation_error *i
 
 	if (item->code == CONFIG_VALIDATION_UNKNOWN_KEY)
 		return "unknown key; ignored for forward compatibility";
+
 	if (!item->path[0])
 		return reason;
+
 	path_len = strlen(item->path);
 	if (strncmp(reason, item->path, path_len) != 0)
 		return reason;
+
 	reason += path_len;
 	while (*reason == ' ' || *reason == ':')
 		reason++;
+
 	return reason;
 }
 
@@ -46,9 +50,11 @@ void cli_diagnostics_config(struct cli_application *ctx, int is_warning, const c
 		if (item->column > 0)
 			fprintf(stderr, ":%d", item->column);
 	}
+
 	fputc('\n', stderr);
 	if (item->path[0])
 		fprintf(stderr, "  %skey%s     %s\n", dim, reset, item->path);
+
 	fprintf(stderr, "  %sreason%s  %s\n", dim, reset,
 		cli_diagnostics_config_diagnostic_reason(item));
 }
@@ -88,6 +94,7 @@ void cli_diagnostics_config_error(struct cli_application *ctx, const char *confi
 		fprintf(stderr, "morph: failed to load configuration %s: %s\n", display,
 			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
+
 	free(expanded);
 }
 
@@ -104,16 +111,19 @@ int cli_diagnostics_preflight(struct cli_application *ctx, const char *config_pa
 
 	if (!expanded)
 		return 0;
+
 	if (!nb_file_exists(expanded)) {
 		free(expanded);
 		return 0;
 	}
+
 	struct cli_diagnostics_config_warning_output output = {.ctx = ctx, .path = expanded};
 
 	rc = config_validate_file_with_warnings(expanded, &error,
 						cli_diagnostics_print_config_warning, &output);
 	if (rc != 0)
 		cli_diagnostics_config(ctx, 0, expanded, &error);
+
 	free(expanded);
 	return rc;
 }

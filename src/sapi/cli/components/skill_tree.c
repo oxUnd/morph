@@ -15,8 +15,10 @@ static int cli_skill_tree_row(const struct nt_tree_node *node, int width, nb_buf
 	int label_width = width / 3;
 	if (label_width < 1)
 		label_width = 1;
+
 	if (label_width > 36)
 		label_width = 36;
+
 	nb_buf row NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (!node->description || !*node->description) {
 		nb_buf_printf(&row, "  %s%s", branch, node->label);
@@ -25,16 +27,20 @@ static int cli_skill_tree_row(const struct nt_tree_node *node, int width, nb_buf
 		char *label NB_CLEANUP(nb_charp_cleanup) = malloc(capacity);
 		if (!label)
 			return NB_ERR_NOMEM;
+
 		nt_terminal_copy_ellipsized_display_width(label, capacity, node->label,
 							  (size_t)label_width, 0);
 		nb_buf_printf(&row, "  %s%s%*s  %s", branch, label,
 			      label_width - (int)nb_utf8_width_cstr(label), "", node->description);
 	}
+
 	if (!nb_buf_ok(&row))
 		return NB_ERR_NOMEM;
+
 	char *clipped NB_CLEANUP(nb_charp_cleanup) = malloc(row.len + 4);
 	if (!clipped)
 		return NB_ERR_NOMEM;
+
 	nt_terminal_copy_ellipsized_display_width(clipped, row.len + 4, nb_buf_cstr(&row),
 						  (size_t)width, 0);
 	return nb_buf_append_cstr(out, clipped) ? 0 : NB_ERR_NOMEM;
@@ -51,10 +57,12 @@ static int cli_skill_tree_populate(struct nt_tree_view_state *state,
 		nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
 		if (!nb_buf_printf(&label, "%s %s", marker, rows[i].name))
 			return NB_ERR_NOMEM;
+
 		if (nt_tree_model_add(state->model, SIZE_MAX, nb_buf_cstr(&label),
 				      rows[i].description) == SIZE_MAX)
 			return state->model->error;
 	}
+
 	int rc = nt_tree_view_state_update(state, 0, count);
 	return rc < 0 ? rc : 0;
 }
@@ -68,6 +76,7 @@ struct nt_view *cli_skill_tree_add(struct nt_builder *builder, struct nt_view *p
 		nt_builder_fail(builder,
 				cli_skill_tree_populate(nt_tree_view_state(tree), rows, count));
 	}
+
 	return tree;
 }
 
@@ -79,9 +88,12 @@ int cli_skill_tree_render(nb_buf *out, int width, const struct cli_skill_list_ro
 	int rc = nt_tree_model_init(&model);
 	if (!rc)
 		rc = nt_tree_view_state_init(&state, &model);
+
 	if (!rc)
 		rc = cli_skill_tree_populate(&state, rows, count);
+
 	if (!rc)
 		rc = nt_tree_view_state_render(&state, out, width, 0, SIZE_MAX);
+
 	return rc;
 }

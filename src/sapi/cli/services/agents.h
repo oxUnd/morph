@@ -18,7 +18,6 @@ int cli_agents_read(struct cli_application *ctx, const char *id, struct agent_in
 int cli_agents_subscribe(struct cli_application *ctx, const char *id, char ***events,
 			 int *count, int64_t *sequence);
 int cli_agents_select(struct cli_application *ctx, const char *id);
-int cli_agents_followup(struct cli_application *ctx, const char *id, const char *message);
 int cli_agents_interrupt(struct cli_application *ctx, const char *id);
 void cli_agents_list_free(struct agent_info *items, int count);
 void cli_agents_events_free(char **items, int count);

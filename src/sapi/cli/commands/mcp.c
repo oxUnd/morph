@@ -33,6 +33,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		int count = runtime_mcp_count(ctx->runtime);
 		if (count < 0)
 			return count;
+
 		nb_vec servers NB_CLEANUP(nb_vec_cleanup) = {0};
 		struct runtime_mcp_status server;
 		int rc = (nb_vec_init(&servers, sizeof(server)),
@@ -41,13 +42,17 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			struct runtime_mcp_status *slot = nb_vec_push(&servers);
 			if (!slot)
 				return NB_ERR_NOMEM;
+
 			rc = runtime_mcp_info(ctx->runtime, i, slot);
 		}
+
 		if (!rc)
 			rc = cli_mcp_tree_write(ctx, ((void *)servers.data), servers.len);
+
 		if (rc)
 			CMD_ERROR(ctx, "failed to inspect MCP servers: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
 
@@ -57,6 +62,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			CMD_ERROR(ctx, "usage: /mcp %s <server_name>", sub);
 			return NB_ERR_INVAL;
 		}
+
 		struct cli_mcp_descriptors descriptors NB_CLEANUP(cli_mcp_descriptors_cleanup) = {
 			0};
 		struct mcp_tool_desc *tools = NULL;
@@ -74,11 +80,13 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			rc = runtime_mcp_list_prompts(ctx->runtime, name, &prompts, &count);
 			descriptors.items = prompts;
 		}
+
 		if (rc) {
 			CMD_ERROR(ctx, "failed to list %s: %s", sub,
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
+
 		nb_vec rows NB_CLEANUP(nb_vec_cleanup) = {0};
 		struct cli_mcp_tree_item row;
 		rc = (nb_vec_init(&rows, sizeof(row)),
@@ -87,6 +95,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			struct cli_mcp_tree_item *slot = nb_vec_push(&rows);
 			if (!slot)
 				return NB_ERR_NOMEM;
+
 			if (tools)
 				*slot = (struct cli_mcp_tree_item){tools[i].name,
 					tools[i].description, NULL};
@@ -97,6 +106,7 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 				*slot = (struct cli_mcp_tree_item){prompts[i].name,
 					prompts[i].description, NULL};
 		}
+
 		return rc ? rc
 			  : cli_mcp_tree_items_write(ctx, sub, name, ((void *)rows.data), rows.len);
 	}
@@ -107,28 +117,34 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			CMD_ERROR(ctx, "usage: /mcp connect <server_name>");
 			return NB_ERR_INVAL;
 		}
+
 		struct runtime_mcp_status info;
 		if (runtime_mcp_find(ctx->runtime, name, &info) != 0) {
 			CMD_ERROR(ctx, "MCP server not found: %s", name);
 			return NB_ERR_NOT_FOUND;
 		}
+
 		if (info.state == RUNTIME_MCP_CONNECTING || info.state == RUNTIME_MCP_DISCOVERING ||
 		    info.state == RUNTIME_MCP_REGISTERING) {
 			CMD_OK(ctx, "MCP server '%s' is initializing", name);
 			return 0;
 		}
+
 		if (info.state == RUNTIME_MCP_READY) {
 			CMD_OK(ctx, "MCP server '%s' already connected", name);
 			return 0;
 		}
+
 		int rc = runtime_mcp_connect(ctx->runtime, name);
 		if (rc < 0) {
 			if (!cli_mcp_event_tree_visible(ctx))
 				CMD_ERROR(ctx, "failed to connect to '%s': %s", name,
 					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 						     rc));
+
 			return rc;
 		}
+
 		int tools;
 		int resources;
 		int prompts;
@@ -138,10 +154,13 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 				CMD_ERROR(ctx, "failed to discover '%s': %s", name,
 					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 						     rc));
+
 			return rc;
 		}
+
 		if (!cli_mcp_event_tree_visible(ctx))
 			CMD_OK(ctx, "MCP server '%s' connected", name);
+
 		return 0;
 	}
 
@@ -151,17 +170,20 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 			CMD_ERROR(ctx, "usage: /mcp disconnect <server_name>");
 			return NB_ERR_INVAL;
 		}
+
 		struct runtime_mcp_status info;
 		if (runtime_mcp_find(ctx->runtime, name, &info) != 0) {
 			CMD_ERROR(ctx, "MCP server not found: %s", name);
 			return NB_ERR_NOT_FOUND;
 		}
+
 		int rc = runtime_mcp_disconnect(ctx->runtime, name);
 		if (rc < 0) {
 			CMD_ERROR(ctx, "failed to disconnect '%s': %s", name,
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			return rc;
 		}
+
 		CMD_OK(ctx, "MCP server '%s' disconnected", name);
 		return 0;
 	}

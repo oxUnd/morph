@@ -1,8 +1,9 @@
 #ifndef MORPH_CLI_PAGES_HOOKS_H
 #define MORPH_CLI_PAGES_HOOKS_H
 
-struct cli_application;
 #include "sapi/cli/application.h"
+
+struct cli_application;
 
 int cli_hooks_ui(struct cli_application *ctx, cJSON **rows, const char *review_id);
 

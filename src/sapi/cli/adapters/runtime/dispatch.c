@@ -7,7 +7,7 @@
 #include "sapi/cli/adapters/input/cancel.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/notifications.h"
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application_internal.h"
 
@@ -32,6 +32,7 @@ int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue
 		 * key again to the composer draft restored by its adapter. */
 		if (result == NB_ERR_CANCELLED || result == NB_ERR_INTERRUPTED)
 			cli_cancel_state_reset(ctx);
+
 		if (updating)
 			cli_feed_update_begin(ctx);
 	} else if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
@@ -39,6 +40,7 @@ int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue
 		cli_notifications_render(ctx, item);
 		cli_feed_history_end(ctx);
 	}
+
 	fflush(stdout);
 	return rc;
 }

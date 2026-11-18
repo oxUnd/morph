@@ -2,7 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/models/transcript.h"
-#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/presentation/transcript.h"
 #include "session_history.h"
 #include "cJSON.h"
 #include "errors.h"
@@ -31,6 +31,7 @@ class CliTranscriptModelTest : public ::testing::Test
 		cJSON *data = cJSON_Parse(json);
 		if (!data)
 			return NB_ERR_INVAL;
+
 		morph_event event{};
 		event.type = type;
 		event.name = name;
@@ -268,5 +269,6 @@ TEST_F(CliTranscriptModelTest, LegacyProcessNameIsExplicitlyDeprecatedInDisplay)
 		EXPECT_NE(std::string(nb_buf_cstr(&row)).find("process [deprecated]"),
 			  std::string::npos);
 	}
+
 	nb_buf_cleanup(&row);
 }

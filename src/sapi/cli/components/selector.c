@@ -1,5 +1,5 @@
 #include "sapi/cli/components/selector.h"
-#include "sapi/cli/presentation/panel_style.h"
+#include "sapi/cli/presentation/panel.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
@@ -51,8 +51,10 @@ static struct cli_selector_rows cli_selector_rows(const struct cli_selector *sel
 		budget - 1 - rows.subtitle - rows.detail - rows.description * 2 - rows.footer;
 	if (rows.options < 0)
 		rows.options = 0;
+
 	if ((size_t)rows.options > selector->count)
 		rows.options = (int)selector->count;
+
 	return rows;
 }
 
@@ -81,15 +83,20 @@ static int cli_selector_layout(struct nt_view *view)
 	int rc = cli_selector_place(s->heading, &slot, 1);
 	if (!rc)
 		rc = cli_selector_place(s->subtitle_view, &slot, rows.subtitle);
+
 	if (!rc)
 		rc = cli_selector_place(s->detail_view, &slot, rows.detail);
+
 	if (!rc)
 		rc = cli_selector_place(s->list, &slot, rows.options);
+
 	slot.y += rows.description;
 	if (!rc)
 		rc = cli_selector_place(s->description, &slot, rows.description);
+
 	if (!rc)
 		rc = cli_selector_place(s->hint, &slot, rows.footer);
+
 	return rc;
 }
 
@@ -111,6 +118,7 @@ static int cli_selector_row(void *data, struct nt_canvas *canvas, size_t item, s
 		style.foreground = (struct nt_color){NT_COLOR_INDEXED, 15};
 		style.background = (struct nt_color){NT_COLOR_INDEXED, 4};
 	}
+
 	const char *label = s->choices[item].label;
 	char *safe NB_CLEANUP(nb_charp_cleanup) =
 		nt_sanitize_dup(label, strlen(label), NT_TEXT_SINGLE_LINE, NULL);
@@ -118,6 +126,7 @@ static int cli_selector_row(void *data, struct nt_canvas *canvas, size_t item, s
 	if (!safe || !nb_buf_printf(&row, "%c %zu. %s%s", selected ? '>' : ' ', item + 1, safe,
 				    s->current == (int)item ? " (current)" : ""))
 		return NB_ERR_NOMEM;
+
 	int rc = nt_canvas_fill_styled(canvas, &style);
 	return rc ? rc : nt_canvas_text_styled(canvas, 0, 0, nb_buf_cstr(&row), &style);
 }
@@ -149,6 +158,7 @@ static struct nt_view *cli_selector_build(struct nt_builder *builder, struct nt_
 		builder, parent, &type, &(struct nt_view_options){.margin = {.right = 1}});
 	if (!layout)
 		return NULL;
+
 	layout->selector = s;
 	struct nt_view *root = &layout->base;
 	struct nt_view_options title = {0}, dim = {0};
@@ -159,6 +169,7 @@ static struct nt_view *cli_selector_build(struct nt_builder *builder, struct nt_
 		dim = cli_panel_hint(NT_AUTO);
 		title.style.background = dim.style.background = layout->normal.background;
 	}
+
 	size_t initial = s->current >= 0 ? (size_t)s->current : 0;
 	layout->heading = nt_label_add(builder, root, s->title, &title);
 	layout->subtitle_view = nt_label_add(builder, root, s->subtitle, &dim);
@@ -169,23 +180,30 @@ static struct nt_view *cli_selector_build(struct nt_builder *builder, struct nt_
 		nt_label_add(builder, root, "  Up/Down Select  Enter Apply  Esc Cancel", &dim);
 	if (nt_builder_error(builder))
 		return NULL;
+
 	struct nt_view *labels[] = {layout->heading, layout->subtitle_view, layout->detail_view,
 				    layout->description, layout->hint};
 	for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++)
 		nt_builder_fail(builder, nt_label_set_opaque(labels[i], 1));
+
 	int rc = nt_list_view_set_source(layout->list, s->count, NULL, NULL);
 	if (!rc)
 		rc = nt_list_view_set_row_renderer(layout->list, cli_selector_row, layout);
+
 	if (!rc)
 		rc = nt_list_view_set_navigation(layout->list,
 						 NT_LIST_VIEW_WRAP | NT_LIST_VIEW_DIGITS);
+
 	if (!rc)
 		rc = nt_list_view_select(layout->list, initial);
+
 	if (!rc)
 		rc = nt_view_bind_compute(layout->description, NT_PROP_TEXT,
 					  cli_selector_description, layout);
+
 	if (!rc && !nt_view_on(layout->list, NT_VIEW_EVENT_ACTIVATE, cli_selector_activate, s))
 		rc = NB_ERR_NOMEM;
+
 	nt_builder_fail(builder, rc);
 	return layout->list;
 }
@@ -195,6 +213,7 @@ static void cli_selector_complete(void *data, int result)
 	struct cli_selector *s = data;
 	if (!result && s->submitted < s->count)
 		s->apply(s->ctx, s->submitted);
+
 	free(s->detail);
 	free(s->subtitle);
 	free(s);
@@ -207,12 +226,15 @@ int cli_selector_show(struct cli_application *ctx, const char *title, const char
 	if (!ctx || !title || !choices || !count || count > INT_MAX || !apply ||
 	    current >= (int)count)
 		return NB_ERR_INVAL;
+
 	for (size_t i = 0; i < count; i++)
 		if (!choices[i].label || !choices[i].description)
 			return NB_ERR_INVAL;
+
 	struct cli_selector *s = calloc(1, sizeof(*s));
 	if (!s)
 		return NB_ERR_NOMEM;
+
 	*s = (struct cli_selector){.ctx = ctx,
 				   .title = title,
 				   .choices = choices,
@@ -227,5 +249,6 @@ int cli_selector_show(struct cli_application *ctx, const char *title, const char
 			 : NB_ERR_NOMEM;
 	if (rc)
 		cli_selector_complete(s, rc);
+
 	return rc;
 }

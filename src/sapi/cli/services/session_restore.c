@@ -3,7 +3,7 @@
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/history.h"
 #include "sapi/cli/presentation/presenter.h"
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include "runtime/runtime.h"
 #include "errors.h"
 #include <nb/file.h>
@@ -22,8 +22,10 @@ void cli_session_history_print_resume_hint(struct cli_application *ctx)
 
 	if (!ctx || !ctx->runtime || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+
 	if (runtime_session_current(ctx->runtime, &session) != 0 || session.id <= 0)
 		return;
+
 	config_path = runtime_config_path_borrow(ctx->runtime);
 	resolved_config =
 		config_path && config_path[0]
@@ -49,13 +51,16 @@ int cli_session_history_restore(struct cli_application *ctx)
 
 	if (!ctx || !ctx->runtime)
 		return NB_ERR_INVAL;
+
 	/* Session commands retain their existing plain and NDJSON contracts. */
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return 0;
+
 	/* Submitted commands and existing scrollback remain visible on session changes. */
 	items = runtime_session_model_history_current_copy(ctx->runtime, 0, &count);
 	if (!items)
 		messages = runtime_session_messages_current_copy(ctx->runtime, &count);
+
 	cli_feed_history_begin(ctx);
 	cli_presentation_reset(ctx);
 	rc = cli_history_render_session(ctx, items, messages);

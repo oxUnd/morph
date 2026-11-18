@@ -8,19 +8,15 @@ extern "C" {
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/command_job.h"
-#include "sapi/cli/components/feed.h"
+#include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/presentation/jobs.h"
 #include "sapi/cli/models/jobs.h"
-#include "sapi/cli/components/jobs.h"
 }
 
 #include <fcntl.h>
 #include <cerrno>
 #include <poll.h>
-#include <regex>
 #include <string>
-#include <chrono>
-#include <thread>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -33,17 +29,22 @@ static std::string collect_terminal_output(int master)
 		int ready = poll(&pending, 1, bytes.empty() ? 1000 : 20);
 		if (ready < 0 && errno == EINTR)
 			continue;
+
 		EXPECT_GE(ready, 0);
 		if (ready <= 0)
 			break;
+
 		ssize_t count = read(master, chunk, sizeof(chunk));
 		if (count < 0 && (errno == EINTR || errno == EAGAIN))
 			continue;
+
 		EXPECT_GT(count, 0);
 		if (count <= 0)
 			break;
+
 		bytes.append(chunk, static_cast<size_t>(count));
 	}
+
 	return bytes;
 }
 
@@ -86,12 +87,11 @@ TEST_F(CliTerminalTest, NonTerminalStatusPrintsOnlyWhenChanged)
 	EXPECT_NE(output.find("unsafe status"), std::string::npos);
 	EXPECT_EQ(output.find("unsafe\nstatus"), std::string::npos);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
-	EXPECT_EQ(cli_feed_next_frame_ms(&ctx), -1);
 	cli_feed_live_clear(&ctx);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
 }
 
-TEST_F(CliTerminalTest, TtyViewportCoalescesFramesAndRestoresComposer)
+TEST_F(CliTerminalTest, TtyViewportCoalescesFramesAroundHistory)
 {
 	int master = posix_openpt(O_RDWR | O_NOCTTY);
 	ASSERT_GE(master, 0);
@@ -125,23 +125,20 @@ TEST_F(CliTerminalTest, TtyViewportCoalescesFramesAndRestoresComposer)
 	count = read(master, bytes, sizeof(bytes));
 	EXPECT_EQ(count, -1);
 	EXPECT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
-	EXPECT_GE(cli_feed_next_frame_ms(&ctx), 0);
 
 	cli_feed_render_frame(&ctx, 1);
-	EXPECT_GT(cli_feed_next_frame_ms(&ctx), 800);
 	cli_feed_history_begin(&ctx);
 	fprintf(output, "committed history\n");
 	fflush(output);
 	cli_feed_history_end(&ctx);
-	cli_feed_composer_resume(&ctx);
-	cli_feed_composer_suspend(&ctx);
 	count = read(master, bytes, sizeof(bytes) - 1);
 	ASSERT_GT(count, 0);
 	bytes[count] = '\0';
 	std::string restored(bytes);
-	EXPECT_NE(restored.find("coalesced update"), std::string::npos);
-	EXPECT_NE(restored.find("committed history"), std::string::npos);
-	EXPECT_NE(restored.find("\033[1A"), std::string::npos);
+	size_t history = restored.find("committed history");
+	ASSERT_NE(history, std::string::npos);
+	EXPECT_LT(restored.find("coalesced update"), history);
+	EXPECT_NE(restored.find("coalesced update", history), std::string::npos);
 
 	cli_feed_cleanup(&ctx);
 	fclose(output);
@@ -248,6 +245,7 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	(void)testing::internal::GetCapturedStdout();
 	char bytes[BUFSIZ];
 	while (read(master, bytes, sizeof(bytes)) > 0) {}
+
 	cli_feed_activity_set(&ctx, "Compacting context…");
 	cli_feed_render_frame(&ctx, 1);
 	ssize_t count = read(master, bytes, sizeof(bytes) - 1);
@@ -266,7 +264,6 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	EXPECT_GE(cli_feed_activity_elapsed_ms(&ctx), 1000);
 	size.ws_col = 12;
 	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
-	cli_feed_resize(&ctx);
 	EXPECT_EQ(cli_feed_columns(&ctx), 12);
 	cli_feed_render_frame(&ctx, 1);
 	count = read(master, bytes, sizeof(bytes) - 1);
@@ -283,63 +280,7 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	close(master);
 }
 
-TEST_F(CliTerminalTest, WorkAnimationPreservesComposerAndQueuedContent)
-{
-	struct cli_command_job job{};
-	int master = posix_openpt(O_RDWR | O_NOCTTY);
-	ASSERT_GE(master, 0);
-	ASSERT_EQ(grantpt(master), 0);
-	ASSERT_EQ(unlockpt(master), 0);
-	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
-	ASSERT_GE(slave, 0);
-	FILE *output = fdopen(dup(slave), "w");
-	ASSERT_NE(output, nullptr);
-	ASSERT_NE(fcntl(master, F_SETFL, O_NONBLOCK), -1);
-	struct winsize size{};
-	size.ws_col = 80;
-	size.ws_row = 24;
-	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
-	ASSERT_EQ(cli_command_job_init(&job), 0);
-	ctx.input_job = &job;
-	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	ctx.input_status.enabled = 1;
-	ASSERT_EQ(cli_command_job_prompt(&job, "queued adjustment", nullptr), 0);
-	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
-	cli_feed_turn_begin(&ctx);
-	cli_feed_live_set(&ctx, "stable tool output");
-	cli_feed_composer_resume(&ctx);
-	char bytes[BUFSIZ];
-	while (read(master, bytes, sizeof(bytes)) > 0) {}
-	usleep(850000);
-	ASSERT_EQ(cli_feed_render_tick(&ctx, 3), 1);
-	ssize_t count = read(master, bytes, sizeof(bytes));
-	ASSERT_GT(count, 0);
-	std::string first(bytes, static_cast<size_t>(count));
-	EXPECT_NE(first.find("\033[7A"), std::string::npos);
-	EXPECT_NE(first.find("\033[38;2;"), std::string::npos);
-	EXPECT_NE(first.find("\0337"), std::string::npos);
-	EXPECT_NE(first.find("\0338"), std::string::npos);
-	EXPECT_EQ(first.find("stable tool output"), std::string::npos);
-	EXPECT_EQ(first.find("queued adjustment"), std::string::npos);
-	EXPECT_EQ(first.find("\033[2K"), std::string::npos);
-	EXPECT_EQ(first.find('\n'), std::string::npos);
-	EXPECT_LE(cli_feed_next_frame_ms(&ctx), 32);
-	usleep(70000);
-	ASSERT_EQ(cli_feed_render_tick(&ctx, 3), 1);
-	count = read(master, bytes, sizeof(bytes));
-	ASSERT_GT(count, 0);
-	EXPECT_NE(first, std::string(bytes, static_cast<size_t>(count)));
-	cli_feed_turn_end(&ctx, 0);
-	EXPECT_EQ(cli_feed_render_tick(&ctx, 3), 0);
-	ctx.input_job = nullptr;
-	cli_feed_cleanup(&ctx);
-	cli_command_job_cleanup(&job);
-	fclose(output);
-	close(slave);
-	close(master);
-}
-
-TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
+TEST_F(CliTerminalTest, FinishedTurnCommitsOneDurationRow)
 {
 	int master = posix_openpt(O_RDWR | O_NOCTTY);
 	ASSERT_GE(master, 0);
@@ -355,38 +296,17 @@ TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
 	size.ws_row = 24;
 	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	ctx.input_status.enabled = 1;
 	ASSERT_EQ(cli_feed_init(&ctx, output, slave), 0);
 	cli_feed_turn_begin(&ctx);
-	/* Final is visible while the worker still owns persistence/cleanup. */
-	ctx.presenter->final_rendered = 1;
-	cli_feed_composer_resume(&ctx);
-	fflush(output);
-	auto collect = [&] { return collect_terminal_output(master); };
-	std::string active = collect();
-	ASSERT_FALSE(active.empty());
+	cli_feed_render_frame(&ctx, 1);
+	std::string active = collect_terminal_output(master);
 	EXPECT_NE(active.find("esc to interrupt"), std::string::npos);
-	cli_feed_composer_suspend(&ctx);
+	ctx.presenter->final_rendered = 1;
 	cli_feed_turn_end(&ctx, 0);
-	cli_feed_composer_resume(&ctx);
-	fflush(output);
-	std::string transition = collect();
-	ASSERT_FALSE(transition.empty());
-	EXPECT_NE(transition.find("Worked for"), std::string::npos);
-	/* No text wraps at this width. Count vertical cursor controls and LF
-	 * to verify the composer ends at the exact row it started on. */
-	std::regex vertical("\x1b\\[([0-9]*)([AB])|(\n)");
-	int displacement = 0;
-	for (auto match = std::sregex_iterator(transition.begin(), transition.end(), vertical);
-	     match != std::sregex_iterator(); ++match) {
-		if ((*match)[3].matched) {
-			displacement++;
-		} else {
-			int rows = (*match)[1].str().empty() ? 1 : std::stoi((*match)[1]);
-			displacement += (*match)[2] == "A" ? -rows : rows;
-		}
-	}
-	EXPECT_EQ(displacement, 0) << transition;
+	cli_feed_turn_end(&ctx, 0);
+	std::string completed = collect_terminal_output(master);
+	EXPECT_NE(completed.find("Worked for"), std::string::npos);
+	EXPECT_EQ(completed.find("Worked for"), completed.rfind("Worked for"));
 	cli_feed_cleanup(&ctx);
 	fclose(output);
 	close(slave);
@@ -428,14 +348,54 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 			auto line = text.substr(offset, end - offset);
 			EXPECT_LT(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns));
 			if (end == std::string::npos) break;
+
 			offset = end + 1;
 		}
 	}
+
 	event.name = "background.wait.end";
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
 	EXPECT_EQ((ctx.jobs && cli_jobs_model_waiting(ctx.jobs)), 0);
 	nb_buf_cleanup(&output);
 	cJSON_Delete(data);
+}
+
+TEST_F(CliTerminalTest, JobActivityRevisionFollowsVisibleJobsAcrossSessionsAndVectorGrowth)
+{
+	ASSERT_EQ(cli_jobs_model_create(&ctx.jobs), 0);
+	cJSON *job NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
+		R"({"session_id":"proc_wait","owner_session_id":0,"status":"running","duration_ms":42})");
+	ASSERT_NE(job, nullptr);
+	ASSERT_EQ(cli_jobs_model_remember(ctx.jobs, job), 0);
+	cli_jobs_model_note_wait(ctx.jobs, "proc_wait", 1);
+	uint64_t revision = ctx.jobs->revision;
+	cJSON *other NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
+		R"({"session_id":"proc_other","owner_session_id":1,"status":"running"})");
+	ASSERT_NE(other, nullptr);
+	for (int i = 0; i < 20; i++) {
+		ASSERT_TRUE(cJSON_SetValuestring(cJSON_GetObjectItem(other, "session_id"),
+						 std::to_string(i).c_str()));
+		ASSERT_EQ(cli_jobs_model_remember(ctx.jobs, other), 0);
+	}
+
+	EXPECT_EQ(ctx.jobs->revision, revision);
+	const struct cli_jobs_job *waiting = cli_jobs_model_waiting(ctx.jobs);
+	ASSERT_NE(waiting, nullptr);
+	EXPECT_STREQ(cli_jobs_job_string(waiting->data, "session_id"), "proc_wait");
+	EXPECT_EQ(cli_jobs_model_wait_elapsed(ctx.jobs, waiting->updated + 1000), 1042);
+	cli_jobs_model_note_wait(ctx.jobs, "proc_wait", 1);
+	cli_jobs_model_note_wait(ctx.jobs, "proc_wait", 0);
+	EXPECT_EQ(ctx.jobs->revision, revision);
+
+	cli_jobs_model_set_session(ctx.jobs, 1);
+	EXPECT_NE(ctx.jobs->revision, revision);
+	EXPECT_EQ(cli_jobs_model_count(ctx.jobs), 20);
+	EXPECT_EQ(cli_jobs_model_waiting(ctx.jobs), nullptr);
+	cli_jobs_model_set_session(ctx.jobs, 0);
+	EXPECT_EQ(cli_jobs_model_count(ctx.jobs), 1);
+	ASSERT_NE(cli_jobs_model_waiting(ctx.jobs), nullptr);
+	cli_jobs_model_note_wait(ctx.jobs, "proc_wait", 0);
+	EXPECT_EQ(cli_jobs_model_waiting(ctx.jobs), nullptr);
 }
 
 TEST_F(CliTerminalTest, CompletedJobsLeaveOneHistoryReceiptAndNoLiveRows)
@@ -486,7 +446,8 @@ TEST_F(CliTerminalTest, CompletedJobClearsLiveRowsWithoutAnActiveTurn)
 	EXPECT_EQ(cli_jobs_event(&ctx, &event), 1);
 	cli_feed_render_frame(&ctx, 1);
 	EXPECT_EQ(cli_jobs_model_visible(ctx.jobs), 1);
-	EXPECT_GE(cli_feed_next_frame_ms(&ctx), 0);
+	EXPECT_NE(collect_terminal_output(master).find("1 background job running"),
+		  std::string::npos);
 	cJSON_ReplaceItemInObject(data, "status", cJSON_CreateString("exited"));
 	event.name = "process.completed";
 	testing::internal::CaptureStdout();
@@ -494,7 +455,9 @@ TEST_F(CliTerminalTest, CompletedJobClearsLiveRowsWithoutAnActiveTurn)
 	(void)testing::internal::GetCapturedStdout();
 	EXPECT_EQ(cli_jobs_model_visible(ctx.jobs), 0);
 	cli_feed_render_frame(&ctx, 1);
-	EXPECT_EQ(cli_feed_next_frame_ms(&ctx), -1);
+	std::string cleared = collect_terminal_output(master);
+	EXPECT_NE(cleared.find("\033[2K"), std::string::npos);
+	EXPECT_EQ(cleared.find("background job running"), std::string::npos);
 	cJSON_Delete(data);
 	cli_feed_cleanup(&ctx);
 	fclose(output);
@@ -525,8 +488,10 @@ TEST_F(CliTerminalTest, MarkdownPreviewUsesOutputHeightAndSharedFallbackDuringRe
 		snprintf(line, sizeof(line), "preview-%02d", i);
 		if (i)
 			text += '\n';
+
 		text += line;
 	}
+
 	ASSERT_EQ(cli_feed_markdown_preview_set(&ctx, text.data(), text.size(), 0), 0);
 	auto take = [&] {
 		std::string bytes;
@@ -534,6 +499,7 @@ TEST_F(CliTerminalTest, MarkdownPreviewUsesOutputHeightAndSharedFallbackDuringRe
 		ssize_t length;
 		while ((length = read(master, buffer, sizeof(buffer))) > 0)
 			bytes.append(buffer, static_cast<size_t>(length));
+
 		return bytes;
 	};
 	cli_feed_render_frame(&ctx, 1);
@@ -552,7 +518,9 @@ TEST_F(CliTerminalTest, MarkdownPreviewUsesOutputHeightAndSharedFallbackDuringRe
 		EXPECT_NE(normal.find("preview-18"), std::string::npos);
 		EXPECT_NE(normal.find("preview-29"), std::string::npos);
 	}
-	ctx.input_status.composer_rows = 20;
+
+	size.ws_row = 12;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
 	cli_feed_render_frame(&ctx, 1);
 	EXPECT_EQ(take().find("preview-"), std::string::npos);
 	cli_feed_cleanup(&ctx);
@@ -584,6 +552,7 @@ TEST_F(CliTerminalTest, MarkdownPreviewCountsWrappedRowsWhenClearing)
 		ssize_t length;
 		while ((length = read(master, buffer, sizeof(buffer))) > 0)
 			bytes.append(buffer, static_cast<size_t>(length));
+
 		return bytes;
 	};
 
@@ -599,6 +568,7 @@ TEST_F(CliTerminalTest, MarkdownPreviewCountsWrappedRowsWhenClearing)
 	for (size_t pos = 0; (pos = cleared.find("\033[2K", pos)) != std::string::npos;
 	     pos += 4)
 		clear_rows++;
+
 	EXPECT_GE(clear_rows, 3u);
 	cli_feed_cleanup(&ctx);
 	fclose(output);
@@ -629,6 +599,7 @@ TEST_F(CliTerminalTest, MarkdownPreviewCountsTrailingBlankRowWhenClearing)
 		ssize_t length;
 		while ((length = read(master, buffer, sizeof(buffer))) > 0)
 			bytes.append(buffer, static_cast<size_t>(length));
+
 		return bytes;
 	};
 
@@ -644,6 +615,7 @@ TEST_F(CliTerminalTest, MarkdownPreviewCountsTrailingBlankRowWhenClearing)
 	for (size_t pos = 0; (pos = cleared.find("\033[2K", pos)) != std::string::npos;
 	     pos += 4)
 		clear_rows++;
+
 	EXPECT_EQ(clear_rows, 3u);
 	cli_feed_cleanup(&ctx);
 	fclose(output);

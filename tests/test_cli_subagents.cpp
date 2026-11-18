@@ -2,7 +2,6 @@
 #include <nb/err.h>
 
 extern "C" {
-#include <nothing/tui/input.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/models/subagents.h"
 #include "sapi/cli/models/transcript.h"
@@ -10,10 +9,10 @@ extern "C" {
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/components/subagents.h"
+#include "sapi/cli/presentation/subagents.h"
 #include "cli_agents_browser_fixture.h"
 #include <nothing/tui/input.h>
-#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/presentation/transcript.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/utf8.h>
@@ -41,19 +40,76 @@ TEST(CliAgentsBrowserTest, FiltersMapVisibleSelectionBackToTheSnapshot)
 	cli_agents_browser_data data{};
 	data.agents = agents;
 	data.count = 5;
-	cli_agents_browser_state state{};
-	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 0u);
+	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 0), 0);
+	EXPECT_EQ(cli_agents_browser_selected(&state), 0u);
 	for (size_t expected : {1u, 2u, 3u, 4u, 5u, 0u}) {
-		EXPECT_EQ(cli_agents_browser_update(&state, &data, '\t'), NT_NAVIGATION_CHANGED);
-		EXPECT_EQ(cli_agents_browser_selected(&state, &data), expected);
+		EXPECT_EQ(cli_agents_browser_update(&state, '\t'), NT_NAVIGATION_CHANGED);
+		EXPECT_EQ(cli_agents_browser_selected(&state), expected);
 	}
-	cli_agents_browser_update(&state, &data, NT_KEY_BACK_TAB);
-	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 5u);
+
+	cli_agents_browser_update(&state, NT_KEY_BACK_TAB);
+	EXPECT_EQ(cli_agents_browser_selected(&state), 5u);
 	state.filter = CLI_AGENTS_BROWSER_RUNNING;
 	agents[0].status = AGENT_COMPLETED;
-	EXPECT_EQ(cli_agents_browser_selected(&state, &data), SIZE_MAX);
-	EXPECT_EQ(cli_agents_browser_update(&state, &data, '\r'), NT_NAVIGATION_UNHANDLED);
-	EXPECT_EQ(cli_agents_browser_update(&state, &data, 27), NT_NAVIGATION_CANCEL);
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
+	EXPECT_EQ(cli_agents_browser_selected(&state), SIZE_MAX);
+	EXPECT_EQ(cli_agents_browser_update(&state, '\r'), NT_NAVIGATION_UNHANDLED);
+	EXPECT_EQ(cli_agents_browser_update(&state, 27), NT_NAVIGATION_CANCEL);
+}
+
+TEST(CliAgentsBrowserTest, RefreshKeepsTheSelectedAgentAcrossReorderAndFilterChanges)
+{
+	agent_info agents[3]{};
+	strcpy(agents[0].id, "/a");
+	strcpy(agents[1].id, "/b");
+	strcpy(agents[2].id, "/c");
+	agents[0].status = agents[2].status = AGENT_RUNNING;
+	agents[1].status = AGENT_PENDING;
+	cli_agents_browser_data data{};
+	data.agents = agents;
+	data.count = 3;
+	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 0), 0);
+	ASSERT_EQ(cli_agents_browser_update(&state, '\t'), NT_NAVIGATION_CHANGED);
+	ASSERT_EQ(cli_agents_browser_update(&state, NT_KEY_DOWN), NT_NAVIGATION_CHANGED);
+	ASSERT_STREQ(agents[cli_agents_browser_selected(&state) - 1].id, "/c");
+
+	std::swap(agents[0], agents[2]);
+	data.root_running = 1;
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
+	ASSERT_EQ(state.selection.index, 1u);
+	ASSERT_EQ(cli_agents_browser_selected(&state), 1u);
+	EXPECT_EQ(state.counts[CLI_AGENTS_BROWSER_ALL], 4u);
+	EXPECT_EQ(state.counts[CLI_AGENTS_BROWSER_RUNNING], 3u);
+	EXPECT_EQ(state.counts[CLI_AGENTS_BROWSER_INACTIVE], 0u);
+
+	agents[0].status = AGENT_COMPLETED;
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
+	EXPECT_EQ(cli_agents_browser_selected(&state), 3u);
+	EXPECT_EQ(state.counts[CLI_AGENTS_BROWSER_COMPLETED], 1u);
+}
+
+TEST(CliAgentsBrowserTest, RowEllipsisPreservesWideGraphemesAtTheColumnEdge)
+{
+	agent_info agent{};
+	strcpy(agent.id, "/a");
+	agent.status = AGENT_RUNNING;
+	std::string prompt = "中👩‍💻é12345";
+	agent.description = prompt.data();
+	cli_agents_browser_data data{};
+	data.agents = &agent;
+	data.count = 1;
+	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
+
+	for (int width : {12, 13, 14}) {
+		nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(test_agents_browser_render(&output, &state, &data, width, 4, 0, nullptr), 0);
+		std::string expected = width == 12 ? "中…" : width == 13 ? "中👩‍💻…" : "中👩‍💻é…";
+		EXPECT_NE(std::string(nb_buf_cstr(&output)).find(expected), std::string::npos)
+			<< nb_buf_cstr(&output);
+	}
 }
 
 TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
@@ -71,14 +127,14 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 	for (int columns : {160, 120, 80, 60, 20, 12}) {
 		for (int rows : {32, 24, 8, 4}) {
 			for (int styled : {0, 1}) {
-				cli_agents_browser_state state{};
-				state.selection.index = 1;
+				cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
+				ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
 				nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
 				ASSERT_EQ((nb_buf_init(&output),
 					   nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM),
 					  0);
 				ASSERT_EQ(test_agents_browser_render(&output, &state, &data,
-					columns, rows, styled), 0);
+					columns, rows, styled, nullptr), 0);
 				char *plain NB_CLEANUP(nb_charp_cleanup) =
 					morph_terminal_sanitize_dup(output.ptr, output.len,
 								    MORPH_TERMINAL_TEXT_MULTILINE,
@@ -92,6 +148,7 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 						  static_cast<size_t>(columns));
 					count++;
 				}
+
 				EXPECT_EQ(count, rows);
 				EXPECT_EQ(std::string(output.ptr).find("\033[2J"),
 					  std::string::npos);
@@ -107,11 +164,46 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 					EXPECT_NE(std::string(output.ptr).find("\033[0;1"),
 						  std::string::npos);
 				}
+
 				if (columns >= 100 && rows >= 24)
 					EXPECT_NE(std::string(plain).find("Task details"), std::string::npos);
 			}
 		}
 	}
+}
+
+TEST(CliAgentsBrowserTest, BatchedUpdatesRestoreTheOriginalHeadingAndHint)
+{
+	agent_info agent{};
+	strcpy(agent.id, "/root/reader");
+	cli_agents_browser_data data{};
+	data.agents = &agent;
+	data.count = 1;
+	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 0), 0);
+
+	auto refresh = [](nt_view *view, cli_agents_browser_state *browser,
+			  const cli_agents_browser_data *current, int styled) {
+		cli_agents_browser_data empty = *current;
+		empty.count = 0;
+		browser->help = 1;
+		int rc = cli_agents_browser_set_snapshot(browser, &empty, 0);
+		if (!rc)
+			rc = cli_agents_browser_sync(view, browser, &empty, styled);
+
+		if (rc)
+			return rc;
+
+		browser->help = 0;
+		rc = cli_agents_browser_set_snapshot(browser, current, 0);
+		return rc ? rc : cli_agents_browser_sync(view, browser, current, styled);
+	};
+
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(test_agents_browser_render(&output, &state, &data, 120, 12, 0, refresh), 0);
+	std::string screen(nb_buf_cstr(&output));
+	EXPECT_NE(screen.find("Agents (1)"), std::string::npos);
+	EXPECT_NE(screen.find("Tab filter · ? help"), std::string::npos);
 }
 
 TEST(CliAgentsBrowserTest, DetailScrollingKeepsItsHeadingAndTaskSelection)
@@ -122,19 +214,20 @@ TEST(CliAgentsBrowserTest, DetailScrollingKeepsItsHeadingAndTaskSelection)
 	std::string prompt;
 	for (int i = 0; i < 40; i++)
 		prompt += "A long assignment line\n";
+
 	agent.description = prompt.data();
 	cli_agents_browser_data data{};
 	data.agents = &agent;
 	data.count = 1;
-	cli_agents_browser_state state{};
-	state.selection.index = 1;
-	cli_agents_browser_update(&state, &data, NT_KEY_RIGHT);
-	cli_agents_browser_update(&state, &data, NT_KEY_PAGE_DOWN);
+	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
+	cli_agents_browser_update(&state, NT_KEY_RIGHT);
+	cli_agents_browser_update(&state, NT_KEY_PAGE_DOWN);
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
-	ASSERT_EQ(test_agents_browser_render(&output, &state, &data, 120, 12, 0), 0);
+	ASSERT_EQ(test_agents_browser_render(&output, &state, &data, 120, 12, 0, nullptr), 0);
 	EXPECT_GT(state.detail_scroll, 0u);
-	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 1u);
+	EXPECT_EQ(cli_agents_browser_selected(&state), 1u);
 	EXPECT_NE(std::string(output.ptr).find("Task details"), std::string::npos);
 	EXPECT_NE(std::string(output.ptr).find("scroll details"), std::string::npos);
 }
@@ -227,6 +320,7 @@ TEST(CliSubagentsTest, ThreadReplayKeepsContentToolAndFollowupChronology)
 	};
 	for (const char *event : events)
 		ASSERT_EQ(cli_subagents_thread_replay(thread.get(), event), 0);
+
 	struct cli_application ctx{};
 	ctx.output.color_disabled = 1;
 	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {};
@@ -355,6 +449,7 @@ TEST(CliSubagentsTest, NonstreamedCommentsAndFinalOnlyResponsesRemainVisible)
 	};
 	for (const char *event : events)
 		ASSERT_EQ(cli_subagents_thread_replay(thread.get(), event), 0);
+
 	ASSERT_EQ(thread->segments.len, 3u);
 	auto *first = static_cast<cli_subagents_segment *>(nb_vec_at(&thread->segments, 0));
 	auto *last = static_cast<cli_subagents_segment *>(nb_vec_at(&thread->segments, 2));
@@ -392,6 +487,7 @@ static int subagents_text_event(struct cli_subagents_thread *thread, const char 
 	if (!data || !cJSON_AddStringToObject(data, "agent_id", thread->id) ||
 	    !cJSON_AddStringToObject(data, "text", text))
 		return NB_ERR_NOMEM;
+
 	struct morph_event event{};
 	event.name = name;
 	event.type = MORPH_EVENT_REACT;
@@ -414,13 +510,16 @@ static void subagents_expect_sgr_rows(const nb_buf &document, int columns,
 	for (size_t offset = 0; offset < text.size(); offset++) {
 		if (text[offset] != '\033')
 			continue;
+
 		ASSERT_LT(offset + 1, text.size());
 		ASSERT_EQ(text[++offset], '[');
 		while (++offset < text.size() && ((text[offset] >= '0' && text[offset] <= '9') ||
 						  text[offset] == ';' || text[offset] == ':')) {}
+
 		ASSERT_LT(offset, text.size());
 		ASSERT_EQ(text[offset], 'm');
 	}
+
 	std::istringstream lines(text);
 	std::string line;
 	while (std::getline(lines, line)) {
@@ -592,6 +691,7 @@ TEST(CliSubagentsTest, ReasoningIsQuietByDefaultAndFullyScrollableInDetailsWitho
 	std::string reasoning = "Check dependencies first.\n";
 	for (int i = 0; i < 4000; i++)
 		reasoning += "中文🙂";
+
 	reasoning += "\nREASONING_TAIL";
 	ASSERT_EQ(subagents_text_event(thread.get(), "react.reasoning.delta", reasoning.c_str()),
 		  0);
@@ -618,6 +718,7 @@ TEST(CliSubagentsTest, ReasoningIsQuietByDefaultAndFullyScrollableInDetailsWitho
 		for (size_t offset = 0; (offset = full.find("🙂", offset)) != std::string::npos;
 		     offset += strlen("🙂"))
 			emoji_count++;
+
 		EXPECT_EQ(emoji_count, 4000u);
 	}
 }

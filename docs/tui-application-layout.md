@@ -43,7 +43,8 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   external renderers/input libraries may use the public controller adapter;
   those pages still belong to the same Application controller stack.
 - Compose components with the NT builder, native controls and observable state. A custom view embeds `struct nt_view` first.
-  App-specific output components may use public drawing/terminal APIs. Rendering,
+  Each component module constructs an NT view or composes native controls.
+  Reusable state bindings and text-output policies live in presentation. Rendering,
   key handling and local interaction state belong here; business actions go
   through page bindings or services. Shared margin/padding behavior follows the
   [View box model](tui-box-model.md).

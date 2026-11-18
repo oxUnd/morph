@@ -30,8 +30,10 @@ char *cli_input_fgets_until(struct cli_application *ctx, char *buffer, size_t ca
 		errno = capacity < 2 ? EINVAL : errno;
 		return NULL;
 	}
+
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
 		return NULL;
+
 	while (length + 1 < capacity) {
 		if (ctx &&
 		    (nb_atomic_int_load(&ctx->interrupted) ||
@@ -40,28 +42,35 @@ char *cli_input_fgets_until(struct cli_application *ctx, char *buffer, size_t ca
 			error = EINTR;
 			break;
 		}
+
 		errno = 0;
 		int ch = fgetc(stream);
 
 		if (ch != EOF) {
 			if (deadline)
 				*deadline = 0;
+
 			buffer[length++] = (char)ch;
 			if (ch == '\n')
 				break;
+
 			continue;
 		}
+
 		if (feof(stream))
 			break;
+
 		if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
 			error = errno ? errno : EIO;
 			break;
 		}
+
 		clearerr(stream);
 		if (deadline && *deadline > 0 && nb_time_monotonic_ms() >= *deadline) {
 			error = ETIMEDOUT;
 			break;
 		}
+
 		struct pollfd descriptor = {.fd = fd, .events = POLLIN};
 
 		if (poll(&descriptor, 1, 100) < 0 && errno != EINTR) {
@@ -69,6 +78,7 @@ char *cli_input_fgets_until(struct cli_application *ctx, char *buffer, size_t ca
 			break;
 		}
 	}
+
 	(void)fcntl(fd, F_SETFL, flags);
 	buffer[length] = '\0';
 	errno = error;
@@ -94,6 +104,7 @@ static int cli_reader_wait(int fd, int milliseconds)
 		errno = EINVAL;
 		return NB_ERR_INVAL;
 	}
+
 	FD_ZERO(&input);
 	FD_SET(fd, &input);
 	int rc = select(fd + 1, &input, NULL, NULL, &timeout);
@@ -112,6 +123,7 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 		if (ready > 0) {
 			if (ctx)
 				ctx->input->input_deadline_ms = 0;
+
 			int ch = rl_getc(stream);
 
 			int suffix = 1;
@@ -120,6 +132,7 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 					suffix = cli_reader_wait(fd, 30);
 				} while (suffix < 0 && errno == EINTR);
 			}
+
 			if (ch == 0x1b && suffix == 0) {
 				/* Consume a lone Esc even when idle, so Readline never
 				 * waits for a prefix suffix and swallows the next edit. */
@@ -129,6 +142,7 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 						rl_done = 1;
 						return EOF;
 					}
+
 					if (!cli_command_job_expedite_prompts(ctx->input_job)) {
 						if (ctx->jobs &&
 						    cli_jobs_model_waiting(ctx->jobs))
@@ -137,12 +151,16 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 							runtime_cancel_turn(ctx->runtime);
 					}
 				}
+
 				return 0;
 			}
+
 			return ch;
 		}
+
 		if (ready < 0 && errno != EINTR)
 			return EOF;
+
 		if (ctx && ctx->input->input_deadline_ms > 0 &&
 		    nb_time_monotonic_ms() >= ctx->input->input_deadline_ms) {
 			ctx->input->input_timed_out = 1;
@@ -150,6 +168,7 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 			return EOF;
 		}
 	}
+
 	rl_done = 1;
 	return EOF;
 }
@@ -158,6 +177,7 @@ char *cli_reader_prompt_stream_copy(struct cli_application *ctx, const char *pro
 {
 	if (cli_chat_yield_input(ctx))
 		return NULL;
+
 	FILE *previous_stream = rl_instream;
 	int (*previous)(FILE *) = rl_getc_function;
 	int (*reader)(FILE *) = ctx ? cli_callback_getc(ctx, cli_poll_getc) : rl_getc;
@@ -167,8 +187,10 @@ char *cli_reader_prompt_stream_copy(struct cli_application *ctx, const char *pro
 
 	if (!reader)
 		return NULL;
+
 	if (stream)
 		rl_instream = stream;
+
 	rl_getc_function = reader;
 	rl_catch_signals = 0;
 	rl_catch_sigwinch = 0;

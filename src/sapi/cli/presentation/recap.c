@@ -3,8 +3,8 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/feed_block.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/feed_block.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include "errors.h"
@@ -23,6 +23,7 @@ static int cli_recap_append_paragraph(nb_buf *out, const char *text, int columns
 		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe)
 		return NB_ERR_NOMEM;
+
 	const char *label = heading ? "  ↳ Recap: " : "           ";
 	size_t indent = nb_utf8_width_cstr(label);
 	size_t width = (size_t)columns;
@@ -34,16 +35,20 @@ static int cli_recap_append_paragraph(nb_buf *out, const char *text, int columns
 			(void)nb_buf_printf(out, "%s%.*s%s\n", styled ? CLI_RECAP_COLOR : "",
 				(int)(end - label), label, styled ? ANSI_RESET : "");
 		}
+
 		indent = 0;
 		first = 0;
 	}
+
 	while (*line) {
 		const char *end = morph_terminal_advance_display_width_borrow(line, width - indent);
 		int clipped = end == line;
 		if (clipped)
 			end = nb_utf8_advance(line, 1);
+
 		if (styled)
 			(void)nb_buf_append_cstr(out, CLI_RECAP_COLOR);
+
 		if (first && heading && styled)
 			(void)nb_buf_append_cstr(out,
 				"  ↳ " ANSI_BOLD "Recap:" ANSI_RESET CLI_RECAP_COLOR " ");
@@ -51,18 +56,22 @@ static int cli_recap_append_paragraph(nb_buf *out, const char *text, int columns
 			(void)nb_buf_append_cstr(out, label);
 		else
 			(void)nb_buf_printf(out, "%*s", (int)indent, "");
+
 		if (clipped)
 			(void)nb_buf_append_cstr(out, "…");
 		else
 			(void)nb_buf_append(out, line, (size_t)(end - line));
+
 		(void)nb_buf_append_cstr(out, styled ? ANSI_RESET "\n" : "\n");
 		if (!nb_buf_ok(out))
 			return nb_buf_status(out);
+
 		first = 0;
 		line = end;
 		while (*line == ' ')
 			line++;
 	}
+
 	return nb_buf_status(out);
 }
 
@@ -70,15 +79,19 @@ int cli_recap_append(nb_buf *out, const char *summary, const char *next, int col
 {
 	if (!out || !summary)
 		return NB_ERR_INVAL;
+
 	if (columns <= (int)CLI_CONTENT_RIGHT_PADDING)
 		return 0;
+
 	int width = columns - (int)CLI_CONTENT_RIGHT_PADDING;
 	int rc = cli_recap_append_paragraph(out, summary, width, styled, 1);
 	if (rc || !next || !*next)
 		return rc;
+
 	nb_buf action NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (!nb_buf_printf(&action, "Next: %s", next))
 		return nb_buf_status(&action);
+
 	return cli_recap_append_paragraph(out, nb_buf_cstr(&action), width, styled, 0);
 }
 
@@ -95,17 +108,20 @@ static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 
 	if (!safe)
 		return;
+
 	if (columns <= indent + 3) {
 		cli_output_printf(ctx, "%s\n", label);
 		indent = 0;
 		first = 0;
 	}
+
 	while (*line) {
 		size_t width = columns > indent + 1 ? columns - indent - 1 : 2;
 		const char *end = morph_terminal_advance_display_width_borrow(line, width);
 
 		if (end == line)
 			end = nb_utf8_advance(line, 1);
+
 		cli_output_printf(ctx, "%s%.*s%.*s\n", first ? label : "",
 				  first ? 0 : (int)indent,
 				  "                                  ",
@@ -115,6 +131,7 @@ static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 		while (*line == ' ')
 			line++;
 	}
+
 	free(safe);
 }
 
@@ -123,6 +140,7 @@ static void cli_recap_render_show(struct cli_application *ctx, const char *summa
 {
 	if (!ctx || !summary)
 		return;
+
 	cli_feed_history_begin(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 		struct cli_feed_block block = {
@@ -134,13 +152,17 @@ static void cli_recap_render_show(struct cli_application *ctx, const char *summa
 	} else {
 		if (cli_output_color_enabled(ctx))
 			cli_output_printf(ctx, ANSI_DIM "\033[3m");
+
 		cli_recap_print_text(ctx, "  ↳ Recap: ", summary);
 		if (next && next[0])
 			cli_recap_print_text(ctx, "    Next: ", next);
+
 		if (cli_output_color_enabled(ctx))
 			cli_output_printf(ctx, ANSI_RESET);
+
 		cli_output_printf(ctx, "\n");
 	}
+
 	fflush(stdout);
 	cli_feed_history_end(ctx);
 }
@@ -149,6 +171,7 @@ static void cli_recap_render_failed(struct cli_application *ctx, int code)
 {
 	if (!ctx)
 		return;
+
 	if (code == NB_ERR_BUSY)
 		cli_output_printf(ctx, CLI_FEED_FAILED_STYLE CLI_FEED_FAILED
 				  " Error  " ANSI_RESET
@@ -178,5 +201,6 @@ void cli_presentation_recap_attach(struct cli_application *ctx)
 {
 	if (!ctx)
 		return;
+
 	cli_recap_set_renderer(ctx, &cli_recap_presentation_renderer);
 }

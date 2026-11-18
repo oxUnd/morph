@@ -1,9 +1,9 @@
 #include "sapi/cli/pages/turn_details.h"
-#include "sapi/cli/presentation/panel_style.h"
+#include "sapi/cli/presentation/panel.h"
 #include <nb/err.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/components/report.h"
-#include "sapi/cli/components/transcript.h"
+#include "sapi/cli/presentation/transcript.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/recap.h"
@@ -16,7 +16,6 @@
 #include <nothing/tui/views/scroll_view.h>
 #include <nothing/tui/views/stack_view.h>
 
-#include <limits.h>
 #include <stdlib.h>
 
 struct cli_turn_details {
@@ -40,8 +39,10 @@ static int cli_turn_details_prepare(struct cli_application *ctx)
 		ctx->details = calloc(1, sizeof(*ctx->details));
 		if (!ctx->details)
 			return NB_ERR_NOMEM;
+
 		ctx->details->ctx = ctx;
 	}
+
 	return 0;
 }
 
@@ -66,10 +67,12 @@ static int cli_turn_details_refresh(struct cli_turn_details *page)
 {
 	if (!page->controller)
 		return 0;
+
 	const struct cli_transcript_model *model = page->ctx->transcript;
 	uint64_t revision = model ? model->revision : 0;
 	if (page->model == model && page->revision == revision)
 		return 0;
+
 	nb_buf counter NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_printf(&counter, "  · %zu calls",
 				page->ctx->transcript ? page->ctx->transcript->tools.len : 0)
@@ -77,48 +80,14 @@ static int cli_turn_details_refresh(struct cli_turn_details *page)
 			  : NB_ERR_NOMEM);
 	if (!rc)
 		rc = nt_label_set_text(page->counter, nb_buf_cstr(&counter));
+
 	if (rc)
 		return rc;
+
 	page->model = model;
 	page->revision = revision;
 	cli_report_invalidate(page->body, cli_output_color_enabled(page->ctx));
 	return rc;
-}
-
-static void cli_turn_details_scroll(struct cli_turn_details *page, int scroll)
-{
-	if (scroll == INT_MIN)
-		(void)nt_scroll_view_handle_key(page->scroll, NT_KEY_HOME);
-	else if (scroll == INT_MAX)
-		(void)nt_scroll_view_handle_key(page->scroll, NT_KEY_END);
-	else {
-		int key = scroll < 0 ? NT_KEY_UP : NT_KEY_DOWN;
-		unsigned steps = scroll < 0 ? (unsigned)(-(scroll + 1)) + 1u : (unsigned)scroll;
-		for (unsigned i = 0; i < steps; i++)
-			(void)nt_scroll_view_handle_key(page->scroll, key);
-	}
-}
-
-void cli_turn_details_render(struct cli_application *ctx, int scroll)
-{
-	if (!ctx || cli_turn_details_prepare(ctx))
-		return;
-	struct cli_turn_details *page = ctx->details;
-	if (page->controller) {
-		if (!cli_turn_details_refresh(page)) {
-			cli_turn_details_scroll(page, scroll);
-			(void)nt_application_render(cli_application_tui_borrow(ctx));
-		}
-		return;
-	}
-	/* Stateless callers request a transcript snapshot outside the interactive page. */
-	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
-	int visible = page->visible;
-	page->visible = 1;
-	int rc = cli_transcript_render_details(ctx, ctx->transcript, &rendered);
-	if (!rc)
-		(void)cli_output_printf(ctx, "%s", nb_buf_cstr(&rendered));
-	page->visible = visible;
 }
 
 static void cli_turn_details_build(struct nt_view_controller *controller,
@@ -136,6 +105,7 @@ static void cli_turn_details_build(struct nt_view_controller *controller,
 		title = cli_panel_heading(NT_AUTO);
 		counter = cli_panel_hint(NT_AUTO);
 	}
+
 	nt_label_add(builder, heading, "Turn details", &title);
 	page->counter = nt_label_add(builder, heading, "", &counter);
 	const struct nt_view_options fill = {.grow = 1};
@@ -152,6 +122,7 @@ static void cli_turn_details_build(struct nt_view_controller *controller,
 				    cli_turn_details_document_format);
 	if (page->body)
 		((struct cli_turn_details_document *)page->body)->page = page;
+
 	const struct nt_view_options footer = {.margin = {.top = 1},
 					       .padding = {.left = 2, .right = 1}};
 	nt_label_add(builder, root, "Ctrl+T / Esc back · PgUp/PgDn scroll · End follow", &footer);
@@ -165,19 +136,26 @@ static int cli_turn_details_event(struct nt_view_controller *controller,
 		if (event->key == 20 || event->key == 27 || event->key == NT_KEY_ESCAPE ||
 		    event->key == 3)
 			return nt_view_controller_dismiss(controller, 0);
+
 		if (event->key == NT_KEY_FOCUS_IN || event->key == NT_KEY_FOCUS_OUT)
 			cli_recap_focus(page->ctx, event->key == NT_KEY_FOCUS_IN, cli_recap_now());
-		if (event->key == NT_KEY_WHEEL_UP || event->key == NT_KEY_WHEEL_DOWN) {
-			cli_turn_details_scroll(page, event->key == NT_KEY_WHEEL_UP ? -3 : 3);
+
+		int steps = event->key == NT_KEY_WHEEL_UP || event->key == NT_KEY_WHEEL_DOWN ? 3 : 1;
+		int rc = 0;
+		for (int i = 0; i < steps && rc >= 0; i++)
+			rc = nt_scroll_view_handle_key(page->scroll, event->key);
+
+		if (steps > 1 && rc >= 0)
 			return 1;
-		}
-		int rc = nt_scroll_view_handle_key(page->scroll, event->key);
+
 		if (rc)
 			return rc;
 	}
+
 	if (event->type == NT_EVENT_WAKE || event->type == NT_EVENT_TICK ||
 	    event->type == NT_EVENT_RESIZE)
 		return cli_turn_details_refresh(page);
+
 	return 0;
 }
 
@@ -206,6 +184,7 @@ static void cli_turn_details_close(struct nt_view_controller *controller)
 	struct cli_turn_details *page = controller->data;
 	if (!page)
 		return;
+
 	page->open = 0;
 	page->visible = 0;
 	page->controller = NULL;
@@ -220,14 +199,18 @@ void cli_turn_details_toggle(struct cli_application *ctx)
 	struct nt_application *app = cli_application_tui_borrow(ctx);
 	if (!app || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+
 	if (cli_turn_details_is_open(ctx)) {
 		(void)nt_view_controller_dismiss(ctx->details->controller, 0);
 		return;
 	}
+
 	if (cli_turn_details_prepare(ctx))
 		return;
+
 	if (!ctx->transcript && cli_transcript_model_create(&ctx->transcript))
 		return;
+
 	static const struct nt_view_controller_class type = {
 		.superclass = &nt_view_controller_base_class,
 		.instance_size = sizeof(struct nt_view_controller),
@@ -244,6 +227,7 @@ void cli_turn_details_cleanup(struct cli_application *ctx)
 {
 	if (!ctx || !ctx->details)
 		return;
+
 	free(ctx->details);
 	ctx->details = NULL;
 }

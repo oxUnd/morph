@@ -1,4 +1,4 @@
-#include "sapi/cli/components/subagents.h"
+#include "sapi/cli/presentation/subagents.h"
 #include <nb/err.h>
 
 #include "sapi/cli/models/subagents.h"
@@ -6,8 +6,8 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/components/transcript.h"
-#include "sapi/cli/components/feed_block.h"
+#include "sapi/cli/presentation/transcript.h"
+#include "sapi/cli/presentation/feed_block.h"
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include <errno.h>
@@ -17,6 +17,7 @@ int cli_subagents_transcript(struct cli_application *ctx, const struct cli_subag
 {
 	if (!ctx || !thread || !out)
 		return NB_ERR_INVAL;
+
 	struct cli_message_style style = {
 		.columns = columns,
 		.styled = cli_output_color_enabled(ctx),
@@ -41,6 +42,7 @@ int cli_subagents_transcript(struct cli_application *ctx, const struct cli_subag
 				plan = cJSON_Parse(nb_buf_cstr(&segment->text));
 				if (!plan)
 					continue;
+
 				block.kind = CLI_FEED_BLOCK_PLAN;
 				block.content.plan = plan;
 			} else {
@@ -50,6 +52,7 @@ int cli_subagents_transcript(struct cli_application *ctx, const struct cli_subag
 				if (!block.content.tool)
 					continue;
 			}
+
 			rc = cli_feed_block_append(out, &block, &feed);
 			style.trailing_newlines = feed.trailing_newlines;
 		} else {
@@ -59,8 +62,10 @@ int cli_subagents_transcript(struct cli_application *ctx, const struct cli_subag
 									   : CLI_MESSAGE_ASSISTANT;
 			rc = cli_messages_append(out, kind, nb_buf_cstr(&segment->text), &style);
 		}
+
 		if (rc != 0)
 			break;
 	}
+
 	return rc != 0 ? rc : nb_buf_status(out);
 }

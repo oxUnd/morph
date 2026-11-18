@@ -1,6 +1,6 @@
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 #include "errors.h"
 #include <limits.h>
 #include <stdio.h>
@@ -34,8 +34,10 @@ void cli_rewind_report_print(struct cli_application *ctx, const cJSON *report)
 	if (incomplete)
 		cli_output_printf(ctx, "  Recovery incomplete: inspect session history and files "
 				       "before continuing.\n");
+
 	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "cleanup_incomplete")))
 		cli_output_printf(ctx, "  Temporary-file cleanup is incomplete.\n");
+
 	cJSON_ArrayForEach (item, cJSON_GetObjectItemCaseSensitive(report, "effects")) {
 		const cJSON *code = cJSON_GetObjectItemCaseSensitive(item, "compensation_error");
 		const cJSON *cleanup_code = cJSON_GetObjectItemCaseSensitive(item, "cleanup_error");
@@ -47,6 +49,7 @@ void cli_rewind_report_print(struct cli_application *ctx, const cJSON *report)
 		int compensation_failed = error || (incomplete && applied && !compensated);
 		if (!compensation_failed && !cleanup_error)
 			continue;
+
 		char path[PATH_MAX];
 		char recovery[PATH_MAX];
 		cli_list_compact_text(path, sizeof(path), cli_rewind_string(item, "path"));
@@ -55,10 +58,12 @@ void cli_rewind_report_print(struct cli_application *ctx, const cJSON *report)
 				ctx, "  Could not return %s to its state before rewind: %s\n", path,
 				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 					   error ? error : NB_ERR_IO));
+
 		if (cleanup_error)
 			cli_output_printf(ctx, "  Temporary-file cleanup failed for %s: %s\n", path,
 					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 						     cleanup_error));
+
 		if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(item, "recovery_available"))) {
 			cli_list_compact_text(recovery, sizeof(recovery),
 					      cli_rewind_string(item, "recovery_path"));

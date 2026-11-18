@@ -29,6 +29,7 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 
 	if (!isatty(STDOUT_FILENO))
 		return NB_ERR_NOT_TERMINAL;
+
 	if (!isatty(STDIN_FILENO)) {
 		/* Open the actual device: macOS poll rejects the /dev/tty alias. */
 		const char *path = ttyname(STDOUT_FILENO);
@@ -36,21 +37,26 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 		tty = path ? fopen(path, "r") : NULL;
 		input = tty;
 	}
+
 	if (!nt_terminal_available(input, stdout)) {
 		if (tty)
 			fclose(tty);
+
 		return NB_ERR_NOT_TERMINAL;
 	}
+
 	items[count] = "Yes once";
 	verdicts[count++] = 1;
 	if (scoped) {
 		items[count] = "Allow for this session";
 		verdicts[count++] = 2;
 	}
+
 	if (!ephemeral) {
 		items[count] = scoped ? "Always allow for this project" : "Always allow";
 		verdicts[count++] = scoped ? 3 : 2;
 	}
+
 	items[count] = "No";
 	verdicts[count++] = 0;
 	struct nt_selection_model model = {0};
@@ -65,17 +71,17 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 	if (!rc) {
 		cli_output_printf(ctx, "\n");
 		fflush(stdout);
-		rc = cli_chat_prompt_begin(ctx, (int)count + 2);
-		if (!rc) {
-			rc = nt_choice_prompt_run(&model, &state, &options, input, stdout, NULL);
-			cli_chat_prompt_end(ctx);
-		}
+		rc = cli_chat_prompt_choice(ctx, (int)count + 2, &model, &state, &options,
+					    input, NULL);
 	}
+
 	if (!rc)
 		verdict = verdicts[state.list.index];
+
 	nt_selection_model_deinit(&model);
 	if (tty)
 		fclose(tty);
+
 	return verdict;
 }
 
@@ -94,6 +100,7 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 		cli_output_printf(ctx, "\n");
 		return NB_ERR_CANCELLED;
 	}
+
 	if (!ephemeral && (rl_input[0] == 'a' || rl_input[0] == 'A'))
 		v = scoped ? 3 : 2;
 	else if (scoped && (rl_input[0] == 's' || rl_input[0] == 'S'))
@@ -102,6 +109,7 @@ static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int
 		v = 1;
 	else
 		v = 0;
+
 	free(rl_input);
 	return v;
 }
@@ -112,13 +120,16 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 {
 	if (ctx->input->prompt_lock_ready)
 		nb_mutex_lock(ctx->input->prompt_lock);
+
 	int v = cli_approval_select_choice(ctx, scoped, ephemeral);
 
 	if (v == NB_ERR_NOT_TERMINAL)
 		v = cli_approval_read_choice(ctx, scoped, ephemeral);
+
 	if (v < 0) {
 		if (ctx->input->prompt_lock_ready)
 			nb_mutex_unlock(ctx->input->prompt_lock);
+
 		return 0;
 	}
 
@@ -138,6 +149,7 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 	fflush(stdout);
 	if (ctx->input->prompt_lock_ready)
 		nb_mutex_unlock(ctx->input->prompt_lock);
+
 	return v;
 }
 
@@ -152,19 +164,23 @@ static enum hitl_verdict cli_approval_json_hitl_approval(struct cli_application 
 
 	if (!request)
 		return HITL_DENY;
+
 	if (!cJSON_AddStringToObject(request, "tool_name", tool_name ? tool_name : "") ||
 	    !cJSON_AddStringToObject(request, "arguments_json", tool_args ? tool_args : "{}")) {
 		cJSON_Delete(request);
 		return HITL_DENY;
 	}
+
 	rc = cli_interaction_decision(ctx, "tool_approval", request, allowed,
 				      (int)(sizeof(allowed) / sizeof(allowed[0])), decision,
 				      sizeof(decision));
 	cJSON_Delete(request);
 	if (rc != 0 || strcmp(decision, "deny") == 0)
 		return HITL_DENY;
+
 	if (strcmp(decision, "always") == 0)
 		return HITL_ALWAYS;
+
 	return HITL_APPROVE;
 }
 
@@ -219,8 +235,10 @@ static void cli_approval_card_rule(struct cli_application *ctx, size_t width, co
 		/* Approval titles contain only ASCII. */
 		used = 4u + (size_t)(end - title);
 	}
+
 	for (; used < width - 1u; used++)
 		cli_output_printf(ctx, "─");
+
 	cli_output_printf(ctx, "%s" ANSI_RESET "\n", title ? "╮" : "╯");
 }
 
@@ -234,21 +252,26 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 
 	if (!value)
 		value = "";
+
 	safe = morph_terminal_sanitize_dup(value, strlen(value), MORPH_TERMINAL_TEXT_SINGLE_LINE,
 					   NULL);
 	if (!safe)
 		return;
+
 	if (width == 0) {
 		if (indent)
 			cli_output_printf(ctx, "%-8s ", label);
+
 		cli_output_printf(ctx, "%s%s" ANSI_RESET "\n", style, safe);
 		free(safe);
 		return;
 	}
+
 	if (indent && width < indent + 6u) {
 		cli_approval_card_field(ctx, width, NULL, label, style);
 		indent = 0;
 	}
+
 	line = safe;
 	do {
 		size_t budget = width - 4u - indent;
@@ -264,19 +287,23 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 
 			if (first)
 				cli_output_printf(ctx, "%s", label);
+
 			for (; label_width < indent; label_width++)
 				cli_output_putchar(ctx, ' ');
 		}
+
 		cli_output_printf(ctx, "%s", style);
 		cli_output_printf(ctx, "%s", line);
 		*end = saved;
 		cli_output_printf(ctx, ANSI_RESET);
 		for (; used < width - 4u; used++)
 			cli_output_putchar(ctx, ' ');
+
 		cli_output_printf(ctx, ANSI_YELLOW " │" ANSI_RESET "\n");
 		line = end;
 		first = 0;
 	} while (*line);
+
 	free(safe);
 }
 
@@ -290,14 +317,18 @@ void cli_approval_render_tool(struct cli_application *ctx, const char *tool_name
 		cli_output_printf(ctx, "\n");
 		cli_approval_card_rule(ctx, width, CLI_FEED_QUESTION " Approval required");
 	}
+
 	if (!width)
 		cli_output_printf(ctx, "approval: ");
+
 	cli_approval_card_field(ctx, width, width ? "Tool" : NULL, tool_name, ANSI_BOLD);
 	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
 		if (!width)
 			cli_output_printf(ctx, "args: ");
+
 		cli_approval_card_field(ctx, width, width ? "Args" : NULL, tool_args, ANSI_DIM);
 	}
+
 	if (width)
 		cli_approval_card_rule(ctx, width, NULL);
 }
@@ -308,8 +339,10 @@ enum hitl_verdict cli_approval_tool_callback(const char *tool_name, const char *
 	struct cli_application *ctx = user_data;
 	if (!ctx)
 		return HITL_DENY;
+
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return cli_approval_json_hitl_approval(ctx, tool_name, tool_args);
+
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
 		struct cli_approval_hitl_call call = {ctx, tool_name, tool_args};
 
@@ -324,8 +357,10 @@ enum hitl_verdict cli_approval_tool_callback(const char *tool_name, const char *
 	int v = cli_approval_prompt_approval(ctx, tool_name, 0, 0);
 	if (v == 2)
 		return HITL_ALWAYS;
+
 	if (v == 1)
 		return HITL_APPROVE;
+
 	return HITL_DENY;
 }
 
@@ -351,6 +386,7 @@ static const char *cli_approval_operation_label(enum tool_operation_kind kind)
 	case TOOL_OP_TOOL_CALL:
 		return "Tool Approval";
 	}
+
 	return "Operation Approval";
 }
 
@@ -358,6 +394,7 @@ static const char *cli_approval_operation_approval_label(const struct tool_opera
 {
 	if (op->path_access && (op->path_access & (op->path_access - 1u)))
 		return "Directory Access Approval";
+
 	return cli_approval_operation_label(op->kind);
 }
 
@@ -383,6 +420,7 @@ static const char *cli_approval_operation_subject(enum tool_operation_kind kind)
 	case TOOL_OP_TOOL_CALL:
 		return "tool_call";
 	}
+
 	return "operation";
 }
 
@@ -390,6 +428,7 @@ static const char *cli_approval_operation_approval_subject(const struct tool_ope
 {
 	if (op->path_access && (op->path_access & (op->path_access - 1u)))
 		return "directory_access";
+
 	return cli_approval_operation_subject(op->kind);
 }
 
@@ -412,6 +451,7 @@ static const char *cli_approval_operation_scope_label(enum tool_operation_kind k
 	case TOOL_OP_TOOL_CALL:
 		return "Scope";
 	}
+
 	return "Scope";
 }
 
@@ -419,8 +459,10 @@ static int cli_approval_json_add_optional_string(cJSON *object, const char *name
 {
 	if (!value || !value[0])
 		return 0;
+
 	if (!cJSON_AddStringToObject(object, name, value))
 		return NB_ERR_NOMEM;
+
 	return 0;
 }
 
@@ -444,6 +486,7 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 		cJSON_Delete(programs);
 		return TOOL_OP_DENY;
 	}
+
 	ephemeral = op->tool_name && strcmp(op->tool_name, "exec") == 0 &&
 		    (op->kind == TOOL_OP_PATH_WRITE || op->kind == TOOL_OP_PATH_DELETE);
 	if (!cJSON_AddStringToObject(request, "operation",
@@ -462,6 +505,7 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 		cJSON_Delete(request);
 		return TOOL_OP_DENY;
 	}
+
 	for (int i = 0; i < op->programs_count; i++) {
 		cJSON *program = cJSON_CreateString(op->programs[i]);
 
@@ -470,22 +514,28 @@ cli_approval_json_operation_approval(struct cli_application *ctx, const struct t
 			cJSON_Delete(request);
 			return TOOL_OP_DENY;
 		}
+
 		cJSON_AddItemToArray(programs, program);
 	}
+
 	cJSON_AddItemToObject(request, "programs", programs);
 	if (ephemeral) {
 		allowed = ephemeral_decisions;
 		allowed_count = (int)(sizeof(ephemeral_decisions) / sizeof(ephemeral_decisions[0]));
 	}
+
 	rc = cli_interaction_decision(ctx, "operation_approval", request, allowed, allowed_count,
 				      decision, sizeof(decision));
 	cJSON_Delete(request);
 	if (rc != 0 || strcmp(decision, "deny") == 0)
 		return TOOL_OP_DENY;
+
 	if (strcmp(decision, "always") == 0)
 		return TOOL_OP_ALWAYS;
+
 	if (strcmp(decision, "session") == 0)
 		return TOOL_OP_SESSION;
+
 	return TOOL_OP_ALLOW;
 }
 
@@ -502,19 +552,25 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 	} else {
 		cli_output_printf(ctx, "approval: %s\n", cli_approval_operation_approval_label(op));
 	}
+
 	if (op->tool_name && *op->tool_name)
 		cli_approval_card_field(ctx, width, "Tool", op->tool_name, ANSI_BOLD);
+
 	if (op->kind != TOOL_OP_COMMAND && op->principal && *op->principal &&
 	    strcmp(op->principal, "*") != 0)
 		cli_approval_card_field(ctx, width, "Subject", op->principal, ANSI_BOLD);
+
 	if (op->kind != TOOL_OP_COMMAND && op->principal && strcmp(op->principal, "*") == 0)
 		cli_approval_card_field(ctx, width, "Applies to", "All tools and commands",
 					ANSI_BOLD);
+
 	if (op->reason && *op->reason)
 		cli_approval_card_field(ctx, width, "Reason", op->reason, ANSI_BOLD);
+
 	if (op->kind == TOOL_OP_COMMAND) {
 		if (op->action)
 			cli_approval_card_field(ctx, width, "Command", op->action, ANSI_BOLD);
+
 		if (op->programs_count > 0) {
 			nb_buf programs NB_CLEANUP(nb_buf_cleanup) = {0};
 
@@ -523,8 +579,10 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 				for (int i = 0; i < op->programs_count; i++) {
 					if (i > 0)
 						(void)nb_buf_append_cstr(&programs, ", ");
+
 					(void)nb_buf_append_cstr(&programs, op->programs[i]);
 				}
+
 				cli_approval_card_field(ctx, width, "Programs",
 							nb_buf_cstr(&programs), ANSI_BOLD);
 				nb_buf_cleanup(&programs);
@@ -533,9 +591,11 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 	} else if (op->target && *op->target) {
 		cli_approval_card_field(ctx, width, "Target", op->target, ANSI_BOLD);
 	}
+
 	if (op->path_access)
 		cli_approval_card_field(ctx, width, "Access",
 					tool_path_access_name(op->path_access), ANSI_BOLD);
+
 	if (op->scope && *op->scope)
 		cli_approval_card_field(
 			ctx, width,
@@ -543,6 +603,7 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 				? "Lifetime"
 				: cli_approval_operation_scope_label(op->kind),
 			op->scope, ANSI_DIM);
+
 	if (op->kind == TOOL_OP_COMMAND)
 		cli_approval_card_field(ctx, width, NULL,
 					"'yes once' runs only the command shown; "
@@ -565,6 +626,7 @@ void cli_approval_render_operation(struct cli_application *ctx, const struct too
 					"'session' trusts this scope until exit; "
 					"'always' remembers it for this project.",
 					ANSI_DIM);
+
 	if (width)
 		cli_approval_card_rule(ctx, width, NULL);
 }
@@ -575,8 +637,10 @@ enum tool_operation_verdict cli_approval_operation_callback(const struct tool_op
 	struct cli_application *ctx = user_data;
 	if (!ctx || !op)
 		return TOOL_OP_DENY;
+
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return cli_approval_json_operation_approval(ctx, op);
+
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
 		struct cli_approval_operation_call call = {ctx, op};
 
@@ -594,9 +658,12 @@ enum tool_operation_verdict cli_approval_operation_callback(const struct tool_op
 					     ephemeral);
 	if (v == 3)
 		return TOOL_OP_ALWAYS;
+
 	if (v == 2)
 		return TOOL_OP_SESSION;
+
 	if (v == 1)
 		return TOOL_OP_ALLOW;
+
 	return TOOL_OP_DENY;
 }

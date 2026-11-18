@@ -36,9 +36,11 @@ static int cli_media_measure(struct nt_view *view, int width,
 		int limit = root ? nt_view_frame(root).height : 0;
 		if (limit < 1)
 			limit = 24;
+
 		int columns = width / 2;
 		if (columns < 1)
 			columns = 1;
+
 		int64_t numerator = (int64_t)media->pixels_high * columns;
 		int64_t denominator = (int64_t)media->pixels_wide * 2;
 		int rows = (int)((numerator + denominator - 1) / denominator);
@@ -47,15 +49,19 @@ static int cli_media_measure(struct nt_view *view, int width,
 				media->pixels_high - 1) / media->pixels_high);
 			rows = limit;
 		}
+
 		media->columns = columns;
 		media->rows = rows > 0 ? rows : 1;
 	}
+
 	struct nt_view_size caption = {0};
 	int rc = media->caption ? nt_view_measure(media->caption, width, &caption) : 0;
 	if (!rc && media->rows > INT_MAX - caption.height)
 		return NB_ERR_RANGE;
+
 	if (!rc)
 		*size = (struct nt_view_size){width, media->rows + caption.height};
+
 	return rc;
 }
 
@@ -67,11 +73,13 @@ static int cli_media_layout(struct nt_view *view)
 	if (media->image)
 		rc = nt_view_arrange(media->image, (struct nt_view_rect){
 			rect.x, rect.y, media->columns, media->rows});
+
 	if (!rc && media->caption) {
 		rect.y += media->rows;
 		rect.height = rect.height > media->rows ? rect.height - media->rows : 0;
 		rc = nt_view_arrange(media->caption, rect);
 	}
+
 	return rc;
 }
 
@@ -89,10 +97,12 @@ struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
 		nt_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
+
 	int video = !strcmp(type, "video");
 	struct nt_media_asset *asset NB_CLEANUP(cli_media_asset_cleanup) = NULL;
 	if (cli_output_color_enabled(ctx) && cli_media_native_available())
 		(void)cli_renderer_media_asset_create_copy(type, path, &asset);
+
 	static const struct nt_view_class ops = {.superclass = &nt_view_base_class,
 						 .instance_size = sizeof(struct cli_media),
 						 .kind = "cli_media",
@@ -102,6 +112,7 @@ struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
 		builder, parent, &ops, options);
 	if (!media)
 		return NULL;
+
 	media->ctx = ctx;
 	struct nt_view *view = &media->base;
 	if (asset) {
@@ -109,6 +120,7 @@ struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
 		media->pixels_high = nt_media_asset_height(asset);
 		media->image = nt_image_view_add(builder, view, asset, NULL);
 	}
+
 	if (video || !asset) {
 		nb_buf caption NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc;
@@ -128,6 +140,7 @@ struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
 										  : NB_ERR_NOMEM)
 				  : NB_ERR_NOMEM;
 		}
+
 		nt_builder_fail(builder, rc);
 		media->caption = nt_text_view_add(builder, view, "", NULL);
 		if (media->caption) {
@@ -139,5 +152,6 @@ struct nt_view *cli_media_add_borrow(struct nt_builder *builder,
 							 cli_output_color_enabled(ctx)));
 		}
 	}
+
 	return view;
 }

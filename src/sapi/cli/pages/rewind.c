@@ -1,8 +1,8 @@
 #include "sapi/cli/pages/rewind.h"
-#include "sapi/cli/presentation/panel_style.h"
+#include "sapi/cli/presentation/panel.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include "errors.h"
@@ -49,6 +49,7 @@ static int cli_rewind_available(const struct cli_rewind_picker *picker,
 	    (cJSON_IsFalse(cJSON_GetObjectItem(picker->preview, "code_active")) ||
 	     cJSON_IsFalse(cJSON_GetObjectItem(picker->preview, "code_restorable"))))
 		return 0;
+
 	return !(mode & RUNTIME_REWIND_CONVERSATION) ||
 	       !cJSON_IsFalse(cJSON_GetObjectItem(picker->preview, "conversation_restorable"));
 }
@@ -59,6 +60,7 @@ static const char *cli_rewind_reason(const struct cli_rewind_picker *picker)
 		cJSON_GetStringValue(cJSON_GetObjectItem(picker->preview, "invalid_reason"));
 	if (!reason || !*reason)
 		reason = cJSON_GetStringValue(cJSON_GetObjectItem(picker->preview, "reason"));
+
 	return reason && *reason ? reason
 				 : "Code restore is unavailable; inspect conflicts or choose "
 				   "conversation only.";
@@ -69,6 +71,7 @@ static void cli_rewind_close(void *opaque, int result)
 	struct cli_rewind_picker *picker = opaque;
 	if (!result && picker->mode)
 		(void)picker->apply(picker->ctx, picker->id, picker->mode);
+
 	cli_rewind_cleanup(picker);
 }
 
@@ -106,6 +109,7 @@ static int cli_rewind_row(void *data, struct nt_canvas *canvas, size_t item, siz
 			 (long long)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id")),
 			 cli_rewind_prompt(entry));
 	}
+
 	cli_rewind_clip(clipped, sizeof(clipped), text, canvas->width);
 	int rc = nt_canvas_fill_styled(canvas, &style);
 	return rc ? rc : nt_canvas_text_styled(canvas, 0, 0, clipped, &style);
@@ -117,6 +121,7 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 	int rc = nt_application_environment(&page->ctx->base, &env);
 	if (rc)
 		return rc;
+
 	int h = env.rows, w = env.columns;
 	int first = page->stage && h >= 10 ? 4 : page->stage && h >= 8 ? 3 : h >= 6 ? 2 : 1;
 	const cJSON *files = cJSON_GetObjectItem(page->preview, "files");
@@ -149,19 +154,24 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 						       (struct nt_view_rect){0, i, w, 1});
 		}
 	}
+
 	int rows = h - first - 1;
 	if (rows < 1)
 		rows = 1;
+
 	int choices =
 		page->stage ? 3
 			    : cJSON_GetArraySize(cJSON_GetObjectItem(page->listing, "checkpoints"));
 	if (choices < rows)
 		rows = choices;
+
 	if (!rc)
 		rc = nt_view_set_frame(page->list, (struct nt_view_rect){0, first, w, rows});
+
 	int space = h - first - rows - 1;
 	if (!rc)
 		rc = nt_view_set_hidden(page->files, !page->stage || space <= 0);
+
 	if (!rc && page->stage && space > 0) {
 		nb_buf lines NB_CLEANUP(nb_buf_cleanup) = {0};
 		for (int i = 0; i < space && i < cJSON_GetArraySize(files); i++) {
@@ -171,15 +181,19 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 			cli_rewind_clip(compact, sizeof(compact), path ? path : "", w);
 			nb_buf_printf(&lines, "%s%s", i ? "\n" : "", compact);
 		}
+
 		rc = nb_buf_status(&lines);
 		if (!rc)
 			rc = nt_text_view_set_text(page->files, nb_buf_cstr(&lines));
+
 		if (!rc)
 			rc = nt_view_set_frame(page->files,
 					       (struct nt_view_rect){0, first + rows, w, space});
 	}
+
 	if (!rc)
 		rc = nt_view_set_hidden(page->footer, h < 3);
+
 	if (!rc) {
 		char text[BUFSIZ];
 		const char *hint =
@@ -188,8 +202,10 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 		cli_rewind_clip(text, sizeof(text), hint, w);
 		rc = nt_label_set_text(page->footer, text);
 	}
+
 	if (!rc)
 		rc = nt_view_set_frame(page->footer, (struct nt_view_rect){0, h - 1, w, 1});
+
 	return rc;
 }
 
@@ -201,6 +217,7 @@ static int cli_rewind_choices(struct cli_rewind_picker *page, size_t selected)
 	int rc = nt_list_view_set_source(page->list, (size_t)choices, NULL, NULL);
 	if (!rc)
 		rc = nt_list_view_select(page->list, selected);
+
 	return rc ? rc : cli_rewind_layout(page);
 }
 
@@ -214,9 +231,11 @@ static int cli_rewind_activate(void *data, const struct nt_view_event *event)
 				 "That restore mode is unavailable.");
 			return cli_rewind_layout(page);
 		}
+
 		page->mode = cli_rewind_modes[index];
 		return nt_view_controller_dismiss(page->controller, 0);
 	}
+
 	const cJSON *entry =
 		cJSON_GetArrayItem(cJSON_GetObjectItem(page->listing, "checkpoints"), (int)index);
 	page->id = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id"));
@@ -227,6 +246,7 @@ static int cli_rewind_activate(void *data, const struct nt_view_event *event)
 			 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return cli_rewind_layout(page);
 	}
+
 	page->stage = 1;
 	page->error[0] = '\0';
 	return cli_rewind_choices(page, cli_rewind_available(page, RUNTIME_REWIND_BOTH) ? 0
@@ -244,17 +264,21 @@ static void cli_rewind_build(struct nt_view_controller *controller, struct nt_bu
 	const struct nt_view_options hint = cli_panel_hint(NT_AUTO);
 	for (int i = 0; i < 4; i++)
 		page->heading[i] = nt_label_add(builder, root, "", i == 0 ? &heading : NULL);
+
 	page->list = nt_list_view_add(builder, root, NULL, 0, 0, NULL);
 	page->files = nt_text_view_add(builder, root, "", NULL);
 	page->footer = nt_label_add(builder, root, "", &hint);
 	if (nt_builder_error(builder))
 		return;
+
 	nt_view_set_focusable(page->files, 0);
 	int rc = nt_list_view_set_row_renderer(page->list, cli_rewind_row, page);
 	if (!rc)
 		rc = nt_list_view_set_navigation(page->list, NT_LIST_VIEW_VIM | NT_LIST_VIEW_PAGED);
+
 	if (!rc && !nt_view_on(page->list, NT_VIEW_EVENT_ACTIVATE, cli_rewind_activate, page))
 		rc = NB_ERR_NOMEM;
+
 	nt_builder_fail(builder, rc ? rc : cli_rewind_choices(page, 0));
 }
 
@@ -263,16 +287,20 @@ static int cli_rewind_event(struct nt_view_controller *controller, const struct 
 	struct cli_rewind_picker *page = controller->data;
 	if (event->type == NT_EVENT_RESIZE)
 		return cli_rewind_layout(page);
+
 	if (event->type != NT_EVENT_KEY || event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return 0;
+
 	if (event->key == NT_KEY_LEFT && page->stage) {
 		page->stage = 0;
 		page->error[0] = '\0';
 		return cli_rewind_choices(page, 0);
 	}
+
 	if (event->key == 'q' || event->key == 27 || event->key == NT_KEY_ESCAPE ||
 	    event->key == 3 || event->key == 4 || event->key == NT_KEY_LEFT)
 		return nt_view_controller_dismiss(controller, 0);
+
 	return 0;
 }
 
@@ -289,9 +317,11 @@ int cli_rewind_show_take(struct cli_application *ctx, cJSON **listing, cli_rewin
 	if (!ctx || !listing || !*listing || !apply ||
 	    cJSON_GetArraySize(cJSON_GetObjectItem(*listing, "checkpoints")) <= 0)
 		return NB_ERR_INVAL;
+
 	struct cli_rewind_picker *picker = calloc(1, sizeof(*picker));
 	if (!picker)
 		return NB_ERR_NOMEM;
+
 	picker->ctx = ctx;
 	picker->listing = *listing;
 	picker->apply = apply;
@@ -310,5 +340,6 @@ int cli_rewind_show_take(struct cli_application *ctx, cJSON **listing, cli_rewin
 		picker->listing = NULL;
 		cli_rewind_cleanup(picker);
 	}
+
 	return rc;
 }

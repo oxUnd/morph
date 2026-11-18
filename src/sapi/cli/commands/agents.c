@@ -7,8 +7,8 @@
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/components/agents.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/agents.h"
+#include "sapi/cli/presentation/list.h"
 #include <nb/cleanup.h>
 #include <string.h>
 
@@ -30,8 +30,10 @@ static int cli_agents_print_detail(struct cli_application *ctx, const char *labe
 	if (rc == 0)
 		rc = cli_agents_detail(&detail, label, value, cli_list_columns(),
 				       cli_output_color_enabled(ctx));
+
 	if (rc == 0)
 		cli_output_printf(ctx, "%s", nb_buf_cstr(&detail));
+
 	return rc;
 }
 
@@ -41,13 +43,16 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 		CMD_ERROR(ctx, "usage: /agents [/root/name]");
 		return NB_ERR_INVAL;
 	}
+
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 		int rc = cli_subagents_show_fullscreen(ctx, cli_cmd_arg_borrow(argc, argv, 1));
 		if (rc != 0)
 			CMD_ERROR(ctx, "cannot open agents: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 		return rc;
 	}
+
 	struct cli_agents_snapshot snapshot NB_CLEANUP(cli_agents_snapshot_cleanup) = {0};
 	int64_t session = 0;
 	(void)runtime_session_current_id(ctx->runtime, &session);
@@ -57,31 +62,38 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 		cli_output_printf(ctx, "  Multi-agent collaboration is unavailable.\n");
 		return 0;
 	}
+
 	if (rc != 0) {
 		CMD_ERROR(ctx, "cannot inspect agents: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	const char *id = cli_cmd_arg_borrow(argc, argv, 1);
 	CMD_HEADER(ctx, "Agents (%d)", snapshot.count);
 	struct agent_budget budget = {0};
 	if (runtime_agent_budget(ctx->runtime, &budget) == 0 && budget.limit > 0)
 		cli_output_printf(ctx, "  Shared session budget: %lld / %lld weighted units%s\n", (long long)budget.used,
 		       (long long)budget.limit, budget.exhausted ? " (exhausted)" : "");
+
 	if (budget.limit == 0)
 		cli_output_printf(ctx, "  Shared session usage: %lld weighted units (limit disabled).\n",
 		       (long long)budget.used);
+
 	if (budget.request_tokens > 0)
 		cli_output_printf(ctx, "  Last refused request: up to %lld weighted units "
 		       "(input + configured maximum output).\n",
 		       (long long)budget.request_tokens);
+
 	if (!snapshot.count && !id)
 		cli_output_printf(ctx, "  No agents have been spawned in this session.\n");
+
 	int found = !id;
 	for (int i = 0; i < snapshot.count; i++) {
 		const struct agent_info *agent = &snapshot.items[i];
 		if (id && strcmp(id, agent->id))
 			continue;
+
 		found = 1;
 		cli_list_text_field(ctx, agent->id, cli_agents_status(agent->status), 0,
 				    cli_list_columns());
@@ -95,6 +107,7 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 					    agent->description ? agent->description : "", 0,
 					    cli_list_columns());
 		}
+
 		cli_list_text_field(ctx, "Activity",
 				    agent->activity ? agent->activity
 						    : cli_agents_status(agent->status),
@@ -106,10 +119,12 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 				return rc;
 		}
 	}
+
 	if (!found) {
 		CMD_ERROR(ctx, "agent not found: %s", id);
 		return NB_ERR_NOT_FOUND;
 	}
+
 	return 0;
 }
 
@@ -119,10 +134,12 @@ static int cli_agents_command_subagents(struct cli_application *ctx, int argc, c
 		CMD_ERROR(ctx, "usage: /subagents [/root/name]");
 		return NB_ERR_INVAL;
 	}
+
 	int rc = cli_subagents_show(ctx, cli_cmd_arg_borrow(argc, argv, 1));
 	if (rc != 0)
 		CMD_ERROR(ctx, "cannot open subagents: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	return rc;
 }
 

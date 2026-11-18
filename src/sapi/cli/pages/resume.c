@@ -1,11 +1,11 @@
 #include "sapi/cli/pages/resume.h"
-#include "sapi/cli/presentation/panel_style.h"
+#include "sapi/cli/presentation/panel.h"
 #include <nb/err.h>
 #include <nb/cleanup.h>
 #include "sapi/cli/presentation/output.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/application_internal.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 #include <nothing/tui/terminal.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/session_restore.h"
@@ -29,6 +29,7 @@ static int cli_resume_append_token_number(nb_buf *buf, int64_t tokens)
 		if (rc != 0)
 			return rc;
 	}
+
 	length = strlen(digits);
 	for (size_t i = 0; i < length; i++) {
 		if (i > 0 && (length - i) % 3 == 0) {
@@ -36,10 +37,12 @@ static int cli_resume_append_token_number(nb_buf *buf, int64_t tokens)
 			if (rc != 0)
 				return rc;
 		}
+
 		rc = (nb_buf_append_char(buf, digits[i]) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
 	}
+
 	return 0;
 }
 
@@ -60,6 +63,7 @@ static int cli_resume_append_session_time(nb_buf *buf, int64_t updated_at, int64
 	if (timestamp <= 0 || !localtime_r(&timestamp, &local) ||
 	    strftime(formatted, sizeof(formatted), "%m-%d %H:%M", &local) == 0)
 		return (nb_buf_append_cstr(buf, " · -- --:--") ? 0 : NB_ERR_NOMEM);
+
 	return (nb_buf_printf(buf, " · %s", formatted) ? 0 : NB_ERR_NOMEM);
 }
 
@@ -85,6 +89,7 @@ static void cli_resume_model_cleanup(struct cli_resume_model *model)
 {
 	if (!model)
 		return;
+
 	free(model->groups);
 	free(model->group_order);
 	free(model->order);
@@ -96,6 +101,7 @@ static void cli_resume_sessions_cleanup(struct session **sessions)
 {
 	if (!sessions)
 		return;
+
 	runtime_session_list_free(*sessions);
 	*sessions = NULL;
 }
@@ -106,6 +112,7 @@ static int cli_resume_model_group(const struct cli_resume_model *model, const ch
 		if (strcmp(model->groups[i].workdir, workdir) == 0)
 			return i;
 	}
+
 	return -1;
 }
 
@@ -123,6 +130,7 @@ static void cli_resume_model_accumulate(struct cli_resume_model *model, int *ses
 						       current_workdir[0] &&
 						       strcmp(workdir, current_workdir) == 0;
 		}
+
 		model->groups[group].count++;
 		session_groups[i] = group;
 	}
@@ -136,9 +144,11 @@ static void cli_resume_model_order(const struct cli_resume_model *model, int *or
 		if (model->groups[g].current)
 			current_group = g;
 	}
+
 	*count = 0;
 	if (current_group >= 0)
 		order[(*count)++] = current_group;
+
 	for (int g = 0; g < model->group_count; g++) {
 		if (g != current_group)
 			order[(*count)++] = g;
@@ -157,10 +167,12 @@ static int cli_resume_model_fill(struct cli_resume_model *model, const int *sess
 		for (int i = 0; i < model->session_count; i++) {
 			if (session_groups[i] != group)
 				continue;
+
 			model->order[item] = i;
 			item++;
 		}
 	}
+
 	return nt_list_groups_init(&model->rows, counts, (size_t)model->group_count);
 }
 
@@ -175,6 +187,7 @@ static int cli_resume_model_build(struct cli_resume_model *model, const struct s
 
 	if (!model || !sessions || count <= 0)
 		return NB_ERR_INVAL;
+
 	memset(model, 0, sizeof(*model));
 	model->sessions = sessions;
 	model->session_count = count;
@@ -190,6 +203,7 @@ static int cli_resume_model_build(struct cli_resume_model *model, const struct s
 		cli_resume_model_cleanup(model);
 		return NB_ERR_NOMEM;
 	}
+
 	cli_resume_model_accumulate(model, session_groups, current_workdir);
 	cli_resume_model_order(model, order, &ordered);
 	rc = cli_resume_model_fill(model, session_groups, order, counts);
@@ -200,6 +214,7 @@ static int cli_resume_model_build(struct cli_resume_model *model, const struct s
 		cli_resume_model_cleanup(model);
 		return rc;
 	}
+
 	model->group_order = order;
 	return 0;
 }
@@ -209,6 +224,7 @@ static const struct session *cli_resume_model_session(const struct cli_resume_mo
 {
 	if (!model || ordinal < 0 || ordinal >= model->session_count)
 		return NULL;
+
 	return &model->sessions[model->order[ordinal]];
 }
 
@@ -217,6 +233,7 @@ static int cli_resume_model_row_item(const struct cli_resume_model *model, int r
 	if (!model || row < 0 || (size_t)row >= model->rows.row_count ||
 	    model->rows.row_item[row] == SIZE_MAX)
 		return -1;
+
 	return (int)model->rows.row_item[row];
 }
 
@@ -237,8 +254,10 @@ static int cli_resume_append_group(nb_buf *buf, const struct cli_resume_group *g
 	} else {
 		rc = (nb_buf_append_cstr(buf, workdir) ? 0 : NB_ERR_NOMEM);
 	}
+
 	if (rc == 0 && group->current)
 		rc = (nb_buf_append_cstr(buf, " · current") ? 0 : NB_ERR_NOMEM);
+
 	return rc;
 }
 
@@ -267,33 +286,41 @@ static int cli_resume_page(struct cli_application *ctx, const struct cli_resume_
 			rc = (nb_buf_init(&label), nb_buf_reserve(&label, 64) ? 0 : NB_ERR_NOMEM);
 			if (rc != 0)
 				return rc;
+
 			rc = cli_resume_append_group(&label, &model->groups[group]);
 			if (rc == 0)
 				cli_list_group(ctx, nb_buf_cstr(&label), model->groups[group].count,
 					       0);
+
 			nb_buf_cleanup(&label);
 			if (rc != 0)
 				return rc;
 		}
+
 		rc = (nb_buf_init(&metadata), nb_buf_reserve(&metadata, 64) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
 			return rc;
+
 		rc = (nb_buf_printf(&metadata, "%s · ", session->display_id) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)
 			rc = cli_resume_append_token_count(&metadata, session->token_used);
+
 		if (rc == 0)
 			rc = cli_resume_append_session_time(&metadata, session->updated_at,
 							    session->created_at);
+
 		if (rc == 0) {
 			snprintf(number, sizeof(number), "%d", ordinal - start + 1);
 			cli_list_row(ctx, number, session->name, nb_buf_cstr(&metadata),
 				     session->id == current_id, ordinal == end - 1,
 				     cli_list_columns());
 		}
+
 		nb_buf_cleanup(&metadata);
 		if (rc != 0)
 			return rc;
 	}
+
 	return 0;
 }
 
@@ -339,19 +366,23 @@ static int cli_resume_label(struct cli_resume_picker *page, enum cli_resume_labe
 	struct nt_view *label = page->labels[id];
 	if (width > page->columns - x)
 		width = page->columns - x;
+
 	int hidden = y < 0 || width <= 0 || page->columns < 5;
 	int rc = nt_view_set_hidden(label, hidden);
 	if (rc || hidden)
 		return rc;
+
 	char clipped[BUFSIZ];
 	if (nb_utf8_width_cstr(text) > (size_t)width) {
 		nt_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped), text,
 							  (size_t)width, 0);
 		text = clipped;
 	}
+
 	rc = nt_view_set_frame(label, (struct nt_view_rect){x, y, width, 1});
 	if (!rc && strcmp(nt_label_text(label), text))
 		rc = nt_label_set_text(label, text);
+
 	return rc;
 }
 
@@ -370,9 +401,11 @@ static int cli_resume_pagination(struct cli_resume_picker *page)
 		if (item >= 0) {
 			if (!first)
 				first = item + 1;
+
 			last = item + 1;
 		}
 	}
+
 	char text[96];
 	snprintf(text, sizeof(text), "%d / %d", number + 1, (count - 1) / page->page_size + 1);
 	int width = (int)strlen(text);
@@ -381,6 +414,7 @@ static int cli_resume_pagination(struct cli_resume_picker *page)
 		page->columns >= 32 && page->rows >= 3 ? (page->grouped ? 2 : 0) : -1, width, text);
 	if (rc)
 		return rc;
+
 	snprintf(text, sizeof(text), "Showing %d–%d of %d", first, last, model->session_count);
 	return cli_resume_label(page, CLI_RESUME_RANGE, 2,
 				page->rows >= 6 ? page->rows - (page->grouped ? 4 : 3) : -1,
@@ -410,16 +444,21 @@ static int cli_resume_layout(struct cli_resume_picker *page, int cols, int rows)
 				       page->grouped
 					       ? cli_panel_heading(NT_AUTO).style
 					       : cli_resume_accent);
+
 	if (!rc)
 		rc = nt_view_set_frame(page->list, (struct nt_view_rect){0, page->first_row, cols,
 									 page->page_size});
+
 	if (rc)
 		return rc;
+
 	nb_buf rule NB_CLEANUP(nb_buf_cleanup) = {0};
 	for (int i = 0; i < width; i++)
 		nb_buf_append_cstr(&rule, "─");
+
 	if (!nb_buf_ok(&rule))
 		return NB_ERR_NOMEM;
+
 	int title_row = page->grouped ? 2 : rows >= 3 ? 0 : -1;
 	int heading = rows >= 6 ? page->first_row - 1 : -1;
 	int footer = rows >= 3 ? rows - 1 : -1;
@@ -455,6 +494,7 @@ static int cli_resume_layout(struct cli_resume_picker *page, int cols, int rows)
 		if (i != CLI_RESUME_RANGE && i != CLI_RESUME_PAGE)
 			rc = cli_resume_label(page, (enum cli_resume_label)i, labels[i].x,
 					      labels[i].y, labels[i].width, labels[i].text);
+
 	return rc ? rc : cli_resume_pagination(page);
 }
 
@@ -463,8 +503,10 @@ static int cli_resume_cell(struct nt_canvas *canvas, int x, int width, const cha
 {
 	if (width > canvas->width - x)
 		width = canvas->width - x;
+
 	if (width <= 0)
 		return 0;
+
 	char compact[BUFSIZ], clipped[BUFSIZ];
 	cli_list_compact_text(compact, sizeof(compact), text);
 	int used = (int)nt_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped), compact,
@@ -488,40 +530,48 @@ static int cli_resume_row(void *data, struct nt_canvas *canvas, size_t item, siz
 		int rc = cli_resume_append_group(&text, entry);
 		if (!rc)
 			rc = cli_resume_cell(canvas, 2, 1, "▾", style, 0);
+
 		return rc ? rc
 			  : cli_resume_cell(canvas, 4, canvas->width - 6, nb_buf_cstr(&text), style,
 					    0);
 	}
+
 	const struct session *session = cli_resume_model_session(&page->model, (int)item);
 	const struct nt_text_style *meta = selected ? &cli_resume_accent : &cli_resume_muted;
 	const struct nt_text_style normal = {0};
 	const struct nt_text_style *name = selected ? &cli_resume_selected : &normal;
 	if (canvas->width < 5)
 		return cli_resume_cell(canvas, 0, canvas->width, session->name, name, 0);
+
 	int rc = selected ? cli_resume_cell(canvas, 1, 1, "▏", &cli_resume_accent, 0) : 0;
 	if (!rc && selected) {
 		struct nt_canvas strip;
 		nt_canvas_subcanvas(canvas, 2, 0, canvas->width - 4, 1, &strip);
 		rc = nt_canvas_fill_styled(&strip, name);
 	}
+
 	if (!rc && page->grouped) {
 		size_t row = page->model.rows.item_row[item];
 		int last = row + 1 == page->model.rows.row_count ||
 			   page->model.rows.row_group[row + 1] != group;
 		rc = cli_resume_cell(canvas, 4, 1, last ? "└" : "├", meta, 0);
 	}
+
 	int inset = page->grouped ? 4 : 2;
 	int name_width = page->name_width > inset ? page->name_width - inset : 1;
 	if (!rc)
 		rc = cli_resume_cell(canvas, 2 + inset, name_width, session->name, name, 0);
+
 	if (!rc && page->id_x)
 		rc = cli_resume_cell(canvas, page->id_x, 8, session->display_id, meta, 0);
+
 	if (!rc && page->tokens_x) {
 		rc = cli_resume_append_token_number(&text, session->token_used);
 		if (!rc)
 			rc = cli_resume_cell(canvas, page->tokens_x, 12, nb_buf_cstr(&text), meta,
 					     1);
 	}
+
 	if (!rc && page->updated_x) {
 		nb_buf_clear(&text);
 		rc = cli_resume_append_session_time(&text, session->updated_at,
@@ -530,6 +580,7 @@ static int cli_resume_row(void *data, struct nt_canvas *canvas, size_t item, siz
 			rc = cli_resume_cell(canvas, page->updated_x, 14,
 					     nb_buf_cstr(&text) + strlen(" · "), meta, 0);
 	}
+
 	return rc;
 }
 
@@ -538,6 +589,7 @@ static int cli_resume_action(void *data, const struct nt_view_event *event)
 	struct cli_resume_picker *page = data;
 	if (event->type == NT_VIEW_EVENT_CHANGED)
 		return cli_resume_pagination(page);
+
 	page->selection = page->model.order[event->index];
 	return nt_view_controller_dismiss(page->controller, 0);
 }
@@ -551,33 +603,43 @@ static void cli_resume_build(struct nt_view_controller *controller, struct nt_bu
 		struct nt_view_options options = cli_panel_hint(NT_AUTO);
 		if (i == CLI_RESUME_BRAND)
 			options.style = cli_resume_accent;
+
 		if (i == CLI_RESUME_ESCAPE)
 			options.style = (struct nt_text_style){0};
+
 		page->labels[i] = nt_label_add(builder, root, "", &options);
 		nt_builder_fail(builder, nt_label_set_opaque(page->labels[i], 1));
 		nt_builder_fail(builder,
 				nt_label_set_wrap_mode(page->labels[i], NT_TEXT_WRAP_NONE));
 	}
+
 	page->list = nt_list_view_add(builder, root, NULL, 0, 0, NULL);
 	if (nt_builder_error(builder))
 		return;
+
 	int rc = nt_list_view_set_source(page->list, (size_t)page->model.session_count, NULL, NULL);
 	if (!rc)
 		rc = nt_list_view_set_row_renderer(page->list, cli_resume_row, page);
+
 	if (!rc)
 		rc = nt_list_view_set_activate_on_click(page->list, 1);
+
 	if (!rc)
 		rc = nt_list_view_set_navigation(page->list, NT_LIST_VIEW_VIM | NT_LIST_VIEW_TAB |
 								     NT_LIST_VIEW_HORIZONTAL_PAGES |
 								     NT_LIST_VIEW_PAGED);
+
 	struct nt_terminal_environment env;
 	if (!rc)
 		rc = nt_application_environment(&page->ctx->base, &env);
+
 	if (!rc)
 		rc = cli_resume_layout(page, env.columns, env.rows);
+
 	if (!rc && (!nt_view_on(page->list, NT_VIEW_EVENT_ACTIVATE, cli_resume_action, page) ||
 		    !nt_view_on(page->list, NT_VIEW_EVENT_CHANGED, cli_resume_action, page)))
 		rc = NB_ERR_NOMEM;
+
 	nt_builder_fail(builder, rc);
 }
 
@@ -586,18 +648,23 @@ static int cli_resume_event(struct nt_view_controller *controller, const struct 
 	struct cli_resume_picker *page = controller->data;
 	if (event->type == NT_EVENT_RESIZE)
 		return cli_resume_layout(page, event->columns, event->rows);
+
 	if (event->type != NT_EVENT_KEY || event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return 0;
+
 	if (event->key == 'q' || event->key == 27 || event->key == NT_KEY_ESCAPE ||
 	    event->key == 3 || event->key == 4)
 		return nt_view_controller_dismiss(controller, 0);
+
 	if (event->key == 'n' || event->key == 'p') {
 		size_t item = nt_list_view_selected(page->list), step = (size_t)page->page_size;
 		size_t next = event->key == 'p' ? (item > step ? item - step : 0) : item + step;
 		if (next >= (size_t)page->model.session_count)
 			next = (size_t)page->model.session_count - 1;
+
 		return nt_list_view_select(page->list, next);
 	}
+
 	return 0;
 }
 
@@ -611,6 +678,7 @@ static int cli_resume_select(struct cli_application *ctx, int64_t id)
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	ctx->session_auto_named = 1;
 	rc = cli_session_history_restore(ctx);
 	if (rc)
@@ -618,6 +686,7 @@ static int cli_resume_select(struct cli_application *ctx, int64_t id)
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else
 		CMD_OK(ctx, "resumed session: %s", selected.name);
+
 	return rc;
 }
 
@@ -626,6 +695,7 @@ static void cli_resume_picker_cleanup(struct cli_resume_picker **owner)
 	struct cli_resume_picker *picker = owner ? *owner : NULL;
 	if (!picker)
 		return;
+
 	cli_resume_model_cleanup(&picker->model);
 	cli_resume_sessions_cleanup(&picker->sessions);
 	free(picker);
@@ -639,6 +709,7 @@ static void cli_resume_close(void *data, int result)
 
 	if (!result && picker->selection >= 0)
 		(void)cli_resume_select(ctx, picker->model.sessions[picker->selection].id);
+
 	cli_resume_picker_cleanup(&picker);
 }
 
@@ -664,12 +735,14 @@ static int cli_resume_present_take(struct cli_application *ctx, struct session *
 		calloc(1, sizeof(*page));
 	if (!page)
 		return NB_ERR_NOMEM;
+
 	page->ctx = ctx;
 	page->selection = -1;
 	int rc = cli_resume_model_build(&page->model, *sessions, count,
 					runtime_workdir_borrow(ctx->runtime));
 	if (rc)
 		return rc;
+
 	page->sessions = *sessions;
 	int accepted = 0;
 	rc = cli_application_show_page(ctx, &type, page, 0, &accepted);
@@ -679,6 +752,7 @@ static int cli_resume_present_take(struct cli_application *ctx, struct session *
 	} else {
 		page->sessions = NULL;
 	}
+
 	return rc;
 }
 
@@ -695,19 +769,24 @@ int cli_resume_show(struct cli_application *ctx)
 		CMD_ERROR(ctx, "use /resume <name|id> in JSON mode");
 		return NB_ERR_INVAL;
 	}
+
 	rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
 	if (rc != 0)
 		return rc;
+
 	if (count == 0) {
 		CMD_OK(ctx, "no sessions to resume");
 		return 0;
 	}
+
 	int controls_available = nt_terminal_available(stdin, stdout);
 	if (controls_available)
 		return cli_resume_present_take(ctx, &list, count);
+
 	rc = cli_resume_model_build(&model, list, count, runtime_workdir_borrow(ctx->runtime));
 	if (rc != NB_OK)
 		return rc;
+
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	while (count > 0) {
 		char answer[BUFSIZ];
@@ -717,6 +796,7 @@ int cli_resume_show(struct cli_application *ctx)
 		rc = cli_resume_page(ctx, &model, page, current_id, CLI_RESUME_PAGE_SIZE);
 		if (rc != 0)
 			break;
+
 		cli_output_printf(ctx, "  Select 1-%d · n next · p previous · q cancel: ",
 				  count - page * CLI_RESUME_PAGE_SIZE > CLI_RESUME_PAGE_SIZE
 					  ? CLI_RESUME_PAGE_SIZE
@@ -724,30 +804,38 @@ int cli_resume_show(struct cli_application *ctx)
 		fflush(stdout);
 		if (!fgets(answer, sizeof(answer), stdin))
 			break;
+
 		if (!strchr(answer, '\n') && !feof(stdin)) {
 			int ch;
 
 			while ((ch = getchar()) != '\n' && ch != EOF) {}
+
 			CMD_ERROR(ctx, "invalid selection");
 			continue;
 		}
+
 		answer[strcspn(answer, "\r\n")] = '\0';
 		if (!answer[0] || strcmp(answer, "q") == 0)
 			break;
+
 		if (strcmp(answer, "n") == 0) {
 			if (page < (count - 1) / CLI_RESUME_PAGE_SIZE)
 				page++;
 			else
 				CMD_ERROR(ctx, "already on the last page");
+
 			continue;
 		}
+
 		if (strcmp(answer, "p") == 0) {
 			if (page > 0)
 				page--;
 			else
 				CMD_ERROR(ctx, "already on the first page");
+
 			continue;
 		}
+
 		errno = 0;
 		number = strtol(answer, &end, 10);
 		if (errno || end == answer || *end || number < 1 || number > CLI_RESUME_PAGE_SIZE ||
@@ -755,6 +843,7 @@ int cli_resume_show(struct cli_application *ctx)
 			CMD_ERROR(ctx, "invalid selection");
 			continue;
 		}
+
 		const struct session *session = cli_resume_model_session(
 			&model, page * CLI_RESUME_PAGE_SIZE + (int)number - 1);
 
@@ -762,8 +851,10 @@ int cli_resume_show(struct cli_application *ctx)
 			CMD_ERROR(ctx, "invalid selection");
 			continue;
 		}
+
 		rc = cli_resume_select(ctx, session->id);
 		break;
 	}
+
 	return rc;
 }

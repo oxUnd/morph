@@ -21,6 +21,7 @@ static int cli_mcp_tree_format(struct cli_report *report, nb_buf *out, int width
 		return cli_mcp_tree_items_render(out, tree->kind, tree->server,
 						 (void *)tree->items.data, tree->items.len,
 						 width > 0 ? width : 1, report->styled);
+
 	return cli_mcp_tree_render(out, (void *)tree->servers.data, tree->servers.len,
 				   width > 0 ? width : 1, report->styled);
 }
@@ -36,6 +37,7 @@ static void cli_mcp_tree_destroy(struct nt_view *view)
 		free((char *)item->description);
 		free((char *)item->uri);
 	}
+
 	nb_vec_cleanup(&tree->items);
 	nb_vec_cleanup(&tree->servers);
 	free(tree->kind);
@@ -56,6 +58,7 @@ static struct cli_mcp_tree *cli_mcp_tree_add(struct nt_builder *builder, struct 
 		builder, parent, &cli_mcp_tree_class, &options, styled, cli_mcp_tree_format);
 	if (!tree)
 		return NULL;
+
 	return tree;
 }
 
@@ -67,9 +70,11 @@ struct nt_view *cli_mcp_tree_servers_add_borrow(struct nt_builder *builder, stru
 		nt_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
+
 	struct cli_mcp_tree *tree = cli_mcp_tree_add(builder, parent, styled);
 	if (!tree)
 		return NULL;
+
 	struct runtime_mcp_status snapshot;
 	int rc = (nb_vec_init(&tree->servers, sizeof(snapshot)),
 		  nb_vec_reserve(&tree->servers, count ? count : 1) ? 0 : NB_ERR_NOMEM);
@@ -79,6 +84,7 @@ struct nt_view *cli_mcp_tree_servers_add_borrow(struct nt_builder *builder, stru
 			rc = NB_ERR_NOMEM;
 			break;
 		}
+
 		/* Copy display fields only; credentials and process configuration
 		 * do not belong to the retained report. */
 		copy->state = servers[i].state;
@@ -96,6 +102,7 @@ struct nt_view *cli_mcp_tree_servers_add_borrow(struct nt_builder *builder, stru
 		copy->supports_resources = servers[i].supports_resources;
 		copy->supports_prompts = servers[i].supports_prompts;
 	}
+
 	nt_builder_fail(builder, rc);
 	return &tree->report.base;
 }
@@ -109,9 +116,11 @@ struct nt_view *cli_mcp_tree_items_add_borrow(struct nt_builder *builder, struct
 		nt_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
+
 	struct cli_mcp_tree *tree = cli_mcp_tree_add(builder, parent, styled);
 	if (!tree)
 		return NULL;
+
 	tree->kind = strdup(kind);
 	tree->server = strdup(server);
 	struct cli_mcp_tree_item item;
@@ -125,12 +134,14 @@ struct nt_view *cli_mcp_tree_items_add_borrow(struct nt_builder *builder, struct
 			rc = NB_ERR_NOMEM;
 			break;
 		}
+
 		copy->name = strdup(items[i].name ? items[i].name : "");
 		copy->description = strdup(items[i].description ? items[i].description : "");
 		copy->uri = strdup(items[i].uri ? items[i].uri : "");
 		if (!copy->name || !copy->description || !copy->uri)
 			rc = NB_ERR_NOMEM;
 	}
+
 	nt_builder_fail(builder, rc);
 	return &tree->report.base;
 }

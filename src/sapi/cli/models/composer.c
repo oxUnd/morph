@@ -27,6 +27,7 @@ int cli_composer_model_init(struct cli_composer_model *composer)
 	      nb_vec_reserve(&composer->images, 16) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
+
 	return 0;
 }
 
@@ -39,6 +40,7 @@ void cli_composer_model_cleanup(struct cli_composer_model *composer)
 	     (image = (struct cli_composer_model_input_image *)nb_vec_at(&composer->images, _i_));
 	     _i_++)
 		free(image->path);
+
 	nb_vec_cleanup(&composer->images);
 }
 
@@ -51,19 +53,24 @@ int cli_composer_model_add_image_resolved(struct cli_composer_model *composer,
 
 	if (!composer || !absolute_path || !absolute_path[0] || !label)
 		return NB_ERR_INVAL;
+
 	if (width <= 0 || height <= 0)
 		return NB_ERR_INVAL;
+
 	if (composer->next_image == SIZE_MAX) {
 		return NB_ERR_RANGE;
 	}
+
 	path = strdup(absolute_path);
 	if (!path)
 		return NB_ERR_NOMEM;
+
 	image = nb_vec_push(&composer->images);
 	if (!image) {
 		free(path);
 		return NB_ERR_NOMEM;
 	}
+
 	image->path = path;
 	image->width = width;
 	image->height = height;
@@ -95,6 +102,7 @@ char *cli_composer_model_expand_copy(struct cli_composer_model *composer, const 
 	if ((nb_buf_init(&result), nb_buf_reserve(&result, strlen(input) + 1) ? 0 : NB_ERR_NOMEM) !=
 	    0)
 		return NULL;
+
 	while (*cursor) {
 		struct cli_composer_model_input_image *image;
 		struct cli_composer_model_input_image *matched = NULL;
@@ -111,18 +119,22 @@ char *cli_composer_model_expand_copy(struct cli_composer_model *composer, const 
 				matched = image;
 			}
 		}
+
 		if (!matched) {
 			(void)nb_buf_append_cstr(&result, cursor);
 			break;
 		}
+
 		(void)nb_buf_append(&result, cursor, (size_t)(next - cursor));
 		(void)nb_buf_printf(&result, "%s [Image: %s]", matched->label, matched->path);
 		cursor = next + strlen(matched->label);
 	}
+
 	if (nb_buf_status(&result)) {
 		nb_buf_cleanup(&result);
 		return NULL;
 	}
+
 	return (nb_buf_ok(&result) ? strdup(nb_buf_cstr(&result)) : NULL);
 }
 
@@ -147,9 +159,11 @@ int cli_composer_model_image_span(struct cli_composer_model *composer, const cha
 				*end = right;
 				return 1;
 			}
+
 			found += strlen(image->label);
 		}
 	}
+
 	return 0;
 }
 
@@ -158,6 +172,7 @@ void cli_composer_model_set_ultra(struct cli_composer_model *composer, int ultra
 	ultra = !!ultra;
 	if (composer->mode_ready && composer->ultra == ultra)
 		return;
+
 	composer->mode_transition = composer->mode_ready && animate && ultra;
 	composer->mode_ready = 1;
 	composer->ultra = ultra;
@@ -174,14 +189,18 @@ int cli_composer_model_animation_frame(struct cli_composer_model *composer, int6
 {
 	if (!composer->mode_transition)
 		return -1;
+
 	if (composer->mode_started_ms < 0)
 		composer->mode_started_ms = now_ms;
+
 	int64_t elapsed = now_ms - composer->mode_started_ms;
 	if (elapsed < 0)
 		elapsed = 0;
+
 	if (elapsed >= 990) {
 		composer->mode_transition = 0;
 		return 30;
 	}
+
 	return (int)(elapsed / 33);
 }

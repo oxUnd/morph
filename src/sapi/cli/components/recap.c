@@ -31,6 +31,7 @@ struct nt_view *cli_recap_add_borrow(struct nt_builder *builder, struct nt_view 
 		nt_builder_fail(builder, NB_ERR_INVAL);
 		return NULL;
 	}
+
 	const struct nt_view_options options = {
 		.margin = {.top = 1, .bottom = 1},
 		.padding = {.right = (int)CLI_CONTENT_RIGHT_PADDING}};
@@ -39,10 +40,12 @@ struct nt_view *cli_recap_add_borrow(struct nt_builder *builder, struct nt_view 
 		cli_recap_widget_format);
 	if (!widget)
 		return NULL;
+
 	struct nt_view *view = &widget->report.base;
 	int rc = nt_view_use_state_string(view, summary, &widget->summary);
 	if (!rc)
 		rc = nt_view_use_state_string(view, next ? next : "", &widget->next);
+
 	nt_builder_fail(builder, rc);
 	return view;
 }

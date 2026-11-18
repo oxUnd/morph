@@ -17,18 +17,18 @@ extern "C" {
 #include "sapi/cli/presentation/work_status.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/models/transcript.h"
-#include "sapi/cli/components/banner.h"
+#include "sapi/cli/presentation/banner.h"
 #include "sapi/cli/pages/approval.h"
-#include "sapi/cli/components/transcript.h"
-#include "sapi/cli/components/agents.h"
+#include "sapi/cli/presentation/transcript.h"
+#include "sapi/cli/presentation/agents.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/components/feed.h"
-#include "sapi/cli/components/feed_block.h"
-#include "sapi/cli/components/plan.h"
-#include "sapi/cli/components/list.h"
-#include "sapi/cli/components/shell_style.h"
+#include "sapi/cli/presentation/feed.h"
+#include "sapi/cli/presentation/feed_block.h"
+#include "sapi/cli/presentation/plan.h"
+#include "sapi/cli/presentation/list.h"
+#include "sapi/cli/presentation/shell_style.h"
 #include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <nb/cleanup.h>
@@ -100,12 +100,14 @@ TEST(CliMarkdownImageTest, BlockPreviewsFitBoundsAndShowOriginalPathAndAlt)
 			EXPECT_EQ(columns, 2u);
 			EXPECT_EQ(rows, 2u);
 		}
+
 		std::string caption = "(\033]8;;file://" + std::string(source) + "\033\\" + source +
 				      "\033]8;;\033\\ · First photo alt)";
 		EXPECT_NE(output.find(caption), std::string::npos);
 		EXPECT_LT(image, output.find(caption));
 		EXPECT_EQ(output.find("morph-markdown-image-"), std::string::npos);
 	}
+
 	EXPECT_EQ(unlink(source), 0);
 }
 
@@ -153,6 +155,7 @@ TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
 						    NULL) == 0;
 			WebPFree(encoded);
 		}
+
 		ASSERT_NE(written, 0);
 		char *resolved = nullptr;
 		ASSERT_EQ(cli_image_loader_load(source.c_str(), &resolved, nullptr), 0);
@@ -177,6 +180,7 @@ TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
 		EXPECT_EQ(output.find("[image"), std::string::npos);
 		EXPECT_EQ(unlink(source.c_str()), 0);
 	}
+
 	EXPECT_EQ(rmdir(directory), 0);
 }
 
@@ -213,6 +217,7 @@ TEST(CliMarkdownImageTest, RemoteGifRendersInsideTable)
 		int client = accept(server, nullptr, nullptr);
 		if (client < 0)
 			return;
+
 		char request[BUFSIZ];
 		(void)recv(client, request, sizeof(request), 0);
 		std::string response =
@@ -290,10 +295,13 @@ class CliPresentationTest : public ::testing::Test
 
 		if (ctx.base.state)
 			nt_application_deinit(&ctx.base);
+
 		if (details_input)
 			fclose(details_input);
+
 		if (details_master >= 0)
 			close(details_master);
+
 		cli_presentation_cleanup(&ctx);
 		cli_input_cleanup(&ctx);
 		cli_feed_cleanup(&ctx);
@@ -316,6 +324,8 @@ class CliPresentationTest : public ::testing::Test
 			options.output = stdout;
 			options.external_signals = 1;
 			ASSERT_EQ(nt_application_init(&ctx.base, &options), 0);
+			ASSERT_EQ(nt_application_set_color_profile(&ctx.base, cli_output_color_enabled(&ctx)
+				? NT_COLOR_PROFILE_256 : NT_COLOR_PROFILE_NONE), 0);
 			static const struct nt_view_controller_class root = [] {
 				struct nt_view_controller_class type{};
 				type.superclass = &nt_view_controller_base_class;
@@ -328,6 +338,7 @@ class CliPresentationTest : public ::testing::Test
 			ASSERT_EQ(cli_application_present_page(&ctx.base, &root, nullptr, 0), 0);
 			ASSERT_EQ(nt_application_step(&ctx.base, 0), 0);
 		}
+
 		cli_turn_details_toggle(&ctx);
 		ASSERT_EQ(nt_application_step(&ctx.base, 0), 0);
 	}
@@ -386,6 +397,7 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 			EXPECT_EQ(output.find('\n'), std::string::npos);
 			if (width == 120)
 				EXPECT_NE(output.find("footer-model"), std::string::npos) << output;
+
 			if (styled) {
 				EXPECT_NE(std::string(rendered).find("\033[1mmorph\033[0m"),
 					  std::string::npos);
@@ -395,6 +407,7 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 				EXPECT_EQ(std::string(rendered).find('\033'), std::string::npos);
 		}
 	}
+
 	ctx.runtime = nullptr;
 }
 
@@ -409,6 +422,7 @@ TEST(CliWorkStatusTest, RunningPreservesOriginalLabelClockAndTranscriptHint)
 		EXPECT_EQ(nb_buf_cstr(&text), expected);
 		EXPECT_LE(nb_utf8_width_cstr(nb_buf_cstr(&text)), static_cast<size_t>(width));
 	}
+
 	nb_buf styled NB_CLEANUP(nb_buf_cleanup) = {0};
 	ASSERT_EQ(cli_work_status_running(&styled, 60, 1, 900, 1000, "Agents: 2 running · 1 done"),
 		  0);
@@ -445,12 +459,15 @@ TEST(CliWorkStatusTest, CompletionPreservesIntegerDurationAndLocalTimestamp)
 			std::string expected;
 			if (styled)
 				expected += "\033[2m";
+
 			expected += label + "1m 5s · 12:34";
 			if (styled)
 				expected += "\033[0m";
+
 			EXPECT_EQ(nb_buf_cstr(&text), expected);
 		}
 	}
+
 	EXPECT_EQ(cli_work_status_interval_ms(600, 600), 32);
 	EXPECT_EQ(cli_work_status_interval_ms(2000, 2000), 500);
 	EXPECT_EQ(cli_work_status_interval_ms(2500, 2500), 500);
@@ -478,6 +495,7 @@ TEST_F(CliPresentationTest, RestoresInactiveHistoryAndToolsWithoutInternalRecord
 		items[i].content = contents[i].data();
 		items[i].next = i < 6 ? &items[i + 1] : nullptr;
 	}
+
 	items[1].payload_json = calls;
 	items[2].tool_call_id = id;
 	testing::internal::CaptureStdout();
@@ -582,6 +600,7 @@ TEST(CliCancelMonitorTest, StandaloneEscapeRequestsCancellation)
 	ASSERT_EQ(write(master, "\033", 1), 1);
 	for (int i = 0; i < 50 && !ctx.interrupted; i++)
 		usleep(10000);
+
 	cli_cancel_monitor_stop(monitor);
 
 	EXPECT_EQ(ctx.interrupted, 1);
@@ -816,10 +835,12 @@ TEST_F(CliPresentationTest, CompactionCompletionFitsNarrowTerminal)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
 		unsetenv("COLUMNS");
+
 	std::istringstream lines(output);
 	std::string line;
 	while (std::getline(lines, line))
 		EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()), 23U);
+
 	EXPECT_NE(output.find("● Context compacted"), std::string::npos);
 	cJSON_Delete(data);
 }
@@ -978,22 +999,28 @@ static CliTestTextStyle cli_test_style_at(const std::string &output, const char 
 	EXPECT_NE(position, std::string::npos);
 	if (position == std::string::npos)
 		return style;
+
 	for (size_t offset = 0; offset < position; offset++) {
 		if (output[offset] != '\033' || offset + 1 >= output.size() || output[offset + 1] != '[')
 			continue;
+
 		size_t end = offset + 2;
 		while (end < position && (static_cast<unsigned char>(output[end]) < 0x40u ||
 			static_cast<unsigned char>(output[end]) > 0x7eu))
 			end++;
+
 		if (end >= position || output[end] != 'm')
 			continue;
+
 		std::istringstream parameters(output.substr(offset + 2, end - offset - 2));
 		std::vector<int> codes;
 		std::string parameter;
 		while (std::getline(parameters, parameter, ';'))
 			codes.push_back(std::atoi(parameter.c_str()));
+
 		if (codes.empty())
 			codes.push_back(0);
+
 		for (size_t index = 0; index < codes.size(); index++) {
 			int code = codes[index];
 			if (code == 0)
@@ -1015,8 +1042,10 @@ static CliTestTextStyle cli_test_style_at(const std::string &output, const char 
 						: palette >= 8 && palette < 16 ? 90 + palette - 8 : -2;
 			}
 		}
+
 		offset = end;
 	}
+
 	return style;
 }
 
@@ -1324,9 +1353,9 @@ TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 	EXPECT_NE(output.find("\033[2m\033[3m"), std::string::npos);
 	EXPECT_NE(output.find("Inspecting the state…"), std::string::npos);
 	EXPECT_EQ(output.find("A hidden detail"), std::string::npos);
-	testing::internal::CaptureStdout();
-	cli_turn_details_render(&ctx, 0);
-	std::string details = testing::internal::GetCapturedStdout();
+	nb_buf snapshot NB_CLEANUP(nb_buf_cleanup) = {0};
+	ASSERT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &snapshot), 0);
+	std::string details = nb_buf_cstr(&snapshot);
 	EXPECT_NE(details.find("Inspecting the state"), std::string::npos);
 	EXPECT_NE(details.find("A hidden detail"), std::string::npos);
 	EXPECT_NE(output.find("\n\033[1m●\033[0m "), std::string::npos);
@@ -1355,6 +1384,7 @@ TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStream
 			cli_presentation_user_input(&ctx, "Review");
 			if (streaming)
 				Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", answer);
+
 			Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
 			std::string output = testing::internal::GetCapturedStdout();
 			char *plain =
@@ -1369,6 +1399,7 @@ TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStream
 				row.resize(visible_end == std::string::npos ? 0 : visible_end + 1);
 				normalized += row + '\n';
 			}
+
 			std::string expected = color ? "› Review\n\n\n● " : "> Review\n\n● ";
 			EXPECT_NE(normalized.find(expected), std::string::npos) << normalized;
 			free(plain);
@@ -1445,9 +1476,9 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("beforeafter"), std::string::npos);
-	testing::internal::CaptureStdout();
-	cli_turn_details_render(&ctx, 0);
-	output = testing::internal::GetCapturedStdout();
+	nb_buf snapshot NB_CLEANUP(nb_buf_cleanup) = {0};
+	ASSERT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &snapshot), 0);
+	output = nb_buf_cstr(&snapshot);
 	EXPECT_NE(output.find("beforeafter"), std::string::npos);
 	EXPECT_EQ(output.find("secret"), std::string::npos);
 	EXPECT_EQ(output.find("52;c"), std::string::npos);
@@ -1922,6 +1953,7 @@ TEST_F(CliPresentationTest, InteractiveWrapsLongTranscriptStrings)
 		ASSERT_EQ(setenv("COLUMNS", saved_columns.c_str(), 1), 0);
 	else
 		ASSERT_EQ(unsetenv("COLUMNS"), 0);
+
 	cJSON_Delete(call);
 }
 
@@ -2274,10 +2306,12 @@ TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
 			EXPECT_GE(nb_utf8_width_cstr(row.c_str()), (size_t)(columns - 3));
 		}
 	}
+
 	if (had_columns)
 		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
 	else
 		EXPECT_EQ(unsetenv("COLUMNS"), 0);
+
 	cJSON_Delete(call);
 }
 
@@ -2353,13 +2387,16 @@ TEST_F(CliPresentationTest, NarrowTimeoutRowsFitActualWidth)
 				  static_cast<size_t>(columns - 2))
 				<< line;
 		}
+
 		if (columns >= 12)
 			EXPECT_NE(output.find("TIMEOUT"), std::string::npos);
 	}
+
 	if (had_columns)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
 		unsetenv("COLUMNS");
+
 	cJSON_Delete(result);
 	cJSON_Delete(call);
 }
@@ -2381,6 +2418,7 @@ TEST_F(CliPresentationTest, TranscriptGrowsPastInitialEventAndToolCapacity)
 		Emit(MORPH_EVENT_TOOL, "tool.result", "end", call);
 		cJSON_Delete(call);
 	}
+
 	cJSON *final = TextData("All calls completed");
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	cli_presentation_finish(&ctx);
@@ -2483,6 +2521,7 @@ TEST(CliPlanWidgetTest, StatusesAndUnsafeDescriptionsUseSharedMarkersWithinTheWi
 			std::string text = "Inspect parser\033[2J\n";
 			for (int i = 0; i < 80; i++)
 				text += "中文🙂";
+
 			cJSON_ReplaceItemInObject(step, "description", cJSON_CreateString(text.c_str()));
 			struct cli_plan_style style{columns, 1, 1};
 			nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
@@ -2663,6 +2702,7 @@ TEST_F(CliPresentationTest, InteractivePlanQueriesWithoutSelectionRenderAllPlans
 		EXPECT_EQ(output, "\n● Plan · 1/1 completed\n└ ● Previous work\n"
 				  "◯ Plan · 0/1 completed\n└ ◯ Current work\n");
 	}
+
 	cJSON_Delete(event_data);
 }
 
@@ -2676,6 +2716,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 	std::string long_value;
 	for (int i = 0; i < 30; i++)
 		long_value += "中文/path-without-spaces/";
+
 	const char *programs[] = {long_value.c_str(), "python3"};
 	struct tool_operation op = {};
 	op.kind = TOOL_OP_COMMAND;
@@ -2699,6 +2740,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 				op.path_access = kind == 3 ? TOOL_PATH_ACCESS_ALL : 0;
 				cli_approval_render_operation(&ctx, &op);
 			}
+
 			std::string output = testing::internal::GetCapturedStdout();
 			char *safe =
 				morph_terminal_sanitize_dup(output.c_str(), output.size(),
@@ -2706,6 +2748,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 			EXPECT_NE(safe, nullptr);
 			if (!safe)
 				continue;
+
 			std::istringstream lines(safe);
 			free(safe);
 			std::string line;
@@ -2715,6 +2758,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 			while (std::getline(lines, line)) {
 				if (line.empty())
 					continue;
+
 				EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(line.c_str()), NULL),
 					  NB_UTF8_OK);
 				EXPECT_EQ(nb_utf8_width_cstr(line.c_str()), width) << line;
@@ -2735,6 +2779,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 					body += content;
 				}
 			}
+
 			EXPECT_EQ(borders, 2);
 			/* Long values must survive wrapping, including their tail. */
 			size_t offset = 0;
@@ -2743,9 +2788,11 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 				values++;
 				offset += long_value.size();
 			}
+
 			EXPECT_EQ(values, kind == 0 ? 2 : 5);
 		}
 	}
+
 	if (had_columns)
 		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
 	else
@@ -2779,6 +2826,7 @@ TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
 	std::string input;
 	for (int i = 0; i < 160; i++)
 		input += "中文🙂";
+
 	testing::internal::CaptureStdout();
 	cli_presentation_user_input(_cli_output_context_ptr, input.c_str());
 	std::string output = testing::internal::GetCapturedStdout();
@@ -2786,6 +2834,7 @@ TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
 	for (size_t pos = 0; (pos = output.find("🙂", pos)) != std::string::npos;
 	     pos += strlen("🙂"))
 		count++;
+
 	EXPECT_EQ(count, 160u);
 	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(output.c_str()), NULL), NB_UTF8_OK);
 	EXPECT_EQ(output.find("truncated"), std::string::npos);
@@ -2828,6 +2877,7 @@ TEST(CliWelcomeTest, FitsBoundedLayoutAndWrapsHintsAtNarrowWidths)
 			EXPECT_LE(nb_utf8_width_cstr(line.c_str()),
 				  static_cast<size_t>(std::min(width, 80)));
 		}
+
 		if (width >= 40) {
 			EXPECT_NE(output.find("morph"), std::string::npos);
 			EXPECT_NE(output.find("Workspace"), std::string::npos);
@@ -2845,11 +2895,14 @@ TEST(CliWelcomeTest, FitsBoundedLayoutAndWrapsHintsAtNarrowWidths)
 			EXPECT_NE(output.find("Esc Cancel"), std::string::npos);
 			EXPECT_NE(output.find("Ctrl+Cmd+V Paste image"), std::string::npos);
 		}
+
 		if (width == 80)
 			wide_output = output;
+
 		if (width == 120)
 			EXPECT_EQ(output, wide_output);
 	}
+
 	if (had_columns)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
@@ -2882,12 +2935,14 @@ TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
 			EXPECT_LE(nb_utf8_width_cstr(line.c_str()),
 				  static_cast<size_t>(std::min(width, 80)));
 		}
+
 		if (width >= 40) {
 			EXPECT_NE(output.find("Workspace"), std::string::npos);
 			EXPECT_NE(output.find("Model"), std::string::npos);
 			EXPECT_NE(output.find("/ending"), std::string::npos);
 		}
 	}
+
 	if (had_columns)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
@@ -2999,6 +3054,7 @@ TEST_F(CliPresentationTest, SlashOutputGapIsDeferredAndNormalizesHeadingNewlines
 		EXPECT_EQ(testing::internal::GetCapturedStdout(),
 			  "/share\n\nSaved to ~/Downloads/share.html\n\n");
 	}
+
 	testing::internal::CaptureStdout();
 	cli_presentation_command_input(&ctx, "/model");
 	cli_output_putchar(&ctx, '\n');
@@ -3093,6 +3149,38 @@ TEST_F(CliPresentationTest, AgentWaitHasAConciseTitleAndPreservesFailureReason)
 	cJSON_Delete(failure);
 }
 
+TEST(CliAgentsPresentationTest, ActivityRevisionIgnoresUnrenderedSnapshotFields)
+{
+	struct cli_agents_model model NB_CLEANUP(cli_agents_model_cleanup) = {};
+	ASSERT_EQ(cli_agents_model_init(&model), 0);
+	auto publish = [&](int iterations, const char *activity, enum agent_status status) {
+		struct agent_info *item = nullptr;
+		item = static_cast<struct agent_info *>(calloc(1, sizeof(*item)));
+		ASSERT_NE(item, nullptr);
+		std::strcpy(item->id, "/root/test");
+		item->status = status;
+		item->iteration_count = iterations;
+		item->activity = activity ? strdup(activity) : nullptr;
+		cli_agents_model_set(&model, item, 1, 100);
+	};
+
+	publish(1, nullptr, AGENT_RUNNING);
+	uint64_t revision = model.activity_revision;
+	publish(2, nullptr, AGENT_RUNNING);
+	EXPECT_EQ(model.activity_revision, revision);
+	EXPECT_EQ(model.items[0].iteration_count, 2);
+	publish(2, "Reading files", AGENT_RUNNING);
+	EXPECT_NE(model.activity_revision, revision);
+	revision = model.activity_revision;
+	publish(3, "Reading files", AGENT_RUNNING);
+	EXPECT_EQ(model.activity_revision, revision);
+	publish(3, nullptr, AGENT_COMPLETED);
+	EXPECT_NE(model.activity_revision, revision);
+	revision = model.activity_revision;
+	publish(4, "Stored details", AGENT_COMPLETED);
+	EXPECT_EQ(model.activity_revision, revision);
+}
+
 TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 {
 	struct agent_info agents[4]{};
@@ -3102,6 +3190,7 @@ TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 		agents[i].status = AGENT_RUNNING;
 		agents[i].description = instruction.data();
 	}
+
 	for (int columns : {120, 80, 60}) {
 		nb_buf out{};
 		ASSERT_EQ((nb_buf_init(&out), nb_buf_reserve(&out, 128) ? 0 : NB_ERR_NOMEM), 0);
@@ -3114,6 +3203,7 @@ TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 		std::string line;
 		while (std::getline(lines, line))
 			EXPECT_LT(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns));
+
 		nb_buf_cleanup(&out);
 	}
 }
@@ -3150,6 +3240,7 @@ TEST(CliAgentsPresentationTest, NestedActivityDistinguishesSameNamesAcrossBranch
 	std::strcpy(agents[1].id, "/root/b/aa");
 	for (auto &agent : agents)
 		agent.status = AGENT_RUNNING;
+
 	for (int columns : {120, 80, 60}) {
 		nb_buf out NB_CLEANUP(nb_buf_cleanup) = {};
 		ASSERT_EQ((nb_buf_init(&out), nb_buf_reserve(&out, 128) ? 0 : NB_ERR_NOMEM), 0);
@@ -3192,6 +3283,7 @@ TEST_F(CliPresentationTest, MultiAgentV2AnalyticsCallsStayInDetailsWithoutDefaul
 		cJSON_Delete(result);
 		cJSON_Delete(call);
 	}
+
 	nb_buf details{};
 	ASSERT_EQ((nb_buf_init(&details), nb_buf_reserve(&details, 1024) ? 0 : NB_ERR_NOMEM), 0);
 	EXPECT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &details), 0);
@@ -3220,6 +3312,7 @@ TEST(CliAgentsPresentationTest, AgentDetailsPreserveLargeMultilineResultsAndStri
 		std::string line;
 		while (std::getline(lines, line))
 			EXPECT_LT(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns));
+
 		nb_buf_cleanup(&details);
 	}
 }
@@ -3438,6 +3531,7 @@ TEST_F(CliPresentationTest, ToolStatusesUseCanonicalShapesStylesAndPlainFallback
 				} else {
 					EXPECT_EQ(row.find('\033'), std::string::npos);
 				}
+
 				if (tool->interrupted)
 					EXPECT_EQ(row.find("FAILED"), std::string::npos);
 			}

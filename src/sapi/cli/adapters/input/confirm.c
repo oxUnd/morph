@@ -16,10 +16,12 @@ static int cli_confirm_read(char *answer, size_t capacity)
 	tty = fopen("/dev/tty", "r");
 	if (!tty)
 		return 0;
+
 	if (!fgets(answer, (int)capacity, tty)) {
 		fclose(tty);
 		return NB_ERR_IO;
 	}
+
 	fclose(tty);
 	return 1;
 }
@@ -31,8 +33,10 @@ enum cli_input_confirm_result cli_input_confirm_yes_no(void)
 
 	if (rc == 0)
 		return CLI_INPUT_CONFIRM_NO_TERMINAL;
+
 	if (rc < 0)
 		return CLI_INPUT_CONFIRM_READ_ERROR;
+
 	return answer[0] == 'y' || answer[0] == 'Y' ? CLI_INPUT_CONFIRM_ACCEPTED
 						    : CLI_INPUT_CONFIRM_DECLINED;
 }
@@ -44,11 +48,14 @@ enum cli_input_confirm_result cli_input_confirm_phrase(const char *phrase)
 
 	if (!phrase)
 		return CLI_INPUT_CONFIRM_DECLINED;
+
 	rc = cli_confirm_read(answer, sizeof(answer));
 	if (rc == 0)
 		return CLI_INPUT_CONFIRM_NO_TERMINAL;
+
 	if (rc < 0)
 		return CLI_INPUT_CONFIRM_READ_ERROR;
+
 	answer[strcspn(answer, "\r\n")] = '\0';
 	return strcmp(answer, phrase) == 0 ? CLI_INPUT_CONFIRM_ACCEPTED
 					   : CLI_INPUT_CONFIRM_DECLINED;

@@ -28,8 +28,6 @@ add_library(morph-cli STATIC
 
 	# Application components
 	components/setup_prompt.c
-	components/subagents.c
-	components/agents.c
 	components/agents_browser.c
 	components/banner.c
 	components/skill_tree.c
@@ -40,18 +38,11 @@ add_library(morph-cli STATIC
 	components/media.c
 	components/rich_document.c
 	components/tool_call.c
-	components/feed.c
-	components/feed_block.c
-	components/jobs.c
 	components/list.c
-	components/visibility.c
 	components/notice.c
-	components/notification.c
 	components/plan.c
 	components/recap.c
 	components/report.c
-	components/shell_style.c
-	components/transcript.c
 
 	# Commands
 	commands/agents.c
@@ -110,6 +101,16 @@ add_library(morph-cli STATIC
 	adapters/runtime/observer.c
 
 	# Application presentation
+	presentation/banner.c
+	presentation/feed_block.c
+	presentation/feed.c
+	presentation/list.c
+	presentation/notice.c
+	presentation/panel.c
+	presentation/plan.c
+	presentation/shell_style.c
+	presentation/subagents.c
+	presentation/transcript.c
 	presentation/agent_tools.c
 	presentation/about.c
 	presentation/diagnostics.c

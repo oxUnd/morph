@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/sync.h"
+#include <morph/tui/terminal/report.h>
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
@@ -11,7 +12,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include "sapi/cli/components/list.h"
+#include "sapi/cli/presentation/list.h"
 
 static void cli_sync_print_sync_field(struct cli_application *ctx, const char *ancestor,
 				      int is_last, const char *name, const char *value, int columns)
@@ -34,6 +35,7 @@ static void cli_sync_print_sync_status(struct cli_application *ctx,
 		snprintf(value, sizeof(value), "%lld", (long long)st->last_run_at);
 	else
 		strncpy(value, "never", sizeof(value) - 1);
+
 	cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), st->error_code == 0,
 				  "last run", value, columns);
 	if (st->error_code != 0)
@@ -73,6 +75,7 @@ static int cli_sync_command_status(struct cli_application *ctx)
 	rc = runtime_sync_status_instance(ctx->runtime, &st);
 	if (rc != 0)
 		return rc;
+
 	cli_sync_print_sync_status(ctx, &st);
 	return 0;
 }
@@ -89,6 +92,7 @@ static int cli_sync_command_now(struct cli_application *ctx)
 	else
 		CMD_ERROR(ctx, "sync failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	return rc;
 }
 
@@ -103,14 +107,17 @@ static int cli_sync_command_conflicts(struct cli_application *ctx)
 		CMD_ERROR(ctx, "sync manifest not found");
 		return NB_ERR_NOT_FOUND;
 	}
+
 	if (rc != 0)
 		return rc;
+
 	CMD_HEADER(ctx, "sync conflicts (%d)", count);
 	if (count == 0) {
 		cli_command_print_tree_note(ctx, "none");
 		runtime_sync_conflicts_free(items);
 		return 0;
 	}
+
 	for (int i = 0; i < count; i++) {
 		char label[64];
 		char description[PATH_MAX + 64];
@@ -121,6 +128,7 @@ static int cli_sync_command_conflicts(struct cli_application *ctx)
 		cli_list_item(ctx, "", i == count - 1, "", label, description, 12,
 			      cli_list_columns());
 	}
+
 	runtime_sync_conflicts_free(items);
 	return 0;
 }
@@ -134,6 +142,7 @@ static int cli_sync_command_restore(struct cli_application *ctx, const char *id)
 		CMD_ERROR(ctx, "usage: /sync restore <trash-id>");
 		return NB_ERR_INVAL;
 	}
+
 	trash_id = atoll(id);
 	rc = runtime_sync_restore(ctx->runtime, trash_id);
 	if (rc == 0)
@@ -141,6 +150,7 @@ static int cli_sync_command_restore(struct cli_application *ctx, const char *id)
 	else
 		CMD_ERROR(ctx, "restore failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	return rc;
 }
 
@@ -153,8 +163,10 @@ static int cli_sync_backup_compare(const void *left, const void *right)
 	rc = strcmp(a->path, b->path);
 	if (rc != 0)
 		return rc;
+
 	if (a->created_at != b->created_at)
 		return a->created_at > b->created_at ? -1 : 1;
+
 	return strcmp(a->snapshot_id, b->snapshot_id);
 }
 
@@ -168,12 +180,14 @@ static int cli_sync_command_backups(struct cli_application *ctx, const char *pat
 	rc = runtime_sync_backups(ctx->runtime, path, &items, &count);
 	if (rc != 0)
 		return rc;
+
 	CMD_HEADER(ctx, "database backups (%d)", count);
 	if (count == 0) {
 		cli_command_print_tree_note(ctx, "none");
 		morph_sync_backups_free(items);
 		return 0;
 	}
+
 	qsort(items, (size_t)count, sizeof(items[0]), cli_sync_backup_compare);
 	for (int i = 0; i < count;) {
 		int end = i + 1;
@@ -182,6 +196,7 @@ static int cli_sync_command_backups(struct cli_application *ctx, const char *pat
 
 		while (end < count && strcmp(items[i].path, items[end].path) == 0)
 			end++;
+
 		group_last = end == count;
 		cli_list_group(ctx, items[i].path, end - i, group_last);
 		ancestor = morph_terminal_tree_branch(group_last, 1);
@@ -194,8 +209,10 @@ static int cli_sync_command_backups(struct cli_application *ctx, const char *pat
 			cli_list_item(ctx, ancestor, j == end - 1, "", items[j].snapshot_id,
 				      description, 24, columns);
 		}
+
 		i = end;
 	}
+
 	morph_sync_backups_free(items);
 	return 0;
 }
@@ -209,12 +226,14 @@ static int cli_sync_command_restore_db(struct cli_application *ctx, const char *
 		CMD_ERROR(ctx, "usage: /sync restore-db <snapshot-id> <destination>");
 		return NB_ERR_INVAL;
 	}
+
 	rc = runtime_sync_restore_db(ctx->runtime, snapshot_id, destination);
 	if (rc == 0)
 		CMD_OK(ctx, "restored database to %s", destination);
 	else
 		CMD_ERROR(ctx, "database restore failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+
 	return rc;
 }
 
@@ -229,11 +248,13 @@ static int cli_sync_confirm_db_replace(struct cli_application *ctx, const char *
 
 		if (!request)
 			return 0;
+
 		if (!cJSON_AddStringToObject(request, "action", "replace_database") ||
 		    !cJSON_AddStringToObject(request, "path", path ? path : "")) {
 			cJSON_Delete(request);
 			return 0;
 		}
+
 		rc = cli_interaction_confirm(ctx, "command_confirmation", request, &confirmed);
 		cJSON_Delete(request);
 		return rc == 0 && confirmed;
@@ -243,6 +264,7 @@ static int cli_sync_confirm_db_replace(struct cli_application *ctx, const char *
 	answer = cli_input_confirm_yes_no();
 	if (answer == CLI_INPUT_CONFIRM_NO_TERMINAL)
 		cli_confirm_prompt_end(ctx);
+
 	return answer == CLI_INPUT_CONFIRM_ACCEPTED;
 }
 
@@ -258,12 +280,14 @@ static int cli_sync_command_replace_db(struct cli_application *ctx, const char *
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
+
 	if (!confirmed && !cli_sync_confirm_db_replace(ctx, plan.path)) {
 		(void)morph_sync_rollback_db_replace(&plan);
 		(void)runtime_sync_start_instance(ctx->runtime, NULL, NULL);
 		cli_command_print_cancelled(ctx);
 		return 0;
 	}
+
 	ctx->db_restore_plan = plan;
 	ctx->pending_db_restore = 1;
 	ctx->running = 0;
@@ -277,14 +301,19 @@ static int cli_sync_cmd(struct cli_application *ctx, int argc, char **argv)
 
 	if (!sub || strcmp(sub, "status") == 0)
 		return cli_sync_command_status(ctx);
+
 	if (strcmp(sub, "now") == 0)
 		return cli_sync_command_now(ctx);
+
 	if (strcmp(sub, "conflicts") == 0)
 		return cli_sync_command_conflicts(ctx);
+
 	if (strcmp(sub, "restore") == 0)
 		return cli_sync_command_restore(ctx, cli_cmd_arg_borrow(argc, argv, 2));
+
 	if (strcmp(sub, "backups") == 0)
 		return cli_sync_command_backups(ctx, cli_cmd_arg_borrow(argc, argv, 2));
+
 	if (strcmp(sub, "restore-db") == 0) {
 		const char *snapshot_id = cli_cmd_arg_borrow(argc, argv, 2);
 		const char *destination = cli_cmd_arg_borrow(argc, argv, 3);
@@ -296,10 +325,13 @@ static int cli_sync_cmd(struct cli_application *ctx, int argc, char **argv)
 				       "[destination|--yes]");
 			return NB_ERR_INVAL;
 		}
+
 		if (destination && !yes)
 			return cli_sync_command_restore_db(ctx, snapshot_id, destination);
+
 		return cli_sync_command_replace_db(ctx, snapshot_id, yes);
 	}
+
 	CMD_ERROR(ctx, "usage: /sync [status|now|conflicts|restore <trash-id>|"
 		       "backups [path]|restore-db <snapshot-id> "
 		       "[destination|--yes]]");
