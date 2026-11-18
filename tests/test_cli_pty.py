@@ -141,6 +141,10 @@ retry_count = 0
                 consumed = end
             self.stream.feed(data[consumed:])
             self.frame_tail = combined[-8:]
+            # PTY reads may split a synchronized update between replacing a wide
+            # glyph and its continuation cell. Only published rows are observable.
+            if 2026 << 5 in self.screen.mode:
+                continue
             screen = '\n'.join(self.screen.display)
             if 'Messages queued' in screen:
                 self.queued_states.append(screen)

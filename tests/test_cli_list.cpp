@@ -9,7 +9,7 @@ extern "C" {
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/component/list.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/composer.h"
 #include <nb/file.h>
@@ -99,7 +99,7 @@ static void resume_terminal_pick(struct cli_application *context, const char *ke
 	else unsetenv("TERM");
 	EXPECT_TRUE(sent) << output;
 	EXPECT_NE(output.find("\033[?1049h"), std::string::npos);
-	EXPECT_NE(output.find("\033[H\033[J"), std::string::npos);
+	EXPECT_NE(output.find(rows >= 14 ? "Resume a session" : "Sessions"), std::string::npos);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(restored, 0);
 	const tcflag_t flags = ICANON | ECHO | ISIG | IEXTEN;

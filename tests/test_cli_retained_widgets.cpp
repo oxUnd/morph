@@ -3,24 +3,24 @@
 
 extern "C" {
 #include "sapi/cli/models/transcript.h"
-#include "sapi/cli/widgets/tool_call.h"
-#include "sapi/cli/widgets/transcript.h"
-#include "sapi/cli/widgets/notice.h"
-#include "sapi/cli/widgets/plan.h"
-#include "sapi/cli/widgets/recap.h"
+#include "sapi/cli/component/tool_call.h"
+#include "sapi/cli/component/transcript.h"
+#include "sapi/cli/component/notice.h"
+#include "sapi/cli/component/plan.h"
+#include "sapi/cli/component/recap.h"
 #include "sapi/cli/presentation/recap.h"
-#include "sapi/cli/widgets/composer.h"
+#include "sapi/cli/component/composer.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include <morph/tui/application.h>
-#include <morph/tui/view_controller.h>
-#include <morph/tui/window.h>
-#include <morph/tui/widgets/stack.h>
-#include <morph/tui/widgets/text_field.h>
-#include <morph/tui/widgets/editor.h>
-#include <morph/tui/widgets/list.h>
+#include <nothing/tui/application.h>
+#include <nothing/tui/view_controller.h>
+#include <nothing/tui/window.h>
+#include <nothing/tui/views/stack_view.h>
+#include <nothing/tui/controls/text_field.h>
+#include <nothing/tui/models/text_editor.h>
+#include <nothing/tui/models/list_navigation.h>
 #include <nb/cleanup.h>
 }
 
@@ -28,8 +28,31 @@ extern "C" {
 #include <cstring>
 #include <fcntl.h>
 #include <string>
+#include <chrono>
+#include <regex>
+#include <nothing/tui/capabilities.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+
+/* NT packs a cell's reset, attributes, and colors into one SGR. Compare the
+ * individual SGR operations so visual checks are independent of batching. */
+static std::string retained_sgr(const std::string &frame)
+{
+	static const std::regex packed("\\x1b\\[0((;[0-9]+)+)m");
+	static const std::regex operation("(?:38|48);5;[0-9]+|(?:38|48);2;[0-9]+;[0-9]+;[0-9]+|[0-9]+");
+	std::string result;
+	std::size_t start = 0;
+	for (std::sregex_iterator i(frame.begin(), frame.end(), packed), end; i != end; ++i) {
+		result.append(frame, start, static_cast<std::size_t>(i->position()) - start);
+		result += "\033[0m";
+		const std::string parameters = (*i)[1];
+		for (std::sregex_iterator part(parameters.begin(), parameters.end(), operation);
+		     part != end; ++part)
+			result += "\033[" + part->str() + "m";
+		start = static_cast<std::size_t>(i->position() + i->length());
+	}
+	return result.append(frame, start);
+}
 
 static std::string retained_normalized(const char *text)
 {
@@ -60,36 +83,39 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	enum Kind { Tool, Notice, Plan, Composer, Recap } kind = Tool;
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
-	struct morph_tui_application *app = nullptr;
-	struct morph_tui_view_controller *controller = nullptr;
-	struct morph_tui_view *component = nullptr;
-	struct morph_tui_view *editor = nullptr;
+	struct nt_application *app = nullptr;
+	struct nt_view_controller *controller = nullptr;
+	struct nt_view *component = nullptr;
+	struct nt_view *editor = nullptr;
 	struct cli_application ctx{};
-	int cursor_x = -1, cursor_y = -1;
+	int cursor_x = -1, cursor_y = -1, columns_rendered = 0;
 	struct cli_transcript_tool tool{};
 	struct cli_notice notice{};
 	std::string recap_summary, recap_next;
 	cJSON *plan = nullptr;
 	bool details = false;
 	std::string frame;
-	struct morph_tui_renderer renderer{};
-	const struct morph_tui_renderer_ops renderer_ops = {
-		+[](struct morph_tui_renderer *backend, struct morph_tui_surface *surface, FILE *) {
+	struct nt_renderer renderer = {
+		+[](struct nt_renderer *backend, struct nt_surface *surface, FILE *) {
 			auto *self = static_cast<CliRetainedWidgetsTest *>(backend->data);
+			struct nt_terminal_capabilities caps{};
+			caps.color_profile = NT_COLOR_PROFILE_256;
+			nt_surface_set_capabilities(surface, &caps);
+			nt_surface_size(surface, &self->columns_rendered, nullptr);
 			nb_buf rows{};
-			int rc = morph_tui_surface_rows(surface, &rows);
+			int rc = nt_surface_rows(surface, &rows);
 			if (!rc)
-				self->frame = nb_buf_cstr(&rows);
-			(void)morph_tui_surface_cursor(surface, &self->cursor_x, &self->cursor_y);
+				self->frame = retained_sgr(nb_buf_cstr(&rows));
+			(void)nt_surface_cursor(surface, &self->cursor_x, &self->cursor_y);
 			nb_buf_cleanup(&rows);
 			return rc;
-		}, nullptr};
-	const struct morph_tui_view_controller_ops ops = {
-		+[](struct morph_tui_view_controller *owner, struct morph_tui_builder *builder) {
+		}, nullptr, this};
+	static void Build(struct nt_view_controller *owner, struct nt_builder *builder)
+	{
 			auto *self = static_cast<CliRetainedWidgetsTest *>(owner->data);
 			self->controller = owner;
-			auto *root = morph_tui_widget_stack_add_borrow(builder, nullptr,
-				MORPH_TUI_WIDGET_STACK_VERTICAL, 0, nullptr);
+			auto *root = nt_stack_view_add(builder, nullptr,
+				NT_STACK_VIEW_VERTICAL, 0, nullptr);
 			if (self->kind == Tool)
 				self->component = cli_tool_call_add_borrow(builder, root,
 					&self->tool, 1, self->details);
@@ -102,13 +128,13 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			else if (self->kind == Composer) {
 				self->component = cli_composer_add_borrow(builder, root,
 					&self->ctx, &self->editor);
-				morph_tui_builder_fail(builder,
-					morph_tui_widget_text_field_set_prompt_copy(
+				nt_builder_fail(builder,
+					nt_text_field_set_prompt(
 							self->editor, "› "));
 			}
 			else
 				self->component = cli_plan_add_borrow(builder, root, self->plan, 1);
-		}, nullptr, nullptr, nullptr, nullptr, nullptr};
+		}
 
 	void SetUp() override
 	{
@@ -122,15 +148,13 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		size.ws_col = 120;
 		size.ws_row = 48;
 		ASSERT_EQ(ioctl(fileno(input), TIOCSWINSZ, &size), 0);
-		struct morph_tui_application_options options{};
+		struct nt_application_options options{};
 		options.input = input;
 		options.output = output;
 		options.external_signals = 1;
-		ASSERT_EQ(morph_tui_application_create(&options, &app), 0);
-		renderer.ops = &renderer_ops;
-		renderer.data = this;
-		ASSERT_EQ(morph_tui_window_set_renderer_borrow(
-			morph_tui_application_window_borrow(app), &renderer), 0);
+		ASSERT_EQ(nt_application_create(&options, &app), 0);
+		ASSERT_EQ(nt_window_set_renderer(
+			nt_application_window(app), &renderer), 0);
 		tool.id = const_cast<char *>("parity");
 		tool.name = const_cast<char *>("exec");
 		tool.subject = const_cast<char *>("printf '%s\\n' visual-parity");
@@ -148,7 +172,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 
 	void TearDown() override
 	{
-		morph_tui_application_destroy(app);
+		nt_application_destroy(app);
 		cli_composer_model_cleanup(&ctx.composer);
 		cJSON_Delete(plan);
 		nb_buf_cleanup(&tool.stream);
@@ -162,13 +186,15 @@ class CliRetainedWidgetsTest : public ::testing::Test
 
 	void Present()
 	{
-		struct morph_tui_view_controller_spec spec{};
-		spec.ops = &ops;
-		spec.data = this;
-		ASSERT_EQ(morph_tui_view_controller_present_borrow(app, &spec), 0);
-		ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+		struct nt_view_controller_class type{};
+		type.superclass = &nt_view_controller_base_class;
+		type.instance_size = sizeof(struct nt_view_controller);
+		type.load_view = Build;
+		static const struct nt_view_controller_class page_class = type;
+		ASSERT_EQ(cli_application_present_page(app, &page_class, this, 0), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
 		if (editor)
-			ASSERT_EQ(morph_tui_view_focus(editor), 0);
+			ASSERT_EQ(nt_window_focus_view(nt_application_window(app), editor), 0);
 	}
 
 	void Resize(int columns)
@@ -177,13 +203,16 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		size.ws_col = static_cast<unsigned short>(columns);
 		size.ws_row = 48;
 		ASSERT_EQ(ioctl(fileno(input), TIOCSWINSZ, &size), 0);
-		ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (columns_rendered != columns && std::chrono::steady_clock::now() < deadline)
+			ASSERT_EQ(nt_application_step(app, 1), 0);
+		ASSERT_EQ(columns_rendered, columns);
 	}
 
 	void ExpectLegacy(int columns)
 	{
-		EXPECT_EQ(morph_tui_view_get_options(component).padding.right, 2);
-		EXPECT_EQ(morph_tui_view_content_rect(component).width, columns - 2);
+		EXPECT_EQ(nt_view_options(component).padding.right, 2);
+		EXPECT_EQ(nt_view_content_rect(component).width, columns - 2);
 		nb_buf expected{};
 		if (kind == Tool)
 			ASSERT_EQ(cli_transcript_tool_append(&expected, &tool, columns, 1, details),
@@ -197,7 +226,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			const struct cli_plan_style style = {columns, 1, 1};
 			ASSERT_EQ(cli_plan_append(&expected, plan, &style), 0);
 		}
-		EXPECT_EQ(morph_tui_view_frame(component).y, 1);
+		EXPECT_EQ(nt_view_frame(component).y, 1);
 		EXPECT_EQ(retained_normalized(frame.c_str()).substr(1),
 			  retained_normalized(nb_buf_cstr(&expected)))
 			<< columns;
@@ -281,7 +310,7 @@ TEST_F(CliRetainedWidgetsTest, PlanKeepsSingleLineClippingAndMarkerOnlyColors)
 	}
 	EXPECT_NE(frame.find("\033[38;5;2m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
-	EXPECT_EQ(morph_tui_view_frame(component).height, 3);
+	EXPECT_EQ(nt_view_frame(component).height, 3);
 }
 
 TEST_F(CliRetainedWidgetsTest, LiveToolKeepsThreeTailRowsAndBranchPrefix)
@@ -314,14 +343,14 @@ TEST_F(CliRetainedWidgetsTest, LiveAgentToolsMayOmitTheirBodyWithoutFailingLayou
 	tool.name = const_cast<char *>("wait_agent");
 	tool.args = const_cast<char *>("{\"timeout_ms\":10000}");
 	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
-	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("Waiting for agents"),
 		  std::string::npos);
 	EXPECT_EQ(frame.find("Running…"), std::string::npos);
 	tool.state = 1;
 	tool.ended = tool.started + 1;
 	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
-	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("Finished waiting"),
 		  std::string::npos);
 }
@@ -342,16 +371,16 @@ TEST_F(CliRetainedWidgetsTest, AnalyticsToolsHideRunningAndCompletedRowsUntilDet
 			tool.state = state;
 			tool.ended = tool.started + state;
 			ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
-			ASSERT_EQ(morph_tui_application_step(app, 0), 0);
-			EXPECT_TRUE(morph_tui_view_hidden(component));
-			struct morph_tui_view_size size{};
-			ASSERT_EQ(morph_tui_view_measure(component, 120, &size), 0);
+			ASSERT_EQ(nt_application_step(app, 0), 0);
+			EXPECT_TRUE(nt_view_is_hidden(component));
+			struct nt_view_size size{};
+			ASSERT_EQ(nt_view_measure(component, 120, &size), 0);
 			EXPECT_EQ(size.width, 0);
 			EXPECT_EQ(size.height, 0);
 			EXPECT_TRUE(retained_normalized(frame.c_str()).empty());
 			ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 1), 0);
-			ASSERT_EQ(morph_tui_application_step(app, 0), 0);
-			EXPECT_FALSE(morph_tui_view_hidden(component));
+			ASSERT_EQ(nt_application_step(app, 0), 0);
+			EXPECT_FALSE(nt_view_is_hidden(component));
 			EXPECT_NE(frame.find("DETAIL_SENTINEL"), std::string::npos);
 			EXPECT_NE(frame.find("Arguments"), std::string::npos);
 			EXPECT_EQ(frame.find("Running…"), std::string::npos);
@@ -364,30 +393,30 @@ TEST_F(CliRetainedWidgetsTest, ComposerUltraWavePaintsOnlyTruePaddingAndPreserve
 	kind = Composer;
 	Present();
 	ASSERT_NE(editor, nullptr);
-	ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor, "draft中文"), 0);
-	ASSERT_EQ(morph_tui_application_render(app), 0);
+	ASSERT_EQ(nt_text_field_set_text(editor, "draft中文"), 0);
+	ASSERT_EQ(nt_application_render(app), 0);
 	const std::string initial = frame;
 	const int initial_x = cursor_x, initial_y = cursor_y;
 	EXPECT_NE(frame.find("\033[48;5;237m"), std::string::npos);
-	const struct morph_tui_view_options options = morph_tui_view_get_options(component);
+	const struct nt_view_options options = nt_view_options(component);
 	EXPECT_EQ(options.padding.top, 1);
 	EXPECT_EQ(options.padding.bottom, 1);
 	EXPECT_EQ(options.padding.right, 0);
-	EXPECT_EQ(morph_tui_view_frame(component).height, 3);
+	EXPECT_EQ(nt_view_frame(component).height, 3);
 	cli_composer_model_set_ultra(&ctx.composer, 0, 0);
 	cli_composer_model_set_ultra(&ctx.composer, 1, 1);
 	for (int64_t now : {1000, 1495}) {
 		ASSERT_EQ(cli_composer_update(component, now), 0);
-		ASSERT_EQ(morph_tui_application_render(app), 0);
+		ASSERT_EQ(nt_application_render(app), 0);
 		EXPECT_NE(frame.find("\033[48;5;141m"), std::string::npos);
 		EXPECT_NE(frame.find("\033[48;5;98m"), std::string::npos);
 		EXPECT_EQ(retained_normalized(frame.c_str()), retained_normalized(initial.c_str()));
 		EXPECT_EQ(cursor_x, initial_x);
 		EXPECT_EQ(cursor_y, initial_y);
-		EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor), "draft中文");
+		EXPECT_STREQ(nt_text_field_text(editor), "draft中文");
 	}
 	ASSERT_EQ(cli_composer_update(component, 1990), 0);
-	ASSERT_EQ(morph_tui_application_render(app), 0);
+	ASSERT_EQ(nt_application_render(app), 0);
 	EXPECT_FALSE(ctx.composer.mode_transition);
 	EXPECT_EQ(frame, initial);
 }
@@ -398,37 +427,37 @@ TEST_F(CliRetainedWidgetsTest, ComposerContinuationRowsMatchOriginalUnindentedIn
 	Present();
 	Resize(10);
 	const int editor_y = cursor_y;
-	EXPECT_EQ(morph_tui_view_frame(editor).width, 10);
-	ASSERT_EQ(morph_tui_widget_text_field_set_prompt_hanging_indent(editor, 0), 0);
-	ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor, "12345678abcdefghijZ"), 0);
-	ASSERT_EQ(morph_tui_application_render(app), 0);
+	EXPECT_EQ(nt_view_frame(editor).width, 10);
+	ASSERT_EQ(nt_text_field_set_prompt_hanging_indent(editor, 0), 0);
+	ASSERT_EQ(nt_text_field_set_text(editor, "12345678abcdefghijZ"), 0);
+	ASSERT_EQ(nt_application_render(app), 0);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("› 12345678\nabcdefghij\nZ"),
 		  std::string::npos);
-	EXPECT_EQ(morph_tui_view_frame(editor).height, 3);
+	EXPECT_EQ(nt_view_frame(editor).height, 3);
 	EXPECT_EQ(cursor_x, 1);
 	EXPECT_EQ(cursor_y, editor_y + 2);
 	for (const char *text : {"12345678", "12345678\n"}) {
-		ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor, text), 0);
-		ASSERT_EQ(morph_tui_application_render(app), 0);
-		EXPECT_EQ(morph_tui_view_frame(editor).height, 2) << text;
+		ASSERT_EQ(nt_text_field_set_text(editor, text), 0);
+		ASSERT_EQ(nt_application_render(app), 0);
+		EXPECT_EQ(nt_view_frame(editor).height, 2) << text;
 		EXPECT_EQ(cursor_x, 0) << text;
 		EXPECT_EQ(cursor_y, editor_y + 1) << text;
 	}
 	for (const char *text : {"12345678\nabcdefghij", "12345678\nabcdefghij\n"}) {
-		ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor, text), 0);
-		ASSERT_EQ(morph_tui_application_render(app), 0);
-		EXPECT_EQ(morph_tui_view_frame(editor).height, 3) << text;
+		ASSERT_EQ(nt_text_field_set_text(editor, text), 0);
+		ASSERT_EQ(nt_application_render(app), 0);
+		EXPECT_EQ(nt_view_frame(editor).height, 3) << text;
 		EXPECT_EQ(cursor_x, 0) << text;
 		EXPECT_EQ(cursor_y, editor_y + 2) << text;
 	}
-	ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor, "123456中文abcd"), 0);
-	ASSERT_EQ(morph_tui_application_render(app), 0);
+	ASSERT_EQ(nt_text_field_set_text(editor, "123456中文abcd"), 0);
+	ASSERT_EQ(nt_application_render(app), 0);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("› 123456中\n文abcd"), std::string::npos);
 	EXPECT_EQ(cursor_x, 6);
 	EXPECT_EQ(cursor_y, editor_y + 1);
-	ASSERT_EQ(morph_tui_widget_text_field_set_prompt_hanging_indent(editor, 1), 0);
-	ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor, "12345678abcdefghij"), 0);
-	ASSERT_EQ(morph_tui_application_render(app), 0);
+	ASSERT_EQ(nt_text_field_set_prompt_hanging_indent(editor, 1), 0);
+	ASSERT_EQ(nt_text_field_set_text(editor, "12345678abcdefghij"), 0);
+	ASSERT_EQ(nt_application_render(app), 0);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("› 12345678\n  abcdefgh\n  ij"),
 		  std::string::npos);
 	EXPECT_EQ(cursor_x, 4);
@@ -446,34 +475,34 @@ TEST_F(CliRetainedWidgetsTest, ComposerImageChipsKeepColorsWrappingAtomicEditsAn
 		1, 1, &label), 0);
 	Present();
 	Resize(24);
-	ASSERT_EQ(morph_tui_widget_text_field_set_prompt_hanging_indent(editor, 0), 0);
-	ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor,
+	ASSERT_EQ(nt_text_field_set_prompt_hanging_indent(editor, 0), 0);
+	ASSERT_EQ(nt_text_field_set_text(editor,
 		"Compare [IMAGE#1][IMAGE#2]"), 0);
-	ASSERT_EQ(morph_tui_application_render(app), 0);
+	ASSERT_EQ(nt_application_render(app), 0);
 	EXPECT_NE(frame.find("\033[38;5;153m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[48;5;24m"), std::string::npos);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("› Compare [IMAGE#1][IMAG\nE#2]"),
 		std::string::npos);
 	ASSERT_EQ(write(master, "\177", 1), 1);
-	ASSERT_EQ(morph_tui_application_step(app, 100), 0);
-	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor), "Compare [IMAGE#1]");
+	ASSERT_EQ(nt_application_step(app, 100), 0);
+	EXPECT_STREQ(nt_text_field_text(editor), "Compare [IMAGE#1]");
 	ASSERT_EQ(write(master, "\037", 1), 1);
-	ASSERT_EQ(morph_tui_application_step(app, 100), 0);
-	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor),
+	ASSERT_EQ(nt_application_step(app, 100), 0);
+	EXPECT_STREQ(nt_text_field_text(editor),
 		"Compare [IMAGE#1][IMAGE#2]");
 	ASSERT_EQ(write(master, "\027", 1), 1);
-	ASSERT_EQ(morph_tui_application_step(app, 100), 0);
-	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor), "Compare [IMAGE#1]");
-	ASSERT_EQ(morph_tui_widget_text_field_insert_text_copy(editor, "[IMAGE#2]"), 0);
+	ASSERT_EQ(nt_application_step(app, 100), 0);
+	EXPECT_STREQ(nt_text_field_text(editor), "Compare [IMAGE#1]");
+	ASSERT_EQ(nt_text_field_insert_text(editor, "[IMAGE#2]"), 0);
 	ASSERT_EQ(write(master, "\033[D", 3), 3);
-	ASSERT_EQ(morph_tui_application_step(app, 100), 0);
-	EXPECT_EQ(morph_tui_widget_text_field_cursor(editor), strlen("Compare [IMAGE#1]"));
+	ASSERT_EQ(nt_application_step(app, 100), 0);
+	EXPECT_EQ(nt_text_field_cursor(editor), strlen("Compare [IMAGE#1]"));
 	ASSERT_EQ(write(master, "\033[3~", 4), 4);
-	ASSERT_EQ(morph_tui_application_step(app, 100), 0);
-	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor), "Compare [IMAGE#1]");
-	ASSERT_EQ(morph_tui_widget_text_field_replace_range_copy(editor, 0, 7, "中文"), 0);
-	EXPECT_STREQ(morph_tui_widget_text_field_text_borrow(editor), "中文 [IMAGE#1]");
-	EXPECT_EQ(morph_tui_widget_text_field_set_cursor(editor, 1), NB_ERR_INVAL);
+	ASSERT_EQ(nt_application_step(app, 100), 0);
+	EXPECT_STREQ(nt_text_field_text(editor), "Compare [IMAGE#1]");
+	ASSERT_EQ(nt_text_field_replace_range(editor, 0, 7, "中文"), 0);
+	EXPECT_STREQ(nt_text_field_text(editor), "中文 [IMAGE#1]");
+	EXPECT_EQ(nt_text_field_set_cursor(editor, 1), NT_ERR_RANGE);
 }
 
 TEST_F(CliRetainedWidgetsTest, ComposerNoColorKeepsUltraPaddingSteady)
@@ -481,15 +510,15 @@ TEST_F(CliRetainedWidgetsTest, ComposerNoColorKeepsUltraPaddingSteady)
 	kind = Composer;
 	cli_output_set_color_enabled(&ctx, 0);
 	Present();
-	ASSERT_EQ(morph_tui_widget_text_field_set_text_copy(editor, "protected draft"), 0);
-	ASSERT_EQ(morph_tui_application_render(app), 0);
+	ASSERT_EQ(nt_text_field_set_text(editor, "protected draft"), 0);
+	ASSERT_EQ(nt_application_render(app), 0);
 	const std::string initial = frame;
 	const int initial_x = cursor_x, initial_y = cursor_y;
 	cli_composer_model_set_ultra(&ctx.composer, 0, 0);
 	cli_composer_model_set_ultra(&ctx.composer, 1, 1);
 	for (int64_t now : {1000, 1495, 1990}) {
 		ASSERT_EQ(cli_composer_update(component, now), 0);
-		ASSERT_EQ(morph_tui_application_render(app), 0);
+		ASSERT_EQ(nt_application_render(app), 0);
 		EXPECT_EQ(frame, initial);
 		EXPECT_EQ(cursor_x, initial_x);
 		EXPECT_EQ(cursor_y, initial_y);
@@ -499,53 +528,53 @@ TEST_F(CliRetainedWidgetsTest, ComposerNoColorKeepsUltraPaddingSteady)
 
 TEST(CliEditorStateTest, AtomicRangeUndoRestoresCompleteUtf8TextAndCursor)
 {
-	struct morph_tui_widget_editor_state editor NB_CLEANUP(
-		morph_tui_widget_editor_state_cleanup) = {};
+	struct nt_text_editor_state editor NB_CLEANUP(
+		nt_text_editor_state_deinit) = {};
 	const char original[] = "A中[IMAGE#1]Z";
 	const size_t start = strlen("A中"), end = strlen("A中[IMAGE#1]");
-	ASSERT_EQ(morph_tui_widget_editor_state_init(&editor, original, 128, 0), 0);
-	ASSERT_EQ(morph_tui_widget_editor_state_set_cursor(&editor, end), 0);
-	ASSERT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, start, end, ""), 0);
+	ASSERT_EQ(nt_text_editor_state_init(&editor, original, 128, 0), 0);
+	ASSERT_EQ(nt_text_editor_state_set_cursor(&editor, end), 0);
+	ASSERT_EQ(nt_text_editor_state_replace_range(&editor, start, end, ""), 0);
 	EXPECT_STREQ(editor.text.ptr, "A中Z");
 	EXPECT_EQ(editor.cursor, start);
 	const size_t history = editor.undo.len;
-	EXPECT_EQ(morph_tui_widget_editor_state_set_cursor(&editor, 2), NB_ERR_INVAL);
-	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, 2, start, ""),
-		  NB_ERR_INVAL);
-	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, start, start, "\xff"),
-		  NB_ERR_FORMAT);
+	EXPECT_EQ(nt_text_editor_state_set_cursor(&editor, 2), NT_ERR_RANGE);
+	EXPECT_EQ(nt_text_editor_state_replace_range(&editor, 2, start, ""),
+		  NT_ERR_RANGE);
+	EXPECT_EQ(nt_text_editor_state_replace_range(&editor, start, start, "\xff"),
+		  NT_ERR_FORMAT);
 	const std::string too_long(128, 'x');
-	EXPECT_EQ(morph_tui_widget_editor_state_replace_range_copy(&editor, start, start,
+	EXPECT_EQ(nt_text_editor_state_replace_range(&editor, start, start,
 								   too_long.c_str()),
-		  NB_ERR_TOO_BIG);
+		  NT_ERR_RANGE);
 	EXPECT_STREQ(editor.text.ptr, "A中Z");
 	EXPECT_EQ(editor.cursor, start);
 	EXPECT_EQ(editor.undo.len, history);
-	EXPECT_EQ(morph_tui_widget_editor_state_update(&editor, 31), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(nt_text_editor_prompt_key(&editor, 31), NT_NAVIGATION_CHANGED);
 	EXPECT_STREQ(editor.text.ptr, original);
 	EXPECT_EQ(editor.cursor, end);
-	EXPECT_EQ(morph_tui_widget_editor_state_undo(&editor), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(nt_text_editor_state_undo(&editor), NT_NAVIGATION_UNHANDLED);
 }
 
 TEST(CliEditorStateTest, TypedUtf8AndSecretEditingKeepUndoOwnershipSafe)
 {
-	struct morph_tui_widget_editor_state editor NB_CLEANUP(
-		morph_tui_widget_editor_state_cleanup) = {};
-	ASSERT_EQ(morph_tui_widget_editor_state_init(&editor, "A", 64, 0), 0);
+	struct nt_text_editor_state editor NB_CLEANUP(
+		nt_text_editor_state_deinit) = {};
+	ASSERT_EQ(nt_text_editor_state_init(&editor, "A", 64, 0), 0);
 	const std::string input = "中";
 	for (unsigned char byte : input)
-		ASSERT_EQ(morph_tui_widget_editor_state_update(&editor, byte),
-			  MORPH_TUI_WIDGET_CHANGED);
+		ASSERT_EQ(nt_text_editor_prompt_key(&editor, byte),
+			  NT_NAVIGATION_CHANGED);
 	EXPECT_STREQ(editor.text.ptr, "A中");
-	EXPECT_EQ(morph_tui_widget_editor_state_undo(&editor), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(nt_text_editor_state_undo(&editor), NT_NAVIGATION_CHANGED);
 	EXPECT_STREQ(editor.text.ptr, "A");
 	EXPECT_EQ(editor.cursor, 1u);
-	struct morph_tui_widget_editor_state secret NB_CLEANUP(
-		morph_tui_widget_editor_state_cleanup) = {};
-	ASSERT_EQ(morph_tui_widget_editor_state_init(&secret, "secret", 64, 1), 0);
-	ASSERT_EQ(morph_tui_widget_editor_state_replace_range_copy(&secret, 6, 6, "x"), 0);
-	ASSERT_EQ(morph_tui_widget_editor_state_update(&secret, 127), MORPH_TUI_WIDGET_CHANGED);
+	struct nt_text_editor_state secret NB_CLEANUP(
+		nt_text_editor_state_deinit) = {};
+	ASSERT_EQ(nt_text_editor_state_init(&secret, "secret", 64, 1), 0);
+	ASSERT_EQ(nt_text_editor_state_replace_range(&secret, 6, 6, "x"), 0);
+	ASSERT_EQ(nt_text_editor_prompt_key(&secret, 127), NT_NAVIGATION_CHANGED);
 	EXPECT_EQ(secret.undo.len, 0u);
-	EXPECT_EQ(morph_tui_widget_editor_state_undo(&secret), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(nt_text_editor_state_undo(&secret), NT_NAVIGATION_UNHANDLED);
 	EXPECT_STREQ(secret.text.ptr, "secret");
 }

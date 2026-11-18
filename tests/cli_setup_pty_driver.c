@@ -1,6 +1,6 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/pages/setup/wizard.h"
+#include "sapi/cli/page/setup/wizard.h"
 #include "config/config.h"
 #include <stdio.h>
 #include <stdlib.h>

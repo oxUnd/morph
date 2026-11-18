@@ -18,14 +18,6 @@ struct cli_input_state {
 	int64_t input_deadline_ms;
 	int input_timed_out;
 	const struct nb_cancel *input_cancel_token;
-	char *readline_ready_input;
-	int display_columns;
-	int display_rows;
-	char *footer_text;
-	struct session *completion_sessions;
-	int completion_count;
-	int completion_index;
-	int completion_length;
 };
 
 int cli_input_init(struct cli_application *ctx);

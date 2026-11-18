@@ -65,6 +65,8 @@ def scroll_to(terminal, sequence, marker, count, draft, composer):
             return
         terminal.child.send(sequence * 100)
         terminal.pump(.08)
+        # Wait for the end of any partially received synchronized repaint.
+        wait(terminal, lambda: True)
         assert draft in terminal.screen.display[composer], visible(terminal)
         assert terminal.screen.cursor.y == composer, visible(terminal)
     raise AssertionError(f'history marker unreachable: {marker}\n{visible(terminal)}')

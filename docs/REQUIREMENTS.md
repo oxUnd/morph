@@ -662,7 +662,7 @@ ctest --test-dir build --output-on-failure
 - 测试默认启用，GoogleTest 用于 C 库和 Mock LLM 回归。
 - Python/PTY 集成覆盖 CLI 呈现、命令、问答、粘贴、权限及 FastCGI API。
 - `-DENABLE_ASAN=ON` 同时开启 ASan/UBSan。
-- `-DENABLE_READLINE=OFF` 支持独立验证 plain 输入与问答路径。
+- CLI 构建依赖 GNU Readline 8.0 或更新版本。
 - `-DENABLE_GLOBAL_STATE_AUDIT=ON` 开启额外全局状态检查。
 - 平台沙箱、剪贴板、live MCP 等测试按环境条件执行，跳过不计为通过该能力的现场验收。
 

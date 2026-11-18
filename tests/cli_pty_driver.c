@@ -1,8 +1,8 @@
 #include "sapi/cli/presentation/output.h"
 #include <nb/err.h>
 #include "sapi/cli/presentation/presenter.h"
-#include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/widgets/agents_browser.h"
+#include "sapi/cli/component/feed.h"
+#include "cli_agents_browser_fixture.h"
 #include <nb/cleanup.h>
 #include <morph/tui/terminal/size.h>
 /* Exercise the real CLI with an isolated database and a local model server. */
@@ -27,9 +27,9 @@ static int advance_recap(void *opaque)
 	ctx->recap.last_finished = now - CLI_RECAP_DELAY_MS - 1;
 	ctx->recap.unfocused_since = now - CLI_RECAP_DELAY_MS - 1;
 	ctx->recap.next_poll = 0;
-	struct morph_tui_application *app = cli_application_tui_borrow(ctx);
+	struct nt_application *app = cli_application_tui_borrow(ctx);
 	if (app)
-		morph_tui_application_schedule(app, 0);
+		nt_application_schedule(app, 0);
 	return 0;
 }
 
@@ -135,9 +135,10 @@ static int preview_agents_browser(void)
 	morph_terminal_dimensions(STDOUT_FILENO, &columns, &rows);
 	int rc = (nb_buf_init(&output), nb_buf_reserve(&output, BUFSIZ) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = cli_agents_browser_append(&output, &state, &data, columns - 1, rows, 1);
+		rc = test_agents_browser_render(&output, &state, &data, columns - 1, rows, 1);
 	if (rc == 0) {
-		cli_output_printf(NULL, "%s", nb_buf_cstr(&output));
+		if (fwrite(output.ptr, 1, output.len, stdout) != output.len || putchar('\n') == EOF)
+			return NB_ERR_IO;
 		fflush(stdout);
 		if (isatty(STDIN_FILENO))
 			(void)getchar();

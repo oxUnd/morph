@@ -5,7 +5,7 @@
 #include "db/scheduled_task.h"
 
 struct cli_application;
-struct morph_tui_application;
+struct nt_application;
 struct cli_event_queue_item;
 struct cli_event_queue_owner_call;
 typedef int (*cli_event_queue_dispatch_fn)(struct cli_application *,
@@ -18,7 +18,7 @@ int cli_event_queue_run_owner_call(struct cli_application *ctx,
 void cli_event_queue_cleanup(struct cli_application *ctx);
 int cli_event_queue_is_owner(const struct cli_application *ctx);
 int cli_event_queue_wake_fd(const struct cli_application *ctx);
-void cli_event_queue_attach_app(struct cli_application *ctx, struct morph_tui_application *app);
+void cli_event_queue_attach_app(struct cli_application *ctx, struct nt_application *app);
 /* Owner-only delivery gate. Paused events/notifications remain queued; owner
  * calls continue to run so startup interactions cannot deadlock. */
 int cli_event_queue_set_events_enabled(struct cli_application *ctx, int enabled);

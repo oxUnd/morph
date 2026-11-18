@@ -1,6 +1,6 @@
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/page/chat.h"
 #include <nb/cleanup.h>
 #include "sapi/cli/presentation/presenter_state.h"
 #include "render/image.h"
@@ -9,7 +9,7 @@
 #include "media/image.h"
 #include "errors.h"
 #include "stb_image.h"
-#include <morph/tui/media.h>
+#include <nothing/tui/media.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -28,7 +28,7 @@ static void cli_renderer_preview_cleanup(char **owner)
 }
 
 int cli_renderer_media_asset_create_copy(const char *type, const char *path,
-	struct morph_tui_media_asset **out)
+	struct nt_media_asset **out)
 {
 	if (!type || !path || !*path || !out || *out)
 		return NB_ERR_INVAL;
@@ -45,7 +45,7 @@ int cli_renderer_media_asset_create_copy(const char *type, const char *path,
 		image_load_bounded_copy(path, &width, &height, &channels, 4);
 	if (!pixels)
 		return NB_ERR_FORMAT;
-	return morph_tui_media_asset_create_rgba_copy(out, pixels, width, height);
+	return nt_media_asset_create_rgba(out, pixels, width, height);
 }
 
 void cli_renderer_media(const char *type, const char *path, void *user)

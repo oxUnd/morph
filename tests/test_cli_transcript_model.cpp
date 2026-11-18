@@ -2,7 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/models/transcript.h"
-#include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/component/transcript.h"
 #include "session_history.h"
 #include "cJSON.h"
 #include "errors.h"

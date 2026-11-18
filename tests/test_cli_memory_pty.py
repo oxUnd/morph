@@ -38,6 +38,12 @@ def check_memory_panel(terminal, directory):
         assert 'Saved facts (1)' in menu and 'Reusable tips (1)' in menu, menu
         assert 'Enter open' in menu and '1-8' not in menu, menu
         assert 'Memory status, counts and settings.' in menu, menu
+        selected = next(i for i, row in enumerate(terminal.screen.display)
+                        if row.strip() == 'Summary')
+        assert all(terminal.screen.buffer[selected][x].bold and
+                   not terminal.screen.buffer[selected][x].reverse and
+                   terminal.screen.buffer[selected][x].fg == '00cdcd'
+                   for x in range(1, width - 1)), menu
         terminal.send('3')
         assert 'morph / memory /' not in terminal.snapshot('digits do not open sections')
         terminal.send('\r')
@@ -122,7 +128,7 @@ def main():
         directory = Path(temp)
         try:
             terminal = Terminal(driver, directory, server.server_port, memory_enabled=True,
-                                memory_save_tasks=True)
+                                memory_save_tasks=True, extra_env={'NO_COLOR': ''})
             terminal.pump(1)
             terminal.send('/memory set language Chinese\r')
             assert 'Preference saved' in terminal.raw, terminal.raw[-4000:]

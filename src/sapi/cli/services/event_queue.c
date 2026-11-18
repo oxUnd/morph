@@ -4,7 +4,7 @@
 #include "cJSON.h"
 #include "errors.h"
 #include <nb/cleanup.h>
-#include <morph/tui/application.h>
+#include <nothing/tui/application.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -24,7 +24,7 @@ struct cli_event_queue_owner_call {
 };
 
 struct cli_event_queue {
-	struct morph_tui_application *application;
+	struct nt_application *application;
 	cli_event_queue_dispatch_fn dispatch;
 	nb_mutex *mutex;
 	nb_queue pending;
@@ -103,7 +103,7 @@ static void cli_event_queue_wake(struct cli_event_queue *ui)
 		return;
 	nb_mutex_lock(ui->mutex);
 	if (ui->application)
-		(void)morph_tui_application_wake(ui->application);
+		(void)nt_application_wake(ui->application);
 	nb_mutex_unlock(ui->mutex);
 	unsigned char byte = 1;
 	ssize_t count;
@@ -245,7 +245,7 @@ int cli_event_queue_wake_fd(const struct cli_application *ctx)
 	return ctx && ctx->events ? ctx->events->wake_read : -1;
 }
 
-void cli_event_queue_attach_app(struct cli_application *ctx, struct morph_tui_application *app)
+void cli_event_queue_attach_app(struct cli_application *ctx, struct nt_application *app)
 {
 	if (!ctx || !ctx->events)
 		return;
@@ -253,7 +253,7 @@ void cli_event_queue_attach_app(struct cli_application *ctx, struct morph_tui_ap
 	ctx->events->application = app;
 	nb_mutex_unlock(ctx->events->mutex);
 	if (app)
-		(void)morph_tui_application_wake(app);
+		(void)nt_application_wake(app);
 }
 
 int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct morph_event *event)
@@ -483,6 +483,9 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 	cli_event_queue_consume_wake(ui);
 	nb_queue_init(&local);
 	nb_mutex_lock(ui->mutex);
+	/* A worker can enqueue a prompt after chat checked the queue and before
+	 * this drain acquired the lock. Leave it queued until chat has focus. */
+	int defer_calls = cli_application_prompt_deferred(ctx);
 	int taken = 0;
 	NB_QUEUE_FOREACH_SAFE(link, next, &ui->pending)
 	{
@@ -490,6 +493,8 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 			break;
 		struct cli_event_queue_item *item =
 			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
+		if (defer_calls && item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
+			break;
 		if (!ui->events_enabled && item->kind != CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			continue;
 		nb_queue_remove(link);

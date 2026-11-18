@@ -101,6 +101,8 @@ def main():
             title = next(row for row, line in enumerate(terminal.screen.display)
                          if 'Lifecycle hooks' in line)
             assert terminal.screen.buffer[title][2].fg == '202020', text
+            assert all(terminal.screen.buffer[title][x].bold
+                       for x in range(2, terminal.screen.columns - 2)), text
             assert not trust_rows()
             terminal.send('e')
             text = snapshot('lifecycle event overview')

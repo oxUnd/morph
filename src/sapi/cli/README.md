@@ -1,7 +1,7 @@
 # CLI application
 
-The entire CLI is a `morph-tui` application. `struct cli_application` embeds
-`struct morph_tui_application` as its first member and owns the opaque runtime,
+The entire CLI is a `nothing-tui` application. `struct cli_application` embeds
+`struct nt_application` as its first member and owns the opaque runtime,
 execution mode, workers, models and presentation state. There is one application
 identity; chat, selectors and modal pages share its controller stack.
 
@@ -18,14 +18,14 @@ cli/
     presentation.h             output/presentation state
     transcript.c, .h            tool/reasoning event projection and owned records
     setup.h                    configuration wizard data
-  pages/
+  page/
     chat.c, .h                 chat controller and page-local editing state
     history, hooks, jobs, memory, resume
     model, permissions         inline mode/policy selectors in the input area
     turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
-  widgets/                     feed, transcript, banner, list and shell styling
+  component/                   feed, transcript, banner, list and shell styling
   commands/                    options, slash actions, registry and management entry points
   services/
     command_job, event_queue   workers, owner calls and wakeup bridge
@@ -35,7 +35,7 @@ cli/
     management, skill_store, share_store
     configuration/             provider defaults, validation, roles and storage
   adapters/
-    input/                     input state owner, Readline, callbacks, keymaps and reader
+    input/                     input state owner, GNU Readline prompts, callbacks and stream readers
     clipboard/                 native clipboard access and terminal copy requests
     runtime/                   owner-thread UI dispatch, event translation and observer
     protocol/                  runtime interaction request/reply mapping
@@ -52,9 +52,9 @@ import application state. Configuration services do not import wizard pages.
 
 Interactive chat is a retained ViewController in alternate screen. Its page layout
 contains a scrolling feed, activity/jobs/queue controls and a multiline TextField
-composer. `widgets/message` composes Label and content-sized TextView controls;
-`widgets/tool_call` composes a Stack and rich content-sized TextViews. Plan
-and notice controls use the same base components. View margin/padding determine
+composer. `component/message` composes Label and content-sized TextView controls;
+`component/tool_call`, plan and notice bind domain state to rich text through
+`component/report`. View margin/padding determine
 spacing; pages and event handlers do not count terminal rows or move the cursor.
 Tool events update the existing control by call ID. Streaming messages keep their
 source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
@@ -73,13 +73,13 @@ Unicode transcript. It also checks that the oldest and newest records remain
 reachable, drafts survive scrolling and resize, and replay does not add records.
 The CI case uses 1,000 turns and has no machine-dependent timing threshold.
 
-`widgets/feed_block` and the stateless append formatters remain adapters for
+`component/feed_block` and the stateless append formatters remain adapters for
 legacy renderers, child transcript documents, fixtures and non-retained consumers.
 Their trailing-newline helper is a text-output compatibility policy, not a View
 layout engine. Keep new interactive feed content on the retained component path.
 Plain and JSON modes retain their separate output contracts.
 
-The full-screen agents browser follows the same boundary: `widgets/agents_browser`
+The full-screen agents browser follows the same boundary: `component/agents_browser`
 owns responsive split/stacked layout, filters, selection and detail scrolling.
 It consumes borrowed snapshots and performs no runtime calls. The subagents page
 owns snapshot refresh, selection identity and navigation to agent conversations.
@@ -115,10 +115,9 @@ the app's runtime, command services and output policies without opening a TUI.
 
 ## Extending the app
 
-- Add a page in `pages/`, expose its open/factory function in its sibling header
-  and dispatch it from a command or existing page. Use retained ViewControllers
-  for new view trees; public controller adapters support existing renderers.
-- Add a reusable app component in `widgets/`; keep its state and drawing local.
+- Add a page in `page/`, expose its open/factory function in its sibling header
+  and dispatch it from a command or existing page using an NT view controller.
+- Add a reusable app component in `component/`; keep its state and drawing local.
   The [customization demo](../../tui/samples/customization/README.md) shows Widget,
   ViewController and Application extension, semantic actions and shared models.
 - Add data operations in `models/`, business actions in `services/` and an
@@ -140,12 +139,11 @@ restoration. Keep the slash-command presentation contract in
 
 ## Presentation ownership
 
-Application owns opaque presenter and input objects. Presenter owns stream buffers,
-Markdown renderer lifetime and artifact deduplication; input adapters own callback
-closures and compatibility adapters. The retained chat page owns its TextField,
-recall history and completion actions; its adaptive footer is a TextView.
-The root keeps runtime and execution lifecycle, rather than exposing renderer
-buffers as application state. Feed and turn services query final-output visibility
+The application owns the presenter, the input adapter and the runtime lifecycle.
+The presenter manages stream buffers, Markdown rendering and artifact deduplication.
+The input adapter owns cancellable stream reads and the per-application Readline
+callback used for a blocking prompt. Chat owns its native TextField, recall
+history, completion actions and adaptive TextView footer. Feed and turn services query final-output visibility
 through the presenter interface.
 
 The event queue only copies/transports items, wakes the owner and completes or
@@ -162,7 +160,7 @@ terminal output, workspace access or a clock. The transcript service supplies th
 time and coordinates presentation. Widgets render const model/tool views; live
 rendering receives its width from the feed. Call-time patch previews are captured
 by `presentation/tool_preview`, so replay and redraw never reread today's files.
-The `turn_details` page owns scrolling and a shared TUI frame. Application controls
+The `turn_details` page hosts a native scroll view and a text view bound to the transcript revision. Application controls
 its terminal session and input handoff just like other modal pages.
 
 The retained feed receives geometry from the framework. Legacy output adapters
@@ -178,20 +176,11 @@ canvases. The TextField measures its prompt and wrapped draft at the current
 content width. Prompt color is separate from the draft style; no-color output
 keeps the same geometry.
 
-`widgets/composer_panel` is the reusable presentation for replacing the editable
-composer with local interactions. Retained chat hosts its temporary Widget and
-TextView in the same root tree, hides the editor and footer while it is active,
-and restores their focus and layout on completion. The root renders the submitted
-command and conversation together with the panel through the shared frame renderer.
-Legacy hosts use a controller on the root Application's existing stack. Both
-paths own bounded height, input handoff, ticks, resize and cleanup; pages append
-rows and handle semantic events without terminal cursor control.
-Panels always span the usable terminal width, reserving the last physical column
-to avoid automatic wrapping. Options set the row limit and tick frequency.
-A successful presentation owns the callback lifetime through `complete`; failure
-leaves business data with the caller. Trusted renderer rows retain SGR styles
-while cursor and OSC controls are rejected. `/model`, `/permissions` and
-`/subagents` use this same component.
+`cli_chat_panel_mount` builds the inline panel in the chat view tree. The panel
+returns its initial focus target and receives its completion callback once.
+`component/selector` supplies native lists and labels for the model and
+permission pages. The subagent picker supplies its own activity list. Closing
+the panel restores the draft, footer and input focus.
 
 `/agents [id|shortname]` opens the full-screen agent browser, with a live status
 summary, a scrolling roster and the selected task preview. Enter opens the
@@ -200,8 +189,8 @@ to the primary conversation. Noninteractive `/agents` retains text snapshots.
 `/subagents [id|shortname]` opens a compact agent picker within the composer area.
 Selecting a child replaces the visible feed with that child's full-width
 conversation in an alternate terminal screen; Escape returns directly to the
-primary feed. `pages/subagents` owns navigation and follow-up input,
-`models/subagents` reduces ordered child events, `widgets/subagents` composes
+primary feed. `page/subagents` owns navigation and follow-up input,
+`models/subagents` reduces ordered child events, `component/subagents` composes
 shared feed messages and tool rows, and `services/agents` enters the runtime
 facade. Snapshot/live sequence frontiers prevent duplicate replay; child events
 never enter the primary reducer. Shared message presentation retains user boxes,

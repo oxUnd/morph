@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / 'src/sapi/cli'
 ROOT_FILES = {'main.c', 'application.c', 'application.h', 'application_internal.h',
               'CMakeLists.txt', 'README.md'}
-APP_DIRS = {'models', 'pages', 'widgets', 'commands', 'services', 'adapters', 'presentation'}
+APP_DIRS = {'models', 'page', 'component', 'commands', 'services', 'adapters', 'presentation'}
 MODULE_NAMES = {'models/composer.c': 'composer_model',
                 'adapters/runtime/observer.c': 'runtime_observer'}
 
@@ -94,50 +94,52 @@ def main():
         errors.append('application_internal.h: function interfaces belong in module headers')
     for source in sorted((CLI / 'commands').glob('*.c')):
         code = code_only(source.read_text())
-        if re.search(r'\bmorph_tui_(?:screen_(?:open|run|poll)|application_(?:init|run|step))\s*\(', code):
+        if re.search(r'\bnt_(?:screen_(?:open|run|poll)|application_(?:init|run|step))\s*\(', code):
             errors.append(f'{source}: command handler owns a UI loop')
     app_header = code_only((CLI / 'application.h').read_text())
-    if not re.search(r'struct cli_application\s*{\s*struct morph_tui_application base;', app_header):
+    if not re.search(r'struct cli_application\s*{\s*struct nt_application base;', app_header):
         errors.append('application.h: Application must embed its TUI base first')
     for field in ('event_stream', 'markdown_stream', 'rendered_artifacts',
                   'completion_sessions', 'readline_ready_input', 'prompt_lock'):
         if re.search(r'\b' + field + r'\b', app_header):
             errors.append(f'application.h: {field} belongs to its presentation/input owner')
     queue = (CLI / 'services/event_queue.c').read_text()
-    if re.search(r'^#include [<"](?:readline/|sapi/cli/(?:pages|widgets|presentation|adapters)/)',
+    if re.search(r'^#include [<"](?:readline/|sapi/cli/(?:page|component|presentation|adapters)/)',
                  queue, re.M):
         errors.append('services/event_queue.c: transport imports UI dispatch or presentation')
-    transcript = (CLI / 'widgets/transcript.c').read_text()
+    transcript = (CLI / 'component/transcript.c').read_text()
     if '\\033[?1049' in transcript or 'previous_frame' in transcript:
-        errors.append('widgets/transcript.c: modal terminal/frame ownership belongs to the page')
+        errors.append('component/transcript.c: modal terminal/frame ownership belongs to the page')
     if re.search(r'\b(?:morph_array_push_borrow|utf8_terminal_sanitize_feed|patch_preview)\s*\(',
                  code_only(transcript)):
-        errors.append('widgets/transcript.c: state reduction and workspace reads belong outside rendering')
+        errors.append('component/transcript.c: state reduction and workspace reads belong outside rendering')
     if '#include "sapi/cli/application_internal.h"' in transcript:
-        errors.append('widgets/transcript.c: rendering must import its actual interfaces')
+        errors.append('component/transcript.c: rendering must import its actual interfaces')
     model = (CLI / 'models/transcript.c').read_text()
     if re.search(r'^#include [<"](?:agent/patch|util/file|sapi/cli/presentation)', model, re.M):
         errors.append('models/transcript.c: projection updates must not render or read workspace files')
-    feed = code_only((CLI / 'widgets/feed.c').read_text())
+    feed = code_only((CLI / 'component/feed.c').read_text())
     if re.search(r'\b(?:ioctl|TIOCGWINSZ|winsize)\b', feed):
-        errors.append('widgets/feed.c: terminal dimensions belong to the shared size helper')
-    chat = code_only((CLI / 'pages/chat.c').read_text())
-    if 'morph_tui_view_controller_present_borrow' not in chat:
-        errors.append('pages/chat.c: chat must present a retained ViewController')
-    if re.search(r'\b(?:fprintf|printf|fputs|fwrite|putchar|morph_tui_frame_present|'
+        errors.append('component/feed.c: terminal dimensions belong to the shared size helper')
+    chat = code_only((CLI / 'page/chat.c').read_text())
+    if 'cli_application_present_page' not in chat:
+        errors.append('page/chat.c: chat must present a retained ViewController')
+    if re.search(r'\b(?:fprintf|printf|fputs|fwrite|putchar|nt_frame_present|'
                  r'cli_readline_(?:render_frame|suspend_copy|resume_take))\s*\(', chat):
-        errors.append('pages/chat.c: retained chat must not own terminal painting or Readline geometry')
-    if re.search(r'\b(?:morph_tui_view_get_options|'
-                 r'morph_tui_canvas_(?:text|fill|child)\w*)\s*\(', chat):
-        errors.append('pages/chat.c: margin and padding painting belongs to framework views')
-    for module in ('message', 'tool_call'):
-        component = code_only((CLI / f'widgets/{module}.c').read_text())
-        apis = ['morph_tui_widget_add_borrow', 'morph_tui_widget_text_view_add_borrow']
-        if module == 'message':
-            apis.append('morph_tui_widget_label_add_borrow')
+        errors.append('page/chat.c: retained chat must not own terminal painting or Readline geometry')
+    if re.search(r'\b(?:nt_view_options|'
+                 r'nt_canvas_(?:text|fill|child)\w*)\s*\(', chat):
+        errors.append('page/chat.c: margin and padding painting belongs to framework views')
+    for module, apis in {
+        'message': ('nt_view_add', 'nt_label_add', 'cli_report_text_add'),
+        'tool_call': ('cli_report_add', 'nt_component_'),
+        'report': ('nt_view_add', 'nt_text_view_add'),
+        'selector': ('nt_list_view_add', 'nt_label_add')
+    }.items():
+        component = code_only((CLI / f'component/{module}.c').read_text())
         for api in apis:
             if api not in component:
-                errors.append(f'widgets/{module}.c: domain component must compose base controls ({api})')
+                errors.append(f'component/{module}.c: domain component must compose base controls ({api})')
     for source in sorted(CLI.rglob('*')):
         if source.suffix not in ('.c', '.h'):
             continue
@@ -148,16 +150,16 @@ def main():
             if target.startswith(('sapi/cli/ui/', 'sapi/cli/setup/')):
                 errors.append(f'{source}: obsolete application include {target}')
             if relative.startswith('models/') and target.startswith((
-                    'sapi/cli/pages/', 'sapi/cli/widgets/', 'sapi/cli/adapters/',
+                    'sapi/cli/page/', 'sapi/cli/component/', 'sapi/cli/adapters/',
                     'sapi/cli/services/', 'sapi/cli/application', 'runtime/')):
                 errors.append(f'{source}: model depends on application behavior {target}')
             if relative.startswith('services/configuration/') and target.startswith((
-                    'sapi/cli/pages/', 'sapi/cli/widgets/')):
+                    'sapi/cli/page/', 'sapi/cli/component/')):
                 errors.append(f'{source}: configuration service depends on a page {target}')
-        if relative != 'application.h' and re.search(r'\bstruct morph_tui_application\s+\w+\s*;', code):
+        if relative != 'application.h' and re.search(r'\bstruct nt_application\s+\w+\s*;', code):
             errors.append(f'{source}: second TUI Application instance outside application.h')
         if relative != 'application.c' and re.search(
-                r'\bmorph_tui_application_(?:init|run|deinit)\s*\(', code):
+                r'\bnt_application_(?:init(?:_with_class)?|run|deinit)\s*\(', code):
             errors.append(f'{source}: Application host lifecycle belongs in application.c')
     # Application status shapes have one shared owner. Content bullets and
     # framework radio controls are deliberately outside this application audit.

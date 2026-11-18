@@ -15,13 +15,8 @@
 #define ANSI_CYAN "\033[36m"
 #define ANSI_RESET "\033[0m"
 
-#ifdef HAVE_READLINE
 #define CLI_RL_IGNORE_START "\001"
 #define CLI_RL_IGNORE_END "\002"
-#else
-#define CLI_RL_IGNORE_START ""
-#define CLI_RL_IGNORE_END ""
-#endif
 
 /* Canonical CLI status shapes and styles; see AGENTS.md. */
 #define CLI_FEED_DONE MORPH_TERMINAL_STATUS_DONE

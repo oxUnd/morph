@@ -19,28 +19,25 @@ extern "C" {
 #include <unistd.h>
 #include <thread>
 
-static int instance_key(struct cli_application *ctx, int count, int key)
+static int instance_getc(struct cli_application *ctx, FILE *)
 {
-	ctx->input->completion_index += count;
-	return ctx->input->completion_index + key;
+	return ++ctx->input->input_timed_out;
 }
 
 TEST(StateOwnershipTest, NativeCallbacksKeepTheirOwnContext)
 {
 	struct cli_application first{}, second{};
-	auto first_key = cli_callback_key(&first, instance_key);
-	auto second_key = cli_callback_key(&second, instance_key);
+	auto first_getc = cli_callback_getc(&first, instance_getc);
+	auto second_getc = cli_callback_getc(&second, instance_getc);
 
-	ASSERT_NE(first_key, nullptr);
-	ASSERT_NE(second_key, nullptr);
-	EXPECT_NE(first_key, second_key);
-	EXPECT_EQ(first_key(3, 10), 13);
-	EXPECT_EQ(second_key(7, 20), 27);
-	EXPECT_EQ(first_key(2, 10), 15);
-	EXPECT_EQ(first_key(0, INT_MIN), INT_MIN + 5);
-	EXPECT_EQ(second_key(0, -8), -1);
+	ASSERT_NE(first_getc, nullptr);
+	ASSERT_NE(second_getc, nullptr);
+	EXPECT_NE(first_getc, second_getc);
+	EXPECT_EQ(first_getc(nullptr), 1);
+	EXPECT_EQ(second_getc(nullptr), 1);
+	EXPECT_EQ(first_getc(nullptr), 2);
 	cli_input_cleanup(&first);
-	EXPECT_EQ(second_key(1, 20), 28);
+	EXPECT_EQ(second_getc(nullptr), 2);
 	cli_input_cleanup(&second);
 }
 

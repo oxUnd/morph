@@ -1,7 +1,7 @@
 #include "sapi/cli/presentation/output.h"
 #include <nb/err.h>
 #include "sapi/cli/application.h"
-#include "sapi/cli/presentation/turn_details.h"
+#include "sapi/cli/page/turn_details.h"
 #include "sapi/cli/services/command_job.h"
 #include "agent/turn.h"
 #include "sapi/cli/adapters/input/callbacks.h"
@@ -9,11 +9,11 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/component/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "runtime/runtime.h"
-#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/page/chat.h"
 #include <stdarg.h>
 
 
@@ -236,15 +236,15 @@ void cli_output_track_tail(int *tail, const char *bytes, size_t len)
 	free(safe);
 }
 
-int cli_output_block_gap_margin(struct morph_tui_view_insets margin, int trailing_newlines)
+int cli_output_block_gap_margin(struct nt_view_insets margin, int trailing_newlines)
 {
-	struct morph_tui_view_rect slot = {
+	struct nt_view_rect slot = {
 		.x = 0,
 		.y = 0,
 		.width = 1,
 		.height = margin.top + 1,
 	};
-	struct morph_tui_view_rect frame = morph_tui_view_inset_rect(slot, margin);
+	struct nt_view_rect frame = nt_view_inset_rect(slot, margin);
 	int required = frame.y + 1;
 
 	/* Nothing precedes the first visible block, so it starts on the next
@@ -256,7 +256,7 @@ int cli_output_block_gap_margin(struct morph_tui_view_insets margin, int trailin
 	return required - trailing_newlines;
 }
 
-int cli_output_block_append(nb_buf *out, const char *text, struct morph_tui_view_insets margin,
+int cli_output_block_append(nb_buf *out, const char *text, struct nt_view_insets margin,
 			    int *trailing_newlines)
 {
 	size_t start;
@@ -287,7 +287,7 @@ int cli_output_block_append(nb_buf *out, const char *text, struct morph_tui_view
 }
 
 int cli_output_block_write(struct cli_application *ctx, const char *text,
-			   struct morph_tui_view_insets margin)
+			   struct nt_view_insets margin)
 {
 	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {0};
 	int trailing;

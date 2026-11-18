@@ -12,7 +12,7 @@
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/component/list.h"
 #include <nb/utf8.h>
 #include "cJSON.h"
 

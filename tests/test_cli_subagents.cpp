@@ -2,6 +2,7 @@
 #include <nb/err.h>
 
 extern "C" {
+#include <nothing/tui/input.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/models/subagents.h"
 #include "sapi/cli/models/transcript.h"
@@ -9,9 +10,10 @@ extern "C" {
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/widgets/subagents.h"
-#include "sapi/cli/widgets/agents_browser.h"
-#include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/component/subagents.h"
+#include "cli_agents_browser_fixture.h"
+#include <nothing/tui/input.h>
+#include "sapi/cli/component/transcript.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/utf8.h>
@@ -42,16 +44,16 @@ TEST(CliAgentsBrowserTest, FiltersMapVisibleSelectionBackToTheSnapshot)
 	cli_agents_browser_state state{};
 	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 0u);
 	for (size_t expected : {1u, 2u, 3u, 4u, 5u, 0u}) {
-		EXPECT_EQ(cli_agents_browser_update(&state, &data, '\t'), MORPH_TUI_WIDGET_CHANGED);
+		EXPECT_EQ(cli_agents_browser_update(&state, &data, '\t'), NT_NAVIGATION_CHANGED);
 		EXPECT_EQ(cli_agents_browser_selected(&state, &data), expected);
 	}
-	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_BACK_TAB);
+	cli_agents_browser_update(&state, &data, NT_KEY_BACK_TAB);
 	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 5u);
 	state.filter = CLI_AGENTS_BROWSER_RUNNING;
 	agents[0].status = AGENT_COMPLETED;
 	EXPECT_EQ(cli_agents_browser_selected(&state, &data), SIZE_MAX);
-	EXPECT_EQ(cli_agents_browser_update(&state, &data, '\r'), MORPH_TUI_WIDGET_UNHANDLED);
-	EXPECT_EQ(cli_agents_browser_update(&state, &data, 27), MORPH_TUI_WIDGET_CANCEL);
+	EXPECT_EQ(cli_agents_browser_update(&state, &data, '\r'), NT_NAVIGATION_UNHANDLED);
+	EXPECT_EQ(cli_agents_browser_update(&state, &data, 27), NT_NAVIGATION_CANCEL);
 }
 
 TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
@@ -75,7 +77,7 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 				ASSERT_EQ((nb_buf_init(&output),
 					   nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM),
 					  0);
-				ASSERT_EQ(cli_agents_browser_append(&output, &state, &data,
+				ASSERT_EQ(test_agents_browser_render(&output, &state, &data,
 					columns, rows, styled), 0);
 				char *plain NB_CLEANUP(nb_charp_cleanup) =
 					morph_terminal_sanitize_dup(output.ptr, output.len,
@@ -94,8 +96,7 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 				EXPECT_EQ(std::string(output.ptr).find("\033[2J"),
 					  std::string::npos);
 				if (!styled)
-					EXPECT_EQ(std::string(output.ptr).find('\033'),
-						  std::string::npos);
+					EXPECT_EQ(std::string(output.ptr).find("\033[0;"), std::string::npos);
 				else {
 					EXPECT_EQ(std::string(output.ptr).find("\033[44;"),
 						  std::string::npos);
@@ -103,7 +104,7 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 						  std::string::npos);
 					EXPECT_EQ(std::string(output.ptr).find("\033[7m"),
 						  std::string::npos);
-					EXPECT_NE(std::string(output.ptr).find("\033[1m"),
+					EXPECT_NE(std::string(output.ptr).find("\033[0;1"),
 						  std::string::npos);
 				}
 				if (columns >= 100 && rows >= 24)
@@ -127,11 +128,11 @@ TEST(CliAgentsBrowserTest, DetailScrollingKeepsItsHeadingAndTaskSelection)
 	data.count = 1;
 	cli_agents_browser_state state{};
 	state.selection.index = 1;
-	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_RIGHT);
-	cli_agents_browser_update(&state, &data, MORPH_TUI_KEY_PAGE_DOWN);
+	cli_agents_browser_update(&state, &data, NT_KEY_RIGHT);
+	cli_agents_browser_update(&state, &data, NT_KEY_PAGE_DOWN);
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
-	ASSERT_EQ(cli_agents_browser_append(&output, &state, &data, 120, 12, 0), 0);
+	ASSERT_EQ(test_agents_browser_render(&output, &state, &data, 120, 12, 0), 0);
 	EXPECT_GT(state.detail_scroll, 0u);
 	EXPECT_EQ(cli_agents_browser_selected(&state, &data), 1u);
 	EXPECT_NE(std::string(output.ptr).find("Task details"), std::string::npos);

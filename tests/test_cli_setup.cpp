@@ -6,9 +6,9 @@ extern "C" {
 #include "sapi/cli/services/configuration/role.h"
 }
 #include <gtest/gtest.h>
-#include "sapi/cli/pages/setup/wizard.h"
+#include "sapi/cli/page/setup/wizard.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/pages/setup/controls.h"
+#include "sapi/cli/page/setup/controls.h"
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/mcp.h"
 #include "agent/system_prompt.h"

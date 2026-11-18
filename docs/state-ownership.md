@@ -192,12 +192,3 @@ that immutable data and third-party definitions are excluded. Runtime tests
 exercise independent loggers, output capture, native callbacks, cancellation,
 signal cleanup and bridge pools; PTY tests cover editing, window resizing,
 interrupts, slash commands and shutdown.
-
-Also check the fallback CLI branch with Readline explicitly disabled:
-
-```sh
-cmake -S . -B cmake-build-no-readline -DENABLE_READLINE=OFF \
-  -DENABLE_GLOBAL_STATE_AUDIT=ON -DBUILD_FASTCGI=ON
-cmake --build cmake-build-no-readline
-ctest --test-dir cmake-build-no-readline --output-on-failure
-```

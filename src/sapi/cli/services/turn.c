@@ -11,7 +11,7 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/services/scheduler.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/component/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "runtime/runtime.h"
 #include <stdarg.h>

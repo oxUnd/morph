@@ -1,13 +1,14 @@
 #include "sapi/cli/presentation/command_output.h"
 #include <nb/err.h>
-#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/page/chat.h"
+#include "sapi/cli/component/skill_tree.h"
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
-#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/component/list.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
@@ -184,7 +185,7 @@ int cli_command_output_status_rows(struct cli_application *ctx,
 		const struct cli_output_status_row *row = &rows[i];
 		const char *ancestor = row->place == CLI_OUTPUT_ROW_INDENTED
 					       ? "  "
-					       : morph_tui_widget_tree_branch(row->group_is_last, 1);
+					       : morph_terminal_tree_branch(row->group_is_last, 1);
 		int name_width = row->wide ? 46 : 24;
 
 		cli_list_item(ctx, ancestor, row->is_last,
@@ -557,7 +558,7 @@ void cli_help_begin(struct cli_application *ctx)
 void cli_help_group(struct cli_application *ctx, const char *name,
 		    const struct cli_help_item *items, int count, int is_last)
 {
-	const char *ancestor = morph_tui_widget_tree_branch(is_last, 1);
+	const char *ancestor = morph_terminal_tree_branch(is_last, 1);
 	int columns = cli_list_columns();
 
 	cli_list_group(ctx, name ? name : "Other", count, is_last);
@@ -578,54 +579,25 @@ void cli_help_end(struct cli_application *ctx)
 			  "\n" ANSI_DIM "Use /help <command> for details." ANSI_RESET "\n");
 }
 
-static const char *cli_command_output_skill_marker(enum cli_skill_list_state state)
-{
-	if (state == CLI_SKILL_LIST_DISABLED)
-		return "×";
-	return state == CLI_SKILL_LIST_ACTIVE ? CLI_FEED_DONE : CLI_FEED_PENDING;
-}
-
 int cli_skill_list_render(struct cli_application *ctx, const struct cli_skill_list_row *rows,
 			  size_t count, int active_count)
 {
-	struct morph_tui_widget_tree tree NB_CLEANUP(morph_tui_widget_tree_cleanup) = {0};
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
-	int columns = cli_list_columns();
-	int rc;
-
 	cli_output_printf(ctx, "\n" ANSI_BOLD ANSI_CYAN CLI_FEED_MESSAGE " Skills %zu" ANSI_DIM
 			  " · %d active" ANSI_RESET "\n", count, active_count);
-	if (count == 0) {
+	if (!count) {
 		cli_output_printf(ctx, "  " ANSI_DIM "(none — install to ~/.morph/skills/ "
 				  "or ~/.agents/skills/)" ANSI_RESET "\n");
 		return 0;
 	}
-	rc = morph_tui_widget_tree_init(&tree);
-	if (rc != 0)
-		return rc;
-	rc = (nb_buf_init(&output), nb_buf_reserve(&output, 1024) ? 0 : NB_ERR_NOMEM);
-	if (rc != 0)
-		return rc;
-	for (size_t i = 0; i < count; i++) {
-		nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
-
-		rc = (nb_buf_init(&label), nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
-		if (rc != 0)
-			break;
-		nb_buf_printf(&label, "%s %s", cli_command_output_skill_marker(rows[i].state),
-			      rows[i].name);
-		if (nb_buf_status(&label))
-			rc = nb_buf_status(&label);
-		else
-			(void)morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT,
-							nb_buf_cstr(&label), rows[i].description);
-		if (rc != 0)
-			break;
+	int rc;
+	if (cli_chat_active(ctx))
+		rc = cli_chat_skills(ctx, rows, count);
+	else {
+		rc = cli_skill_tree_render(&output, cli_list_columns(), rows, count);
+		if (!rc)
+			cli_output_fputs(ctx, nb_buf_cstr(&output), stdout);
 	}
-	if (rc == 0)
-		rc = morph_tui_widget_tree_render(&tree, &output, columns, 0, SIZE_MAX);
-	if (rc == 0)
-		cli_output_fputs(ctx, nb_buf_cstr(&output), stdout);
 	cli_output_printf(ctx, "\n  " ANSI_DIM CLI_FEED_DONE " active   " CLI_FEED_PENDING
 			  " available   × disabled" ANSI_RESET "\n");
 	return rc;
@@ -689,7 +661,7 @@ int cli_tool_list_render(struct cli_application *ctx, const struct cli_tool_list
 		if (count == 0)
 			continue;
 		name_width = cli_command_output_tool_group_name_width(rows, row_count, groups[g].id);
-		ancestor = morph_tui_widget_tree_branch(is_last, 1);
+		ancestor = morph_terminal_tree_branch(is_last, 1);
 		if (printed_groups > 0)
 			cli_output_putchar(ctx, '\n');
 		printed_groups++;

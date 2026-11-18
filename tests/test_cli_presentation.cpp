@@ -4,12 +4,11 @@
 
 extern "C" {
 #include "sapi/cli/adapters/input/state.h"
-#include "sapi/cli/presentation/turn_details.h"
+#include "sapi/cli/page/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 
 #include "sapi/cli/services/turn.h"
 #include "sapi/cli/adapters/input/cancel.h"
-#include "sapi/cli/adapters/input/readline.h"
 #include "sapi/cli/adapters/media/image_loader.h"
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/presenter.h"
@@ -18,18 +17,18 @@ extern "C" {
 #include "sapi/cli/presentation/work_status.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/models/transcript.h"
-#include "sapi/cli/widgets/banner.h"
-#include "sapi/cli/pages/approval.h"
-#include "sapi/cli/widgets/transcript.h"
-#include "sapi/cli/widgets/agents.h"
+#include "sapi/cli/component/banner.h"
+#include "sapi/cli/page/approval.h"
+#include "sapi/cli/component/transcript.h"
+#include "sapi/cli/component/agents.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
-#include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/widgets/feed_block.h"
-#include "sapi/cli/widgets/plan.h"
-#include "sapi/cli/widgets/list.h"
-#include "sapi/cli/widgets/shell_style.h"
+#include "sapi/cli/component/feed.h"
+#include "sapi/cli/component/feed_block.h"
+#include "sapi/cli/component/plan.h"
+#include "sapi/cli/component/list.h"
+#include "sapi/cli/component/shell_style.h"
 #include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
 #include <nb/cleanup.h>
@@ -290,7 +289,7 @@ class CliPresentationTest : public ::testing::Test
 		std::error_code error;
 
 		if (ctx.base.state)
-			morph_tui_application_deinit(&ctx.base);
+			nt_application_deinit(&ctx.base);
 		if (details_input)
 			fclose(details_input);
 		if (details_master >= 0)
@@ -311,22 +310,26 @@ class CliPresentationTest : public ::testing::Test
 			ASSERT_EQ(unlockpt(details_master), 0);
 			details_input = fopen(ptsname(details_master), "r+");
 			ASSERT_NE(details_input, nullptr);
-			struct morph_tui_application_options options{};
+			struct nt_application_options options{};
 
 			options.input = details_input;
 			options.output = stdout;
 			options.external_signals = 1;
-			ASSERT_EQ(morph_tui_application_init(&ctx.base, &options), 0);
-			static const struct morph_tui_controller_ops root_ops{};
-			struct morph_tui_controller root = {&root_ops, nullptr,
-							    MORPH_TUI_INPUT_EXTERNAL, 0, 0};
-
-			ASSERT_EQ(morph_tui_application_present_controller_take(&ctx.base, &root),
-				  0);
-			ASSERT_EQ(morph_tui_application_step(&ctx.base, 0), 0);
+			ASSERT_EQ(nt_application_init(&ctx.base, &options), 0);
+			static const struct nt_view_controller_class root = [] {
+				struct nt_view_controller_class type{};
+				type.superclass = &nt_view_controller_base_class;
+				type.instance_size = sizeof(struct nt_view_controller);
+				type.load_view = [](struct nt_view_controller *, struct nt_builder *b) {
+					nt_view_add(b, nullptr, &nt_view_base_class, nullptr);
+				};
+				return type;
+			}();
+			ASSERT_EQ(cli_application_present_page(&ctx.base, &root, nullptr, 0), 0);
+			ASSERT_EQ(nt_application_step(&ctx.base, 0), 0);
 		}
 		cli_turn_details_toggle(&ctx);
-		ASSERT_EQ(morph_tui_application_step(&ctx.base, 0), 0);
+		ASSERT_EQ(nt_application_step(&ctx.base, 0), 0);
 	}
 
 	void Emit(enum morph_event_type type, const char *name, const char *phase, cJSON *data)
@@ -559,34 +562,6 @@ TEST_F(CliPresentationTest, RestoresLegacyMessagesWithTerminalControlsSanitized)
 	EXPECT_NE(output.find("LEGACY_ANSWER"), std::string::npos);
 	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
 	EXPECT_EQ(output.find("INTERNAL_SYSTEM_MESSAGE"), std::string::npos);
-}
-
-TEST(CliInputPromptTest, AnsiSequencesAreMarkedAsInvisible)
-{
-	struct cli_application _cli_output_context = {0};
-	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
-	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
-	const unsigned char *prompt = reinterpret_cast<const unsigned char *>(
-		cli_readline_input_prompt_borrow(_cli_output_context_ptr));
-	int ignored = 0;
-	int escapes = 0;
-	if (!std::strchr(reinterpret_cast<const char *>(prompt), 0x01))
-		GTEST_SKIP() << "readline is not available";
-
-	for (; *prompt; prompt++) {
-		if (*prompt == 0x01) {
-			EXPECT_EQ(ignored, 0);
-			ignored = 1;
-		} else if (*prompt == 0x02) {
-			EXPECT_EQ(ignored, 1);
-			ignored = 0;
-		} else if (*prompt == 0x1b) {
-			EXPECT_EQ(ignored, 1);
-			escapes++;
-		}
-	}
-	EXPECT_EQ(ignored, 0);
-	EXPECT_GT(escapes, 0);
 }
 
 TEST(CliCancelMonitorTest, StandaloneEscapeRequestsCancellation)
@@ -1996,7 +1971,7 @@ TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 	EXPECT_LT(expanded.find("Compare the two files"), expanded.find("second.txt"));
 	EXPECT_LT(expanded.find("second.txt"), expanded.find("SECOND OUTPUT"));
 	EXPECT_NE(expanded.find("Turn details"), std::string::npos);
-	EXPECT_NE(expanded.find("\033[?1049h"), std::string::npos);
+	EXPECT_EQ(nt_application_depth(&ctx.base), 2u);
 	EXPECT_EQ(expanded.find("Files checked"), std::string::npos);
 	EXPECT_EQ(ctx.turn_active, 0);
 
@@ -2006,7 +1981,7 @@ TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 	EXPECT_EQ(collapsed.find("FIRST OUTPUT"), std::string::npos);
 	EXPECT_EQ(collapsed.find("Read  first.txt"), std::string::npos);
 	EXPECT_EQ(collapsed.find("succeeded"), std::string::npos);
-	EXPECT_NE(collapsed.find("\033[?1049l"), std::string::npos);
+	EXPECT_EQ(nt_application_depth(&ctx.base), 1u);
 	EXPECT_EQ(cli_turn_details_is_open(&ctx), 0);
 	EXPECT_EQ(ctx.presenter->final_rendered, 1);
 	cJSON_Delete(first);
@@ -2564,17 +2539,17 @@ TEST(CliPlanWidgetTest, FeedBlocksKeepOneBlankRowBeforeInlineRecap)
 
 TEST(CliFeedBlockTest, GapAddsMissingNewlinesForOneBlankRow)
 {
-	struct morph_tui_view_insets margin = {.top = 1};
-	struct morph_tui_view_insets wider = {.top = 2};
-	struct morph_tui_view_rect slot = {.width = 1, .height = 2};
+	struct nt_view_insets margin = {.top = 1};
+	struct nt_view_insets wider = {.top = 2};
+	struct nt_view_rect slot = {.width = 1, .height = 2};
 
 	EXPECT_EQ(margin.top, 1);
 	EXPECT_EQ(cli_output_block_gap_margin(margin, 0), 1);
 	EXPECT_EQ(cli_output_block_gap_margin(margin, 1), 1);
 	EXPECT_EQ(cli_output_block_gap_margin(wider, 1), 2);
 	EXPECT_EQ(cli_output_block_gap_margin(wider, 2), 1);
-	EXPECT_EQ(morph_tui_view_inset_rect(slot, margin).y, 1);
-	EXPECT_EQ(morph_tui_view_inset_rect(slot, wider).y, 2);
+	EXPECT_EQ(nt_view_inset_rect(slot, margin).y, 1);
+	EXPECT_EQ(nt_view_inset_rect(slot, wider).y, 2);
 }
 
 TEST_F(CliPresentationTest, PlainPlanUpdateKeepsItsExistingTextContract)

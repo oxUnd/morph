@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-static void cli_transcript_tool_cleanup(struct cli_transcript_tool *tool)
+void cli_transcript_tool_cleanup(struct cli_transcript_tool *tool)
 {
 	free(tool->id);
 	free(tool->name);

@@ -1,14 +1,14 @@
 #include "sapi/cli/presentation/presenter.h"
 #include <nb/err.h>
 #include "runtime/runtime.h"
-#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/page/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/models/agents.h"
 #include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/agents.h"
 #include "sapi/cli/models/composer.h"
-#include "sapi/cli/presentation/turn_details.h"
+#include "sapi/cli/page/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/output.h"
 #include "agent/plan.h"
@@ -17,17 +17,17 @@
 #include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/services/recap.h"
-#include "sapi/cli/widgets/feed.h"
-#include "sapi/cli/widgets/feed_block.h"
-#include "sapi/cli/widgets/plan.h"
-#include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/component/feed.h"
+#include "sapi/cli/component/feed_block.h"
+#include "sapi/cli/component/plan.h"
+#include "sapi/cli/component/transcript.h"
 #include "sapi/cli/services/transcript.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/jobs.h"
-#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/component/list.h"
 #include "agent/patch.h"
-#include <morph/tui/view.h>
+#include <nothing/tui/view.h>
 
 #define CLI_PRESENTER_STREAM_NONE 0
 #define CLI_PRESENTER_STREAM_THOUGHT 1
@@ -134,7 +134,7 @@ static void cli_presenter_clear_status(struct cli_application *ctx)
 
 static void cli_presenter_block_gap(struct cli_application *ctx)
 {
-	struct morph_tui_view_insets margin = {.top = 1};
+	struct nt_view_insets margin = {.top = 1};
 
 	for (int i = cli_output_block_gap_margin(margin, ctx->output.trailing_newlines); i > 0; i--)
 		cli_output_putchar(ctx, '\n');
@@ -863,7 +863,7 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 		truncated = 1;
 	if (truncated)
 		cli_output_printf(ctx, "  %s" ANSI_DIM "… patch display truncated" ANSI_RESET "\n",
-		       morph_tui_widget_tree_branch(1, 0));
+		       morph_terminal_tree_branch(1, 0));
 	free(display);
 	if (preview_ready)
 		nb_buf_cleanup(&preview);
@@ -1008,7 +1008,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 	} else if (cli_presenter_event_error_code(ev) < 0) {
 		nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
 		if ((nb_buf_init(&prefix), nb_buf_reserve(&prefix, 64) ? 0 : NB_ERR_NOMEM) == 0) {
-			morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+			morph_terminal_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 			nb_buf_append_cstr(&prefix, ANSI_RED "Error: " ANSI_RESET);
 			cli_presenter_print_indented(ctx, nb_buf_cstr(&prefix), text);
 			nb_buf_cleanup(&prefix);
@@ -1034,7 +1034,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 			nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
 			if ((nb_buf_init(&prefix),
 			     nb_buf_reserve(&prefix, 32) ? 0 : NB_ERR_NOMEM) == 0) {
-				morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+				morph_terminal_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 				cli_presenter_print_indented(ctx, nb_buf_cstr(&prefix), text);
 				nb_buf_cleanup(&prefix);
 			}

@@ -6,8 +6,8 @@
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/pages/hooks.h"
-#include "sapi/cli/pages/setup/controls.h"
+#include "sapi/cli/page/hooks.h"
+#include "sapi/cli/page/setup/controls.h"
 
 static const char *cli_hooks_hook_field(const cJSON *row, const char *key)
 {

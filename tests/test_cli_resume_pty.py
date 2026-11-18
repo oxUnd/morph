@@ -86,6 +86,22 @@ def main():
                 terminal.pump(0.5)
                 return frame(f'resize to {height}x{width} without a key', focus)
 
+            # Both banner gutters fill a four-column terminal. Its logical
+            # rows still separate the clipped command from the editable prompt.
+            terminal.screen.resize(lines=14, columns=4)
+            terminal.child.setwinsize(14, 4)
+            terminal.pump(0.5)
+            assert terminal.screen.cursor.y == 12, terminal.screen.display
+            terminal.send('/resume\r')
+            assert terminal.screen.cursor.hidden, terminal.screen.display
+            terminal.send('\x1b')
+            assert terminal.screen.display[9] == '/res', terminal.screen.display
+            assert terminal.screen.display[12].startswith('› '), terminal.screen.display
+            assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == (2, 12)
+            terminal.screen.resize(lines=24, columns=120)
+            terminal.child.setwinsize(24, 120)
+            terminal.pump(0.5)
+
             terminal.send('/resume\r')
             frame('initial picker: 12 rows', 1)
             terminal.send('\x1b[B' * 10)

@@ -8,10 +8,10 @@ extern "C" {
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/command_job.h"
-#include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/component/feed.h"
 #include "sapi/cli/presentation/jobs.h"
 #include "sapi/cli/models/jobs.h"
-#include "sapi/cli/widgets/jobs.h"
+#include "sapi/cli/component/jobs.h"
 }
 
 #include <fcntl.h>
@@ -405,7 +405,7 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
 	nb_buf output{};
 	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
-	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 80, 0), 1);
+	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 80, 0, cli_jobs_now()), 1);
 	std::string text = nb_buf_cstr(&output);
 	EXPECT_EQ(text.find("◉ 1 background job running · /jobs"), 0u);
 	EXPECT_EQ(text.find("cmake --build"), std::string::npos);
@@ -415,7 +415,7 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 	EXPECT_EQ((ctx.jobs && cli_jobs_model_waiting(ctx.jobs)), 1);
 	for (int columns : {120, 80, 60, 40}) {
 		nb_buf_clear(&output);
-		EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, columns, 0), 2);
+		EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, columns, 0, cli_jobs_now()), 2);
 		text = nb_buf_cstr(&output);
 		EXPECT_EQ(text.find("◉ Waiting for"), 0u) << text;
 		EXPECT_NE(text.find("/jobs"), std::string::npos) << text;
@@ -453,7 +453,7 @@ TEST_F(CliTerminalTest, CompletedJobsLeaveOneHistoryReceiptAndNoLiveRows)
 	EXPECT_NE(receipt.find("exited 7"), std::string::npos);
 	nb_buf output{};
 	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
-	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 40, 0), 0);
+	EXPECT_EQ(cli_jobs_render(ctx.jobs, &output, 40, 0, cli_jobs_now()), 0);
 	EXPECT_EQ(std::string(nb_buf_cstr(&output)).find("└"), std::string::npos);
 	EXPECT_TRUE(std::string(nb_buf_cstr(&output)).empty());
 	EXPECT_EQ(cli_jobs_model_visible(ctx.jobs), 0);

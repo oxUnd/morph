@@ -1,20 +1,20 @@
 #include "sapi/cli/presentation/markdown.h"
 #include <nb/err.h>
 #include "sapi/cli/application.h"
-#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/page/chat.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
-#include "sapi/cli/presentation/turn_details.h"
+#include "sapi/cli/page/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "morph_markdown_kitty.h"
 #include "agent_ui/agent_ui.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/component/feed.h"
 #include "sapi/cli/adapters/media/image_loader.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application_internal.h"
 #include "runtime/resources.h"
-#include <morph/tui/media.h>
+#include "sapi/cli/adapters/media/asset.h"
 #include "render/video.h"
 
 #include <limits.h>
@@ -114,7 +114,7 @@ static void cli_markdown_retained_media(const char *type, const char *path, void
 	if (output->error)
 		return;
 	char *preview NB_CLEANUP(cli_markdown_retained_preview_cleanup) = NULL;
-	if (output->styled && morph_tui_media_protocol_available() &&
+	if (output->styled && cli_media_native_available() &&
 	    !video_preview_create_copy(path, &preview)) {
 		nb_buf preview_url NB_CLEANUP(nb_buf_cleanup) = {0};
 		nb_buf markdown NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -160,7 +160,7 @@ static int cli_markdown_retained_document(nb_buf *out, const char *text, int col
 	options.image_max_height_rows = CLI_MARKDOWN_IMAGE_MAX_ROWS;
 	options.image_caption = image_caption;
 	char font[PATH_MAX];
-	if (styled && morph_tui_media_protocol_available()) {
+	if (styled && cli_media_native_available()) {
 		options.load_image = cli_image_loader_load;
 		options.release_image = cli_image_loader_release;
 		if (cli_markdown_terminal_supports_kitty() &&
@@ -219,7 +219,7 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {
-		struct morph_tui_view_insets margin = {.top = 1};
+		struct nt_view_insets margin = {.top = 1};
 
 		for (int gap = cli_output_block_gap_margin(
 			     margin, output->ctx->output.trailing_newlines);
@@ -302,7 +302,7 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 	options.load_image = cli_image_loader_load;
 	options.release_image = cli_image_loader_release;
 	if (cli_chat_active(ctx) &&
-	    (!cli_output_color_enabled(ctx) || !morph_tui_media_protocol_available())) {
+	    (!cli_output_color_enabled(ctx) || !cli_media_native_available())) {
 		options.load_image = cli_markdown_document_image;
 		options.release_image = NULL;
 	}

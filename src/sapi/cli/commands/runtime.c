@@ -14,9 +14,8 @@
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/pages/model.h"
-#include "sapi/cli/pages/chat.h"
-#include "sapi/cli/adapters/input/readline.h"
+#include "sapi/cli/page/model.h"
+#include "sapi/cli/page/chat.h"
 
 static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
 {
@@ -114,14 +113,7 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 	    cli_application_tui_borrow(ctx))
 		return cli_model_show(ctx);
 	if (name && (!strcmp(name, "normal") || !strcmp(name, "ultra"))) {
-		int rc = runtime_model_set_ultra(ctx->runtime, !strcmp(name, "ultra"));
-		if (rc != 0) {
-			CMD_ERROR(ctx, "model mode change failed: %s",
-				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
-			return rc;
-		}
-		cli_readline_sync_mode(ctx, 1);
-		CMD_OK(ctx, "model mode: %s", name);
+		return cli_model_set_mode(ctx, !strcmp(name, "ultra"));
 	} else if (name && strcmp(name, "status")) {
 		int rc = runtime_session_set_model(ctx->runtime, name);
 		if (rc != 0) {

@@ -7,7 +7,7 @@ extern "C" {
 #include "runtime/checkpoint.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/pages/rewind.h"
+#include "sapi/cli/page/rewind.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/presentation/output.h"
@@ -138,11 +138,11 @@ TEST(CliRewindPicker, EscapeClosesWithoutRestoringOrPrintingAReceipt)
 	FILE *terminal = fdopen(slave, "r+");
 	ASSERT_NE(terminal, nullptr);
 	struct cli_application cli{};
-	struct morph_tui_application_options options{};
+	struct nt_application_options options{};
 	options.input = terminal;
 	options.output = terminal;
 	options.external_signals = 1;
-	ASSERT_EQ(morph_tui_application_init(&cli.base, &options), 0);
+	ASSERT_EQ(nt_application_init(&cli.base, &options), 0);
 	cJSON *listing NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
 		"{\"checkpoints\":[{\"id\":1,\"prompt\":\"selected turn\",\"files\":[]}]}");
 	ASSERT_NE(listing, nullptr);
@@ -154,16 +154,16 @@ TEST(CliRewindPicker, EscapeClosesWithoutRestoringOrPrintingAReceipt)
 	cli_presentation_command_input(&cli, "/rewind");
 	int shown = cli_rewind_show_take(&cli, &listing, apply);
 	cli.application_command = shown == 0;
-	int stepped = shown == 0 ? morph_tui_application_step(&cli.base, 0) : shown;
+	int stepped = shown == 0 ? nt_application_step(&cli.base, 0) : shown;
 	ssize_t written = write(master, "\033", 1);
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-	while (stepped == 0 && morph_tui_application_depth(&cli.base) > 0 &&
+	while (stepped == 0 && nt_application_depth(&cli.base) > 0 &&
 	       std::chrono::steady_clock::now() < deadline) {
-		stepped = morph_tui_application_step(&cli.base, 0);
+		stepped = nt_application_step(&cli.base, 0);
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	}
-	size_t depth = morph_tui_application_depth(&cli.base);
-	morph_tui_application_deinit(&cli.base);
+	size_t depth = nt_application_depth(&cli.base);
+	nt_application_deinit(&cli.base);
 	std::string output = testing::internal::GetCapturedStdout();
 	fclose(terminal);
 	close(master);

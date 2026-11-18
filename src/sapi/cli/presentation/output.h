@@ -4,7 +4,7 @@
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include <morph/tui/view.h>
+#include <nothing/tui/view.h>
 #include <stdio.h>
 struct cli_application;
 
@@ -26,13 +26,13 @@ int cli_output_result_begin(struct cli_application *ctx);
 void cli_output_track_tail(int *tail, const char *bytes, size_t len);
 /* Feed components own their box margin. The shared writer realizes it through
  * the TUI box model and reports how many rows are still missing. */
-int cli_output_block_gap_margin(struct morph_tui_view_insets margin, int trailing_newlines);
+int cli_output_block_gap_margin(struct nt_view_insets margin, int trailing_newlines);
 /* Appends one committed block inside its box. The block's top margin is part
  * of the outer slot; the content starts below it. */
-int cli_output_block_append(nb_buf *out, const char *text, struct morph_tui_view_insets margin,
+int cli_output_block_append(nb_buf *out, const char *text, struct nt_view_insets margin,
 			    int *trailing_newlines);
 int cli_output_block_write(struct cli_application *ctx, const char *text,
-			   struct morph_tui_view_insets margin);
+			   struct nt_view_insets margin);
 void cli_output_print_padded(struct cli_application *ctx, const char *s, int target_width);
 int cli_output_print_untrusted(struct cli_application *ctx, const char *text,
 			       enum morph_terminal_text_mode mode);

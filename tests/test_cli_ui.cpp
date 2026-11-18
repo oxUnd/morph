@@ -4,17 +4,16 @@
 extern "C" {
 #include "sapi/cli/adapters/runtime/dispatch.h"
 #include "sapi/cli/adapters/input/state.h"
-#include "sapi/cli/adapters/input/readline.h"
 
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/pages/question.h"
+#include "sapi/cli/page/question.h"
 #include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/presentation/presenter.h"
-#include "sapi/cli/pages/approval.h"
+#include "sapi/cli/page/approval.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "sapi/cli/services/command_job.h"
-#include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/component/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "agent/tool_context.h"
 #include "agent/tools/ask_user.h"
@@ -827,21 +826,6 @@ TEST(CliCommandPrompts, CopyRejectsOccupiedSlotsAndPreservesTheirOwners)
 	EXPECT_EQ(total, 1U);
 	cli_command_job_cleanup(&job);
 }
-
-#ifdef HAVE_READLINE
-TEST(CliReadlineOwnership, InvalidApplicationPreservesDraftForRetry)
-{
-	char *draft NB_CLEANUP(nb_charp_cleanup) = strdup("keep this draft");
-	ASSERT_NE(draft, nullptr);
-	char *original = draft;
-
-	cli_readline_resume_take(nullptr, &draft, 3);
-	EXPECT_EQ(draft, original);
-	cli_readline_editor_open_take(nullptr, &draft, 3);
-	EXPECT_EQ(draft, original);
-	EXPECT_STREQ(draft, "keep this draft");
-}
-#endif
 
 TEST_F(CliUiTest, QueuePreservesDisplayTextForSteeringAndNextTurn)
 {

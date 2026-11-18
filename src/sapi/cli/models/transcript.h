@@ -81,6 +81,7 @@ int cli_transcript_model_set_preview(struct cli_transcript_model *model, size_t 
 void cli_transcript_model_finish(struct cli_transcript_model *model, double now);
 const struct cli_transcript_tool *
 cli_transcript_model_active_borrow(const struct cli_transcript_model *model);
+void cli_transcript_tool_cleanup(struct cli_transcript_tool *tool);
 int cli_transcript_tool_is_running(const struct cli_transcript_tool *tool);
 int cli_transcript_tool_is_pending(const struct cli_transcript_tool *tool);
 

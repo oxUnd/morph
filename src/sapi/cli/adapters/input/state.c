@@ -33,9 +33,6 @@ void cli_input_cleanup(struct cli_application *ctx)
 		return;
 	cli_callbacks_cleanup(ctx);
 	(nb_mutex_free(ctx->input->prompt_lock), ctx->input->prompt_lock = NULL);
-	free(ctx->input->completion_sessions);
-	free(ctx->input->readline_ready_input);
-	free(ctx->input->footer_text);
 	free(ctx->input);
 	ctx->input = NULL;
 }

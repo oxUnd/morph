@@ -10,7 +10,9 @@ struct nb_log;
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/models/agents.h"
 #include <nb/signal.h>
-#include <morph/tui/application.h>
+#include <nothing/tui/application.h>
+#include <nothing/tui/view_controller.h>
+#include <nothing/tui/screen.h>
 #include "sapi/cli/models/presentation.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -28,7 +30,7 @@ struct cli_chat_page;
 struct cli_subagents_page;
 
 struct cli_application {
-	struct morph_tui_application base;
+	struct nt_application base;
 	struct cli_chat_page *chat;
 	struct cli_presenter_state *presenter;
 	struct cli_input_state *input;
@@ -81,12 +83,13 @@ int cli_application_init(struct cli_application *ctx, struct nb_log *logger,
 void cli_application_run(struct cli_application *ctx);
 void cli_application_run_once(struct cli_application *ctx, const char *prompt);
 void cli_application_shutdown(struct cli_application *ctx);
-struct morph_tui_application *cli_application_tui_borrow(struct cli_application *);
-int cli_application_present_screen(struct cli_application *, const struct morph_tui_screen_ops *,
-				   void *data, void (*complete)(void *, int));
-int cli_application_present_screen_with_flags(struct cli_application *,
-					      const struct morph_tui_screen_ops *, void *data,
-					      void (*complete)(void *, int), int flags);
+struct nt_application *cli_application_tui_borrow(struct cli_application *);
+/* accepted transfers the page context even if a standalone run later fails. */
+int cli_application_show_page(struct cli_application *, const struct nt_view_controller_class *,
+			      void *data, int tick_ms, int *accepted);
+int cli_application_present_page(struct nt_application *, const struct nt_view_controller_class *,
+				 void *data, int tick_ms);
+int cli_application_prompt_deferred(const struct cli_application *);
 void cli_application_panel_complete(struct cli_application *, void *data,
 				    void (*complete)(void *, int), int result);
 

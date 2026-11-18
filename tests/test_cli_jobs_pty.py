@@ -133,6 +133,17 @@ class PulseScreen(AlternateScreen):
 
 
 class JobsTerminal(Terminal):
+    def resize(self, lines, columns):
+        if (lines, columns) == (self.screen.lines, self.screen.columns):
+            return
+        start = len(self.stream.frames)
+        self.child.setwinsize(lines, columns)
+        self.screen.resize(lines=lines, columns=columns)
+        # An animation frame queued at the old width can arrive after SIGWINCH.
+        # Wait for the application's complete resize repaint before reading rows.
+        until(self, lambda _: any(len(frame['written']) == lines
+                                  for frame in self.stream.frames[start:]))
+
     def send(self, text):
         if '\x15' in text or '\r' in text:
             self.stream.release_draft_guard()
@@ -251,12 +262,10 @@ def main():
                           for col in range(100)] for row in range(30)]
                 (artifacts / 'live.json').write_text(json.dumps(cells, ensure_ascii=False))
             for width in (120, 80, 60):
-                terminal.child.setwinsize(30, width)
-                terminal.screen.resize(lines=30, columns=width)
+                terminal.resize(30, width)
                 text = until(terminal, lambda text: '2 background jobs running · /jobs' in text)
                 check_collapsed(terminal)
-            terminal.child.setwinsize(30, 100)
-            terminal.screen.resize(lines=30, columns=100)
+            terminal.resize(30, 100)
             terminal.pump(.4)
             with sqlite3.connect(directory / 'data.db') as db:
                 records = db.execute('SELECT process_id,data_json FROM process_jobs').fetchall()
@@ -402,8 +411,7 @@ def main():
                 until(terminal, lambda text: 'Waiting for background job' in text)
                 terminal.pump(1.2)
                 for width in (120, 80, 60):
-                    terminal.child.setwinsize(30, width)
-                    terminal.screen.resize(lines=30, columns=width)
+                    terminal.resize(30, width)
                     text = until(terminal, lambda text: 'Waiting for background job' in text
                                  and '/jobs' in text and 'Esc' in text)
                     assert any(row.startswith('  └ ') for row in terminal.screen.display), text

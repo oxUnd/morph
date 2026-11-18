@@ -1,0 +1,8 @@
+#ifndef MORPH_CLI_PAGE_MODEL_H
+#define MORPH_CLI_PAGE_MODEL_H
+
+struct cli_application;
+int cli_model_set_mode(struct cli_application *application, int ultra);
+int cli_model_show(struct cli_application *application);
+
+#endif

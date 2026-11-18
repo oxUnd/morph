@@ -2,13 +2,13 @@
 #include <nb/err.h>
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/widgets/list.h"
-#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/component/list.h"
+#include "sapi/cli/page/chat.h"
 #include "runtime/runtime.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
 #include <morph/tui/terminal/text.h>
-#include <morph/tui/widgets/tree.h>
+#include <morph/tui/terminal/report.h>
 #include <errno.h>
 #include <string.h>
 
@@ -67,9 +67,9 @@ static int cli_mcp_tree_child(nb_buf *out, const int *ancestors, size_t depth, i
 {
 	nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf continuation NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc = morph_tui_widget_tree_prefix(&prefix, ancestors, depth, last, 0, 0);
+	int rc = morph_terminal_tree_prefix(&prefix, ancestors, depth, last, 0, 0);
 	if (!rc)
-		rc = morph_tui_widget_tree_prefix(&continuation, ancestors, depth, last, 1, 0);
+		rc = morph_terminal_tree_prefix(&continuation, ancestors, depth, last, 1, 0);
 	if (!rc)
 		rc = cli_mcp_tree_line(out, text, prefix.ptr, continuation.ptr, style, columns);
 	return rc;

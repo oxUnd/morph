@@ -27,8 +27,13 @@ Unicode decoding, validation, and terminal widths use vendored [utf8proc](docs/u
 
 ## Build
 
-Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libuv ≥ 1.44, libffi, libwebp, libxml2, and
-[mathjax-c](https://github.com/oxUnd/mathjax-c). Optional: readline.
+Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libuv ≥ 1.44, libffi, libwebp, libxml2, GNU readline ≥ 8, and
+[mathjax-c](https://github.com/oxUnd/mathjax-c).
+
+The CLI builds against the companion nothing-tui checkout at `../nothing-tui`
+at commit `be798de4c4ee5caa76f975ac8a847ab3c04bdaf4` on branch
+`feat/morph-cli-integration`. Use `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui`
+to select another checkout of that revision. Both libraries use the nbase snapshot in `vendor/nothing`.
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
 
@@ -136,9 +141,9 @@ local directories also work. `morph skill` aliases `morph skills`.
 See [the management command reference](docs/cli-management.md) for selection,
 update protection, configuration scope, and all options.
 
-With readline, the prompt stays editable while the agent runs: Enter submits a
+The prompt stays editable while the agent runs. Enter submits a
 requirement adjustment, Esc/Ctrl+C cancels, Ctrl+J or Alt+Enter inserts a
-newline. Ctrl+O opens the turn's full-screen tool transcript. Pasted and typed
+newline. Ctrl+T opens the turn's full-screen tool transcript. Pasted and typed
 image paths become `[IMAGE#1]` chips (Backspace removes one); `/render <path>`
 previews, `/image <path>` attaches.
 

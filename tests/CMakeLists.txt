@@ -90,7 +90,8 @@ set(TEST_SOURCES
 	test_cli_retained_widgets.cpp
 	test_cli_retained_media.cpp
 	test_cli_subagents.cpp
-	test_cli_composer_panel.cpp
+	cli_agents_browser_fixture.c
+	test_cli_selector.cpp
 	test_cli_model.cpp
 	test_cli_transcript_model.cpp
 	test_cli_terminal.cpp
@@ -169,12 +170,8 @@ target_compile_definitions(morph-tests PRIVATE
 	MORPH_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-if(ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
-	target_compile_definitions(morph-tests PRIVATE HAVE_READLINE=1)
-endif()
-
 target_link_libraries(morph-tests PRIVATE
-	morph-cli
+	morph-cli morph-tui
 	GTest::gtest_main
 )
 
@@ -185,7 +182,7 @@ endif()
 gtest_discover_tests(morph-tests)
 
 # PTY integration driver uses the production CLI with a disposable database.
-add_executable(morph-cli-pty-driver cli_pty_driver.c)
+add_executable(morph-cli-pty-driver cli_pty_driver.c cli_agents_browser_fixture.c)
 target_include_directories(morph-cli-pty-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(morph-cli-pty-driver PRIVATE morph-cli)
 set_target_properties(morph-cli-pty-driver PROPERTIES
@@ -265,8 +262,7 @@ if(Python3_Interpreter_FOUND)
 		set_tests_properties(cli_resume_scale_pty_integration PROPERTIES
 			SKIP_RETURN_CODE 77 TIMEOUT 120)
 	endif()
-	if(UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
-		# Inline composer geometry requires the Readline input mode.
+	if(UNIX)
 		add_test(NAME cli_agents_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_agents_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver>)
@@ -309,13 +305,6 @@ if(ENABLE_GLOBAL_STATE_AUDIT)
 			${CMAKE_CURRENT_SOURCE_DIR}/test_global_state_audit.py)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX)
-	if(NOT ENABLE_READLINE OR NOT MORPH_READLINE_LIBRARY)
-		add_test(NAME cli_select_plain_pty_integration
-			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_select_pty.py
-				$<TARGET_FILE:morph-cli-pty-driver> --plain)
-		set_tests_properties(cli_select_plain_pty_integration PROPERTIES
-			SKIP_RETURN_CODE 77 TIMEOUT 90)
-	endif()
 	if(TARGET morph-tui-minimal AND TARGET morph-tui-controls)
 		add_test(NAME tui_samples_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_samples_pty.py
@@ -369,7 +358,7 @@ if(Python3_Interpreter_FOUND AND UNIX)
 	set_tests_properties(cli_setup_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 endif()
-if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
+if(Python3_Interpreter_FOUND AND UNIX)
 	add_test(NAME cli_application_pty_integration
 		COMMAND ${Python3_EXECUTABLE}
 			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_pty.py
@@ -504,23 +493,21 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_recap_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
-	if(MORPH_HAVE_RL_BIND_KEYSEQ AND MORPH_READLINE_INCLUDE_DIR)
-		add_test(NAME cli_recap_composer_pty_integration
-			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_recap_composer_pty.py
-				$<TARGET_FILE:morph-cli-pty-driver>)
-		set_tests_properties(cli_recap_composer_pty_integration PROPERTIES
-			SKIP_RETURN_CODE 77 TIMEOUT 120)
-		add_test(NAME cli_recap_live_composer_pty_integration
-			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_recap_composer_pty.py
-				$<TARGET_FILE:morph-cli-pty-driver> --live)
-		set_tests_properties(cli_recap_live_composer_pty_integration PROPERTIES
-			SKIP_RETURN_CODE 77 TIMEOUT 120)
-		add_test(NAME cli_reflow_pty_integration
-			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_reflow_pty.py
-				$<TARGET_FILE:morph-cli-pty-driver>)
-		set_tests_properties(cli_reflow_pty_integration PROPERTIES
-			SKIP_RETURN_CODE 77 TIMEOUT 120)
-	endif()
+	add_test(NAME cli_recap_composer_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_recap_composer_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_recap_composer_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 120)
+	add_test(NAME cli_recap_live_composer_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_recap_composer_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver> --live)
+	set_tests_properties(cli_recap_live_composer_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 120)
+	add_test(NAME cli_reflow_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_reflow_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_reflow_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 120)
 	add_test(NAME cli_footer_geometry_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_footer_geometry_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

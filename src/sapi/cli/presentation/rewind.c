@@ -1,6 +1,6 @@
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/presentation/output.h"
-#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/component/list.h"
 #include "errors.h"
 #include <limits.h>
 #include <stdio.h>

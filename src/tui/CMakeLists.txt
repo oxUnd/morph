@@ -1,4 +1,5 @@
 add_library(morph-terminal STATIC
+    terminal/report.c
     terminal/text.c
     terminal/size.c
     terminal/activity.c)

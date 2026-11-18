@@ -4,11 +4,10 @@
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/state.h"
-#ifdef HAVE_READLINE
+#include "sapi/cli/page/chat.h"
 #include <stdio.h>
 #include <readline/readline.h>
 #include <readline/history.h>
-#endif
 #include "sapi/cli/adapters/input/cancel.h"
 #include "sapi/cli/adapters/input/callbacks.h"
 #include "sapi/cli/services/command_job.h"
@@ -81,7 +80,6 @@ char *cli_input_fgets(struct cli_application *ctx, char *buffer, size_t capacity
 	return cli_input_fgets_until(ctx, buffer, capacity, stream, NULL);
 }
 
-#ifdef HAVE_READLINE
 /* macOS poll reports POLLNVAL for a valid /dev/tty descriptor. Approval and
  * question prompts use that device, so wait with select for both input paths. */
 static int cli_reader_wait(int fd, int milliseconds)
@@ -158,6 +156,8 @@ int cli_poll_getc(struct cli_application *ctx, FILE *stream)
 
 char *cli_reader_prompt_stream_copy(struct cli_application *ctx, const char *prompt, FILE *stream)
 {
+	if (cli_chat_yield_input(ctx))
+		return NULL;
 	FILE *previous_stream = rl_instream;
 	int (*previous)(FILE *) = rl_getc_function;
 	int (*reader)(FILE *) = ctx ? cli_callback_getc(ctx, cli_poll_getc) : rl_getc;
@@ -190,4 +190,3 @@ void cli_reader_remember(const char *text)
 	if (text && text[0])
 		add_history(text);
 }
-#endif

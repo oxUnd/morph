@@ -1,14 +1,10 @@
 # Project terminal UI framework
 
-`morph-tui` is the terminal UI framework used by the interactive CLI, setup wizard,
-session picker, hooks review, history inspector, and `ask_user` selector. It depends
-on `nbase::nbase`, the terminal text/size/activity target `morph-terminal`,
-`morph-media`, libuv 1.44 or newer, and POSIX terminal APIs. It does not depend on CLI context, runtime services, model configuration,
-sessions, or agent types.
-
-The framework covers the components these screens currently need. Application
-code owns domain data and actions; the framework owns terminal mechanics,
-interaction state, layout helpers, and presentation primitives.
+This document records the in-tree `morph-tui` SDK and the original CLI design.
+The SDK remains available to its samples and library consumers. The current CLI
+uses the sibling `nothing-tui` library and shares the stateless `morph-terminal`
+text and status helpers. Its current architecture and build instructions are in
+the [CLI module map](../src/sapi/cli/README.md).
 
 ## Directory and include conventions
 
@@ -39,18 +35,6 @@ src/tui/
     customization/           custom widget, pages, bindings, and app shortcuts
   CMakeLists.txt
 
-src/sapi/cli/                 complete TUI application
-  main.c                     process bootstrap
-  application.c, .h          Application subclass, modes and lifecycle
-  application_internal.h     shared implementation conveniences
-  models/                    composer, presentation and setup data
-  pages/                     chat, navigation, questions, approvals and setup
-  widgets/                   app-specific feed, transcript, banner and lists
-  commands/                  slash actions and management entry points
-  services/                  jobs, runtime actions, configuration and storage
-  adapters/                  input, runtime, interaction protocol and media
-  presentation/              text/Markdown/HTML formatting and output policy
-  CMakeLists.txt, README.md
 ```
 
 - Include domain APIs as `<morph/tui/<object>.h>`, such as
@@ -173,14 +157,6 @@ renderer is the only writer for this retained tree. Runtime events mutate models
 and controls on the owner thread; modal pages retain the underlying tree and
 draft. Closing a modal restores that tree and invalidates the frame.
 
-Inline model, permission and subagent pickers use a temporary compound Widget
-with a TextView inside the chat tree. The panel replaces the composer and footer
-while retaining the submitted command and feed. Its provider still supplies
-content and actions; the retained renderer owns layout, clipping and cursor
-placement. Closing the panel removes its subtree before invoking completion and
-restores the existing editor. Application shutdown cancels it before View scope
-destruction.
-
 Native Image controls retain immutable PNG/RGBA assets. Canvas image placements
 inherit View content clipping; the renderer crops pixels, caches encoded data,
 and owns Kitty/iTerm/Sixel plane placement and deletion in the same synchronized
@@ -203,13 +179,6 @@ stop the loop immediately, including while a modal page is visible. Signal
 handling stays with the existing sigwait listener, which sets flags and wakes the application;
 libuv does not install competing signal handlers. JSON and plain modes retain
 their existing input/output contracts.
-
-Standalone startup review, setup, and legacy synchronous tool prompts continue
-to use the screen polling API below. Interactive runtime requests currently close
-an open navigation panel before invoking that prompt adapter. Replacing those
-blocking prompt adapters remains follow-up work. Primary feed updates are
-retained while another page is visible; stateless legacy consumers may still
-capture textual output.
 
 ## Retained application interface
 
@@ -390,7 +359,7 @@ and setup migration.
 
 ## Layers and current consumers
 
-| Layer / component | Responsibility | Production consumers |
+| Layer / component | Responsibility | Original CLI consumers |
 | --- | --- | --- |
 | Application | libuv scheduling, controller presentation, input ownership, invalidation, teardown | Interactive chat, hooks, sessions, history, jobs |
 | Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `morph_tui_screen` |
@@ -588,7 +557,7 @@ its `first` and `rows` parameters address visible nodes. Every row respects the
 requested display width, including CJK text and very narrow terminals. Skill
 names and descriptions use bounded columns; long text receives an ellipsis.
 
-`morph_tui_widget_tree_row`, `morph_tui_widget_tree_prefix`, and `morph_tui_widget_tree_branch` serve incremental reports
+`morph_terminal_tree_row`, `morph_terminal_tree_prefix`, and `morph_terminal_tree_branch` serve incremental reports
 whose later siblings are not yet available. CLI adapters retain domain formatting
 (JSON limits, status colors, timestamps and receipts), while all branch geometry
 comes from this component. Help, extensions, permissions, tasks, sync, sessions,

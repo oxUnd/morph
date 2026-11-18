@@ -9,7 +9,7 @@
 - **ReAct** `src/agent/react.c`: Thought → Action → Observation → Guardrail → Final, via OpenAI Function Calling (not text parsing).
 - **Models**: `llm` (text chat), `image_gen`, `video_gen`, each configured independently.
 - **Runtime facade** `src/runtime/`: process-level owner. Frontends hold an opaque `struct runtime *` and enter through `runtime_execute_turn()`; they never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md`.
-- **TUI** `src/tui/`: implementation sources stay in `core/`, `terminal/`, `render/`, and `widgets/`. Public APIs name domain objects (`morph_tui_application_*`, `morph_tui_view_*`, `morph_tui_canvas_*`) rather than implementation layers; controls use `morph_tui_widget_*`. Include `<morph/tui/application.h>`, `<morph/tui/view.h>`, or `<morph/tui/widgets/list.h>`; consumers may use `<morph/tui.h>`. Keep implementation headers private and convenience umbrellas out of framework implementations. Application is one extensible object for init/deinit, run/step, messages, embedding, and main; there is no separate public App/runtime object. Custom types embed public base structs first and override optional method tables. Mutable view operations belong to the UI owner thread; workers post model messages. The entire CLI follows the TUI application layout under `src/sapi/cli/`; its root Application owns modes and lifecycle, with pages, widgets, models, services, commands, presentation and adapters. See `docs/tui-application-layout.md`. Samples live in `src/tui/samples/<name>/` with `main.c`, `CMakeLists.txt`, and `README.md`; `customization/` demonstrates custom components, pages, and interactions. See `docs/tui-architecture.md`.
+- **TUI** `src/tui/`: implementation sources stay in `core/`, `terminal/`, `render/`, and `widgets/`. Public APIs name domain objects (`morph_tui_application_*`, `morph_tui_view_*`, `morph_tui_canvas_*`) rather than implementation layers; controls use `morph_tui_widget_*`. Include `<morph/tui/application.h>`, `<morph/tui/view.h>`, or `<morph/tui/widgets/list.h>`; consumers may use `<morph/tui.h>`. Keep implementation headers private and convenience umbrellas out of framework implementations. Application is one extensible object for init/deinit, run/step, messages, embedding, and main; there is no separate public App/runtime object. Custom types embed public base structs first and override optional method tables. Mutable view operations belong to the UI owner thread; workers post model messages. The entire CLI follows the TUI application layout under `src/sapi/cli/`; its root embeds the companion nothing-tui Application and owns modes and lifecycle. Native controllers live in `page/` and state-driven components live in `component/`. See `docs/tui-application-layout.md`. Samples live in `src/tui/samples/<name>/` with `main.c`, `CMakeLists.txt`, and `README.md`; `customization/` demonstrates custom components, pages, and interactions. See `docs/tui-architecture.md`.
 - **Permissions** `src/permission/`: shared access/approval/reviewer policy, grants and review routing. Runtime owns the context, human/model adapters and application presets; frontends use `runtime_permission_get_policy()` / `_set_policy()`. Concrete tools describe operations; opaque tools use the registry gate. Descendants share authority. See `docs/permissions-design.md` and `docs/permissions-acceptance.md`.
 - **Tools** `src/agent/tools/`:
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, ask_user
@@ -90,8 +90,8 @@
   [src/sapi/cli/README.md](src/sapi/cli/README.md) and
   [the shared application layout](docs/tui-application-layout.md). The complete
   CLI is the application; its root `application.c/.h` owns the embedded TUI base
-  and all execution modes. Keep page controllers in `pages/`, reusable app
-  components in `widgets/`, models in `models/`, use cases in `services/`,
+  and all execution modes. Keep page controllers in `page/`, reusable app
+  components in `component/`, models in `models/`, use cases in `services/`,
   external integrations in `adapters/`, command actions in `commands/` and
   formatting in `presentation/`. Every implementation includes its sibling
   header first and imports other interfaces directly. `application_internal.h`
@@ -165,7 +165,8 @@ morph-agent (react, context, compress, tokenizer, tool, plan)
 morph-tools, morph-skill, morph-mcp, morph-config
 morph-runtime ← morph-agent, config, credits, event, mcp, session, skill, sync, tools
 morph-tui ← nbase, morph-terminal, morph-media, libuv
-morph-cli → morph (executable)
+nothing-tui ← nbase, libuv, GNU Readline, morph-markdown-render
+morph-cli ← nothing-tui, morph-terminal, morph-runtime → morph (executable)
 ```
 Declare the dependencies actually consumed by a target. There is no shared
 `morph-util` facade. Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config,
@@ -220,7 +221,7 @@ Prefer these over hand-rolled equivalents.
 ## Dependencies
 - Required: SQLite3, libcurl, libuv ≥ 1.44, CMake ≥ 3.20.
 - Fetched: cmark-gfm (Markdown), QuickJS, wasm3, BLAKE3, tree-sitter and GoogleTest v1.14.0; versions are pinned in CMake.
-- Optional: readline (auto-detected; falls back to fgets); libseccomp (Linux sandbox).
+- The CLI requires GNU Readline ≥ 8.0. libseccomp is optional for the Linux sandbox.
 
 ## Configuration
 - Default `~/.morph/config.toml` (`mkdir -p ~/.morph && cp config.toml.example ~/.morph/config.toml`); override with `-c`/`--config`.

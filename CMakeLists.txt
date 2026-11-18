@@ -45,7 +45,6 @@ endif()
 
 option(BUILD_TESTS "Build tests" ON)
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
-option(ENABLE_READLINE "Build legacy Readline input adapters" ON)
 option(BUILD_FASTCGI "Build FastCGI front-end (morph-fastcgi)" OFF)
 
 if(ENABLE_ASAN)
@@ -325,6 +324,15 @@ set(NB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(NB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(NB_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 add_subdirectory(vendor/nothing EXCLUDE_FROM_ALL)
+
+set(MORPH_NOTHING_TUI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../nothing-tui"
+    CACHE PATH "nothing-tui source checkout used by the CLI")
+set(NT_BUILD_SAMPLES OFF)
+set(NT_BUILD_TESTS OFF)
+set(NT_INSTALL OFF)
+set(NT_STB_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
+set(NT_STB_RESIZE_TARGET morph-media)
+add_subdirectory("${MORPH_NOTHING_TUI_SOURCE_DIR}" nothing-tui EXCLUDE_FROM_ALL)
 
 add_subdirectory(vendor)
 add_subdirectory(src)

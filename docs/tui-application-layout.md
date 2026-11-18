@@ -1,6 +1,6 @@
 # TUI application directory conventions
 
-A TUI consumer is an application that depends on `morph-tui`. Its root owns the
+Morph CLI uses the companion `nothing-tui` library. Its root owns the
 Application and its lifecycle. Organize the entire executable by application
 responsibility, including commands, configuration and noninteractive modes.
 The framework implementation layout (`core/`, `terminal/`, `render/`, `widgets/`)
@@ -12,16 +12,16 @@ is separate from the application layout.
   application.c, .h            Application subclass, composition and lifecycle
   application_internal.h       optional implementation conveniences
   models/                      shared application data and model operations
-  pages/                       page controllers, navigation and modal interactions
+  page/                        page controllers, navigation and modal interactions
     <feature>/                 cohesive multi-module feature, when needed
-  widgets/                     application-specific reusable components
+  component/                   application-specific reusable components
   commands/                    local command parsing and action dispatch
   services/                    use cases, persistence and asynchronous jobs
   adapters/                    external runtime, protocol, input and media bridges
     <integration>/             interfaces grouped by external responsibility
   presentation/                formatting, styles and output policies
   assets/                      application-owned static assets, when needed
-  CMakeLists.txt                explicit sources and framework dependency
+  CMakeLists.txt               explicit sources and framework dependency
   README.md                    module map, entry points and extension guide
 ```
 
@@ -35,14 +35,14 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
 
 - `main.c` parses process arguments, prepares logging and selects an application
   operation. Application owns its state, runtime handle, execution modes, workers
-  and teardown. It embeds `struct morph_tui_application` first and uses that same
+  and teardown. It embeds `struct nt_application` first and uses that same
   base for initialization, run/step, presentation and shutdown. Noninteractive
   modes may leave the terminal framework uninitialized while using the same app.
 - Pages compose views, keep editing/navigation state and bind semantic actions.
-  Custom retained pages embed `struct morph_tui_view_controller` first. Existing
+  Custom retained pages embed `struct nt_view_controller` first. Existing
   external renderers/input libraries may use the public controller adapter;
   those pages still belong to the same Application controller stack.
-- Widgets embed `struct morph_tui_widget` first when using retained controls.
+- Compose components with the NT builder, native controls and observable state. A custom view embeds `struct nt_view` first.
   App-specific output components may use public drawing/terminal APIs. Rendering,
   key handling and local interaction state belong here; business actions go
   through page bindings or services. Shared margin/padding behavior follows the
@@ -59,20 +59,17 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   dispatch pages or services; they never start a second event loop. The app owns
   the loop, page presentation and terminal restoration.
 
-Local interactions that replace only the CLI composer use
-`widgets/composer_panel`. The component presents a key-input controller on the
-existing stack, bounds its rows to retain conversation context, and owns relative
-redraw and terminal cleanup. Pages supply content and semantic event callbacks;
-they do not implement cursor movement or alternate-screen sessions. The model,
-permissions and subagent pages are examples. Shared feed message formatting
-lives in `presentation/messages`, so thread previews can retain message and
-Markdown styles without borrowing the primary presenter's mutable stream state.
+The chat page mounts inline controls using `cli_chat_panel_mount`. A panel
+builds its native views, identifies the control to focus and handles its
+selection and completion. The model and permissions pages share
+`component/selector`. Child threads use the same feed formatting as the primary
+conversation through `presentation/messages`.
 
 Prepare termination while the stopped framework is still initialized: stop new
 owner-thread calls, cancel/join workers and detach wakeup producers. Then destroy
 controllers and the framework, flush deferred output and release the app's
 remaining resources. Borrowed app/page pointers must remain alive through their
-callbacks. Import only public `<morph/tui/...>` headers; the framework never
+callbacks. Import NT through public `<nothing/tui/...>` headers; the framework never
 imports app/domain headers. Do not duplicate runtime initialization, turn
 execution, persistence or shutdown in a frontend.
 

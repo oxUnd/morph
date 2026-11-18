@@ -1,0 +1,12 @@
+#ifndef MORPH_CLI_COMPONENT_SHELL_STYLE_H
+#define MORPH_CLI_COMPONENT_SHELL_STYLE_H
+
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+
+/* Append terminal-safe shell text. A positive width wraps with four-column
+ * continuation indentation. This is a conservative lexer, not a shell parser. */
+int cli_shell_style(nb_buf *out, const char *text, int width);
+const char *cli_shell_summary_borrow(const char *text, const char *workdir);
+
+#endif

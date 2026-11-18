@@ -10,44 +10,47 @@ add_library(morph-cli STATIC
 	models/transcript.c
 
 	# Page controllers
-	pages/approval.c
-	pages/chat.c
-	pages/history.c
-	pages/hooks.c
-	pages/jobs.c
-	pages/memory.c
-	pages/subagents.c
-	pages/model.c
-	pages/permissions.c
-	pages/question.c
-	pages/resume.c
-	pages/rewind.c
-	presentation/turn_details.c
-	pages/setup/controls.c
-	pages/setup/wizard.c
+	page/approval.c
+	page/chat.c
+	page/history.c
+	page/hooks.c
+	page/jobs.c
+	page/memory.c
+	page/subagents.c
+	page/model.c
+	page/permissions.c
+	page/question.c
+	page/resume.c
+	page/rewind.c
+	page/turn_details.c
+	page/setup/controls.c
+	page/setup/wizard.c
 
-	# Application widgets
-	widgets/subagents.c
-	widgets/agents.c
-	widgets/agents_browser.c
-	widgets/banner.c
-	widgets/composer_panel.c
-	widgets/composer.c
-	widgets/message.c
-	widgets/mcp_tree.c
-	widgets/media.c
-	widgets/rich_document.c
-	widgets/tool_call.c
-	widgets/feed.c
-	widgets/feed_block.c
-	widgets/jobs.c
-	widgets/list.c
-	widgets/notice.c
-	widgets/notification.c
-	widgets/plan.c
-	widgets/recap.c
-	widgets/shell_style.c
-	widgets/transcript.c
+	# Application components
+	component/setup_prompt.c
+	component/subagents.c
+	component/agents.c
+	component/agents_browser.c
+	component/banner.c
+	component/skill_tree.c
+	component/selector.c
+	component/composer.c
+	component/message.c
+	component/mcp_tree.c
+	component/media.c
+	component/rich_document.c
+	component/tool_call.c
+	component/feed.c
+	component/feed_block.c
+	component/jobs.c
+	component/list.c
+	component/notice.c
+	component/notification.c
+	component/plan.c
+	component/recap.c
+	component/report.c
+	component/shell_style.c
+	component/transcript.c
 
 	# Commands
 	commands/agents.c
@@ -93,10 +96,9 @@ add_library(morph-cli STATIC
 	adapters/clipboard/clipboard.c
 	adapters/input/callbacks.c
 	adapters/input/cancel.c
-	adapters/input/keymap.c
 	adapters/input/reader.c
-	adapters/input/readline.c
 	adapters/input/state.c
+	adapters/media/asset.c
 	adapters/media/image_loader.c
 	adapters/media/image_probe.c
 	adapters/input/confirm.c
@@ -144,7 +146,8 @@ target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(morph-cli PUBLIC
 	morph-runtime
 	nbase::nbase morph-cjson
-	morph-tui
+	nothing-tui::nothing-tui
+	morph-terminal
 	morph-db
 	morph-agent
 	morph-http
@@ -186,57 +189,4 @@ install(TARGETS morph
 	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-if(ENABLE_READLINE)
-	find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h
-		/opt/homebrew/opt/readline/include
-		/usr/local/opt/readline/include
-		/usr/include
-		NO_DEFAULT_PATH
-	)
-	find_library(MORPH_READLINE_LIBRARY readline
-		/opt/homebrew/opt/readline/lib
-		/usr/local/opt/readline/lib
-		/usr/lib
-		NO_DEFAULT_PATH
-	)
-	if(NOT MORPH_READLINE_INCLUDE_DIR)
-		find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h)
-	endif()
-	if(NOT MORPH_READLINE_LIBRARY)
-		find_library(MORPH_READLINE_LIBRARY readline)
-	endif()
-endif()
-if(ENABLE_READLINE AND MORPH_READLINE_INCLUDE_DIR AND MORPH_READLINE_LIBRARY)
-	include(CheckCSourceCompiles)
-	set(CMAKE_REQUIRED_INCLUDES ${MORPH_READLINE_INCLUDE_DIR})
-	set(CMAKE_REQUIRED_LIBRARIES ${MORPH_READLINE_LIBRARY})
-	check_c_source_compiles([=[
-#include <stdio.h>
-#include <readline/readline.h>
-int main(void)
-{
-	return rl_bind_keyseq("", 0);
-}
-]=] MORPH_HAVE_RL_BIND_KEYSEQ)
-	check_c_source_compiles([=[
-#include <stdio.h>
-#include <readline/readline.h>
-int main(void) { return rl_bracketed_paste_begin(1, 0); }
-]=] MORPH_HAVE_RL_BRACKETED_PASTE_BEGIN)
-	unset(CMAKE_REQUIRED_INCLUDES)
-	unset(CMAKE_REQUIRED_LIBRARIES)
-	target_include_directories(morph-cli PRIVATE ${MORPH_READLINE_INCLUDE_DIR})
-	target_compile_definitions(morph-cli PRIVATE HAVE_READLINE=1)
-	if(MORPH_HAVE_RL_BRACKETED_PASTE_BEGIN)
-		target_compile_definitions(morph-cli PRIVATE HAVE_RL_BRACKETED_PASTE_BEGIN=1)
-	endif()
-	if(MORPH_HAVE_RL_BIND_KEYSEQ)
-		target_compile_definitions(morph-cli PRIVATE HAVE_RL_BIND_KEYSEQ=1)
-	endif()
-	target_link_libraries(morph-cli PUBLIC ${MORPH_READLINE_LIBRARY})
-	message(STATUS "readline found: ${MORPH_READLINE_LIBRARY}")
-elseif(ENABLE_READLINE)
-	message(STATUS "legacy readline adapter unavailable; interactive chat uses retained TUI")
-else()
-	message(STATUS "legacy readline adapter disabled; interactive chat uses retained TUI")
-endif()
+target_link_libraries(morph-cli PRIVATE PkgConfig::NT_READLINE)

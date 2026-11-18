@@ -10,8 +10,8 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include "sapi/cli/widgets/list.h"
-#include "sapi/cli/pages/permissions.h"
+#include "sapi/cli/component/list.h"
+#include "sapi/cli/page/permissions.h"
 #include "sapi/cli/application.h"
 
 #include <stdint.h>
@@ -95,7 +95,7 @@ static int cli_permissions_print_permissions(struct cli_application *ctx)
 		group_last = ++group == group_count;
 		cli_list_group(ctx, cli_permissions_grant_group_name(grants, i, end), end - i,
 			       group_last);
-		ancestor = morph_tui_widget_tree_branch(group_last, 1);
+		ancestor = morph_terminal_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char label[96];
 

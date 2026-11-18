@@ -3,7 +3,7 @@
 #include "sapi/cli/commands/options.h"
 #include "sapi/cli/commands/mcp_manage.h"
 #include "sapi/cli/commands/skills_manage.h"
-#include "sapi/cli/pages/setup/wizard.h"
+#include "sapi/cli/page/setup/wizard.h"
 #include "sapi/cli/presentation/about.h"
 #include "sapi/cli/presentation/diagnostics.h"
 #include "sapi/cli/presentation/output.h"
