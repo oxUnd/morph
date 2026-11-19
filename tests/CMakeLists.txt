@@ -65,7 +65,6 @@ set(TEST_SOURCES
 	test_sync.cpp
 	test_bash_parse.cpp
 	test_exec_process.cpp
-	test_spin.cpp
 	test_util_containers.cpp
 	test_render.cpp
 	test_mcp.cpp
@@ -95,11 +94,6 @@ set(TEST_SOURCES
 	test_cli_model.cpp
 	test_cli_transcript_model.cpp
 	test_cli_terminal.cpp
-	test_tui.cpp
-	test_tui_application.cpp
-	test_tui_views.cpp
-	test_tui_selection.cpp
-	test_tui_media.cpp
 	test_cli_ui.cpp
 	test_utf8.cpp
 	test_kitty_protocol.cpp
@@ -171,7 +165,7 @@ target_compile_definitions(morph-tests PRIVATE
 )
 
 target_link_libraries(morph-tests PRIVATE
-	morph-cli morph-tui
+	morph-cli
 	GTest::gtest_main
 )
 
@@ -306,20 +300,6 @@ if(ENABLE_GLOBAL_STATE_AUDIT)
 			${CMAKE_CURRENT_SOURCE_DIR}/test_global_state_audit.py)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX)
-	if(TARGET morph-tui-minimal AND TARGET morph-tui-controls)
-		add_test(NAME tui_samples_pty_integration
-			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_samples_pty.py
-				$<TARGET_FILE:morph-tui-minimal> $<TARGET_FILE:morph-tui-controls>)
-		if(TARGET morph-tui-customization)
-			add_test(NAME tui_customization_pty_integration
-				COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_customization_pty.py
-					$<TARGET_FILE:morph-tui-customization>)
-			set_tests_properties(tui_customization_pty_integration PROPERTIES
-				SKIP_RETURN_CODE 77 TIMEOUT 45)
-		endif()
-		set_tests_properties(tui_samples_pty_integration PROPERTIES
-			SKIP_RETURN_CODE 77 TIMEOUT 45)
-	endif()
 	if(TARGET morph-fastcgi)
 		add_test(NAME fastcgi_ask_user_integration
 			COMMAND ${Python3_EXECUTABLE}

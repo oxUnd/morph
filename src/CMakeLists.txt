@@ -29,6 +29,10 @@ target_include_directories(morph-credits PUBLIC
 )
 target_link_libraries(morph-credits PUBLIC nbase::nbase morph-cjson morph-db morph-config morph-persistence)
 
+add_library(morph-terminal STATIC terminal/text.c)
+target_include_directories(morph-terminal PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(morph-terminal PUBLIC nbase::nbase)
+
 add_subdirectory(media)
 add_subdirectory(render)
 add_subdirectory(prompt)
@@ -49,5 +53,4 @@ add_subdirectory(event)
 add_subdirectory(agent_ui)
 add_subdirectory(sync)
 add_subdirectory(runtime)
-add_subdirectory(tui)
 add_subdirectory(sapi)

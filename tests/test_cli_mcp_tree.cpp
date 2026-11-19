@@ -7,7 +7,7 @@ extern "C" {
 #include <nb/cleanup.h>
 #include "errors.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "sapi/cli/presentation/terminal_text.h"
 }
 
 #include <cerrno>
@@ -18,7 +18,7 @@ extern "C" {
 static std::string mcp_tree_plain(const char *source)
 {
 	char *plain NB_CLEANUP(nb_charp_cleanup) =
-		morph_terminal_strip_ansi_dup(source, std::strlen(source), nullptr);
+		cli_terminal_text_strip_ansi_dup(source, std::strlen(source), nullptr);
 	return plain ? plain : "";
 }
 
@@ -30,9 +30,11 @@ static std::vector<std::string> mcp_tree_lines(const std::string &text)
 		size_t end = text.find('\n', start);
 		if (end == std::string::npos)
 			end = text.size();
+
 		lines.emplace_back(text.substr(start, end - start));
 		start = end + 1;
 	}
+
 	return lines;
 }
 
@@ -46,12 +48,16 @@ static std::string mcp_tree_unwrap(const std::string &text)
 			size_t bytes = 0;
 			if (!nb_utf8_read(line.data() + offset, line.size() - offset, &cp, &bytes))
 				break;
+
 			if (cp != ' ' && cp != 0x2502u && cp != 0x251cu && cp != 0x2514u)
 				break;
+
 			offset += bytes;
 		}
+
 		result.append(line, offset, std::string::npos);
 	}
+
 	return result;
 }
 
@@ -97,6 +103,7 @@ TEST(CliMcpTreeTest, ServerPeersUseCanonicalMarkersAtTheLeftmostColumn)
 			i % 2 ? MCP_TRANSPORT_STREAMABLE_HTTP : MCP_TRANSPORT_STDIO;
 		servers[i].state = states[i];
 	}
+
 	servers[5].error_code = NB_ERR_IO;
 	servers[6].error_code = NB_ERR_CANCELLED;
 	servers[7].error_code = NB_ERR_TIMEOUT;
@@ -113,14 +120,17 @@ TEST(CliMcpTreeTest, ServerPeersUseCanonicalMarkersAtTheLeftmostColumn)
 			for (const auto &line : lines) {
 				if (line.find(name) == std::string::npos)
 					continue;
+
 				found = true;
 				EXPECT_EQ(line.find(std::string(markers[i]) + " " + name), 0u);
 				EXPECT_NE(line.find(i % 2 ? "[http]" : "[stdio]"),
 					std::string::npos);
 				EXPECT_NE(line.find(state_names[i]), std::string::npos) << line;
 			}
+
 			EXPECT_TRUE(found) << name << '\n' << plain;
 		}
+
 		EXPECT_NE(plain.find("TIMEOUT"), std::string::npos);
 		mcp_tree_expect_width(plain, width);
 	}
@@ -162,6 +172,7 @@ TEST(CliMcpTreeTest, ConnectedMetadataAndCapabilitiesRemainExplicitChildren)
 			    line.find("Prompts:") != std::string::npos)
 				EXPECT_NE(line.find("│ "), std::string::npos) << line;
 		}
+
 		mcp_tree_expect_width(plain, width);
 	}
 }
@@ -176,6 +187,7 @@ TEST(CliMcpTreeTest, UnicodeValuesWrapWithTreeContinuationsWithoutLosingMetadata
 	std::string value;
 	for (int i = 0; i < 12; i++)
 		value += "中文🙂";
+
 	ASSERT_LT(value.size(), sizeof(server.server_name));
 	std::strcpy(server.server_name, value.c_str());
 	std::strcpy(server.server_version, "unicode-version");

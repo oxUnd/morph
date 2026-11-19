@@ -4,7 +4,7 @@
 #include "media/image.h"
 #include "runtime/resources.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
 #include <morph_markdown_html.h>
 #include <errno.h>
 #include <limits.h>

@@ -6,7 +6,8 @@
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
+#include "sapi/cli/presentation/terminal_text.h"
 #include <nothing/tui/views/text_view.h>
 #include <errno.h>
 #include <limits.h>
@@ -331,7 +332,7 @@ static int cli_messages_user(nb_buf *out, char *safe, const struct cli_message_s
 		const char *cursor = line;
 		do {
 			const char *end =
-				morph_terminal_advance_display_width_borrow(cursor, body_width);
+				cli_terminal_text_advance(cursor, body_width);
 			if (end == cursor && *cursor)
 				end += nb_utf8_next_codepoint_len(cursor, strnlen(cursor, 4));
 
@@ -390,7 +391,7 @@ int cli_messages_append(nb_buf *out, enum cli_message_kind kind, const char *tex
 
 				size_t width =
 					style->columns > 4 ? (size_t)(style->columns - 4) : 1u;
-				const char *end = morph_terminal_advance_display_width_borrow(
+				const char *end = cli_terminal_text_advance(
 					start, width > 1 ? width - 1 : 1u);
 				const char *newline = strchr(start, '\n');
 				if (newline && newline < end)

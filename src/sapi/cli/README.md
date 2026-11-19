@@ -78,6 +78,8 @@ formats blocks for child transcripts and other text consumers and routes
 interactive blocks to the chat page. The page mounts NT components, whose
 margin and padding determine layout. Shared banner, list, plan and notice
 formatting lives in `presentation/`.
+Interactive trees reuse NT's tree view. Streaming and plain reports share
+`presentation/tree.c` for branch prefixes, continuation rows and column limits.
 Plain and JSON modes retain their separate output contracts.
 
 The full-screen `components/agents_browser` owns its split and stacked layouts,
@@ -126,9 +128,9 @@ the app's runtime, command services and output policies without opening a TUI.
   inherit `nt_stack_view_class` to reuse measurement and layout.
 - Declare local UI state on its owning view. Bind derived properties during
   construction. Flush pending state before a synchronous focus transfer.
-- Add a reusable app component in `components/`; keep its state and drawing local.
-  The [customization demo](../../tui/samples/customization/README.md) shows Widget,
-  ViewController and Application extension, semantic actions and shared models.
+- Add a reusable app component in `components/` and keep its state and drawing local.
+  The NT sample builds a custom control and presents pages through view controllers.
+  [Customization example](https://codeberg.org/oxund/nothing-tui/src/branch/main/samples/customization/main.c)
 - Add data operations in `models/`, business actions in `services/` and an
   external integration in `adapters/<integration>/`. Keep runtime access behind
   the runtime facade. Formatting belongs to `presentation/`.
@@ -215,9 +217,9 @@ the textual inspection command for scripts and quick queries.
 
 ## Status presentation
 
-Terminal glyphs come from `tui/terminal/status.h`, with CLI aliases and styles in
-`presentation/style.h`: pending `◯` (dim), running `◉` (cyan), completed `●`
-(green), failed `✖` (bold red), and awaiting user input `?` (bold yellow).
+CLI status glyphs and styles live in `presentation/style.h`. Pending uses `◯`
+(dim), running `◉` (cyan), completed `●` (green), failed `✖` (bold red),
+and awaiting user input `?` (bold yellow).
 Cancellation/skipping uses `–` (dim); warnings use `⚠` (yellow). Neutral system
 information uses `◇`. Message bullets may use `●` without indicating success.
 Tool calls, subagents, background jobs, plans, task notifications, setup receipts

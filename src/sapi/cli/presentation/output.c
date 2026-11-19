@@ -1,4 +1,6 @@
 #include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/terminal_text.h"
+#include <nb/utf8.h>
 #include <nb/err.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/turn_details.h"
@@ -331,7 +333,7 @@ static int cli_output_write_output(struct cli_application *ctx, const char *text
 		while (*text == '\n' || *text == '\r')
 			text++;
 
-		if (morph_terminal_display_width_ansi(text) > 0 &&
+		if (cli_terminal_text_width(text) > 0 &&
 		    cli_output_result_begin(ctx) != 0)
 			return NB_ERR_IO;
 	}

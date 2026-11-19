@@ -3,8 +3,6 @@
 Morph CLI uses the companion `nothing-tui` library. Its root owns the
 Application and its lifecycle. Organize the entire executable by application
 responsibility, including commands, configuration and noninteractive modes.
-The framework implementation layout (`core/`, `terminal/`, `render/`, `widgets/`)
-is separate from the application layout.
 
 ```text
 <application>/
@@ -25,9 +23,7 @@ is separate from the application layout.
   README.md                    module map, entry points and extension guide
 ```
 
-Create directories only when they have content. Small examples may keep one
-`main.c`; the customization sample adds `application`, `pages` and `widgets`.
-A larger app adds services, adapters and models using the same conventions.
+Create directories only when they have content. Small examples may keep one `main.c`.
 Avoid a second `ui/` subtree with another Application beneath the real app.
 Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buckets.
 
@@ -49,7 +45,7 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   Reusable state bindings and text-output policies live in presentation. Rendering,
   key handling and local interaction state belong here; business actions go
   through page bindings or services. Shared margin/padding behavior follows the
-  [View box model](tui-box-model.md).
+  [NT layout guide](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md).
 - Models carry app data and operations on that data. They do not depend on the
   Application, pages, widgets or external runtime callbacks. Services apply use
   cases to models and the opaque runtime facade; workers submit owner-thread
@@ -97,4 +93,4 @@ interfaces, includes, tests and documentation together. Behavioral tests stay in
 whole application, including commands and services.
 
 See the [CLI application](../src/sapi/cli/README.md) for a full consumer and the
-[customization sample](../src/tui/samples/customization/README.md) for a small one.
+[customization sample](https://codeberg.org/oxund/nothing-tui/src/branch/main/samples/customization/main.c) for a small one.

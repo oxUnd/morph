@@ -37,11 +37,13 @@ no system Unicode package or build-time download is required.
   `nb_buf`. It preserves existing output on invalid input. Database text matching
   owns its buffers and borrows their C-string views only during comparison.
 
-`<morph/tui/terminal/text.h>` owns ANSI CSI/OSC/string removal, streamed terminal
-sanitization, CR/LF and visible-control handling, display-column budgets and
-ellipsis placement. It uses the same nbase Unicode primitives. Its streaming
-sanitizer keeps incomplete UTF-8 between chunks and clears partial protocol
-state when a field ends. These are terminal policies, not general Unicode APIs.
+`src/terminal/text.h` supplies the streamed sanitizer and code-point-based
+clipping used in agent summaries and CLI output. CLI report formatting lives
+in `src/sapi/cli/presentation/terminal_text.h`. The streaming sanitizer uses
+nbase Unicode primitives, keeps incomplete UTF-8 between chunks and clears
+partial protocol state when a field ends. Plain reports and agent summaries
+use the sum of code-point widths for clipping. NT views use the framework's
+grapheme-aware layout for editing and drawing.
 
 `agent/tokenizer.c` owns CJK/language-block token weighting. `agent/bpe.c` uses
 native category/decoding APIs for BPE segmentation. Markdown fullwidth punctuation

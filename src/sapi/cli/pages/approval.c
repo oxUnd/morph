@@ -1,9 +1,12 @@
 #include "sapi/cli/pages/approval.h"
+#include "sapi/cli/presentation/terminal_text.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <nb/err.h>
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
-#include <morph/tui/terminal/size.h>
+#include <nothing/tui/terminal/size.h>
 #include <nothing/tui/terminal.h>
 #include "sapi/cli/adapters/input/state.h"
 #include "agent/tool_context.h"
@@ -210,7 +213,7 @@ static int cli_approval_operation_on_owner(struct cli_application *ctx, void *op
 /* Reserve a right gutter so terminal autowrap never owns card layout. */
 static size_t cli_approval_card_width(void)
 {
-	int columns = morph_terminal_columns(STDOUT_FILENO, 80);
+	int columns = nt_terminal_columns(STDOUT_FILENO, 80);
 
 	return columns > 82 ? 80u : (columns >= 8 ? (size_t)columns - 2u : 0u);
 }
@@ -221,7 +224,7 @@ static void cli_approval_card_rule(struct cli_application *ctx, size_t width, co
 
 	cli_output_printf(ctx, ANSI_YELLOW "%s", title ? "╭" : "╰");
 	if (title && width > 5) {
-		const char *end = morph_terminal_advance_display_width_borrow(title, width - 5);
+		const char *end = cli_terminal_text_advance(title, width - 5);
 
 		cli_output_printf(ctx, "─ " ANSI_BOLD);
 		cli_output_printf(ctx, "%.*s", (int)(end - title), title);
@@ -269,7 +272,7 @@ static void cli_approval_card_field(struct cli_application *ctx, size_t width, c
 	line = safe;
 	do {
 		size_t budget = width - 4u - indent;
-		char *end = (char *)morph_terminal_advance_display_width_borrow(line, budget);
+		char *end = (char *)cli_terminal_text_advance(line, budget);
 		char saved = *end;
 
 		*end = '\0';

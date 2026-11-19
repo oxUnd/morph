@@ -5,7 +5,8 @@
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
+#include "sapi/cli/presentation/terminal_text.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,14 +187,14 @@ int cli_composer_footer_render(struct cli_application *ctx, int columns, nb_buf 
 			rc = (nb_buf_append_cstr(out, " · ") ? 0 : NB_ERR_NOMEM);
 	}
 
-	remaining = (size_t)columns - 4 - morph_terminal_display_width_ansi(nb_buf_cstr(out));
+	remaining = (size_t)columns - 4 - cli_terminal_text_width(nb_buf_cstr(out));
 	if (!rc && remaining > usage_width + 10)
 		rc = cli_composer_footer_identity(ctx, remaining - usage_width - 6, out);
 
 	if (!rc)
 		rc = cli_composer_footer_field(
 			ctx, out, nb_buf_cstr(&usage),
-			(size_t)columns - 4 - morph_terminal_display_width_ansi(nb_buf_cstr(out)),
+			(size_t)columns - 4 - cli_terminal_text_width(nb_buf_cstr(out)),
 			ANSI_DIM, 0);
 
 	(void)runtime_task_count_active(ctx->runtime, &ctx->input_status.tasks);

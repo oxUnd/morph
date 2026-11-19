@@ -15,7 +15,7 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "sapi/cli/presentation/terminal_text.h"
 #include <nothing/tui/application.h>
 #include <nothing/tui/view_controller.h>
 #include <nothing/tui/window.h>
@@ -60,7 +60,7 @@ static std::string retained_sgr(const std::string &frame)
 
 static std::string retained_normalized(const char *text)
 {
-	char *plain = morph_terminal_strip_ansi_dup(text, strlen(text), nullptr);
+	char *plain = cli_terminal_text_strip_ansi_dup(text, strlen(text), nullptr);
 	std::string value = plain ? plain : "";
 	free(plain);
 	std::string result;

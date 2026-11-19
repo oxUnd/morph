@@ -203,7 +203,7 @@ def main():
     entries = json.loads((options.build_dir / "compile_commands.json").read_text())
     compiled = {Path(entry["file"]).resolve() for entry in entries}
     template = next(entry for entry in entries
-                    if entry["file"].endswith("/src/agent/tools/file_read.c"))
+                    if entry["file"].endswith("/src/sapi/cli/application.c"))
     template_args = template.get("arguments") or shlex.split(template["command"])
     extras = []
     for directory in ("src", "tests", "exts", "examples"):
@@ -211,11 +211,6 @@ def main():
             if source.suffix != ".c" or source.resolve() in compiled:
                 continue
             args = [arg for arg in template_args if arg != template["file"]]
-            args.append("-I" + str(root / "src/tui/include"))
-            samples = root / "src/tui/samples"
-            if source.is_relative_to(samples):
-                module = source.relative_to(samples).parts[0]
-                args.append("-I" + str(samples / module))
             if sys.platform == "darwin" and source == root / "exts/locate/locate.c":
                 args.extend(["-x", "objective-c"])
             extras.append(dict(file=str(source), directory=template["directory"],

@@ -1,5 +1,8 @@
 #include "sapi/cli/presentation/presenter.h"
-#include <morph/tui/terminal/report.h>
+#include "sapi/cli/presentation/terminal_text.h"
+#include "sapi/cli/presentation/tree.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/pages/chat.h"
@@ -276,7 +279,7 @@ static const char *cli_presenter_tree_wrap_end(const char *text, size_t width, i
 	const char *end;
 	const char *space = NULL;
 
-	end = morph_terminal_advance_display_width_borrow(text, width);
+	end = cli_terminal_text_advance(text, width);
 	if (!*end) {
 		*has_break = 0;
 		return end;
@@ -337,7 +340,7 @@ static void cli_presenter_print_tree_string(struct cli_application *ctx, const c
 		}
 
 		if (*end && !has_break)
-			end = morph_terminal_advance_display_width_borrow(line,
+			end = cli_terminal_text_advance(line,
 									  (size_t)(available - 1));
 
 		cli_output_printf(ctx, "%.*s", (int)(end - line), line);
@@ -777,7 +780,7 @@ static void cli_presenter_reasoning_flush(struct cli_application *ctx, int finis
 		return;
 
 	newline = strchr(start, '\n');
-	end = morph_terminal_advance_display_width_borrow(start, width - 1u);
+	end = cli_terminal_text_advance(start, width - 1u);
 	if (newline && newline < end)
 		end = newline;
 
@@ -965,7 +968,7 @@ void cli_presentation_patch_diff(struct cli_application *ctx, const char *workdi
 
 	if (truncated)
 		cli_output_printf(ctx, "  %s" ANSI_DIM "… patch display truncated" ANSI_RESET "\n",
-		       morph_terminal_tree_branch(1, 0));
+		       cli_tree_branch(1, 0));
 
 	free(display);
 	if (preview_ready)
@@ -1131,7 +1134,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 	} else if (cli_presenter_event_error_code(ev) < 0) {
 		nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
 		if ((nb_buf_init(&prefix), nb_buf_reserve(&prefix, 64) ? 0 : NB_ERR_NOMEM) == 0) {
-			morph_terminal_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+			cli_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 			nb_buf_append_cstr(&prefix, ANSI_RED "Error: " ANSI_RESET);
 			cli_presenter_print_indented(ctx, nb_buf_cstr(&prefix), text);
 			nb_buf_cleanup(&prefix);
@@ -1158,7 +1161,7 @@ static void cli_presenter_observation(struct cli_application *ctx, const struct 
 			nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
 			if ((nb_buf_init(&prefix),
 			     nb_buf_reserve(&prefix, 32) ? 0 : NB_ERR_NOMEM) == 0) {
-				morph_terminal_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+				cli_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 				cli_presenter_print_indented(ctx, nb_buf_cstr(&prefix), text);
 				nb_buf_cleanup(&prefix);
 			}

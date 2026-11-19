@@ -33,17 +33,18 @@ and response path without depending on a live provider.
 
 The baseline completed before source changes: 2019 registered tests, no failures.
 Its optional PTY checks initially skipped because Python dependencies were absent.
+The commands below build the current CLI and FastCGI targets.
 For acceptance, `pexpect` and `pyte` were installed in an isolated QA environment;
 the permission test also uses Python 3.11+ `tomllib`.
 
 ```sh
-cmake -S . -B build -DBUILD_FASTCGI=ON -DBUILD_TUI_SAMPLES=ON \
+cmake -S . -B build -DBUILD_FASTCGI=ON \
   -DENABLE_GLOBAL_STATE_AUDIT=ON -DPython3_EXECUTABLE="$QA_PYTHON"
 cmake --build build -j4
 ctest --test-dir build --output-on-failure -j4
 
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DENABLE_ASAN=ON \
-  -DBUILD_FASTCGI=ON -DBUILD_TUI_SAMPLES=ON \
+  -DBUILD_FASTCGI=ON \
   -DENABLE_GLOBAL_STATE_AUDIT=ON -DPython3_EXECUTABLE="$QA_PYTHON"
 cmake --build build-asan -j4
 ctest --test-dir build-asan --output-on-failure -j3

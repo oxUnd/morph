@@ -8,7 +8,7 @@
 #include <nb/vec.h>
 #include <nb/map.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
 
 struct morph_md_kitty;
 

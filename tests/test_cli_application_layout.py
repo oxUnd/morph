@@ -239,31 +239,28 @@ def main():
     # Application status shapes have one shared owner. Content bullets and
     # framework radio controls are deliberately outside this application audit.
     status_glyphs = set('●◉◯○•◦⊗⦻ⓧ✖✘✗✓✔❌❓⨂⍰⯑⚠◇')
+    canonical = {'PENDING': '◯', 'RUNNING': '◉', 'DONE': '●', 'FAILED': '✖',
+                 'QUESTION': '?', 'CANCELLED': '–', 'WARNING': '⚠', 'SYSTEM': '◇'}
+    style_path = CLI / 'presentation/style.h'
+    style = style_path.read_text()
+    for state, glyph in canonical.items():
+        if style.splitlines().count(f'#define CLI_FEED_{state} "{glyph}"') != 1:
+            errors.append(f'presentation/style.h: canonical {state} marker changed')
     for source in sorted(CLI.rglob('*')):
         if source.suffix not in ('.c', '.h'):
             continue
         raw = re.sub(r'/\*[\s\S]*?\*/', '', source.read_text())
+        if source == style_path:
+            for state, glyph in canonical.items():
+                raw = raw.replace(f'#define CLI_FEED_{state} "{glyph}"', '')
         for literal in re.findall(r'"(?:\\.|[^"\\])*"', raw):
             if status_glyphs.intersection(literal):
                 errors.append(f'{source}: hardcoded status glyph; use presentation/style.h')
-    style = (CLI / 'presentation/style.h').read_text()
-    canonical = (ROOT / 'src/tui/include/morph/tui/terminal/status.h').read_text()
-    for state, glyph in {'PENDING': '◯', 'RUNNING': '◉', 'DONE': '●',
-                         'FAILED': '✖', 'QUESTION': '?', 'CANCELLED': '–',
-                         'WARNING': '⚠', 'SYSTEM': '◇'}.items():
-        if f'#define MORPH_TERMINAL_STATUS_{state} "{glyph}"' not in canonical:
-            errors.append(f'terminal_status.h: canonical {state} marker changed')
-        if f'#define CLI_FEED_{state} MORPH_TERMINAL_STATUS_{state}' not in style:
-            errors.append(f'presentation/style.h: {state} must reuse the shared definition')
+    if '#define CLI_FEED_MESSAGE CLI_FEED_DONE' not in style:
+        errors.append('presentation/style.h: message bullet must reuse the shared marker')
     for state, color in {'FAILED': 'RED', 'QUESTION': 'YELLOW'}.items():
         if f'#define CLI_FEED_{state}_STYLE ANSI_BOLD ANSI_{color}' not in style:
             errors.append(f'presentation/style.h: {state} must use bold {color.lower()}')
-    for source in (ROOT / 'src/tui').rglob('*'):
-        if source.suffix not in ('.c', '.h'):
-            continue
-        if re.search(r'^#include [<"](?:sapi/cli|runtime|agent|db|config)/',
-                     source.read_text(), re.M):
-            errors.append(f'{source}: framework imports a frontend/domain module')
     if errors:
         raise AssertionError('\n'.join(errors))
     print(f'PASS: {len(list(CLI.rglob("*.c")))} application modules own their interfaces, '

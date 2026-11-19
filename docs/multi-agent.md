@@ -85,7 +85,7 @@ without nesting alternate screens; Escape returns to the primary conversation.
 `/agents /root/reader` opens that feed directly. Text/JSON command execution keeps
 the existing snapshot output.
 
-`widgets/agents_browser` owns this layout and interaction state and takes borrowed
+`components/agents_browser` owns this layout and interaction state and takes borrowed
 snapshots. The page fetches runtime data, preserves selection across refreshes,
 and routes open/close actions. A component-only visual fixture is available with
 `build/bin/morph-cli-pty-driver --agents-browser-fixture`; it runs no agents.

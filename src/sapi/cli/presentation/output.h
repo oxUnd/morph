@@ -3,7 +3,7 @@
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
 #include <nothing/tui/view.h>
 #include <stdio.h>
 struct cli_application;

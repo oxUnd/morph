@@ -7,8 +7,9 @@
 #include "runtime/runtime.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
-#include <morph/tui/terminal/report.h>
+#include "terminal/text.h"
+#include "sapi/cli/presentation/terminal_text.h"
+#include "sapi/cli/presentation/tree.h"
 #include <errno.h>
 #include <string.h>
 
@@ -29,14 +30,14 @@ static int cli_mcp_tree_line(nb_buf *out, const char *text, const char *prefix,
 	int first = 1;
 	do {
 		const char *branch = first ? prefix : continuation;
-		int available = columns - (int)morph_terminal_display_width_ansi(branch);
+		int available = columns - (int)cli_terminal_text_width(branch);
 		if (available < 1) {
 			int rc = (nb_buf_append_cstr(out, "…\n") ? 0 : NB_ERR_NOMEM);
 			return rc;
 		}
 
 		const char *end =
-			morph_terminal_advance_display_width_borrow(cursor, (size_t)available);
+			cli_terminal_text_advance(cursor, (size_t)available);
 		if (newline && newline < end)
 			end = newline;
 
@@ -79,9 +80,9 @@ static int cli_mcp_tree_child(nb_buf *out, const int *ancestors, size_t depth, i
 {
 	nb_buf prefix NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf continuation NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc = morph_terminal_tree_prefix(&prefix, ancestors, depth, last, 0, 0);
+	int rc = cli_tree_prefix(&prefix, ancestors, depth, last, 0, 0);
 	if (!rc)
-		rc = morph_terminal_tree_prefix(&continuation, ancestors, depth, last, 1, 0);
+		rc = cli_tree_prefix(&continuation, ancestors, depth, last, 1, 0);
 
 	if (!rc)
 		rc = cli_mcp_tree_line(out, text, prefix.ptr, continuation.ptr, style, columns);

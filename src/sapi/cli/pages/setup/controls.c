@@ -16,7 +16,7 @@
 #include "sapi/cli/application.h"
 #include "errors.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
 #include <nb/str.h>
 #include <signal.h>
 #include <stdarg.h>

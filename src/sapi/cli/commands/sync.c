@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/sync.h"
-#include <morph/tui/terminal/report.h>
+#include "sapi/cli/presentation/tree.h"
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
@@ -29,31 +29,31 @@ static void cli_sync_print_sync_status(struct cli_application *ctx,
 
 	CMD_HEADER(ctx, "sync status");
 	cli_list_group(ctx, "state", state_count, 0);
-	cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), 0, "running",
+	cli_sync_print_sync_field(ctx, cli_tree_branch(0, 1), 0, "running",
 				  st->running ? "yes" : "no", columns);
 	if (st->last_run_at > 0)
 		snprintf(value, sizeof(value), "%lld", (long long)st->last_run_at);
 	else
 		strncpy(value, "never", sizeof(value) - 1);
 
-	cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), st->error_code == 0,
+	cli_sync_print_sync_field(ctx, cli_tree_branch(0, 1), st->error_code == 0,
 				  "last run", value, columns);
 	if (st->error_code != 0)
-		cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), 1, "last error",
+		cli_sync_print_sync_field(ctx, cli_tree_branch(0, 1), 1, "last error",
 					  st->last_error, columns);
 
 	cli_list_group(ctx, "files", 4, 0);
 	snprintf(value, sizeof(value), "%d", st->copied);
-	cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), 0, "copied", value,
+	cli_sync_print_sync_field(ctx, cli_tree_branch(0, 1), 0, "copied", value,
 				  columns);
 	snprintf(value, sizeof(value), "%d", st->deleted);
-	cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), 0, "deleted", value,
+	cli_sync_print_sync_field(ctx, cli_tree_branch(0, 1), 0, "deleted", value,
 				  columns);
 	snprintf(value, sizeof(value), "%d", st->conflicts);
-	cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), 0, "conflicts", value,
+	cli_sync_print_sync_field(ctx, cli_tree_branch(0, 1), 0, "conflicts", value,
 				  columns);
 	snprintf(value, sizeof(value), "%d", st->recycled);
-	cli_sync_print_sync_field(ctx, morph_terminal_tree_branch(0, 1), 1, "recycled", value,
+	cli_sync_print_sync_field(ctx, cli_tree_branch(0, 1), 1, "recycled", value,
 				  columns);
 
 	cli_list_group(ctx, "database", 4, 1);
@@ -199,7 +199,7 @@ static int cli_sync_command_backups(struct cli_application *ctx, const char *pat
 
 		group_last = end == count;
 		cli_list_group(ctx, items[i].path, end - i, group_last);
-		ancestor = morph_terminal_tree_branch(group_last, 1);
+		ancestor = cli_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char description[MORPH_SYNC_DEVICE_ID_MAX + 80];
 

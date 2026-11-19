@@ -5,6 +5,7 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "stb_image_write.h"
 #include <nb/cleanup.h>
+#include <nb/err.h>
 #include <nothing/tui/media.h>
 #include "encoding_fixture.h"
 #include <nb/utf8.h>
@@ -252,6 +253,29 @@ TEST_F(CliRetainedMediaTest, RgbaMathInTableKeepsCellPositionAndRejectsTruncated
 	EXPECT_LT(cli_rich_document_set_rendered_copy(document, invalid.c_str(), 1), 0);
 	EXPECT_EQ(frame, previous);
 	EXPECT_EQ(placements.size(), 1u);
+}
+
+TEST_F(CliRetainedMediaTest, InvalidPngPreservesTheDisplayedImage)
+{
+	const unsigned id = 0x53345678u;
+	source = PngTransfer(id) + retained_media_placeholders(id, 0, 3);
+	Present();
+	ASSERT_EQ(placements.size(), 1u);
+	const auto identity = placements[0].identity;
+	const std::string original = frame;
+
+	const unsigned char truncated[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+	const std::string replacement =
+		retained_media_transfer(id, 100, 3, 1, truncated, sizeof(truncated)) +
+		retained_media_placeholders(id, 0, 3);
+	EXPECT_EQ(cli_rich_document_set_rendered_copy(document, replacement.c_str(), 1),
+		  NB_ERR_FORMAT);
+
+	nt_view_invalidate(document, 1);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	ASSERT_EQ(placements.size(), 1u);
+	EXPECT_EQ(placements[0].identity, identity);
+	EXPECT_EQ(frame, original);
 }
 
 TEST_F(CliRetainedMediaTest, MediaClipsAtDocumentBoundaryAndUnsafeControlsNeverEnterSurfaceRows)

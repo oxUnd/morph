@@ -9,7 +9,8 @@
 #include <nb/cleanup.h>
 #include "errors.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
+#include "sapi/cli/presentation/terminal_text.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -31,7 +32,7 @@ static int cli_recap_append_paragraph(nb_buf *out, const char *text, int columns
 	int first = 1;
 	if (width <= indent + 1) {
 		if (heading) {
-			const char *end = morph_terminal_advance_display_width_borrow(label, width);
+			const char *end = cli_terminal_text_advance(label, width);
 			(void)nb_buf_printf(out, "%s%.*s%s\n", styled ? CLI_RECAP_COLOR : "",
 				(int)(end - label), label, styled ? ANSI_RESET : "");
 		}
@@ -41,7 +42,7 @@ static int cli_recap_append_paragraph(nb_buf *out, const char *text, int columns
 	}
 
 	while (*line) {
-		const char *end = morph_terminal_advance_display_width_borrow(line, width - indent);
+		const char *end = cli_terminal_text_advance(line, width - indent);
 		int clipped = end == line;
 		if (clipped)
 			end = nb_utf8_advance(line, 1);
@@ -117,7 +118,7 @@ static void cli_recap_print_text(struct cli_application *ctx, const char *label,
 
 	while (*line) {
 		size_t width = columns > indent + 1 ? columns - indent - 1 : 2;
-		const char *end = morph_terminal_advance_display_width_borrow(line, width);
+		const char *end = cli_terminal_text_advance(line, width);
 
 		if (end == line)
 			end = nb_utf8_advance(line, 1);

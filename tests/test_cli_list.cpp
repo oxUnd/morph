@@ -10,6 +10,8 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/presentation/list.h"
+#include "sapi/cli/presentation/tree.h"
+#include "sapi/cli/presentation/style.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/composer.h"
 #include <nb/file.h>
@@ -211,6 +213,23 @@ TEST(CliMediaInputTest, QuotedImagePathAttachesWithoutCommand)
 	runtime_close(runtime);
 	std::error_code error;
 	(void)std::filesystem::remove_all(directory, error);
+}
+
+TEST(CliListTest, StreamingTreeRowsBoundLongNamesAndDeepPrefixes)
+{
+	for (int width : {1, 4, 12, 40, 80}) {
+		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(cli_tree_row(&text, "│ │ │ ", 1, CLI_FEED_PENDING, "中文很长的名称名称名称",
+				       "description description description", 28, width, "", ""),
+			  0);
+		std::string value = nb_buf_cstr(&text);
+		size_t start = 0;
+		for (size_t end; (end = value.find('\n', start)) != std::string::npos;) {
+			std::string row = value.substr(start, end - start);
+			EXPECT_LE(nb_utf8_width_cstr(row.c_str()), static_cast<size_t>(width));
+			start = end + 1;
+		}
+	}
 }
 
 TEST(CliListTest, CompactsWhitespaceWithoutBreakingUtf8)

@@ -1,10 +1,10 @@
 #include "agent/history_internal.h"
 #include "models/llm/stream.h"
 #include "http/client.h"
+#include "sapi/cli/adapters/media/asset.h"
 #include <nb/cleanup.h>
 #include <nb/mem.h>
 #include <nb/file.h>
-#include <morph/tui/media.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +15,7 @@ struct bench_allocator {
 	size_t live;
 	size_t peak;
 };
+
 static void bench_account(struct bench_allocator *stats, size_t before, size_t after)
 {
 	stats->live -= before;
@@ -22,6 +23,7 @@ static void bench_account(struct bench_allocator *stats, size_t before, size_t a
 	if (stats->live > stats->peak)
 		stats->peak = stats->live;
 }
+
 static void *bench_allocate(void *opaque, size_t size)
 {
 	struct bench_allocator *stats = opaque;
@@ -29,8 +31,10 @@ static void *bench_allocate(void *opaque, size_t size)
 	stats->allocations++;
 	if (ptr)
 		bench_account(stats, 0, size);
+
 	return ptr;
 }
+
 static void *bench_resize(void *opaque, void *ptr, size_t old_size, size_t new_size)
 {
 	struct bench_allocator *stats = opaque;
@@ -39,13 +43,16 @@ static void *bench_resize(void *opaque, void *ptr, size_t old_size, size_t new_s
 	stats->resizes++;
 	if (resized)
 		bench_account(stats, before, new_size);
+
 	return resized;
 }
+
 static void bench_release(void *opaque, void *ptr, size_t size)
 {
 	struct bench_allocator *stats = opaque;
 	if (ptr)
 		bench_account(stats, size, 0);
+
 	free(ptr);
 }
 
@@ -56,12 +63,15 @@ static int bench_redaction(struct bench_allocator *stats)
 	char *source NB_CLEANUP(nb_charp_cleanup) = malloc(length + 1);
 	if (!source)
 		return NB_ERR_NOMEM;
+
 	memset(source, 'A', length);
 	memcpy(source, prefix, strlen(prefix));
 	source[length] = '\0';
+
 	char *output NB_CLEANUP(nb_charp_cleanup) = history_redacted_text_create(NULL, source);
 	if (!output || strcmp(output, "[binary data omitted]"))
 		return NB_ERR_STATE;
+
 	printf("redact_16m,peak_native_bytes=%zu,output_bytes=%zu\n", stats->peak, strlen(output));
 	return NB_OK;
 }
@@ -71,10 +81,13 @@ static int bench_streams(struct bench_allocator *stats)
 	struct llm_stream_ctx streams[128];
 	for (size_t i = 0; i < sizeof(streams) / sizeof(streams[0]); i++)
 		llm_stream_init(&streams[i], NULL, NULL);
+
 	printf("128_idle_streams,live_native_bytes=%zu,alloc_calls=%zu\n",
 	       stats->live, stats->allocations);
+
 	for (size_t i = 0; i < sizeof(streams) / sizeof(streams[0]); i++)
 		llm_stream_cleanup(&streams[i]);
+
 	return NB_OK;
 }
 
@@ -84,6 +97,7 @@ static int bench_http(struct bench_allocator *stats)
 	if (!nb_buf_reserve(&session.resp_body, 16u * 1024u * 1024u) ||
 	    !nb_buf_append_cstr(&session.resp_body, "response"))
 		return NB_ERR_NOMEM;
+
 	size_t before = stats->live;
 	http_session_reset(&session);
 	printf("http_reset_after_16m,before_native_bytes=%zu,after_native_bytes=%zu\n",
@@ -92,7 +106,13 @@ static int bench_http(struct bench_allocator *stats)
 	    !nb_buf_append_cstr(&session.resp_body, "next") ||
 	    strcmp(nb_buf_cstr(&session.resp_body), "next"))
 		return NB_ERR_STATE;
+
 	return NB_OK;
+}
+
+static void bench_asset_cleanup(struct nt_media_asset **asset)
+{
+	nt_media_asset_release(*asset);
 }
 
 static int bench_png(const char *path)
@@ -101,16 +121,16 @@ static int bench_png(const char *path)
 	int rc = nb_file_read_all(path, &input, 0, NULL);
 	if (rc != NB_OK)
 		return 1;
-	struct morph_tui_media_asset *asset = NULL;
-	rc = morph_tui_media_asset_create_png_copy(&asset,
-		(const unsigned char *)nb_buf_cstr(&input), nb_buf_len(&input));
+
+	struct nt_media_asset *asset NB_CLEANUP(bench_asset_cleanup) = NULL;
+	rc = cli_media_asset_from_png(&asset, (const unsigned char *)nb_buf_cstr(&input),
+				      nb_buf_len(&input));
 	nb_buf_destroy(&input);
 	if (rc != NB_OK)
 		return 1;
-	printf("png_asset,width=%d,height=%d,first_channel=%u\n",
-	       morph_tui_media_asset_width(asset), morph_tui_media_asset_height(asset),
-	       (unsigned)morph_tui_media_asset_pixels_borrow(asset)[0]);
-	morph_tui_media_asset_destroy(asset);
+
+	printf("png_asset,width=%d,height=%d,first_channel=%u\n", nt_media_asset_width(asset),
+	       nt_media_asset_height(asset), (unsigned)nt_media_asset_pixels(asset)[0]);
 	return 0;
 }
 
@@ -118,8 +138,10 @@ int main(int argc, char **argv)
 {
 	if (argc == 2)
 		return bench_png(argv[1]);
+
 	if (argc != 1)
 		return 1;
+
 	struct bench_allocator stats = {0};
 	nb_allocator allocator = {bench_allocate, bench_resize, bench_release, &stats};
 	const nb_allocator *previous = nb_mem_allocator();
@@ -138,7 +160,9 @@ int main(int argc, char **argv)
 			break;
 		}
 	}
+
 	if (stats.live == 0)
 		nb_mem_set_allocator(previous);
+
 	return rc == NB_OK ? 0 : 1;
 }

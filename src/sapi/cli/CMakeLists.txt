@@ -129,6 +129,8 @@ add_library(morph-cli STATIC
 	presentation/presenter.c
 	presentation/rewind.c
 	presentation/tool_preview.c
+	presentation/terminal_text.c
+	presentation/tree.c
 	presentation/work_status.c
 	presentation/share.c
 

@@ -8,13 +8,14 @@ scrolling to the bottom resumes following new content.
 
 ## Components and state
 
-`widgets/message` composes a marker Label and content-sized document. Submitted
+`components/message` composes a marker Label and content-sized document. Submitted
 user messages own their outer margin and inner padding/background. Reasoning uses
 muted italic text. Assistant messages retain source Markdown and remeasure it at
 the current content width; trusted renderer SGR is converted into structured
 text spans. Preview and completion update the same component.
 
-`widgets/tool_call` composes a Stack and content-sized rich TextViews.
+`components/tool_call` extends the CLI report view and renders tool state
+in its NT text view.
 The transcript reducer retains tool state; call IDs locate existing controls.
 Running, streamed and completed events update that control in place. The heading
 contains status, tool name, target, outcome and completed elapsed time. Compact
@@ -36,8 +37,8 @@ its position by counting previously printed newlines.
 
 ## Status and editing
 
-Glyph values are defined once in `src/tui/include/morph/tui/terminal/status.h`, with CLI aliases
-in `presentation/style.h`: pending `◯`, running `◉`, success `●`, failed `✖`,
+The CLI defines status glyphs and colors in `src/sapi/cli/presentation/style.h`.
+The markers are pending `◯`, running `◉`, success `●`, failed `✖`,
 question `?`, cancelled `–`, warning `⚠`, and neutral information `◇`. Failures
 and questions use bold status colors. Historical calls without results stay
 pending. Timeouts explicitly include `TIMEOUT`.

@@ -30,7 +30,8 @@ extern "C" {
 #include "sapi/cli/presentation/list.h"
 #include "sapi/cli/presentation/shell_style.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
+#include "sapi/cli/presentation/terminal_text.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/file.h>
@@ -842,7 +843,7 @@ TEST_F(CliPresentationTest, CompactionCompletionFitsNarrowTerminal)
 	std::istringstream lines(output);
 	std::string line;
 	while (std::getline(lines, line))
-		EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()), 23U);
+		EXPECT_LE(cli_terminal_text_width(line.c_str()), 23U);
 
 	EXPECT_NE(output.find("● Context compacted"), std::string::npos);
 	cJSON_Delete(data);
@@ -1055,7 +1056,7 @@ static CliTestTextStyle cli_test_style_at(const std::string &output, const char 
 static std::string cli_test_plain_text(const std::string &output)
 {
 	char *plain NB_CLEANUP(nb_charp_cleanup) =
-		morph_terminal_strip_ansi_dup(output.c_str(), output.size(), nullptr);
+		cli_terminal_text_strip_ansi_dup(output.c_str(), output.size(), nullptr);
 	return plain ? plain : "";
 }
 
@@ -2386,7 +2387,7 @@ TEST_F(CliPresentationTest, NarrowTimeoutRowsFitActualWidth)
 		while (std::getline(lines, line)) {
 			EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(line.c_str()), NULL),
 				  NB_UTF8_OK);
-			EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()),
+			EXPECT_LE(cli_terminal_text_width(line.c_str()),
 				  static_cast<size_t>(columns - 2))
 				<< line;
 		}
@@ -2536,7 +2537,7 @@ TEST(CliPlanWidgetTest, StatusesAndUnsafeDescriptionsUseSharedMarkersWithinTheWi
 			std::istringstream lines(output);
 			std::string line;
 			while (std::getline(lines, line))
-				EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()),
+				EXPECT_LE(cli_terminal_text_width(line.c_str()),
 					  static_cast<size_t>(columns - 2));
 		}
 	}

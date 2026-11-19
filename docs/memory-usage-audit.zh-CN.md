@@ -72,6 +72,8 @@ live bytes 为 0，再恢复 allocator；生产 runtime 不切换全局 allocato
 这些值不含 libc/cJSON/JS 堆、栈或系统内存，不是整个应用 RSS 降幅。
 HTTP 原容量为 32 MiB 是几何扩容和尾 NUL 所致；回收阈值不改变最大可读取的响应。
 
+以下 PNG 数据对应当时的内置 TUI。当前基准通过 CLI 图片适配器创建 nothing-tui 资源。
+
 PNG asset 另用 2048×2048 RGBA 图片和 `/usr/bin/time -l` 各测三次：
 原实现 RSS [40566784, 40583168, 40583168]，新实现
 [40583168, 40583168, 40566784]，中位数相同。对照仅将 media.c 换回基线版本，

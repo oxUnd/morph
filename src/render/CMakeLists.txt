@@ -11,6 +11,6 @@ target_include_directories(morph-render PUBLIC
 target_link_libraries(morph-render PUBLIC
 	nbase::nbase morph-cjson
 	morph-media
-	morph-terminal
 	MorphMarkdown::KittyProtocol
+	PRIVATE nothing-tui::nothing-tui
 )

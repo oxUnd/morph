@@ -11,7 +11,7 @@ extern "C" {
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "sapi/cli/presentation/terminal_text.h"
 }
 
 TEST(CliRecapPresentationTest, KeepsHeadingAndSummaryInlineAndAlignsNextAction)
@@ -278,7 +278,7 @@ TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
 	ASSERT_NE(data, nullptr);
 	std::string output = Render(data, &ctx);
 	char *plain NB_CLEANUP(nb_charp_cleanup) =
-		morph_terminal_strip_ansi_dup(output.c_str(), output.size(), nullptr);
+		cli_terminal_text_strip_ansi_dup(output.c_str(), output.size(), nullptr);
 	ASSERT_NE(plain, nullptr);
 	EXPECT_NE(std::string(plain).find("↳ Recap: Implemented"), std::string::npos);
 	EXPECT_NE(output.find("installation remains unverified"), std::string::npos);

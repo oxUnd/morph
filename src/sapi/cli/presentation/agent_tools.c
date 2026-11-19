@@ -5,7 +5,7 @@
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
 #include <string.h>
 #include <stdio.h>
 

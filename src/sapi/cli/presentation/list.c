@@ -1,5 +1,7 @@
 #include "sapi/cli/presentation/list.h"
-#include <morph/tui/terminal/report.h>
+#include "sapi/cli/presentation/tree.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <nothing/tui/terminal/text.h>
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
@@ -23,7 +25,7 @@ void cli_list_tree_prefix(struct cli_application *ctx, const int *last, int dept
 	    (nb_buf_init(&output), nb_buf_reserve(&output, 64) ? 0 : NB_ERR_NOMEM) != 0)
 		return;
 
-	if (morph_terminal_tree_prefix(&output, last, (size_t)depth, is_last, continuation, 2) ==
+	if (cli_tree_prefix(&output, last, (size_t)depth, is_last, continuation, 2) ==
 	    0)
 		cli_output_fputs(ctx, nb_buf_cstr(&output), stdout);
 
@@ -136,7 +138,7 @@ void cli_list_group(struct cli_application *ctx, const char *name, int count, in
 	cli_list_compact_text(compact, sizeof(compact), name ? name : "Other");
 	nb_buf_printf(&label, "%s  %d", compact, count);
 	if (!nb_buf_status(&label) &&
-	    morph_terminal_tree_row(&output, "", is_last, "", nb_buf_cstr(&label), "", 0,
+	    cli_tree_row(&output, "", is_last, "", nb_buf_cstr(&label), "", 0,
 				      cli_list_columns(), ANSI_BOLD, ANSI_RESET) == 0)
 		cli_output_fputs(ctx, nb_buf_cstr(&output), stdout);
 
@@ -157,7 +159,7 @@ void cli_list_item(struct cli_application *ctx, const char *ancestor, int is_las
 
 	cli_list_compact_text(compact, sizeof(compact), name);
 	cli_list_compact_text(detail, sizeof(detail), description);
-	if (morph_terminal_tree_row(&output, ancestor ? ancestor : "", is_last,
+	if (cli_tree_row(&output, ancestor ? ancestor : "", is_last,
 				      marker ? marker : "", compact, detail, name_width, columns,
 				      ANSI_BOLD, ANSI_RESET) == 0)
 		cli_output_fputs(ctx, nb_buf_cstr(&output), stdout);
@@ -168,8 +170,8 @@ void cli_list_item(struct cli_application *ctx, const char *ancestor, int is_las
 void cli_list_row(struct cli_application *ctx, const char *id, const char *name,
 		  const char *metadata, int is_current, int is_last, int columns)
 {
-	const char *branch = morph_terminal_tree_branch(is_last, 0);
-	const char *continuation = morph_terminal_tree_branch(is_last, 1);
+	const char *branch = cli_tree_branch(is_last, 0);
+	const char *continuation = cli_tree_branch(is_last, 1);
 	char compact[CLI_LIST_TEXT_MAX];
 	char safe_id[CLI_LIST_TEXT_MAX];
 	char safe_metadata[CLI_LIST_TEXT_MAX];
@@ -218,7 +220,7 @@ void cli_list_row(struct cli_application *ctx, const char *id, const char *name,
 	cli_list_print_clipped(ctx, compact, name_width);
 	cli_output_putchar(ctx, '\n');
 	cli_output_printf(ctx, "  " ANSI_DIM "%s" ANSI_RESET "   " ANSI_DIM "%s%s" ANSI_RESET "\n",
-	       continuation, morph_terminal_tree_branch(1, 0), metadata);
+	       continuation, cli_tree_branch(1, 0), metadata);
 }
 
 void cli_list_value_field(struct cli_application *ctx, const char *label, const char *value,

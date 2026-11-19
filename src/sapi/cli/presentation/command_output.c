@@ -1,5 +1,5 @@
 #include "sapi/cli/presentation/command_output.h"
-#include <morph/tui/terminal/report.h>
+#include "sapi/cli/presentation/tree.h"
 #include <nb/err.h>
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/components/skill_tree.h"
@@ -173,7 +173,7 @@ int cli_command_output_status_rows(struct cli_application *ctx,
 		const struct cli_output_status_row *row = &rows[i];
 		const char *ancestor = row->place == CLI_OUTPUT_ROW_INDENTED
 					       ? "  "
-					       : morph_terminal_tree_branch(row->group_is_last, 1);
+					       : cli_tree_branch(row->group_is_last, 1);
 		int name_width = row->wide ? 46 : 24;
 
 		cli_list_item(ctx, ancestor, row->is_last,
@@ -519,7 +519,7 @@ void cli_help_begin(struct cli_application *ctx)
 void cli_help_group(struct cli_application *ctx, const char *name,
 		    const struct cli_help_item *items, int count, int is_last)
 {
-	const char *ancestor = morph_terminal_tree_branch(is_last, 1);
+	const char *ancestor = cli_tree_branch(is_last, 1);
 	int columns = cli_list_columns();
 
 	cli_list_group(ctx, name ? name : "Other", count, is_last);
@@ -630,7 +630,7 @@ int cli_tool_list_render(struct cli_application *ctx, const struct cli_tool_list
 			continue;
 
 		name_width = cli_command_output_tool_group_name_width(rows, row_count, groups[g].id);
-		ancestor = morph_terminal_tree_branch(is_last, 1);
+		ancestor = cli_tree_branch(is_last, 1);
 		if (printed_groups > 0)
 			cli_output_putchar(ctx, '\n');
 

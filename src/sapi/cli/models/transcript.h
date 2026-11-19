@@ -5,7 +5,7 @@
 #include <nb/cleanup.h>
 #include <nb/buf.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
 #include "event/event.h"
 #include <stdint.h>
 

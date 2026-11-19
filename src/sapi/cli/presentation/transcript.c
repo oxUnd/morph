@@ -14,7 +14,7 @@
 #include <nothing/tui/terminal/text.h>
 #include <nb/cleanup.h>
 #include "cJSON.h"
-#include <morph/tui/terminal/report.h>
+#include "sapi/cli/presentation/tree.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -255,7 +255,7 @@ int cli_transcript_tool_live_body(const struct cli_transcript_tool *tool, nb_buf
 			(void)nb_buf_append_char(body, '\n');
 
 		(void)nb_buf_append_cstr(body, styled ? ANSI_DIM : "");
-		(void)morph_terminal_tree_prefix(body, NULL, 0, 1, rows != 0, 2);
+		(void)cli_tree_prefix(body, NULL, 0, 1, rows != 0, 2);
 		cli_transcript_append_clipped_text(body, line, width);
 		(void)nb_buf_append_cstr(body, styled ? ANSI_RESET : "");
 		free(line);
@@ -414,7 +414,7 @@ static void cli_transcript_append_tool_preview(nb_buf *out, const struct cli_tra
 		if ((nb_buf_init(&prefix), nb_buf_reserve(&prefix, 16) ? 0 : NB_ERR_NOMEM) != 0)
 			break;
 
-		morph_terminal_tree_prefix(&prefix, NULL, 0, 1, shown != 0, 2);
+		cli_tree_prefix(&prefix, NULL, 0, 1, shown != 0, 2);
 		cli_transcript_append_feed_line(out, nb_buf_cstr(&prefix), line, color, columns,
 						styled);
 		nb_buf_cleanup(&prefix);

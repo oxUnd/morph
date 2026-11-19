@@ -11,10 +11,15 @@ extern "C" {
 #include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/presentation/jobs.h"
 #include "sapi/cli/models/jobs.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
+#include <nothing/tui/terminal/size.h>
 }
 
 #include <fcntl.h>
 #include <cerrno>
+#include <cstdlib>
+#include <memory>
 #include <poll.h>
 #include <string>
 #include <sys/ioctl.h>
@@ -69,6 +74,36 @@ class CliTerminalTest : public ::testing::Test
 		cli_output_set_color_enabled(&ctx, 1);
 	}
 };
+
+TEST_F(CliTerminalTest, TerminalColumnsValidateEnvironmentAndPreserveCallerFallback)
+{
+	std::unique_ptr<FILE, decltype(&fclose)> output(tmpfile(), fclose);
+	ASSERT_NE(output, nullptr);
+
+	const char *configured = getenv("COLUMNS");
+	const bool had_columns = configured != nullptr;
+	const std::string saved = configured ? configured : "";
+	const struct {
+		const char *value;
+		int expected;
+	} cases[] = {{"60", 60},
+		     {"0", 100},
+		     {"-1", 100},
+		     {"80x", 100},
+		     {"999999999999999999999999", 100},
+		     {"", 100}};
+
+	for (const auto &item : cases) {
+		EXPECT_EQ(setenv("COLUMNS", item.value, 1), 0);
+		EXPECT_EQ(nt_terminal_columns(fileno(output.get()), 100), item.expected)
+			<< item.value;
+	}
+
+	if (had_columns)
+		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
+	else
+		EXPECT_EQ(unsetenv("COLUMNS"), 0);
+}
 
 TEST_F(CliTerminalTest, NonTerminalStatusPrintsOnlyWhenChanged)
 {

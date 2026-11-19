@@ -16,7 +16,8 @@ extern "C" {
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
+#include "sapi/cli/presentation/terminal_text.h"
 }
 
 #include <cstring>
@@ -498,7 +499,7 @@ static int subagents_text_event(struct cli_subagents_thread *thread, const char 
 static std::string subagents_plain(const nb_buf &document)
 {
 	char *plain NB_CLEANUP(nb_charp_cleanup) =
-		morph_terminal_strip_ansi_dup(nb_buf_cstr(&document), document.len, nullptr);
+		cli_terminal_text_strip_ansi_dup(nb_buf_cstr(&document), document.len, nullptr);
 	return plain ? plain : "";
 }
 
@@ -523,7 +524,7 @@ static void subagents_expect_sgr_rows(const nb_buf &document, int columns,
 	std::istringstream lines(text);
 	std::string line;
 	while (std::getline(lines, line)) {
-		EXPECT_LE(morph_terminal_display_width_ansi(line.c_str()),
+		EXPECT_LE(cli_terminal_text_width(line.c_str()),
 			  static_cast<size_t>(full_background ? columns : columns - 1));
 		if (!line.empty()) {
 			EXPECT_EQ(line.find("\033[0m"), 0u);

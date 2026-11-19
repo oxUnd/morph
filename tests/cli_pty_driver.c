@@ -4,7 +4,7 @@
 #include "sapi/cli/presentation/feed.h"
 #include "cli_agents_browser_fixture.h"
 #include <nb/cleanup.h>
-#include <morph/tui/terminal/size.h>
+#include <nothing/tui/terminal/size.h>
 /* Exercise the real CLI with an isolated database and a local model server. */
 #include "sapi/cli/application.h"
 #include "http/client.h"
@@ -145,7 +145,7 @@ static int preview_agents_browser(void)
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = 100;
 	int rows = 24;
-	morph_terminal_dimensions(STDOUT_FILENO, &columns, &rows);
+	nt_terminal_dimensions_of(STDOUT_FILENO, &columns, &rows);
 	nb_buf_init(&output);
 	rc = test_agents_browser_render(&output, &state, &data, columns - 1, rows, 1, NULL);
 

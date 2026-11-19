@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/history.h"
 #include "sapi/cli/presentation/panel.h"
+#include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include "cJSON.h"

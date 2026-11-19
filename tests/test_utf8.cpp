@@ -3,8 +3,10 @@
 #include <cstring>
 
 extern "C" {
+#include <nb/cleanup.h>
 #include <nb/utf8.h>
-#include <morph/tui/terminal/text.h>
+#include "sapi/cli/presentation/terminal_text.h"
+#include "terminal/text.h"
 }
 
 TEST(Utf8EllipsizeTest, KeepsShortValue)
@@ -46,6 +48,25 @@ TEST(Utf8EllipsizeTest, DoesNotSplitUtf8)
 		  7u);
 	EXPECT_TRUE(nb_utf8_validate(nb_str_from_cstr(output), NULL) == NB_UTF8_OK);
 	EXPECT_EQ(nb_utf8_width_cstr(output), 7u);
+}
+
+TEST(TerminalReportText, CountsCodepointColumnsAtWrapBoundaries)
+{
+	const char *text = "👩‍🔧X";
+	EXPECT_EQ(cli_terminal_text_width(text), 5U);
+	EXPECT_EQ(cli_terminal_text_advance(text, 2), text + strlen("👩"));
+}
+
+TEST(TerminalReportText, StripsTerminalFramesWithoutDecodingPayloadBytes)
+{
+	const char input[] = "A\033[31mR\033[0m\033_X\033\\\033]title\a\x9b\xff\033";
+	const char expected[] = "AR\x9b\xff\033";
+	size_t length = 0;
+	char *plain NB_CLEANUP(nb_charp_cleanup) =
+		cli_terminal_text_strip_ansi_dup(input, sizeof(input) - 1, &length);
+	ASSERT_NE(plain, nullptr);
+	ASSERT_EQ(length, sizeof(expected) - 1);
+	EXPECT_EQ(memcmp(plain, expected, length), 0);
 }
 
 TEST(Utf8TerminalSanitizeTest, RemovesTerminalSequencesAndShowsControls)
@@ -138,6 +159,7 @@ TEST(Utf8DecodeTest, RejectsNonScalarCodepoints)
 	for (const char *input : {"\xed\xa0\x80", "\xed\xbf\xbf",
 				  "\xf4\x90\x80\x80", "\xf7\xbf\xbf\xbf"})
 		EXPECT_EQ(nb_utf8_read(input, strlen(input), &cp, &count), 0);
+
 	EXPECT_EQ(nb_utf8_read("\xf4\x8f\xbf\xbf", 4, &cp, &count), 1);
 	EXPECT_EQ(cp, 0x10ffffu);
 	EXPECT_EQ(count, 4u);
@@ -171,9 +193,11 @@ TEST(Utf8ProcTest, EncodingAndDecodingRoundTripScalarBoundaries)
 		EXPECT_EQ(decoded, value);
 		EXPECT_EQ(consumed, size);
 	}
+
 	char text[4];
 	for (unsigned value : {0xd800u, 0xdfffu, 0x110000u, 0xffffffffu})
 		EXPECT_EQ(nb_utf8_encode(value, text), 0u);
+
 	EXPECT_EQ(nb_utf8_encode(0, text), 1u);
 	EXPECT_EQ(text[0], '\0');
 }
@@ -263,6 +287,7 @@ TEST(Utf8TerminalSanitizeTest, EveryChunkBoundaryMatchesWholeInput)
 			EXPECT_STREQ(nb_buf_cstr(&out), expected);
 			nb_buf_cleanup(&out);
 		}
+
 		free(expected);
 	}
 }
@@ -290,4 +315,50 @@ TEST(Utf8ProcTest, ContinuationBytesAreDistinctFromMalformedLeadingBytes)
 		EXPECT_EQ(nb_utf8_is_continuation_byte(static_cast<unsigned char>(byte)),
 			  byte >= 0x80 && byte <= 0xbf);
 	}
+}
+
+TEST(Utf8Util, EllipsizedTailKeepsWholeCodepoints)
+{
+	const char *s = "ab\xe4\xb8\xad" "cd";
+	char tail[16];
+	morph_terminal_copy_ellipsized_display_width(tail, sizeof(tail), s, 5, 1);
+
+	EXPECT_STREQ(tail, "…中cd");
+	EXPECT_EQ(nb_utf8_width_cstr(tail), 5u);
+}
+
+TEST(Utf8Util, CopySanitizedDisplayWidthDropsInvalidBytes)
+{
+	char out[16];
+	const char invalid[] = "ab\xe4\xb8""X\xff""cd";
+
+	size_t width = morph_terminal_copy_sanitized_display_width(out, sizeof(out), invalid, 5);
+
+	EXPECT_STREQ(out, "abXcd");
+	EXPECT_EQ(width, 5u);
+	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(out), NULL), NB_UTF8_OK);
+}
+
+TEST(Utf8Util, StripAnsiHandlesCsiAndOsc)
+{
+	const char input[] =
+		"\033[31m\xe7\xba\xa2\033[0mX\033]0;title\aY";
+	size_t len = 0;
+	char *out NB_CLEANUP(nb_charp_cleanup) =
+		cli_terminal_text_strip_ansi_dup(input, sizeof(input) - 1, &len);
+	ASSERT_NE(out, nullptr);
+
+	EXPECT_STREQ(out, "\xe7\xba\xa2XY");
+	EXPECT_EQ(len, strlen(out));
+}
+
+TEST(Utf8AdvanceDisplayWidth, DoesNotSplitWideCharacters)
+{
+	const char *s = "A\xe4\xb8\xad""B";
+
+	EXPECT_EQ(cli_terminal_text_advance(s, 0), s);
+	EXPECT_EQ(cli_terminal_text_advance(s, 1), s + 1);
+	EXPECT_EQ(cli_terminal_text_advance(s, 2), s + 1);
+	EXPECT_EQ(cli_terminal_text_advance(s, 3), s + 4);
+	EXPECT_EQ(cli_terminal_text_advance(s, 4), s + 5);
 }

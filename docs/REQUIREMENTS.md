@@ -249,7 +249,7 @@ cmake --build build
 - `ask_user` 支持单选、多选、自定义答案、推荐项以及 required/optional 响应策略。
 - 最多 64 个选项，答案文本合计最多 1 MiB；超限明确报错，包括 optional 超时推荐项回退。
 - required 问题不自动作答；optional 支持无输入超时处理，编辑活动会暂停自动回退。
-- 选择和超时问答使用共享选择组件；无 Readline 的交互自由文本也使用共享编辑器，Readline 模式的自由文本沿用 Readline。选择组件的长粘贴合并重绘。
+- 选择和超时问答复用 CLI 选择组件，自由文本输入使用 GNU Readline。选择组件的长粘贴合并重绘。
 - plain 模式在后台执行 turn，由 UI owner 持续处理事件和问答调用。
 
 ### 5.3 输出与本地命令呈现
@@ -262,7 +262,7 @@ cmake --build build
 - 未识别命令明确报错并清空编辑输入；已知但暂不能执行的命令保留重试输入。
 - 命令与首个结果之间、已完成结果组之后各有约定的空行；Readline 回忆历史独立保存。
 
-参见 [CLI 工具输出](cli-tool-feed.md)、[CLI 应用布局](tui-application-layout.md) 和 [TUI 盒模型](tui-box-model.md)。
+参见 [CLI 工具输出](cli-tool-feed.md)、[CLI 应用布局](tui-application-layout.md) 和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)。
 
 ### 5.4 已实现命令
 
@@ -345,7 +345,7 @@ runtime_open / runtime_execute_turn / runtime_close
 | --- | --- |
 | 语言与构建 | C11 / C++17 测试，CMake ≥ 3.20，要求 GCC/Clang cleanup attribute |
 | 网络与存储 | libcurl、SQLite3、pthreads |
-| TUI | 自有 Application/View/Canvas/widgets，libuv；Readline 可选 |
+| TUI | nothing-tui 的 Application、View、组件与事件，依赖 libuv 和 GNU Readline ≥ 8.0 |
 | JSON / TOML / Unicode | 独立 cJSON target、nbase TOML 与 nbase 内置 utf8proc Unicode 后端 |
 | Markdown | `fronts/morph-markdown` 及 Kitty SDK；cmark-gfm 由该构建集成 |
 | 图像 | stb_image / write / resize2；动态工具图像与画布使用 libvips、cairo、pangocairo |
@@ -470,7 +470,7 @@ default_max_output_bytes = 1048576
 | `src/exec/` | 受管进程会话和输出恢复 |
 | `src/persistence/`、`src/db/` | typed 存储、schema、事务及迁移 |
 | `src/session.c` 等 session 模块 | 会话和模型历史持久化接口 |
-| `src/tui/` | core、terminal、render、widgets 和样例 |
+| `src/sapi/cli/pages/`、`src/sapi/cli/components/` | 基于 nothing-tui 的页面控制器和可复用视图 |
 | `src/skill/`、`src/prompt/` | Skill 发现/激活和提示模板 |
 | `src/mcp/`、`src/ext/`、`src/ipc/` | 远程能力及扩展调用 |
 | `src/js_runner/`、`src/sandbox/` | QuickJS Host API 与平台沙箱 |
@@ -499,7 +499,7 @@ default_max_output_bytes = 1048576
 | [nb_queue_t](../vendor/nothing/include/nb/queue.h) | 侵入式队列，按 owner 生命周期保存稳定节点 |
 
 业务直接使用 nbase 类型与 API；Unicode 使用 [nb/utf8.h](../vendor/nothing/include/nb/utf8.h)。
-终端过滤与裁剪属于 `tui/terminal/text`，token 权重属于 `agent/tokenizer`；不得重建 morph 通用基础库 facade。
+共享的终端文本清洗和按码点裁剪属于 `src/terminal/text.h`，token 权重属于 `agent/tokenizer`；不得重建 morph 通用基础库 facade。
 
 #### 6.9.1 ReAct
 
@@ -605,13 +605,13 @@ Chat compatible、Responses 和 DeepSeek 使用各自 codec 编解码工具调�
 
 ### 6.11 TUI 与进度呈现
 
-TUI 公开 Application、View、Canvas 和 widget 对象。自定义类型将公共 base 放在首字段，通过可选 method table 扩展；可变 UI 操作归 owner 线程，worker 通过消息提交状态。
+CLI 使用 nothing-tui 提供的 Application、View 和控件。自定义类型将公共 base 放在首字段，通过可选 method table 扩展；可变 UI 操作归 owner 线程，worker 通过消息提交状态。
 
 View 使用四边 margin/padding：measure 返回含 margin 的外尺寸，arrange 接收 outer slot；size limits 含 padding、不含 margin，兄弟 margin 相加。
 
-CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗时、推理、回答、工具与后台任务。`tui/terminal/activity` 是独立可复用工具，不作为 CLI 的全部线程和输出契约。
+CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗时、推理、回答、工具与后台任务。
 
-参见 [TUI 架构](tui-architecture.md)、[应用布局](tui-application-layout.md) 和 [盒模型](tui-box-model.md)。
+参见 [CLI 应用布局](tui-application-layout.md) 和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)。
 
 ### 6.12 C 编码规范
 
@@ -679,7 +679,7 @@ ctest --test-dir build --output-on-failure
 | 普通完整问答 PTY | 通过，含 600 汉字自由输入、1600 汉字自定义答案、尾部完整性和取消 |
 | ASan/UBSan 无 Readline 问答 PTY | 通过，覆盖长答案、粘贴及 optional 超时 |
 
-核心回归包括 [模型与流式响应](../tests/test_react.cpp)、[模型所有权](../tests/test_model_ownership.cpp)、[Token 预算](../tests/test_model_tokens.cpp)、[BPE](../tests/test_tokenizer.cpp)、[TUI](../tests/test_tui.cpp)、[问答](../tests/test_ask_user.cpp)、[进程恢复](../tests/test_exec_process.cpp)、[checkpoint](../tests/test_checkpoint_store.cpp)、[记忆分页](../tests/test_runtime_query.cpp) 和 [长输入 PTY](../tests/test_cli_select_pty.py)。
+核心回归包括 [模型与流式响应](../tests/test_react.cpp)、[模型所有权](../tests/test_model_ownership.cpp)、[Token 预算](../tests/test_model_tokens.cpp)、[BPE](../tests/test_tokenizer.cpp)、[CLI 终端](../tests/test_cli_terminal.cpp)、[问答](../tests/test_ask_user.cpp)、[进程恢复](../tests/test_exec_process.cpp)、[checkpoint](../tests/test_checkpoint_store.cpp)、[记忆分页](../tests/test_runtime_query.cpp) 和 [长输入 PTY](../tests/test_cli_select_pty.py)。
 
 ## 10. 资源边界
 
@@ -722,8 +722,8 @@ ctest --test-dir build --output-on-failure
 | 记忆、显式偏好、Plan、子代理及任务 | `src/agent/`、`src/persistence/`、`src/runtime/task*` |
 | MCP、Ext、QuickJS、WASM 及 Skill | `src/mcp/`、`src/ext/`、`src/js_runner/`、`src/skill/` |
 | patch 跟踪和代码/对话回退 | `src/agent/patch.c`、`src/runtime/checkpoint.c`、`src/persistence/checkpoint_store.c` |
-| CLI/TUI、FastCGI 和统一事件 | `src/sapi/`、`src/tui/`、`src/event/` |
-| 长输入安全与边界回归 | `src/tui/widgets/editor.c`、`src/agent/bpe.c`、`tests/` |
+| CLI/TUI、FastCGI 和统一事件 | `src/sapi/`、`src/event/` |
+| 长输入安全与边界回归 | `src/sapi/cli/components/composer.c`、`src/agent/bpe.c`、`tests/` |
 
 ## 12. 已实现行为的边界
 
@@ -746,5 +746,5 @@ ctest --test-dir build --output-on-failure
 - [checkpoint](checkpointing.md)
 - [事件系统](event-system.md)与[Hooks](hooks.md)
 - [QuickJS 工具](quickjs-tools.md)与[定时任务](scheduled-tasks.md)
-- [TUI 架构](tui-architecture.md)、[应用布局](tui-application-layout.md)和[盒模型](tui-box-model.md)
+- [CLI 应用布局](tui-application-layout.md)和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)
 - [内存与状态所有权](state-ownership.md)

@@ -38,6 +38,8 @@ to select another checkout of that revision. Both libraries use the nbase snapsh
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
 
 ```bash
+git clone --branch feat/morph-cli-integration https://codeberg.org/oxund/nothing-tui ../nothing-tui
+git -C ../nothing-tui checkout 52f7bf0276e3953faa23716a931bb413ed9ae425
 git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c
 git clone https://github.com/oxUnd/morph-markdown fronts/morph-markdown
 cmake -S . -B build

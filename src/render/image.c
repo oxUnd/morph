@@ -1,5 +1,5 @@
 #include "image.h"
-#include <morph/tui/terminal/size.h>
+#include <nothing/tui/terminal/size.h>
 #include "morph_kitty_protocol.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
@@ -116,10 +116,8 @@ static int render_kitty(struct nb_log *logger, const char *path)
 	const unsigned char *data = (const unsigned char *)nb_buf_cstr(&pixels);
 	size_t rd = nb_buf_len(&pixels);
 
-	int cols;
-	int rows_limit;
-
-	morph_terminal_dimensions(STDOUT_FILENO, &cols, &rows_limit);
+	int cols = nt_terminal_columns(STDOUT_FILENO, 80);
+	int rows_limit = 24;
 	int pixel_width;
 	int pixel_height;
 	int channels;
@@ -127,7 +125,7 @@ static int render_kitty(struct nb_log *logger, const char *path)
 	double placement_rows;
 	double cell_width = 8.0;
 	double cell_height = 16.0;
-	struct winsize ws;
+	struct winsize ws = {0};
 	/*
 	 * Use half the terminal width while preserving the source aspect ratio.
 	 * Kitty scales by columns when only the c parameter is specified.
@@ -135,22 +133,30 @@ static int render_kitty(struct nb_log *logger, const char *path)
 	int disp_cols = cols / 2;
 	if (disp_cols < 1)
 		disp_cols = 1;
+
 	if (disp_cols > (int)MORPH_KITTY_PLACEHOLDER_LIMIT)
 		disp_cols = (int)MORPH_KITTY_PLACEHOLDER_LIMIT;
+
 	if (rd > (size_t)INT_MAX ||
 	    !stbi_info_from_memory(data, (int)rd, &pixel_width, &pixel_height, &channels) ||
 	    pixel_width <= 0 || pixel_height <= 0) {
 		return NB_ERR_INVAL;
 	}
-	memset(&ws, 0, sizeof(ws));
+
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+		if (ws.ws_row > 0)
+			rows_limit = ws.ws_row;
+
 		if (ws.ws_col > 0 && ws.ws_xpixel > 0)
 			cell_width = (double)ws.ws_xpixel / ws.ws_col;
+
 		if (ws.ws_row > 0 && ws.ws_ypixel > 0)
 			cell_height = (double)ws.ws_ypixel / ws.ws_row;
 	}
+
 	if (rows_limit > (int)MORPH_KITTY_PLACEHOLDER_LIMIT)
 		rows_limit = (int)MORPH_KITTY_PLACEHOLDER_LIMIT;
+
 	placement_rows =
 		(double)pixel_height * disp_cols * cell_width / ((double)pixel_width * cell_height);
 	if (placement_rows > rows_limit) {

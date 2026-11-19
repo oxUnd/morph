@@ -8,7 +8,6 @@
 #include <nb/cleanup.h>
 #include <nothing/tui/terminal/text.h>
 #include <nothing/tui/component_state.h>
-#include <morph/tui/terminal/report.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>

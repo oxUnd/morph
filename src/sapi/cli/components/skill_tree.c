@@ -1,7 +1,7 @@
 #include "sapi/cli/components/skill_tree.h"
 #include "sapi/cli/presentation/command_output.h"
 #include "sapi/cli/presentation/style.h"
-#include <morph/tui/terminal/report.h>
+#include "sapi/cli/presentation/tree.h"
 #include <nothing/tui/controls/tree_view.h>
 #include <nothing/tui/terminal/text.h>
 #include <nb/cleanup.h>
@@ -11,7 +11,7 @@
 
 static int cli_skill_tree_row(const struct nt_tree_node *node, int width, nb_buf *out)
 {
-	const char *branch = morph_terminal_tree_branch(node->next_sibling == SIZE_MAX, 0);
+	const char *branch = cli_tree_branch(node->next_sibling == SIZE_MAX, 0);
 	int label_width = width / 3;
 	if (label_width < 1)
 		label_width = 1;

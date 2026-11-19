@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/permissions.h"
-#include <morph/tui/terminal/report.h>
+#include "sapi/cli/presentation/tree.h"
 #include <nb/err.h>
 #include "runtime/runtime.h"
 #include <nb/cleanup.h>
@@ -108,7 +108,7 @@ static int cli_permissions_print_permissions(struct cli_application *ctx)
 		group_last = ++group == group_count;
 		cli_list_group(ctx, cli_permissions_grant_group_name(grants, i, end), end - i,
 			       group_last);
-		ancestor = morph_terminal_tree_branch(group_last, 1);
+		ancestor = cli_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char label[96];
 

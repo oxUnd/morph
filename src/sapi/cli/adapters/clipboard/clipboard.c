@@ -14,7 +14,7 @@
 #include <nb/encoding.h>
 #include <nb/utf8.h>
 #include "sapi/cli/presentation/feed.h"
-#include <morph/tui/terminal/text.h>
+#include "terminal/text.h"
 
 #include <fcntl.h>
 #include <spawn.h>

@@ -9,7 +9,12 @@
 - **ReAct** `src/agent/react.c`: Thought → Action → Observation → Guardrail → Final, via OpenAI Function Calling (not text parsing).
 - **Models**: `llm` (text chat), `image_gen`, `video_gen`, each configured independently.
 - **Runtime facade** `src/runtime/`: process-level owner. Frontends hold an opaque `struct runtime *` and enter through `runtime_execute_turn()`; they never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md`.
-- **TUI** `src/tui/`: implementation sources stay in `core/`, `terminal/`, `render/`, and `widgets/`. Public APIs name domain objects (`morph_tui_application_*`, `morph_tui_view_*`, `morph_tui_canvas_*`) rather than implementation layers; controls use `morph_tui_widget_*`. Include `<morph/tui/application.h>`, `<morph/tui/view.h>`, or `<morph/tui/widgets/list.h>`; consumers may use `<morph/tui.h>`. Keep implementation headers private and convenience umbrellas out of framework implementations. Application is one extensible object for init/deinit, run/step, messages, embedding, and main; there is no separate public App/runtime object. Custom types embed public base structs first and override optional method tables. Mutable view operations belong to the UI owner thread; workers post model messages. The entire CLI follows the TUI application layout under `src/sapi/cli/`; its root embeds the companion nothing-tui Application and owns modes and lifecycle. Native controllers live in `pages/` and state-driven components live in `components/`. See `docs/tui-application-layout.md`. Samples live in `src/tui/samples/<name>/` with `main.c`, `CMakeLists.txt`, and `README.md`; `customization/` demonstrates custom components, pages, and interactions. See `docs/tui-architecture.md`.
+- **TUI**: The CLI uses the companion `nothing-tui` framework through its public
+  `<nothing/tui/...>` headers. The application in `src/sapi/cli/` embeds
+  `struct nt_application` and owns execution modes and lifecycle. Keep native
+  controllers in `pages/`, reusable state-driven views in `components/` and
+  CLI output formatting in `presentation/`. Workers post model events to the
+  UI owner thread. See [the application layout](docs/tui-application-layout.md).
 - **Permissions** `src/permission/`: shared access/approval/reviewer policy, grants and review routing. Runtime owns the context, human/model adapters and application presets; frontends use `runtime_permission_get_policy()` / `_set_policy()`. Concrete tools describe operations; opaque tools use the registry gate. Descendants share authority. See `docs/permissions-design.md` and `docs/permissions-acceptance.md`.
 - **Tools** `src/agent/tools/`:
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, ask_user
@@ -47,10 +52,9 @@
 
 ## CLI Status Symbols
 
-- Terminal status glyph values are defined only in `src/tui/include/morph/tui/terminal/status.h`;
-  CLI aliases and styles live in `src/sapi/cli/presentation/style.h`. All CLI
+- Terminal status glyphs and styles are defined in `src/sapi/cli/presentation/style.h`. All CLI
   commands, pages, tool feeds, background jobs, subagents, plans, notifications,
-  diagnostics, setup flows and shared terminal spinners reuse those definitions.
+  diagnostics and setup flows reuse those definitions.
   Do not hardcode alternative status glyphs or small
   `•` / `◦` step bullets in application sources.
 - Use `◯` (dim gray) for queued/pending, `◉` (cyan) for running,
@@ -105,12 +109,12 @@
   owns no function declarations or domain SDK include collection. Run
   `cli_application_layout_conventions` alongside CLI/TUI behavior regressions
   after moving modules, adding interfaces or changing private names.
-- TUI View options use four-edge `morph_tui_view_insets` for margin and padding.
+- TUI View options use four-edge `nt_view_insets` for margin and padding.
   Measure returns the outer size including margin; arrange accepts an outer slot
   and applies margin once. Size limits include padding and exclude margin.
-  Custom layouts use `morph_tui_view_content_rect` and pass allocated outer slots
+  Custom layouts use `nt_view_content_rect` and pass allocated outer slots
   directly to child arrange calls. Sibling margins add without collapsing.
-  See [the box model](docs/tui-box-model.md) for geometry and extension contracts.
+  See [the NT layout guide](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md) for geometry and extension contracts.
 - Submitted chat boxes own one normal-background row above and below their
   colored padding. Reasoning, answers, and tools share that outer separator;
   streaming previews and committed output keep the same position. Keep local
@@ -164,14 +168,13 @@ morph-cjson, morph-regex (independent third-party targets)
 morph-db → morph-session → morph-persistence → morph-credits
 morph-app-data (runtime/resources), morph-bpe (agent/bpe)
 morph-command-analysis (permission/command_analysis; tree-sitter-bash)
-morph-media (media/image; stb), morph-terminal (tui/terminal text/size/activity)
+morph-media (media/image; stb), morph-terminal (terminal/text; nbase)
 morph-http (libcurl, SSE) → morph-models
 morph-event, morph-exec (→ morph-sandbox), morph-render, morph-ipc
 morph-permission (policy, operations, grants; nbase, db, command analysis)
 morph-agent (react, context, compress, tokenizer, tool, plan)
 morph-tools, morph-skill, morph-mcp, morph-config
 morph-runtime ← morph-agent, config, credits, event, mcp, session, skill, sync, tools
-morph-tui ← nbase, morph-terminal, morph-media, libuv
 nothing-tui ← nbase, libuv, GNU Readline, morph-markdown-render
 morph-cli ← nothing-tui, morph-terminal, morph-runtime → morph (executable)
 ```
@@ -198,7 +201,8 @@ byte offset; `nb_utf8_count` returns `SIZE_MAX` on invalid input. `nb_utf8_read`
 provides the bounded one-code-point operation used by text consumers.
 Unicode widths/category/casefold come from nbase's pinned utf8proc backend.
 ANSI filtering, terminal sanitization, display clipping and ellipsis policies
-belong to `<morph/tui/terminal/text.h>`; language-block token weights belong to
+for agent summaries and CLI output use `src/terminal/text.h`. CLI report formatting
+lives in `src/sapi/cli/presentation/`. Language-block token weights belong to
 `agent/tokenizer.c`. See `docs/unicode.md`.
 
 ## Core Data Structures (include `<nb/*.h>`, link `nbase::nbase`)
