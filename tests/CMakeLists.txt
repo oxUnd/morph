@@ -120,7 +120,7 @@ set_target_properties(morph-agent-eval-runner PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 add_library(morph-error-release-probe OBJECT error_macro_probe.c)
 target_include_directories(morph-error-release-probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(morph-error-release-probe PRIVATE nbase)
+target_link_libraries(morph-error-release-probe PRIVATE nbase::nbase)
 target_compile_options(morph-error-release-probe PRIVATE -UDEBUG -DNDEBUG)
 target_compile_definitions(morph-error-release-probe PRIVATE
 	error_probe_return=error_release_probe_return
@@ -160,8 +160,10 @@ target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi
 )
 
+get_target_property(MORPH_TEST_NBASE_SOURCE_DIR nbase::nbase SOURCE_DIR)
 target_compile_definitions(morph-tests PRIVATE
 	MORPH_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+	MORPH_TEST_NBASE_INCLUDE_DIR="${MORPH_TEST_NBASE_SOURCE_DIR}/include"
 )
 
 target_link_libraries(morph-tests PRIVATE
@@ -335,7 +337,8 @@ if(Python3_Interpreter_FOUND AND UNIX)
 			$<TARGET_FILE:morph>)
 	add_test(NAME cli_setup_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_setup_pty.py
-			$<TARGET_FILE:morph-setup-pty-driver> $<TARGET_FILE:morph>)
+			$<TARGET_FILE:morph-setup-pty-driver> $<TARGET_FILE:morph>
+			"${MORPH_TEST_NBASE_SOURCE_DIR}/include/nb/err.h")
 	set_tests_properties(cli_setup_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 endif()

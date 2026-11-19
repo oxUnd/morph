@@ -21,15 +21,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CheckCSourceCompiles)
-set(CMAKE_REQUIRED_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/nothing/include")
 check_c_source_compiles("\
-#include <nb/cleanup.h>
 #if !defined(__GNUC__) && !defined(__clang__)
 #error scope cleanup is required
 #endif
+static void cleanup_probe(int *value) {
+    (void)value;
+}
 int main(void) {
-    char *text NB_CLEANUP(nb_charp_cleanup) = NULL;
-    return text != NULL;
+    int value __attribute__((__cleanup__(cleanup_probe))) = 0;
+    return value;
 }" MORPH_HAS_SCOPE_CLEANUP)
 if(NOT MORPH_HAS_SCOPE_CLEANUP)
     message(FATAL_ERROR "morph requires GCC/Clang cleanup attribute support")
@@ -316,14 +317,8 @@ add_custom_target(morph-data ALL
 	COMMENT "Staging morph runtime data"
 )
 
-# nbase is a pinned source dependency. Its tests and examples have their own
-# CMake entry point and are not part of the morph build.
-set(NB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-set(NB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(NB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(NB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-set(NB_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
-add_subdirectory(vendor/nothing EXCLUDE_FROM_ALL)
+# Load the shared nbase target before nothing-tui so both use the same library.
+include(cmake/FetchNbase.cmake)
 
 set(MORPH_NOTHING_TUI_SOURCE_DIR "" CACHE PATH "Optional local nothing-tui source checkout")
 set(NT_BUILD_SAMPLES OFF)

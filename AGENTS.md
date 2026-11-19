@@ -162,7 +162,7 @@
 
 ## Libraries (all static, from CMake link targets)
 ```
-nbase::nbase (vendor/nothing; nb containers, errors, log, files/paths,
+nbase::nbase (nothing v0.1.0; nb containers, errors, log, files/paths,
               Unicode, encoding/hash, time, cancellation, threads, processes)
 morph-cjson, morph-regex (independent third-party targets)
 morph-db → morph-session → morph-persistence → morph-credits
@@ -186,12 +186,11 @@ Treat nbase as a third-party dependency: include its public headers with
 `#include <nb/xxx.h>`, never quoted includes or vendor-relative header paths.
 
 ## Vendor
-`vendor/nothing/` is a pinned nbase source snapshot with recorded local changes
-in `vendor/nothing/README.morph.md`; do not fetch a floating version at build time.
-The nbase Unicode backend vendors utf8proc 2.12.0 (Unicode 18.0.0) under
-`vendor/nothing/vendor/utf8proc/`. cJSON and stb remain dedicated dependencies;
-TOML uses `nb/toml.h`. The nbase main-library license remains a distribution
-prerequisite until upstream provides an explicit grant.
+`cmake/FetchNbase.cmake` pins the nothing v0.1.0 release and applies the
+executable-path patch on Cygwin. Morph and nothing-tui share `nbase::nbase`.
+The nbase Unicode backend vendors utf8proc 2.12.0 (Unicode 18.0.0). cJSON and
+stb remain dedicated dependencies. TOML uses `nb/toml.h`. The nbase main-library
+license remains a distribution prerequisite until upstream provides an explicit grant.
 
 ## UTF-8
 Include `nb/utf8.h` and use its bounded decoder, encoder, validation, character

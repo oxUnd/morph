@@ -5,13 +5,12 @@ The morph Unicode wrapper and its compatibility names have been removed.
 Generic UTF-8 handling and Unicode properties belong to nbase; terminal protocol
 handling and token estimation retain their application owners.
 
-The nbase snapshot vendors utf8proc 2.12.0 (Unicode 18.0.0) at
-`vendor/nothing/vendor/utf8proc/`, pinned to upstream commit
-`79cdd5ab40c79afa559f689ffc13b76812dee1ac`. Its generated database and
-MIT/Unicode data license are included. The backend is compiled once into nbase;
-no system Unicode package or build-time download is required.
+The nbase v0.1.0 release bundles utf8proc 2.12.0 (Unicode 18.0.0), pinned to
+upstream commit `79cdd5ab40c79afa559f689ffc13b76812dee1ac`. The generated
+database and MIT/Unicode data license ship with the backend, which compiles
+once into nbase. [Bundled utf8proc](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/vendor/utf8proc)
 
-`vendor/nothing/include/nb/utf8.h` defines the public contracts:
+The public header defines the following contracts. [nb/utf8.h](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/utf8.h)
 
 - `nb_utf8_decode` consumes a bounded `nb_str` through a caller-owned byte index.
   `nb_utf8_read` decodes a single bounded code point and reports its byte length.

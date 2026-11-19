@@ -9,8 +9,9 @@
 - 第 1–6 节保留迁移前的评估依据与原始路径，部分旧文件已删除；
   第 7、9、10 节保留原交付记录；第 12 节保留问题发现记录，最终修复与验收以第 13 节为准。
 
-本文的 TUI 目录、样例及基准数据均对应当时的提交。当前终端界面使用同级仓库
-`nothing-tui`，目录与职责见 [CLI 应用布局](tui-application-layout.md)。
+本文的 TUI 目录、样例及基准数据均对应当时的提交。当前构建从发布版本获取
+`nothing-tui` 和 `nbase`，下文的 `vendor/nothing` 路径属于历史记录。
+[构建说明](../README.md#build) · [CLI 应用布局](tui-application-layout.md)
 
 ## 1. 评估目标与结论
 
@@ -53,7 +54,7 @@
 
 ### 必须先修复的上游实现问题：realpath 缓冲容量
 
-[`nb_platform_path_canonical`](../vendor/nothing/src/platform/posix/path.c:72)
+[`nb_platform_path_canonical`](https://codeberg.org/oxund/nothing/src/commit/cd7efa88aa5c3bbd3825d45d3527e45d7566b716/src/platform/posix/path.c#L72)
 先分配 256 字节，再调用 `realpath(path, resolved)`。这个调用没有缓冲容量参数，
 并不会按这 256 字节截断或可靠地通知“需扩容”；事后检查 ENAMETOOLONG 再翻倍
 不能防止第一次写越界。
@@ -77,7 +78,7 @@ WRITE of size 353
 实施阶段已修复并加入长路径回归，最终平台证据见第 10 节。最小调用是初始化 `nb_buf/nb_err` 后执行
 `nb_path_canonical(&out, long_existing_path, &err)`；探针链接了本次 ASan 版 nbase。
 
-独立构建可以从项目根目录复现；构建目录放在仓库外：
+以下是当时从项目根目录运行的独立构建命令。构建目录位于仓库外。
 
 ```sh
 cmake -S vendor/nothing -B /tmp/morph-nbase-debug \

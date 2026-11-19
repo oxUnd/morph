@@ -32,8 +32,11 @@ Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libuv ≥ 1.44, libffi,
 
 CMake fetches nothing-tui v0.1.0 for the CLI. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that release. Both libraries use the nbase snapshot in `vendor/nothing`.
-[Release tag](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0)
+of that release. [nothing-tui release](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0)
+
+Morph and nothing-tui share one `nbase::nbase` target built from the nothing v0.1.0
+release. Cygwin builds apply the executable-path patch in `vendor/patches`.
+[nothing release](https://codeberg.org/oxund/nothing/src/tag/v0.1.0)
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
 

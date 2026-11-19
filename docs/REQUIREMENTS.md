@@ -474,7 +474,7 @@ default_max_output_bytes = 1048576
 | `src/skill/`、`src/prompt/` | Skill 发现/激活和提示模板 |
 | `src/mcp/`、`src/ext/`、`src/ipc/` | 远程能力及扩展调用 |
 | `src/js_runner/`、`src/sandbox/` | QuickJS Host API 与平台沙箱 |
-| `src/event/`、`src/credits.c`、`src/credits.h`、`src/sync/`、`vendor/nothing/` | 事件、计费、同步和 nbase 基础组件 |
+| `src/event/`、`src/credits.c`、`src/credits.h`、`src/sync/`、`cmake/FetchNbase.cmake` | 事件、计费、同步和 nbase 基础依赖 |
 | `prompts/`、`skills/`、`exts/` | 已提供的提示、技能及扩展示例 |
 | `tests/` | 单元和集成测试 |
 
@@ -492,13 +492,13 @@ default_max_output_bytes = 1048576
 
 | 容器 | API 与约束 |
 | --- | --- |
-| [nb_buf](../vendor/nothing/include/nb/buf.h) | 原生拥有缓冲；append/reserve 返回 bool，错误为 sticky；move 交换两个 handle；detach 必须保留 capacity 配对 nb_free |
-| [nb_vec](../vendor/nothing/include/nb/vec.h) | 原生值数组；push/at/reserve/insert/remove；新槽未初始化，增长使旧槽指针失效；元素资源由业务 owner 清理 |
-| [nb_map](../vendor/nothing/include/nb/map.h) | 不透明字符串索引；value dtor 仅处理 clear/free 时仍保留的值，替换/删除的值交给调用方 |
-| [nb_str](../vendor/nothing/include/nb/str.h) | 非拥有 `{ptr, len}`；字典序比较；借用失效和复制边界显式表达 |
-| [nb_queue_t](../vendor/nothing/include/nb/queue.h) | 侵入式队列，按 owner 生命周期保存稳定节点 |
+| [nb_buf](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/buf.h) | 原生拥有缓冲；append/reserve 返回 bool，错误为 sticky；move 交换两个 handle；detach 必须保留 capacity 配对 nb_free |
+| [nb_vec](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/vec.h) | 原生值数组；push/at/reserve/insert/remove；新槽未初始化，增长使旧槽指针失效；元素资源由业务 owner 清理 |
+| [nb_map](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/map.h) | 不透明字符串索引；value dtor 仅处理 clear/free 时仍保留的值，替换/删除的值交给调用方 |
+| [nb_str](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/str.h) | 非拥有 `{ptr, len}`；字典序比较；借用失效和复制边界显式表达 |
+| [nb_queue_t](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/queue.h) | 侵入式队列，按 owner 生命周期保存稳定节点 |
 
-业务直接使用 nbase 类型与 API；Unicode 使用 [nb/utf8.h](../vendor/nothing/include/nb/utf8.h)。
+业务直接使用 nbase 类型与 API，Unicode 接口见公共头文件。[nb/utf8.h](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/utf8.h)
 共享的终端文本清洗和按码点裁剪属于 `src/terminal/text.h`，token 权重属于 `agent/tokenizer`；不得重建 morph 通用基础库 facade。
 
 #### 6.9.1 ReAct
@@ -635,7 +635,7 @@ CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗
 | 数据与处理 | `MORPH_ERR_PARSE`、`MORPH_ERR_DB`、`MORPH_ERR_FORMAT`、`MORPH_ERR_PROCESSING`、`MORPH_ERR_LOAD` |
 | 执行边界 | `MORPH_ERR_SANDBOX`、`MORPH_ERR_REACT_MAX_ITERATIONS`、`MORPH_ERR_CONTEXT_LIMIT` |
 
-`nb_err_trace` 显式接收 logger、错误码、描述表与源码位置，保留 errno 并返回原错误；不隐藏 return 或赋值，不直接写终端。定义见 [nb/err.h](../vendor/nothing/include/nb/err.h)。
+`nb_err_trace` 显式接收 logger、错误码、描述表与源码位置，保留 errno 并返回原错误；不隐藏 return 或赋值，不直接写终端。[nb/err.h](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/err.h)
 
 ## 8. 日志与可观测性
 

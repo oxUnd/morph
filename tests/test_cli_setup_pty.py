@@ -176,7 +176,7 @@ def missing(config, kind, key):
     return not re.search(r'^\s*' + re.escape(key) + r'\s*=', section(config, kind), re.M)
 
 
-def tests(driver, directory, production):
+def tests(driver, directory, production, cancelled_status):
     terminals = []
 
     def start(name, **kwargs):
@@ -445,24 +445,24 @@ def tests(driver, directory, production):
         t.send('\x1b[200~1\n\x1b[201~', 'Review your setup')
         assert not t.path.exists()
         t.child.send('\x03')
-        t.finish(native_status('NB_ERR_CANCELLED'))
+        t.finish(cancelled_status)
 
         for name, keys in (('cancel-review', '9\r'), ('cancel-key', '\x03')):
             t = start(name, ready=True)
             t.child.send(keys)
-            t.finish(native_status('NB_ERR_CANCELLED'))
+            t.finish(cancelled_status)
             assert not t.path.exists()
 
         t = start('cancel-edit', ready=True)
         t.send('2\r', 'Model settings')
         t.send('3\r', 'Model name / endpoint ID')
         t.child.send('\x04')
-        t.finish(native_status('NB_ERR_CANCELLED'))
+        t.finish(cancelled_status)
         assert not t.path.exists()
 
         t = start('signal', ready=True)
         os.kill(t.child.pid, signal.SIGTERM)
-        t.finish(native_status('NB_ERR_CANCELLED'))
+        t.finish(cancelled_status)
         assert not t.path.exists()
 
         # Reconfiguration keeps custom instructions without another prompt dialog.
@@ -558,4 +558,6 @@ def tests(driver, directory, production):
 
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='morph-setup-pty-') as tmp:
-        tests(Path(sys.argv[1]).resolve(), Path(tmp), Path(sys.argv[2]).resolve())
+        cancelled_status = native_status('NB_ERR_CANCELLED', Path(sys.argv[3]))
+        tests(Path(sys.argv[1]).resolve(), Path(tmp), Path(sys.argv[2]).resolve(),
+              cancelled_status)

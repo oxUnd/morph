@@ -7162,8 +7162,8 @@ static std::string build_agent_ui_tags_so()
 		"/exts/guardrail-agent-ui-tags/agent_ui_tags.c";
 	std::string out = "/tmp/morph_agent_ui_tags_" +
 		std::to_string((long long)getpid()) + ".so";
-	std::string cmd = "cc -shared -fPIC -I\"" + std::string(MORPH_TEST_SOURCE_DIR) +
-			  "/vendor/nothing/include\" -o " + out + " " + src;
+	std::string cmd = "cc -shared -fPIC -I\"" MORPH_TEST_NBASE_INCLUDE_DIR "\" -o " +
+			  out + " " + src;
 	int status = system(cmd.c_str());
 	if (status != 0)
 		return "";

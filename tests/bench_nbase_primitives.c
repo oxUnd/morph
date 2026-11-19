@@ -1,6 +1,6 @@
 /* Mechanism microbenchmark. Build from the repository root after CMake:
- * cc -O2 -Ivendor/nothing/include tests/bench_nbase_primitives.c \
- *    build/vendor/nothing/libnbase.a -o /tmp/bench-nbase-migration
+ * cc -O2 -Ibuild/_deps/nbase-src/include tests/bench_nbase_primitives.c \
+ *    build/_deps/nbase-build/libnbase.a -o /tmp/bench-nbase-migration
  * Requested allocator capacity is measured here, not process RSS.
  */
 #include <nb/buf.h>

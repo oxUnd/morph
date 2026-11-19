@@ -1,0 +1,24 @@
+--- a/src/platform/posix/path.c
++++ b/src/platform/posix/path.c
+@@ -101,8 +101,8 @@
+     return NB_OK;
+ }
+ 
+-#if defined(__linux__)
+-static nb_status executable_linux(nb_buf *out, nb_err *err)
++#if defined(__linux__) || defined(__CYGWIN__)
++static nb_status executable_procfs(nb_buf *out, nb_err *err)
+ {
+     size_t cap = 256u;
+     for (;;) {
+@@ -174,8 +174,8 @@
+         return NB_ERR_INVAL;
+     }
+     nb_buf_clear(out);
+-#if defined(__linux__)
+-    return executable_linux(out, err);
++#if defined(__linux__) || defined(__CYGWIN__)
++    return executable_procfs(out, err);
+ #elif defined(__APPLE__)
+     return executable_macos(out, err);
+ #else

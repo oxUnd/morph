@@ -1,10 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(morph-locate LANGUAGES C)
 
-set(NB_BUILD_SHARED OFF CACHE BOOL "Link static nbase" FORCE)
-set(NB_BUILD_TESTS OFF CACHE BOOL "Build nbase tests" FORCE)
-set(NB_BUILD_EXAMPLES OFF CACHE BOOL "Build nbase examples" FORCE)
-add_subdirectory(../../vendor/nothing nbase)
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/FetchNbase.cmake")
 
 if(APPLE)
 	enable_language(OBJC)
