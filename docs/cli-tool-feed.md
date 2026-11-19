@@ -3,8 +3,11 @@
 Interactive chat runs in alternate screen as a retained TUI ViewController.
 The page layout contains a scrolling feed, background activity, queued messages
 and a multiline TextField composer. The framework owns geometry, clipping,
-terminal modes and frame presentation. PgUp/PgDn and wheel scroll the feed;
-scrolling to the bottom resumes following new content.
+terminal modes and frame presentation. PgUp/PgDn and the mouse wheel scroll the
+feed. While reading earlier messages, click **↓ Back to bottom** above the
+composer or press Esc to jump to the latest message and resume following new
+output. Scrolling back down also resumes following. The draft keeps its cursor
+position.
 
 ## Components and state
 

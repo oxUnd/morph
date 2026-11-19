@@ -73,7 +73,7 @@ def main():
                     terminal.send('UNSENT_DRAFT_中文')
                     screen = terminal.snapshot(f'{columns}: draft before selection')
                     assert 'COPY_中文 é END' in screen, screen
-                    assert '\x1b[?1002h' in terminal.raw, terminal.raw[-5000:]
+                    assert '\x1b[?1003h' in terminal.raw, terminal.raw[-5000:]
                     x1, y1 = find(terminal, 'COPY_')
                     x2, y2 = find(terminal, 'SECOND_COPY_LINE')
                     x2 += len('SECOND_COPY_LINE') - 1

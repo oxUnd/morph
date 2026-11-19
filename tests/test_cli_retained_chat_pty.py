@@ -25,6 +25,22 @@ def wait_visible(terminal, text, timeout=8):
     return '\n'.join(terminal.screen.display)
 
 
+BOTTOM_BUTTON = '↓ Back to bottom · Esc'
+
+
+def bottom_button(terminal, cursor, color):
+    wait_visible(terminal, BOTTOM_BUTTON)
+    screen = terminal.screen
+    y = next(i for i, line in enumerate(screen.display) if BOTTOM_BUTTON in line)
+    x = screen.display[y].index(BOTTOM_BUTTON)
+    assert y == cursor[1] - 2, screen.display
+    assert x == (screen.columns - len(BOTTOM_BUTTON)) // 2, screen.display[y]
+    assert (screen.cursor.x, screen.cursor.y) == cursor and not screen.cursor.hidden
+    if color:
+        assert screen.buffer[y][x].fg == '87afff' and screen.buffer[y][x].bg == '3a3a3a'
+    return x, y
+
+
 def assert_composer_box(terminal, row, color, lines=1):
     """Preserve the old full-width input surface and its two padding rows."""
     screen = terminal.screen
@@ -197,21 +213,49 @@ def run_case(binary, server, width, color, production=False):
             follow.set()
             completed = wait_visible(terminal, 'Worked for')
             assert 'ROW_044' in completed and 'draft🙂' in completed
+            assert BOTTOM_BUTTON not in completed
+            cursor = (terminal.screen.cursor.x, terminal.screen.cursor.y)
             terminal.send('\x1b[5~')
             scrolled = '\n'.join(terminal.screen.display)
             assert 'ROW_044' not in scrolled
             assert 'draft🙂' in scrolled
-            terminal.send('\x1b[6~')
-            wait_visible(terminal, 'ROW_044')
+            bottom_button(terminal, cursor, color)
+            terminal.send('\x1b')
+            assert BOTTOM_BUTTON not in wait_visible(terminal, 'ROW_044')
+            terminal.send('\x1b[<64;4;3M' * 6)
+            x, y = bottom_button(terminal, cursor, color)
+            before_hover = terminal.screen.display.copy()
+            terminal.send(f'\x1b[<35;{x + 1};{y + 1}M')
+            for col in range(x - 1, x + len(BOTTOM_BUTTON) + 1):
+                cell = terminal.screen.buffer[y][col]
+                assert (cell.fg, cell.bg) == (('afd7ff', '005f87') if color else
+                                               ('default', 'default'))
+            assert terminal.screen.display == before_hover
+            assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
+            terminal.send(f'\x1b[<35;1;{y + 1}M')
+            bottom_button(terminal, cursor, color)
+            terminal.send(f'\x1b[<0;{x + 1};{y + 1}M')
+            assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
+            terminal.send(f'\x1b[<0;{x + 1};{y + 1}m')
+            assert BOTTOM_BUTTON not in wait_visible(terminal, 'ROW_044')
+            assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
+            terminal.send('\x1b[5~')
             new_width = 80 if width == 60 else 60
             terminal.child.setwinsize(24, new_width)
             terminal.screen.resize(24, new_width)
-            wait_visible(terminal, 'draft🙂')
+            terminal.pump(.2)
+            bottom_button(terminal, cursor, color)
+            terminal.send('\x1b[6~' * 3)
+            assert BOTTOM_BUTTON not in wait_visible(terminal, 'ROW_044')
             if width == 80 and color:
                 terminal.send('\x15ask a question\r')
                 _, ask = terminal.request()
                 releases.append(ask)
                 terminal.send('protected draft')
+                terminal.send('\x1b[5~')
+                wait_visible(terminal, BOTTOM_BUTTON)
+                terminal.send('\x1b')
+                assert BOTTOM_BUTTON not in wait_visible(terminal, 'protected draft')
                 ask.delta = {'tool_calls': [{'index': 0, 'id': 'retained-read',
                     'type': 'function', 'function': {'name': 'ask_user',
                         'arguments': json.dumps({'question': 'Choose a color',
@@ -224,10 +268,22 @@ def run_case(binary, server, width, color, production=False):
                 assert any(item['role'] == 'tool' and 'Blue' in item['content']
                            for item in answered['messages']), answered
                 wait_visible(terminal, 'protected draft')
+                terminal.send('\x1b[5~')
+                wait_visible(terminal, BOTTOM_BUTTON)
+                first_row = terminal.screen.display[0]
                 answer.delta = {'content': 'QUESTION_DONE'}
                 answer.set()
-                wait_visible(terminal, 'QUESTION_DONE')
-                terminal.pump(.5)
+                with sqlite3.connect(directory / 'data.db') as db:
+                    deadline = time.monotonic() + 8
+                    while not db.execute("SELECT 1 FROM messages WHERE role='assistant' "
+                                         "AND content LIKE '%QUESTION_DONE%'").fetchone():
+                        assert time.monotonic() < deadline, terminal.screen.display
+                        terminal.pump(.05)
+                assert first_row == terminal.screen.display[0]
+                assert BOTTOM_BUTTON in '\n'.join(terminal.screen.display)
+                assert 'QUESTION_DONE' not in '\n'.join(terminal.screen.display)
+                terminal.send('\x1b')
+                assert BOTTOM_BUTTON not in wait_visible(terminal, 'QUESTION_DONE')
                 terminal.send('\x1b[5~' * 8)
                 wait_visible(terminal, 'file_read')
                 terminal.send('\x1b[6~' * 8)
@@ -244,6 +300,7 @@ def run_case(binary, server, width, color, production=False):
             terminal.child.expect(pexpect.EOF, timeout=8)
             terminal.raw += terminal.child.before
             assert '\x1b[?1049l' in terminal.raw
+            assert '\x1b[?1003l' in terminal.raw
             if color:
                 assert '\x1b[48;5;237m' in terminal.raw
             else:

@@ -52,6 +52,7 @@
 #include <nb/map.h>
 #include <nb/time.h>
 #include <nothing/tui/choice_prompt.h>
+#include <nothing/tui/controls/button.h>
 #include <nothing/tui/controls/list_view.h>
 #include <nothing/tui/controls/text_field.h>
 #include <nothing/tui/shortcut.h>
@@ -65,6 +66,8 @@
 
 #include <time.h>
 #include <unistd.h>
+
+#define CLI_CHAT_BOTTOM_LABEL "↓ Back to bottom · Esc"
 
 struct cli_chat_panel {
 	struct nt_stack_view base;
@@ -80,6 +83,7 @@ struct cli_chat_page {
 	struct nt_builder *builder;
 	struct nt_component_state *modal;
 	struct nt_view *scroll, *feed, *composer, *editor, *status, *footer;
+	struct nt_view *bottom_button;
 	struct nt_view *panel_host, *output_container;
 	struct cli_chat_panel *panel;
 	struct nt_view *stream_view, *output_view, *queue, *jobs, *agents;
@@ -144,6 +148,39 @@ static int cli_chat_queue_hidden(void *data, struct nt_value *value)
 	struct cli_chat_page *page = data;
 	return nt_value_set_bool(value, nt_component_state_get_bool(page->modal) ||
 						!nt_list_view_count(page->queue));
+}
+
+static int cli_chat_sync_bottom_button(struct cli_chat_page *page)
+{
+	const struct nt_scroll_state *scroll = nt_scroll_view_state(page->scroll);
+	int hidden = !scroll->viewport || scroll->offset == nt_scroll_max(scroll) ||
+		     page->panel || page->prompt_rows;
+	return nt_view_set_hidden(page->bottom_button, hidden);
+}
+
+static int cli_chat_feed_scrolled(void *data, const struct nt_view_event *event)
+{
+	struct cli_chat_page *page = data;
+	return event->target == page->scroll ? cli_chat_sync_bottom_button(page) : 0;
+}
+
+static int cli_chat_bottom_activate(void *data, const struct nt_view_event *event)
+{
+	struct cli_chat_page *page = data;
+	(void)event;
+	int rc = nt_scroll_view_handle_key(page->scroll, NT_KEY_END);
+	if (rc < 0)
+		return rc;
+
+	rc = nt_view_focus(page->editor);
+	return rc ? rc : NT_VIEW_EVENT_HANDLED;
+}
+
+static int cli_chat_bottom_pointer(void *data, const struct nt_view_event *event)
+{
+	(void)data;
+	/* Let the button receive the synthesized click while the editor keeps focus. */
+	return event->input->mouse.button == NT_MOUSE_LEFT;
 }
 
 int cli_chat_prompt_choice(struct cli_application *ctx, int rows, struct nt_selection_model *model,
@@ -888,6 +925,9 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 			       ? cli_chat_panel_close(ctx, NB_ERR_CANCELLED)
 			       : 1;
 
+	if ((key == 27 || key == NT_KEY_ESCAPE) && !nt_view_is_hidden(page->bottom_button))
+		return nt_button_activate(page->bottom_button);
+
 	if (key == NT_KEY_FOCUS_IN || key == NT_KEY_FOCUS_OUT) {
 		cli_recap_focus(ctx, key == NT_KEY_FOCUS_IN, cli_recap_now());
 		return 1;
@@ -1261,7 +1301,7 @@ static int cli_chat_page_layout(struct nt_view *view)
 	for (size_t i = 1; i < nt_view_child_count(view); i++) {
 		struct nt_view *child = nt_view_child(view, i);
 		if (nt_view_is_hidden(child) || child == page->composer || child == page->panel_host ||
-		    child == page->footer)
+		    child == page->footer || child == page->bottom_button)
 			continue;
 
 		struct nt_view_size size;
@@ -1304,10 +1344,20 @@ static int cli_chat_page_layout(struct nt_view *view)
 		page->feed_rows = feed.height;
 
 	int rows = page->feed_rows < available ? page->feed_rows : available;
+	/* A wheel event can clear follow even at the boundary. Preserve the old
+	 * tail before laying out appended content or resizing the viewport. */
+	const struct nt_scroll_state *scroll = nt_scroll_view_state(page->scroll);
+	if (!scroll->follow && scroll->offset == nt_scroll_max(scroll)) {
+		rc = nt_scroll_view_follow(page->scroll, 1);
+		if (rc)
+			return rc;
+	}
+
+	struct nt_view_rect button_row = {0};
 	int offset = 0;
 	for (size_t i = 0; i < nt_view_child_count(view); i++) {
 		struct nt_view *child = nt_view_child(view, i);
-		if (nt_view_is_hidden(child))
+		if (nt_view_is_hidden(child) || child == page->bottom_button)
 			continue;
 
 		int height = rows;
@@ -1328,15 +1378,25 @@ static int cli_chat_page_layout(struct nt_view *view)
 		if (height > content.height - offset)
 			height = content.height - offset;
 
-		rc = nt_view_arrange(child, (struct nt_view_rect){
-			content.x, content.y + offset, content.width, height});
+		struct nt_view_rect slot = {content.x, content.y + offset, content.width, height};
+		rc = nt_view_arrange(child, slot);
 		if (rc)
 			return rc;
+
+		if (child == page->composer) {
+			/* Share the first row of the input slot without moving the editor. */
+			button_row = slot;
+			button_row.height = nt_view_frame(page->editor).y > slot.y ? 1 : 0;
+		}
 
 		offset += height;
 	}
 
-	return 0;
+	rc = cli_chat_sync_bottom_button(page);
+	if (rc || nt_view_is_hidden(page->bottom_button))
+		return rc;
+
+	return nt_view_place(page->bottom_button, button_row, NT_ANCHOR_CENTER, NT_VIEW_PLACE_FIT);
 }
 
 static int cli_chat_panel_cursor(struct nt_view *view, struct nt_canvas *canvas)
@@ -1354,6 +1414,52 @@ static int cli_chat_panel_cursor(struct nt_view *view, struct nt_canvas *canvas)
 static int cli_chat_editor_key(void *data, const struct nt_view_event *event)
 {
 	return cli_chat_page_key(data, event->input);
+}
+
+static struct nt_text_style cli_chat_bottom_style(int hovered)
+{
+	return (struct nt_text_style){
+		.foreground = {NT_COLOR_INDEXED, hovered ? 153u : 111u},
+		.background = {NT_COLOR_INDEXED, hovered ? 24u : CLI_INPUT_BACKGROUND_INDEX},
+	};
+}
+
+static int cli_chat_bottom_hover(void *data, const struct nt_view_event *event)
+{
+	(void)data;
+	return nt_view_set_style(event->current,
+				 cli_chat_bottom_style(event->type == NT_VIEW_EVENT_MOUSE_ENTER));
+}
+
+static void cli_chat_build_bottom_button(struct cli_chat_page *page, struct nt_builder *builder,
+					struct nt_view *root, int styled)
+{
+	/* The native button owns measurement and activation. Its caption uses the
+	 * composer's background and fills only the button's hit area. */
+	page->bottom_button = nt_button_add(builder, root, CLI_CHAT_BOTTOM_LABEL, 0, NULL);
+	struct nt_view_options options = {.width = NT_FILL, .height = 1};
+	if (styled)
+		options.style = cli_chat_bottom_style(0);
+
+	struct nt_view *caption = nt_label_add(builder, page->bottom_button,
+					       " " CLI_CHAT_BOTTOM_LABEL " ", &options);
+	if (nt_builder_error(builder))
+		return;
+
+	nt_builder_fail(builder, nt_label_set_wrap_mode(caption, NT_TEXT_WRAP_NONE));
+	nt_builder_fail(builder, nt_view_set_selectable(caption, 0));
+	if (styled && (!nt_view_on(caption, NT_VIEW_EVENT_MOUSE_ENTER, cli_chat_bottom_hover, NULL) ||
+		       !nt_view_on(caption, NT_VIEW_EVENT_MOUSE_LEAVE, cli_chat_bottom_hover, NULL)))
+		nt_builder_fail(builder, NB_ERR_NOMEM);
+
+	nt_builder_fail(builder, nt_view_set_hidden(page->bottom_button, 1));
+	if (!nt_view_on(page->scroll, NT_VIEW_EVENT_SCROLLED, cli_chat_feed_scrolled, page) ||
+	    !nt_view_on(page->bottom_button, NT_VIEW_EVENT_ACTIVATE, cli_chat_bottom_activate,
+			page) ||
+	    !nt_view_on_full(page->bottom_button, NT_VIEW_EVENT_MOUSE,
+			     &(struct nt_view_listener_options){.flags = NT_VIEW_LISTEN_CAPTURE,
+				NT_VIEW_LISTENER(cli_chat_bottom_pointer, page)}))
+		nt_builder_fail(builder, NB_ERR_NOMEM);
 }
 
 static void cli_chat_page_build(struct nt_view_controller *controller, struct nt_builder *builder)
@@ -1400,6 +1506,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 						 cli_output_color_enabled(ctx), &page->editor);
 	page->footer = cli_report_text_add(
 		builder, root, &(struct nt_view_options){.padding = {.left = 2, .right = 2}});
+	cli_chat_build_bottom_button(page, builder, root, cli_output_color_enabled(ctx));
 
 	if (nt_builder_error(builder))
 		return;
@@ -1668,7 +1775,7 @@ struct nt_application_options cli_chat_options(void)
 {
 	return (struct nt_application_options){
 		.external_signals = 1,
-		.terminal_flags = NT_TERMINAL_MOUSE_DRAG | NT_TERMINAL_PASTE | NT_TERMINAL_FOCUS,
+		.terminal_flags = NT_TERMINAL_MOUSE | NT_TERMINAL_PASTE | NT_TERMINAL_FOCUS,
 		.input = stdin,
 		.output = stdout,
 		.event = cli_chat_page_event,
