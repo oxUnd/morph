@@ -244,6 +244,8 @@ def main():
                     assert 'Conversation only' in preview, preview
                     assert not any(row.startswith('› ') for row in terminal.screen.display), preview
                     terminal.send('\x1b')
+                    terminal.assert_navigation('rewind')
+                    terminal.send('\x1b')
                     wait_for(terminal, lambda: 'Rewind ·' not in
                              '\n'.join(terminal.screen.display))
                     composer(terminal)

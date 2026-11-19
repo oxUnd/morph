@@ -34,9 +34,9 @@ FreeType, HarfBuzz, libvips, Cairo and PangoCairo. A fresh checkout also needs
 the MathJax and Markdown source trees at the paths shown below.
 
 CMake fetches a pinned nothing-tui revision based on v0.1.0, including native
-image memory fixes, for the CLI. Use
+image memory fixes and text selection across views, for the CLI. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/be13c81c370c856eb994ad8ecef38fa34e0153af)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/276e7788a35e1f96859b505fff0dd7e57d1fbc9a)
 
 Morph and nothing-tui share one `nbase::nbase` target built from the nothing v0.1.0
 release. Cygwin builds apply the executable-path patch in `vendor/patches`.

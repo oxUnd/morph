@@ -141,6 +141,15 @@ static void cli_message_destroy(struct nt_view *view)
 	nb_buf_cleanup(&((struct cli_message *)view)->rendered);
 }
 
+static int cli_message_hit_test_overlay(struct nt_view *view, int x, int y)
+{
+	(void)view;
+	(void)x;
+	(void)y;
+	/* Read-only messages use window selection while the composer keeps focus. */
+	return 1;
+}
+
 static const struct nt_view_class cli_message_class = {
 	.superclass = &nt_view_base_class,
 	.instance_size = sizeof(struct cli_message),
@@ -150,6 +159,7 @@ static const struct nt_view_class cli_message_class = {
 	.deinit = cli_message_destroy,
 	.draw = cli_message_background,
 	.draw_padding = cli_message_padding,
+	.hit_test_overlay = cli_message_hit_test_overlay,
 };
 
 int cli_message_set_ultra(struct nt_view *view, int ultra)
