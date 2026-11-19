@@ -2,10 +2,12 @@
 #include <nb/err.h>
 
 extern "C" {
+#include "sapi/cli/components/message.h"
 #include "sapi/cli/components/plan.h"
 #include "sapi/cli/components/notice.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/components/tool_call.h"
+#include "sapi/cli/components/report.h"
 #include "sapi/cli/presentation/transcript.h"
 #include "sapi/cli/presentation/notice.h"
 #include "sapi/cli/presentation/plan.h"
@@ -19,6 +21,7 @@ extern "C" {
 #include <nothing/tui/application.h>
 #include <nothing/tui/view_controller.h>
 #include <nothing/tui/window.h>
+#include <nothing/tui/views/scroll_view.h>
 #include <nothing/tui/views/stack_view.h>
 #include <nothing/tui/controls/text_field.h>
 #include <nothing/tui/models/text_editor.h>
@@ -88,7 +91,7 @@ static std::string retained_normalized(const char *text)
 class CliRetainedWidgetsTest : public ::testing::Test
 {
       protected:
-	enum Kind { Tool, Notice, Plan, Composer, Recap } kind = Tool;
+	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed } kind = Tool;
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
 	struct nt_application *app = nullptr;
@@ -123,6 +126,20 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	{
 			auto *self = static_cast<CliRetainedWidgetsTest *>(owner->data);
 			self->controller = owner;
+			if (self->kind == Feed) {
+				auto *scroll = nt_scroll_view_add(builder, nullptr, nullptr);
+				struct nt_view_options fill{};
+				fill.width = NT_FILL;
+				auto *feed = nt_column_add(builder, scroll, 0, &fill);
+				for (auto kind : {CLI_MESSAGE_USER, CLI_MESSAGE_REASONING,
+						  CLI_MESSAGE_ASSISTANT})
+					cli_message_add_borrow(builder, feed, kind, "Short text", 1);
+
+				self->component = cli_tool_call_add_borrow(builder, feed,
+					&self->tool, 1, 0);
+				return;
+			}
+
 			auto *root = nt_stack_view_add(builder, nullptr,
 				NT_STACK_VIEW_VERTICAL, 0, nullptr);
 			if (self->kind == Tool)
@@ -284,6 +301,29 @@ TEST_F(CliRetainedWidgetsTest, ToolKeepsLegacyTreePreviewMixedStylesAndResize)
 	EXPECT_NE(frame.find("\033[38;5;2m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[2m"), std::string::npos);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("Ctrl+T to expand"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, ScrollingReusesTheFormattedFeedAtTheViewportWidth)
+{
+	kind = Feed;
+	Present();
+	auto *scroll = nt_view_controller_root_view(controller);
+	auto *feed = nt_view_child(scroll, 0);
+	ASSERT_NE(feed, nullptr);
+	ASSERT_EQ(nt_view_arrange(scroll, {0, 0, 80, 4}), 0);
+	for (size_t i = 0; i < nt_view_child_count(feed); i++) {
+		struct nt_view_size size{};
+		ASSERT_EQ(nt_view_measure(nt_view_child(feed, i), 80, &size), 0);
+		EXPECT_EQ(size.width, 80);
+	}
+
+	/* Moving the viewport must succeed without calling the tool formatter again. */
+	auto *report = reinterpret_cast<struct cli_report *>(component);
+	report->format = [](struct cli_report *, nb_buf *, int) { return int(NB_ERR_STATE); };
+	for (int offset : {1, 2, 1, 0}) {
+		ASSERT_EQ(nt_scroll_view_set_offset(scroll, offset), 0);
+		EXPECT_EQ(nt_scroll_view_offset(scroll), offset);
+	}
 }
 
 TEST_F(CliRetainedWidgetsTest, ExpandedToolKeepsFormattedPayloadAndOwnsSnapshot)

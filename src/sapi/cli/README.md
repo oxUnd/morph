@@ -63,9 +63,10 @@ scroll within the feed; reaching the bottom resumes following.
 Session navigation restores the complete display history without loading or
 repairing the model replay window; that work belongs to the next turn. Rich
 documents retain their TextView while content changes, and TextView reuses its
-wrapped rows until text or width changes. Stack arrangement reuses its first
-measurement of each child. Footer token totals query a narrow projection instead
-of allocating copies of every stored answer and tool result.
+wrapped rows until text or width changes. Feed messages and reports declare
+`NT_FILL` width so scroll layout can reuse their formatted content at the
+viewport width, even for short lines. Footer token totals use a narrow query
+over the stored history.
 
 `python tests/test_cli_resume_scale_pty.py build/bin/morph 1000 5000 10000`
 reports resume, input readiness and page-up timings on a synthetic Markdown and

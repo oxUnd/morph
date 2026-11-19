@@ -33,6 +33,7 @@ struct nt_view *cli_recap_add_borrow(struct nt_builder *builder, struct nt_view 
 	}
 
 	const struct nt_view_options options = {
+		.width = NT_FILL,
 		.margin = {.top = 1, .bottom = 1},
 		.padding = {.right = (int)CLI_CONTENT_RIGHT_PADDING}};
 	struct cli_recap_widget *widget = (struct cli_recap_widget *)cli_report_add(

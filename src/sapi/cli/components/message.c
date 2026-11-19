@@ -201,7 +201,7 @@ int cli_message_set_text_copy(struct nt_view *view, const char *text)
 struct nt_view *cli_message_add_borrow(struct nt_builder *builder, struct nt_view *parent,
 				       enum cli_message_kind kind, const char *text, int styled)
 {
-	struct nt_view_options options = {.margin = {.top = 1}};
+	struct nt_view_options options = {.width = NT_FILL, .margin = {.top = 1}};
 	if (kind == CLI_MESSAGE_USER) {
 		options.padding = (struct nt_view_insets){styled ? 1 : 0, 1, styled ? 1 : 0, 0};
 		if (styled)
@@ -237,8 +237,9 @@ struct nt_view *cli_message_add_borrow(struct nt_builder *builder, struct nt_vie
 					       &marker);
 	}
 
+	const struct nt_view_options body = {.width = NT_FILL};
 	message->body = kind == CLI_MESSAGE_ASSISTANT ? cli_rich_document_add_borrow(builder, view)
-						      : cli_report_text_add(builder, view, NULL);
+						      : cli_report_text_add(builder, view, &body);
 	char *safe NB_CLEANUP(nb_charp_cleanup) =
 		text ? nt_sanitize_dup(text, strlen(text), NT_TEXT_MULTILINE, NULL) : NULL;
 	int rc = safe	? nt_view_use_state_string(view, safe, &message->text)

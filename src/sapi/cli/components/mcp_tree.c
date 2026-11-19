@@ -53,6 +53,7 @@ static struct cli_mcp_tree *cli_mcp_tree_add(struct nt_builder *builder, struct 
 								.kind = "cli_mcp_tree",
 								.deinit = cli_mcp_tree_destroy};
 	const struct nt_view_options options = {
+		.width = NT_FILL,
 		.padding = {.right = (int)CLI_CONTENT_RIGHT_PADDING}};
 	struct cli_mcp_tree *tree = (struct cli_mcp_tree *)cli_report_add(
 		builder, parent, &cli_mcp_tree_class, &options, styled, cli_mcp_tree_format);

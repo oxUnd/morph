@@ -38,6 +38,7 @@ struct nt_view *cli_notice_add_borrow(struct nt_builder *builder, struct nt_view
 	}
 
 	const struct nt_view_options options = {
+		.width = NT_FILL,
 		.margin = {.top = 1}, .padding = {.right = (int)CLI_CONTENT_RIGHT_PADDING}};
 	struct cli_notice_widget *widget = (struct cli_notice_widget *)cli_report_add(
 		builder, parent, &cli_notice_widget_class, &options, styled,

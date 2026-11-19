@@ -179,6 +179,7 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 					 int details)
 {
 	const struct nt_view_options options = {
+		.width = NT_FILL,
 		.margin = {.top = 1}, .padding = {.right = (int)CLI_CONTENT_RIGHT_PADDING}};
 	struct cli_tool_call *widget = (struct cli_tool_call *)cli_report_add(
 		builder, parent, &cli_tool_call_class, &options, styled, cli_tool_call_format);
