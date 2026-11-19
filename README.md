@@ -29,13 +29,14 @@ Unicode decoding, validation, and terminal widths use vendored [utf8proc](docs/u
 
 Build with CMake ≥ 3.20 and a GCC or Clang toolchain with C11, C++17 and
 scope-cleanup support. Install pkg-config and the development files for SQLite3,
-libcurl ≥ 7.84, libuv ≥ 1.44, GNU Readline ≥ 8, libffi, libwebp, libxml2,
+libcurl ≥ 7.84, libuv ≥ 1.44, GNU Readline ≥ 8, zlib, libffi, libwebp, libxml2,
 FreeType, HarfBuzz, libvips, Cairo and PangoCairo. A fresh checkout also needs
 the MathJax and Markdown source trees at the paths shown below.
 
-CMake fetches nothing-tui v0.1.0 for the CLI. Use
+CMake fetches a pinned nothing-tui revision based on v0.1.0, including native
+image memory fixes, for the CLI. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that release. [nothing-tui release](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/be13c81c370c856eb994ad8ecef38fa34e0153af)
 
 Morph and nothing-tui share one `nbase::nbase` target built from the nothing v0.1.0
 release. Cygwin builds apply the executable-path patch in `vendor/patches`.
