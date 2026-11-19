@@ -13,7 +13,13 @@ make -C exts/read-lines test
 
 The standalone build uses the repository’s `cmake/FetchNbase.cmake` to fetch
 the pinned nbase release and link its static library with position-independent
-code. Configure with `-DFETCHCONTENT_SOURCE_DIR_NBASE=/path/to/nothing`
+code. Native extensions can also reuse a compatible Morph executable's exported
+nbase functions without linking another copy; see the
+[extension development guide](../../docs/extension-development.md) for the
+macOS build command, export checks, and test-host requirements. The standalone
+build below remains suitable for the Python test runner.
+
+Configure with `-DFETCHCONTENT_SOURCE_DIR_NBASE=/path/to/nothing`
 to reuse a local checkout of that release. A
 separate build directory supports ASan/UBSan without loading sanitizer code
 into the Python test runner:

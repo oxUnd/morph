@@ -307,6 +307,11 @@ add_custom_target(morph-data ALL
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
 		${CMAKE_SOURCE_DIR}/skills
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
+	COMMAND ${CMAKE_COMMAND} -E make_directory
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills/morph-ext-development/references
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/docs/extension-development.md
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills/morph-ext-development/references/development.md
 	COMMAND ${CMAKE_COMMAND} -E rm -f
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills/.DS_Store
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -361,6 +366,10 @@ install(FILES
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/skills/
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/skills
 	PATTERN ".DS_Store" EXCLUDE
+)
+install(FILES ${CMAKE_SOURCE_DIR}/docs/extension-development.md
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/skills/morph-ext-development/references
+	RENAME development.md
 )
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/prompts/
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/prompts

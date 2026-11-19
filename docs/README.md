@@ -22,6 +22,7 @@ Morph 在终端中运行多模态 Agent。交互式 CLI、单次命令和可选�
 | 执行边界和恢复 | [Runtime 架构](runtime-architecture.md)、[ReAct 实现](../src/agent/README.md)、[统一事件](event-system.md)、[上下文与进程恢复](context-and-process-recovery.md) |
 | 模型输入和预算 | [Prompt 组装](prompt-architecture.md)、[模板语法](prompt-templates.md)、[角色提示词](role-prompts.md)、[模型能力与资源限制](model-capability-limits.md) |
 | CLI 和底层类型 | [应用布局](tui-application-layout.md)、[CLI 模块地图](../src/sapi/cli/README.md)、[状态所有权](state-ownership.md)、[Unicode](unicode.md) |
+| 开发扩展和查询 nbase API | [扩展开发指南](extension-development.md)、[扩展开发 Skill](../skills/morph-ext-development/SKILL.md) |
 | 开发规范和验证 | [开发指南](../AGENTS.md)、[权限模块](../src/permission/README.md)、[权限验收与复现](permissions-acceptance.md)、[开发待办](../TODO.md) |
 
 已完成的需求、迁移计划、审计测量和早期设计保存在[历史归档](archive/README.md)。

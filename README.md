@@ -182,6 +182,11 @@ Source format: `github:<owner>/<repo>[@ref][//subdir]`. A package contains
 `manifest.toml` or `morph-ext.toml` with `name`, `version`, `type`, `entry`, and
 optional `[build] command` (run only after confirmation unless `--yes`).
 
+For implementation, manifests, nbase API discovery, native host-symbol linking,
+standalone builds, and verification, see the
+[extension development guide](docs/extension-development.md). The bundled
+`morph-ext-development` skill follows this guide and includes an offline copy.
+
 ## Permissions
 
 `/permissions` opens the permission picker in the input area, keeping the
