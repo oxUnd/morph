@@ -118,9 +118,9 @@ def feed(terminal, marker):
     rows = stable_rows(terminal)
     diagnostic = '\n'.join(rows)
     assert hasattr(terminal.screen, '_main_screen'), diagnostic
-    assert 'Subagents · /root/worker' in rows[0], diagnostic
+    terminal.assert_navigation('subagents', 'worker')
     assert marker not in diagnostic, diagnostic
-    assert 'Esc' in rows[-1], diagnostic
+    assert 'Esc' in rows[-2], diagnostic
     assert not any(row.lstrip().startswith('morph ·') for row in rows), diagnostic
     return rows
 
@@ -143,8 +143,8 @@ def find_content(terminal, marker, text):
 def resize(terminal, marker, columns):
     terminal.child.setwinsize(40, columns)
     terminal.screen.resize(lines=40, columns=columns)
-    wait_for(terminal, lambda: 'Subagents' in visible(terminal))
-    if 'Subagents ·' in visible(terminal):
+    wait_for(terminal, lambda: 'Subagents' in visible(terminal) or 'morph / subagents' in visible(terminal))
+    if 'morph / subagents /' in visible(terminal):
         feed(terminal, marker)
     else:
         panel(terminal, marker)
@@ -207,9 +207,9 @@ def run(driver, port, columns):
                 resize(terminal, marker, width)
             press(terminal, '\t')
             assert 'Main conversation' in '\n'.join(panel(terminal, marker))
-            assert 'Subagents ·' not in visible(terminal), visible(terminal)
+            assert 'morph / subagents /' not in visible(terminal), visible(terminal)
             press(terminal, '\t')
-            assert 'Subagents ·' not in visible(terminal), visible(terminal)
+            assert 'morph / subagents /' not in visible(terminal), visible(terminal)
             no_screen_switch(terminal.raw[start:])
             choices = [row.lstrip('> ') for row in stable_rows(terminal)
                        if row.lstrip('> ').startswith('/root')]
@@ -221,7 +221,7 @@ def run(driver, port, columns):
             to_worker = '\x1b[Z' if worker_index < observer_index else '\t'
             to_main = '\x1b[Z' if worker_index == 1 else '\t'
             press(terminal, '\x1b[H' + '\x1b[B' * worker_index + '\r')
-            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents / worker' in visible(terminal))
             row, _ = find_content(terminal, marker, 'CHILD_ASSIGNMENT')
             assert terminal.screen.buffer[row][columns - 3].bg == '3a3a3a', visible(terminal)
             assert visible(terminal).count('CHILD_SNAPSHOT_ONCE') == 1, visible(terminal)
@@ -231,23 +231,23 @@ def run(driver, port, columns):
             assert visible(terminal).count('CHILD_LIVE_ONCE') == 1, visible(terminal)
             press(terminal, 'fWORKER_SWITCH_DRAFT\x1b')
             press(terminal, to_observer)
-            wait_for(terminal, lambda: 'Subagents · /root/observer' in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents / observer' in visible(terminal))
             assert 'OBSERVER_SEPARATE_FEED' in visible(terminal), visible(terminal)
             assert 'CHILD_SNAPSHOT_ONCE' not in visible(terminal), visible(terminal)
             press(terminal, 'fOBSERVER_SWITCH_DRAFT\x1b')
             press(terminal, to_worker)
-            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents / worker' in visible(terminal))
             assert 'OBSERVER_SEPARATE_FEED' not in visible(terminal), visible(terminal)
             press(terminal, 'f')
             assert 'Follow up › WORKER_SWITCH_DRAFT' in visible(terminal), visible(terminal)
             press(terminal, '\x7f' * len('WORKER_SWITCH_DRAFT') + '\x1b')
             press(terminal, to_observer)
-            wait_for(terminal, lambda: 'Subagents · /root/observer' in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents / observer' in visible(terminal))
             press(terminal, 'f')
             assert 'Follow up › OBSERVER_SWITCH_DRAFT' in visible(terminal), visible(terminal)
             press(terminal, '\x1b')
             press(terminal, to_worker)
-            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents / worker' in visible(terminal))
             observer.delta = {'content': 'OBSERVER_COMPLETED'}
             observer.set()
             primary.stream({'content': 'ROOT_DEFERRED_SENTINEL\n\n'})
@@ -322,17 +322,24 @@ def run(driver, port, columns):
             press(terminal, '\x1b')
             assert 'Follow up ›' not in visible(terminal), visible(terminal)
             cached_body = feed(terminal, marker)[3:-2]
-            press(terminal, '\x1b')
-            wait_for(terminal, lambda: 'Subagents' not in visible(terminal))
+            press(terminal, 'f')
+            terminal.click_navigation(0)
+            wait_for(terminal, lambda: 'morph / subagents' not in visible(terminal))
             assert hasattr(terminal.screen, '_main_screen') == (terminal.parent_buffer is not None), visible(terminal)
             wait_for(terminal, lambda: 'ROOT_DEFERRED_SENTINEL' in visible(terminal))
             restored_composer(terminal, marker, command=terminal.subagents_command)
             assert 'CHILD_TOOL_DETAIL_END' not in visible(terminal), visible(terminal)
             terminal.subagents_command = '/subagents worker'
             press(terminal, '/subagents worker\r')
-            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents / worker' in visible(terminal))
             assert 'Tool details' in visible(terminal), visible(terminal)
             assert feed(terminal, marker)[3:-2] == cached_body, visible(terminal)
+            press(terminal, 'f')
+            assert 'Follow up › KEPT_CHILD_DRAFT' in visible(terminal), visible(terminal)
+            terminal.click_navigation(1)
+            terminal.assert_navigation('subagents')
+            press(terminal, '\r')
+            wait_for(terminal, lambda: 'morph / subagents / worker' in visible(terminal))
             press(terminal, 'f')
             assert 'Follow up › KEPT_CHILD_DRAFT' in visible(terminal), visible(terminal)
             press(terminal, '\x7f' * len('KEPT_CHILD_DRAFT') + '\x1b')
@@ -365,7 +372,9 @@ def run(driver, port, columns):
             child_again.set()
             wait_for(terminal, lambda: 'interrupted' in '\n'.join(feed(terminal, marker)))
             press(terminal, '\x1b')
-            wait_for(terminal, lambda: 'Subagents' not in visible(terminal))
+            terminal.assert_navigation('subagents')
+            terminal.click_navigation(0)
+            wait_for(terminal, lambda: 'morph / subagents' not in visible(terminal))
             restored_composer(terminal, marker, command=terminal.subagents_command)
             for text in ('CHILD_UTF8_TAIL', 'CHILD_TOOL_OUTPUT', 'CHILD_HEADING'):
                 assert text not in visible(terminal), visible(terminal)
@@ -382,12 +391,12 @@ def run(driver, port, columns):
                               command=terminal.subagents_command)
             terminal.subagents_command = '/subagents worker'
             press(terminal, '\x15/subagents worker\r')
-            wait_for(terminal, lambda: 'Subagents · /root/worker' in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents / worker' in visible(terminal))
             find_content(terminal, marker, 'CHILD_ASSIGNMENT')
             assert visible(terminal).count('CHILD_SNAPSHOT_ONCE') == 1, visible(terminal)
             assert visible(terminal).count('CHILD_LIVE_ONCE') == 1, visible(terminal)
             press(terminal, to_main)
-            wait_for(terminal, lambda: 'Subagents' not in visible(terminal))
+            wait_for(terminal, lambda: 'morph / subagents' not in visible(terminal))
             restored_composer(terminal, 'ROOT_VERIFIED_FINAL',
                               command=terminal.subagents_command)
             # Each child scope suspends and restores the retained root screen.

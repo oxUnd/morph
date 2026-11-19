@@ -26,6 +26,7 @@ cli/
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
   components/                  NT views for the composer, messages, reports, lists and panels
+    page_layout                full-screen breadcrumb navigation, content and shortcut footer
   commands/                    options, slash actions, registry and management entry points
   services/
     command_job, event_queue   workers, owner calls and wakeup bridge
@@ -82,6 +83,12 @@ formatting lives in `presentation/`.
 Interactive trees reuse NT's tree view. Streaming and plain reports share
 `presentation/tree.c` for branch prefixes, continuation rows and column limits.
 Plain and JSON modes retain their separate output contracts.
+
+Full-screen pages compose `components/page_layout`. Its fixed breadcrumb starts
+with a clickable `morph` link back to chat, followed by the page name and the
+current subpage. Ancestor links are underlined and the current location is bold.
+Each page owns its return action and content state. The shared layout reserves
+content space between its navigation and shortcut footer.
 
 The full-screen `components/agents_browser` owns its split and stacked layouts,
 filters, selection and detail scrolling. It indexes the borrowed snapshot once
@@ -196,12 +203,14 @@ the panel restores the draft, footer and input focus.
 
 `/agents [id|shortname]` opens the full-screen agent browser, with a live status
 summary, a scrolling roster and the selected task preview. Enter opens the
-selected child's feed within the same terminal screen; Escape returns directly
-to the primary conversation. Noninteractive `/agents` retains text snapshots.
+selected child's feed within the same terminal screen. Escape returns to the
+agent browser, and Escape from the browser returns to the primary conversation.
+Noninteractive `/agents` retains text snapshots.
 `/subagents [id|shortname]` opens a compact agent picker within the composer area.
 Selecting a child replaces the visible feed with that child's full-width
-conversation in an alternate terminal screen; Escape returns directly to the
-primary feed. `pages/subagents` owns navigation and follow-up input,
+conversation in an alternate terminal screen. Escape opens its full-screen
+agent browser. The `morph` breadcrumb returns directly to the primary feed.
+`pages/subagents` owns navigation and follow-up input,
 `models/subagents` reduces ordered child events, `presentation/subagents` composes
 shared feed messages and tool rows, and `services/agents` enters the runtime
 facade. Snapshot/live sequence frontiers prevent duplicate replay; child events

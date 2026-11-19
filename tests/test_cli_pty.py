@@ -166,12 +166,35 @@ retry_count = 0
                    for row in text.splitlines()) <= 1, text
         return text
 
-    def assert_panel_heading(self, title):
+    def assert_navigation(self, page, subpage=None, color=True):
+        title = ' / '.join(('morph', page) + ((subpage,) if subpage else ()))
         row = next(y for y, line in enumerate(self.screen.display) if line.strip() == title)
-        start = self.screen.display[row].index(title)
-        for x in range(start, start + len(title)):
-            cell = self.screen.buffer[row][x]
-            assert cell.bold and cell.bg == 'default' and not cell.reverse, (title, x, cell)
+        assert row == 1 and self.screen.display[row].startswith('  ' + title), title
+        parts = title.split(' / ')
+        column = 2
+        for index, part in enumerate(parts):
+            for x in range(column, column + len(part)):
+                cell = self.screen.buffer[row][x]
+                assert cell.bg == 'default' and not cell.reverse, (title, x, cell)
+                assert cell.underscore == (index < len(parts) - 1), (title, x, cell)
+                assert cell.bold == (index == len(parts) - 1), (title, x, cell)
+                if not color:
+                    assert cell.fg == 'default', (title, x, cell)
+            column += len(part) + 3
+        assert set(self.screen.display[2].strip()) == {'─'}, self.screen.display
+        last_rule = max(y for y, line in enumerate(self.screen.display)
+                        if set(line.strip()) == {'─'})
+        footer = ' '.join(line.strip() for line in self.screen.display[last_rule + 1:-1])
+        assert last_rule > 2 and footer, self.screen.display
+        assert not self.screen.display[-1].strip(), self.screen.display
+
+    def click_navigation(self, level):
+        row = next(y for y, line in enumerate(self.screen.display)
+                   if line.strip().startswith('morph / '))
+        parts = self.screen.display[row].strip().split(' / ')
+        column = 2 + sum(len(part) + 3 for part in parts[:level])
+        self.send(f'\x1b[<0;{column + 1};{row + 1}M'
+                  f'\x1b[<0;{column + 1};{row + 1}m')
 
     def send(self, text):
         if getattr(self, 'fast_recap', False) and text == '\x1b[99;9~':

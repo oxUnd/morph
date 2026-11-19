@@ -258,6 +258,11 @@ if(Python3_Interpreter_FOUND)
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py
 			"${nothing_tui_SOURCE_DIR}")
 	if(UNIX)
+		add_test(NAME cli_page_layout_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_page_layout_pty.py
+				$<TARGET_FILE:morph>)
+		set_tests_properties(cli_page_layout_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 150)
 		add_test(NAME cli_retained_chat_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_retained_chat_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)

@@ -5,6 +5,7 @@
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/components/agents_browser.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/models/subagents.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/agents.h"
@@ -52,7 +53,7 @@ struct cli_subagents_feed {
 
 struct cli_subagents_reader {
 	struct nt_component_state *reading, *editing, *height;
-	struct nt_view *browser, *reader, *title, *status, *gap;
+	struct nt_view *browser, *reader, *status, *gap;
 	struct nt_view *scroll, *text, *message, *edit_row, *editor, *help;
 };
 
@@ -71,12 +72,14 @@ struct cli_subagents_session {
 
 struct cli_subagents_picker_page {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	struct cli_subagents_page *reader;
 	int standalone;
 };
 
 struct cli_subagents_page {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	struct cli_agents_browser_state browser;
 	struct nt_list_state selection;
 	struct agent_info *items;
@@ -460,7 +463,7 @@ static int cli_subagents_help(void *data, struct nt_value *value)
 		value,
 		nt_component_state_get_bool(data)
 			? "  Enter send · Esc cancel"
-			: "  f follow · k stop · d details · Tab switch · Esc main conversation");
+			: "  f follow · k stop · d details · Tab switch · Esc back");
 }
 
 static int cli_subagents_sync(struct cli_subagents_page *page)
@@ -481,8 +484,9 @@ static int cli_subagents_sync(struct cli_subagents_page *page)
 
 	if (!page->viewing) {
 		struct cli_agents_browser_data data = cli_subagents_browser_data(ctx, page);
-		return cli_agents_browser_sync(view->browser, &page->browser, &data,
-					       cli_output_color_enabled(ctx));
+		rc = cli_page_layout_set_subpage(&page->layout, "");
+		return rc ? rc : cli_agents_browser_sync(view->browser, &page->browser, &data,
+							cli_output_color_enabled(ctx));
 	}
 
 	int changed = feed->columns != page->columns;
@@ -492,14 +496,10 @@ static int cli_subagents_sync(struct cli_subagents_page *page)
 		rc = cli_subagents_document(page);
 
 	nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
-	if (!rc && !nb_buf_printf(&label, "  %s · %s", page->fullscreen ? "Agents" : "Subagents",
-				  feed->thread->id))
-		rc = NB_ERR_NOMEM;
-
 	if (!rc)
-		rc = nt_label_set_text(view->title, nb_buf_cstr(&label));
+		rc = cli_page_layout_set_subpage(&page->layout,
+						 cli_subagents_label(feed->thread->id));
 
-	nb_buf_clear(&label);
 	const struct agent_info *agent =
 		page->selection.index && page->selection.index <= (size_t)page->count
 			? &page->items[page->selection.index - 1]
@@ -525,6 +525,40 @@ static int cli_subagents_sync(struct cli_subagents_page *page)
 		rc = nt_view_focus(view->editor);
 
 	return rc < 0 ? rc : 0;
+}
+
+static int cli_subagents_back(void *data)
+{
+	struct cli_subagents_page *page = data;
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	if (nt_component_state_get_bool(page->ui.editing) && page->feed) {
+		nb_buf_clear(&page->feed->draft);
+		if (!nb_buf_append_cstr(&page->feed->draft, nt_text_field_text(page->ui.editor)))
+			return NB_ERR_NOMEM;
+	}
+
+	if (!page->fullscreen) {
+		struct cli_agents_browser_data snapshot = cli_subagents_browser_data(ctx, page);
+		int rc = cli_agents_browser_set_snapshot(&page->browser, &snapshot,
+							page->selection.index);
+		if (rc)
+			return rc;
+
+		page->fullscreen = 1;
+	}
+
+	page->viewing = 0;
+	int rc = cli_agents_select(ctx, NULL);
+	if (!rc)
+		rc = cli_subagents_refresh(ctx, page);
+
+	if (!rc)
+		rc = nt_component_state_set_bool(page->ui.editing, false);
+
+	if (!rc)
+		rc = cli_subagents_sync(page);
+
+	return rc ? rc : nt_view_focus(page->layout.body);
 }
 
 static int cli_subagents_picker_update(struct cli_application *ctx, struct cli_subagents_page *page,
@@ -627,13 +661,22 @@ static int cli_subagents_update(void *data, const struct nt_event *event)
 			return NB_ERR_NOMEM;
 
 		int rc = nt_component_state_set_bool(page->ui.editing, false);
+		if (!rc)
+			rc = nt_view_flush_state(page->layout.root);
+
+		if (!rc)
+			rc = nt_view_focus(page->layout.body);
+
 		return rc ? rc : NT_SCREEN_REDRAW;
 	}
 
 	if (event->pasting)
 		return NT_SCREEN_CONTINUE;
 
-	if (key == 27 || key == 3 || key == 4 || key == 'q') {
+	if (key == 27) {
+		int rc = cli_subagents_back(page);
+		return rc < 0 ? rc : NT_SCREEN_REDRAW;
+	} else if (key == 3 || key == 4 || key == 'q') {
 		return NT_SCREEN_CLOSE;
 	} else if (key == '\t' || key == NT_KEY_RIGHT || key == NT_KEY_LEFT ||
 		   key == NT_KEY_BACK_TAB) {
@@ -697,6 +740,12 @@ static int cli_subagents_submit(void *data, const struct nt_view_event *event)
 
 	if (!rc) {
 		int error = nt_component_state_set_bool(page->ui.editing, false);
+		if (!error)
+			error = nt_view_flush_state(page->layout.root);
+
+		if (!error)
+			error = nt_view_focus(page->layout.body);
+
 		if (error)
 			return error;
 
@@ -742,10 +791,10 @@ static int cli_subagents_input(void *data, const struct nt_view_event *event)
 static int cli_subagents_size(void *data, const struct nt_view_event *event)
 {
 	struct cli_subagents_page *page = data;
-	if (event->target != nt_view_controller_root_view(&page->base))
+	if (event->target != page->layout.body)
 		return 0;
 
-	page->columns = event->rect.width > 1 ? event->rect.width - 1 : 1;
+	page->columns = event->rect.width > 0 ? event->rect.width : 1;
 	int rc = nt_component_state_set_int(page->ui.height, event->rect.height);
 	return rc ? rc : cli_subagents_sync(page);
 }
@@ -765,8 +814,9 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 	const struct nt_view_options fill = {.grow = 1};
 	const struct nt_view_options row = {.height = 1};
 	const struct nt_view_options dim = cli_panel_hint(1);
-	struct nt_view *root =
-		nt_column_add(builder, NULL, 0, &(struct nt_view_options){.padding = {.right = 1}});
+	cli_page_layout_build(builder, &page->layout, page->fullscreen ? "agents" : "subagents",
+			      &nt_stack_view_class, cli_subagents_back, page);
+	struct nt_view *root = page->layout.body;
 	if (!root)
 		return;
 
@@ -774,11 +824,9 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 	nt_builder_fail(builder, nt_view_use_state_bool(root, page->viewing, &view->reading));
 	nt_builder_fail(builder, nt_view_use_state_bool(root, false, &view->editing));
 	nt_builder_fail(builder, nt_view_use_state_int(root, page->rows, &view->height));
-	view->browser = cli_agents_browser_add(builder, root);
+	struct nt_view *browser_help = nt_column_add(builder, page->layout.footer, 0, NULL);
+	view->browser = cli_agents_browser_add(builder, root, browser_help);
 	view->reader = nt_column_add(builder, root, 0, &fill);
-	struct nt_view_options heading = cli_panel_heading(1);
-	heading.style.foreground = (struct nt_color){NT_COLOR_INDEXED, CLI_INPUT_ULTRA_INDEX};
-	view->title = nt_label_add(builder, view->reader, "", &heading);
 	view->status = nt_label_add(builder, view->reader, "", &dim);
 	view->gap = nt_label_add(builder, view->reader, "", &row);
 	view->scroll = nt_scroll_view_add(builder, view->reader, &fill);
@@ -790,12 +838,14 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 	nt_label_add(builder, view->edit_row, "  Follow up › ", &row);
 	view->editor = nt_text_field_add(builder, view->edit_row,
 					 &(struct nt_text_field_options){.limit = 65533}, &fill);
-	view->help = nt_label_add(builder, view->reader, "", &dim);
+	view->help = nt_label_add(builder, page->layout.footer, "", &dim);
 	if (nt_builder_error(builder))
 		return;
 
 	nt_builder_fail(builder, nt_view_set_options(view->browser, &fill));
 	cli_panel_hide_when(builder, view->browser, view->reading);
+	cli_panel_hide_when(builder, browser_help, view->reading);
+	cli_panel_show_when(builder, view->help, view->reading);
 	cli_panel_show_when(builder, view->reader, view->reading);
 	cli_panel_show_when(builder, view->edit_row, view->editing);
 	nt_builder_fail(builder, nt_view_bind_compute(view->message, NT_PROP_HIDDEN,
@@ -819,6 +869,7 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 
 	nt_builder_fail(builder, cli_subagents_sync(page));
+	nt_builder_fail(builder, nt_view_focus(root));
 }
 
 static void cli_subagents_closed(struct cli_application *ctx, struct cli_subagents_page *page)
@@ -826,6 +877,15 @@ static void cli_subagents_closed(struct cli_application *ctx, struct cli_subagen
 	if (ctx && ctx->subagents && ctx->subagents->active == page) {
 		ctx->subagents->active = NULL;
 		(void)cli_agents_select(ctx, NULL);
+	}
+}
+
+static void cli_subagents_prepare_deinit(struct nt_view_controller *controller)
+{
+	struct cli_subagents_page *page = (struct cli_subagents_page *)controller;
+	if (nt_component_state_get_bool(page->ui.editing) && page->feed) {
+		nb_buf_clear(&page->feed->draft);
+		(void)nb_buf_append_cstr(&page->feed->draft, nt_text_field_text(page->ui.editor));
 	}
 }
 
@@ -851,6 +911,7 @@ static const struct nt_view_controller_class cli_subagents_page_class = {
 	.view_will_appear = cli_subagents_screen_boundary,
 	.view_will_disappear = cli_subagents_screen_boundary,
 	.load_view = cli_subagents_build,
+	.prepare_deinit = cli_subagents_prepare_deinit,
 	.handle_event = cli_subagents_page_event,
 	.deinit = cli_subagents_destroy,
 };
@@ -999,7 +1060,10 @@ static void cli_subagents_picker_page_build(struct nt_view_controller *controlle
 					    struct nt_builder *builder)
 {
 	struct cli_subagents_picker_page *picker = (struct cli_subagents_picker_page *)controller;
-	struct nt_view *root = cli_subagents_picker_build(builder, NULL, picker->reader);
+	cli_page_layout_build(builder, &picker->layout, "subagents", &nt_stack_view_class,
+			      NULL, NULL);
+	struct nt_view *root =
+		cli_subagents_picker_build(builder, picker->layout.body, picker->reader);
 	if (root)
 		nt_builder_fail(builder, nt_view_focus(root));
 }

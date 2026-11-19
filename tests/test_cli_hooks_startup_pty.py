@@ -101,6 +101,8 @@ def main():
             with sqlite3.connect(database) as db:
                 assert db.execute('SELECT id,digest,disabled FROM hook_trust ORDER BY id').fetchall() == before
             terminal.send('\x1b')
+            terminal.assert_navigation('hooks')
+            terminal.click_navigation(0)
         finally:
             stop(terminal)
         print('PASS: startup batch trust/reject, restart persistence, stale snapshot guard; no hooks executed')

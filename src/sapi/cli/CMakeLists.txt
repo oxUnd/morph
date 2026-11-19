@@ -27,6 +27,7 @@ add_library(morph-cli STATIC
 	pages/setup/wizard.c
 
 	# Application components
+	components/page_layout.c
 	components/setup_prompt.c
 	components/agents_browser.c
 	components/banner.c

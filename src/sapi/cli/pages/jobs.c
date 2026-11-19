@@ -1,6 +1,7 @@
 #include "sapi/cli/pages/jobs.h"
 #include "errors.h"
 #include "sapi/cli/components/list.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include <nb/err.h>
 #include "runtime/runtime.h"
@@ -18,6 +19,7 @@
 
 struct cli_jobs_page {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	cJSON *jobs, *details;
 	size_t selected;
 	int64_t refreshed;
@@ -98,8 +100,8 @@ static const char *cli_jobs_row(void *data, size_t index)
 static int cli_jobs_title(void *data, struct nt_value *value)
 {
 	return nt_value_set_string(value, nt_component_state_get_bool(data)
-						  ? "morph / jobs / output"
-						  : "morph / jobs");
+						  ? "output"
+						  : "");
 }
 
 static int cli_jobs_show_snapshot(struct cli_jobs_page *page)
@@ -154,34 +156,39 @@ static int cli_jobs_controller_action(void *data, const struct nt_view_event *ac
 	return rc ? rc : cli_jobs_show_snapshot(page);
 }
 
+static int cli_jobs_back(void *data)
+{
+	struct cli_jobs_page *page = data;
+	int rc = nt_component_state_set_bool(page->detail, false);
+	return rc ? rc : cli_jobs_focus(page);
+}
+
 static void cli_jobs_controller_build(struct nt_view_controller *controller,
 				      struct nt_builder *builder)
 {
-	const struct nt_view_options inset = {.padding = {1, 1, 1, 1}};
 	const struct nt_view_options fill = {.grow = 1};
-	const struct nt_view_options heading = cli_panel_heading(NT_AUTO);
 	const struct nt_view_options hint = cli_panel_hint(NT_AUTO);
-	struct nt_view *root = nt_column_add(builder, NULL, 0, &inset);
+	struct cli_jobs_page *page = (struct cli_jobs_page *)controller;
+	cli_page_layout_build(builder, &page->layout, "jobs", &nt_stack_view_class,
+			      cli_jobs_back, page);
+	struct nt_view *root = page->layout.body;
 	if (!root)
 		return;
 
-	struct cli_jobs_page *page = (struct cli_jobs_page *)controller;
 	nt_builder_fail(builder,
 			nt_view_use_state_bool(root, page->details != NULL, &page->detail));
-	struct nt_view *title = nt_label_add(builder, root, "morph / jobs", &heading);
-	nt_label_add(builder, root, "", NULL);
+	nt_label_add(builder, root, "Background jobs", NULL);
 	page->list = cli_list_add(builder, root, &fill);
 	page->document = nt_text_view_add(builder, root, "", &fill);
 	page->message = nt_label_add(builder, root, "", NULL);
-	nt_label_add(builder, root, "Up/Down · Enter output · k stop · r refresh · Esc back",
-		     &hint);
+	nt_label_add(builder, page->layout.footer,
+		     "Up/Down · Enter output · k stop · r refresh · Esc back", &hint);
 	if (!nt_builder_error(builder)) {
 		nt_builder_fail(builder,
 				nt_text_view_set_wrap_mode(page->document, NT_TEXT_WRAP_CHAR));
 		cli_panel_hide_when(builder, page->list, page->detail);
 		cli_panel_show_when(builder, page->document, page->detail);
-		nt_builder_fail(builder, nt_view_bind_compute(title, NT_PROP_TEXT, cli_jobs_title,
-							      page->detail));
+		cli_page_layout_bind_subpage(builder, &page->layout, cli_jobs_title, page->detail);
 		nt_list_view_set_navigation(page->list, 0);
 		nt_list_view_set_activate_on_click(page->list, 1);
 		if (!nt_view_on(page->list, NT_VIEW_EVENT_ACTIVATE, cli_jobs_controller_action,

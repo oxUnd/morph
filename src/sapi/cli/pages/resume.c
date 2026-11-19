@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/resume.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include <nb/err.h>
 #include <nb/cleanup.h>
@@ -325,26 +326,20 @@ static int cli_resume_page(struct cli_application *ctx, const struct cli_resume_
 }
 
 enum cli_resume_label {
-	CLI_RESUME_BRAND,
-	CLI_RESUME_PATH,
 	CLI_RESUME_TITLE,
 	CLI_RESUME_SUMMARY,
-	CLI_RESUME_TOP_RULE,
 	CLI_RESUME_PAGE,
 	CLI_RESUME_NAME,
 	CLI_RESUME_ID,
 	CLI_RESUME_TOKENS,
 	CLI_RESUME_UPDATED,
-	CLI_RESUME_BOTTOM_RULE,
 	CLI_RESUME_RANGE,
-	CLI_RESUME_FOOT_RULE,
-	CLI_RESUME_HINT,
-	CLI_RESUME_ESCAPE,
 	CLI_RESUME_LABEL_COUNT
 };
 
 struct cli_resume_picker {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	struct cli_resume_model model;
 	struct session *sessions;
 	struct nt_view *list;
@@ -366,7 +361,7 @@ static int cli_resume_label(struct cli_resume_picker *page, enum cli_resume_labe
 	if (width > page->columns - x)
 		width = page->columns - x;
 
-	int hidden = y < 0 || width <= 0 || page->columns < 5;
+	int hidden = y < 0 || width <= 0 || page->columns < 1;
 	int rc = nt_view_set_hidden(label, hidden);
 	if (rc || hidden)
 		return rc;
@@ -408,27 +403,29 @@ static int cli_resume_pagination(struct cli_resume_picker *page)
 	char text[96];
 	snprintf(text, sizeof(text), "%d / %d", number + 1, (count - 1) / page->page_size + 1);
 	int width = (int)strlen(text);
+	const char *title = page->grouped ? "Resume a session" : "Sessions";
 	int rc = cli_resume_label(
-		page, CLI_RESUME_PAGE, page->columns - 2 - width,
-		page->columns >= 32 && page->rows >= 3 ? (page->grouped ? 2 : 0) : -1, width, text);
+		page, CLI_RESUME_PAGE, page->columns - width,
+		page->columns >= (int)strlen(title) + 2 + width && page->rows >= 3 ? 0 : -1,
+		width, text);
 	if (rc)
 		return rc;
 
 	snprintf(text, sizeof(text), "Showing %d–%d of %d", first, last, model->session_count);
-	return cli_resume_label(page, CLI_RESUME_RANGE, 2,
-				page->rows >= 6 ? page->rows - (page->grouped ? 4 : 3) : -1,
-				page->columns - 4, text);
+	return cli_resume_label(page, CLI_RESUME_RANGE, 0,
+				page->rows >= 6 ? page->rows - (page->grouped ? 2 : 1) : -1,
+				page->columns, text);
 }
 
 static int cli_resume_layout(struct cli_resume_picker *page, int cols, int rows)
 {
-	int width = cols - 4;
-	int list_rows = cols < 5 ? 1 : rows;
+	int width = cols;
+	int list_rows = cols < 1 ? 1 : rows;
 	page->rows = rows;
 	page->columns = cols;
 	page->grouped = list_rows >= 14;
-	page->first_row = page->grouped ? 7 : list_rows >= 6 ? 2 : list_rows >= 3 ? 1 : 0;
-	page->page_size = page->grouped	   ? list_rows - 12
+	page->first_row = page->grouped ? 5 : list_rows >= 6 ? 2 : list_rows >= 3 ? 1 : 0;
+	page->page_size = page->grouped	   ? list_rows - 8
 			  : list_rows >= 6 ? list_rows - 5
 			  : list_rows >= 3 ? list_rows - 2
 					   : 1;
@@ -451,16 +448,8 @@ static int cli_resume_layout(struct cli_resume_picker *page, int cols, int rows)
 	if (rc)
 		return rc;
 
-	nb_buf rule NB_CLEANUP(nb_buf_cleanup) = {0};
-	for (int i = 0; i < width; i++)
-		nb_buf_append_cstr(&rule, "─");
-
-	if (!nb_buf_ok(&rule))
-		return NB_ERR_NOMEM;
-
-	int title_row = page->grouped ? 2 : rows >= 3 ? 0 : -1;
+	int title_row = rows >= 3 ? 0 : -1;
 	int heading = rows >= 6 ? page->first_row - 1 : -1;
-	int footer = rows >= 3 ? rows - 1 : -1;
 	char summary[96];
 	snprintf(summary, sizeof(summary), "%d sessions · grouped by working directory",
 		 page->model.session_count);
@@ -468,26 +457,15 @@ static int cli_resume_layout(struct cli_resume_picker *page, int cols, int rows)
 		int x, y, width;
 		const char *text;
 	} labels[CLI_RESUME_LABEL_COUNT] = {
-		[CLI_RESUME_BRAND] = {2, page->grouped ? 0 : -1, 5, "morph"},
-		[CLI_RESUME_PATH] = {8, page->grouped ? 0 : -1, width - 6, "/ sessions"},
-		[CLI_RESUME_TITLE] = {2, title_row, width,
+		[CLI_RESUME_TITLE] = {0, title_row, width,
 				      page->grouped ? "Resume a session" : "Sessions"},
-		[CLI_RESUME_SUMMARY] = {2, page->grouped ? 3 : -1, width, summary},
-		[CLI_RESUME_TOP_RULE] = {2, page->grouped ? 5 : -1, width, nb_buf_cstr(&rule)},
-		[CLI_RESUME_NAME] = {2, heading, page->name_width, "SESSION"},
+		[CLI_RESUME_SUMMARY] = {0, page->grouped ? 1 : -1, width, summary},
+		[CLI_RESUME_NAME] = {0, heading, page->name_width, "SESSION"},
 		[CLI_RESUME_ID] = {page->id_x, page->id_x ? heading : -1, 8, "ID"},
 		[CLI_RESUME_TOKENS] = {page->tokens_x, page->tokens_x ? heading : -1, 12,
 				       "      TOKENS"},
 		[CLI_RESUME_UPDATED] = {page->updated_x, page->updated_x ? heading : -1, 14,
 					"UPDATED"},
-		[CLI_RESUME_BOTTOM_RULE] = {2, page->grouped ? rows - 5 : -1, width,
-					    nb_buf_cstr(&rule)},
-		[CLI_RESUME_FOOT_RULE] = {2, rows >= 6 ? rows - 2 : -1, width, nb_buf_cstr(&rule)},
-		[CLI_RESUME_HINT] = {2, footer, width,
-				     width >= 68   ? "↑ ↓ Select Enter Resume ← → Page"
-				     : width >= 36 ? "↑↓ Select Enter Resume Esc Cancel"
-						   : "↑↓ Enter Esc"},
-		[CLI_RESUME_ESCAPE] = {cols - 12, width >= 68 ? footer : -1, 10, "Esc Cancel"},
 	};
 	for (int i = 0; i < CLI_RESUME_LABEL_COUNT && !rc; i++)
 		if (i != CLI_RESUME_RANGE && i != CLI_RESUME_PAGE)
@@ -593,17 +571,25 @@ static int cli_resume_action(void *data, const struct nt_view_event *event)
 	return nt_view_controller_dismiss(&page->base, 0);
 }
 
+static int cli_resume_size(void *data, const struct nt_view_event *event)
+{
+	struct cli_resume_picker *page = data;
+	if (event->target != page->layout.body)
+		return 0;
+
+	return cli_resume_layout(page, event->rect.width, event->rect.height);
+}
+
 static void cli_resume_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
 	struct cli_resume_picker *page = (struct cli_resume_picker *)controller;
-	struct nt_view *root = nt_view_add(builder, NULL, &nt_view_base_class, NULL);
+	cli_page_layout_build(builder, &page->layout, "resume", &nt_view_base_class, NULL, NULL);
+	struct nt_view *root = page->layout.body;
+	const struct nt_view_options hint = cli_panel_hint(1);
+	nt_label_add(builder, page->layout.footer,
+		     "Up/Down Select · Enter Resume · Left/Right Page · Esc Back", &hint);
 	for (int i = 0; i < CLI_RESUME_LABEL_COUNT; i++) {
 		struct nt_view_options options = cli_panel_hint(NT_AUTO);
-		if (i == CLI_RESUME_BRAND)
-			options.style = cli_resume_accent;
-
-		if (i == CLI_RESUME_ESCAPE)
-			options.style = (struct nt_text_style){0};
 
 		page->labels[i] = nt_label_add(builder, root, "", &options);
 		nt_builder_fail(builder, nt_label_set_opaque(page->labels[i], 1));
@@ -627,25 +613,20 @@ static void cli_resume_build(struct nt_view_controller *controller, struct nt_bu
 								     NT_LIST_VIEW_HORIZONTAL_PAGES |
 								     NT_LIST_VIEW_PAGED);
 
-	struct nt_terminal_environment env;
-	if (!rc)
-		rc = nt_application_environment(nt_view_controller_application(controller), &env);
-
-	if (!rc)
-		rc = cli_resume_layout(page, env.columns, env.rows);
+	if (!rc && !nt_view_on(root, NT_VIEW_EVENT_SIZE_CHANGED, cli_resume_size, page))
+		rc = NB_ERR_NOMEM;
 
 	if (!rc && (!nt_view_on(page->list, NT_VIEW_EVENT_ACTIVATE, cli_resume_action, page) ||
 		    !nt_view_on(page->list, NT_VIEW_EVENT_CHANGED, cli_resume_action, page)))
 		rc = NB_ERR_NOMEM;
 
 	nt_builder_fail(builder, rc);
+	nt_builder_fail(builder, nt_view_focus(page->list));
 }
 
 static int cli_resume_event(struct nt_view_controller *controller, const struct nt_event *event)
 {
 	struct cli_resume_picker *page = (struct cli_resume_picker *)controller;
-	if (event->type == NT_EVENT_RESIZE)
-		return cli_resume_layout(page, event->columns, event->rows);
 
 	if (event->type != NT_EVENT_KEY || event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return 0;

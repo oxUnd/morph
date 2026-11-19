@@ -49,7 +49,7 @@ def main():
             text = terminal.snapshot(label)
             assert not marker.exists(), 'inspection or trust executed a hook'
             assert text.count('morph') >= 1, text
-            if '/ hooks' in terminal.screen.display[0]:
+            if any('/ hooks' in row for row in terminal.screen.display):
                 assert all(terminal.screen.buffer[row][column].bg == 'e8e6de'
                            and not terminal.screen.buffer[row][column].reverse
                            for row in range(terminal.screen.lines)
@@ -69,7 +69,7 @@ def main():
             assert '/ hooks / review' in text and 'Review decision' in text, text
             assert 'Trust current definition' in text, text
             selected = [r for r in range(terminal.screen.lines)
-                        if terminal.screen.buffer[r][1].data == '▏']
+                        if terminal.screen.buffer[r][2].data == '▏']
             assert len(selected) == 1, text
             assert terminal.screen.buffer[selected[0]][2].bold, text
             assert 'Keep unchanged' in terminal.screen.display[selected[0]], text
@@ -92,6 +92,7 @@ def main():
             terminal.pump(1)
             text = snapshot('startup batch review')
             assert 'Trust lifecycle hooks?' in text and 'Reject all current hooks' in text, text
+            terminal.send('\x1b')
             terminal.send('\x1b')
             terminal.send('/hooks\r')
             text = snapshot('hook list')

@@ -201,6 +201,7 @@ struct cli_agents_browser {
 	struct cli_agents_browser_data data;
 	struct nt_view *heading, *tabs, *rule, *columns, *list;
 	struct nt_view *detail_heading, *detail_scroll, *detail_text, *footer;
+	int external_footer;
 	struct nt_component_state *agent_count, *hint;
 	const char *last_hint;
 	nb_buf project, model;
@@ -448,7 +449,7 @@ static int cli_agents_browser_layout(struct nt_view *view)
 
 	int w = r.width, h = r.height;
 	int header = h >= 8 ? 4 : h > 0;
-	int footer = h >= 3;
+	int footer = !b->external_footer && h >= 3;
 	int body = h - header - footer;
 	int split = w >= 100 && body >= 4;
 	int left = split ? w * 3 / 5 : w;
@@ -518,7 +519,8 @@ static int cli_agents_browser_layout(struct nt_view *view)
 		{detail_x, detail_top, right, detail_rows > 0},
 		{detail_x, detail_top + 1, right, detail_rows > 1 ? detail_rows - 1 : 0},
 		{0, h - footer, w, footer}};
-	for (size_t i = 0; !rc && i < sizeof(children) / sizeof(children[0]); i++) {
+	size_t child_count = sizeof(children) / sizeof(children[0]) - (size_t)b->external_footer;
+	for (size_t i = 0; !rc && i < child_count; i++) {
 		slots[i].x += r.x;
 		slots[i].y += r.y;
 		rc = nt_view_arrange(children[i], slots[i]);
@@ -579,7 +581,8 @@ static void cli_agents_browser_destroy(struct nt_view *view)
 	nb_buf_destroy(&browser->model);
 }
 
-struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_view *parent)
+struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_view *parent,
+				      struct nt_view *footer)
 {
 	static const struct nt_view_class type = {
 		.superclass = &nt_view_base_class,
@@ -605,7 +608,9 @@ struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_vie
 	b->detail_heading = nt_label_add(builder, v, "Task details", NULL);
 	b->detail_scroll = nt_scroll_view_add(builder, v, NULL);
 	b->detail_text = nt_text_view_add(builder, b->detail_scroll, "", NULL);
-	b->footer = nt_label_add(builder, v, "", NULL);
+	b->external_footer = footer != NULL;
+	b->footer = nt_label_add(builder, footer ? footer : v, "",
+				 &(struct nt_view_options){.height = 1});
 	nt_builder_fail(builder, nt_view_bind_compute(b->heading, NT_PROP_TEXT,
 						      cli_agents_browser_heading, b->agent_count));
 	nt_builder_fail(builder, nt_view_bind_compute(b->footer, NT_PROP_TEXT,

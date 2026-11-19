@@ -50,7 +50,8 @@ size_t cli_agents_browser_selected(const struct cli_agents_browser_state *state)
 int cli_agents_browser_update(struct cli_agents_browser_state *state, int key);
 struct nt_builder;
 struct nt_view;
-struct nt_view *cli_agents_browser_add(struct nt_builder *, struct nt_view *parent);
+struct nt_view *cli_agents_browser_add(struct nt_builder *, struct nt_view *parent,
+				      struct nt_view *footer);
 int cli_agents_browser_sync(struct nt_view *, struct cli_agents_browser_state *,
 			    const struct cli_agents_browser_data *, int styled);
 #endif

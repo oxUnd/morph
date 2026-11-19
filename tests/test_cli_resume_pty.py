@@ -39,14 +39,18 @@ def main():
 
             def frame(label, focus):
                 screen = terminal.snapshot(label)
-                grouped = rows >= 14
-                page_size = rows - 12 if grouped else rows - 5
+                content_rows = rows - 6
+                grouped = content_rows >= 14
+                page_size = (content_rows - 8 if grouped else
+                             max(1, content_rows - 5) if content_rows >= 6 else
+                             max(1, content_rows - 2))
                 total = 446 if grouped else 445
                 start = focus // page_size * page_size
                 end = min(start + page_size, total)
                 heading = 'Resume a session' if grouped else 'Sessions'
-                assert screen.count(heading) == 1, screen
-                assert f'{focus // page_size + 1} / {((total - 1) // page_size) + 1}' in screen, screen
+                assert screen.count(heading) == (1 if content_rows >= 3 else 0), screen
+                if content_rows >= 3:
+                    assert f'{focus // page_size + 1} / {((total - 1) // page_size) + 1}' in screen, screen
                 if grouped:
                     if start == 0:
                         assert 'unknown workdir' in screen, screen
@@ -57,20 +61,23 @@ def main():
                     session = focus - 1
                 else:
                     assert '├' not in screen and '└' not in screen, screen
-                    assert f'Showing {start + 1}–{end} of 445' in screen, screen
+                    if content_rows >= 6:
+                        assert f'Showing {start + 1}–{end} of 445' in screen, screen
                     shown = end - start
                     session = focus
-                assert 'Esc' in terminal.screen.display[-1], screen
+                terminal.assert_navigation('resume')
+                rules = [line for line in screen.splitlines() if set(line.strip()) == {'─'}]
+                assert len(rules) == 2, screen
                 assert '›' not in screen, screen
                 data_rows = [line for line in screen.splitlines() if '会话 ' in line]
                 assert len(data_rows) == shown, screen
                 selected = [r for r in range(rows) if
-                            terminal.screen.display[r][1:2] == '▏']
+                            terminal.screen.display[r][3:4] == '▏']
                 assert len(selected) == 1, screen
                 selected_row = selected[0]
                 assert ordered[session][0][:12] in terminal.screen.display[selected_row], screen
-                assert terminal.screen.buffer[selected_row][1].fg == '47d3e6', screen
-                assert terminal.screen.buffer[selected_row][2].bold, screen
+                assert terminal.screen.buffer[selected_row][3].fg == '47d3e6', screen
+                assert terminal.screen.buffer[selected_row][4].bold, screen
                 assert all(terminal.screen.buffer[row][column].bg == 'default'
                            for row in range(rows) for column in range(columns)), screen
                 assert terminal.screen.cursor.hidden, screen
@@ -103,7 +110,7 @@ def main():
             terminal.pump(0.5)
 
             terminal.send('/resume\r')
-            frame('initial picker: 12 rows', 1)
+            frame('initial picker', 1)
             terminal.send('\x1b[B' * 10)
             frame('down to last row', 11)
             terminal.send('\x1b[B')
@@ -113,7 +120,7 @@ def main():
             terminal.send('\x1b[A')
             frame('up changes selection in place', 18)
             terminal.send('\x1b[D')
-            frame('left page', 6)
+            frame('left page', 8)
             terminal.send('\x1b[C')
             frame('right page', 18)
             resize(32, 120, 18)
@@ -136,11 +143,15 @@ def main():
             assert not terminal.screen.cursor.hidden, restored
             terminal.send('/resume\r')
             frame('reopen picker', 1)
-            terminal.send('\x1b[<0;8;8M\x1b[<0;8;8m')
+            group_row = next(i + 1 for i, row in enumerate(terminal.screen.display) if '▾' in row)
+            terminal.send(f'\x1b[<0;8;{group_row}M\x1b[<0;8;{group_row}m')
             frame('group header click does not resume', 1)
-            terminal.send('\x1b[<0;8;10M\x1b[<32;9;10M\x1b[<0;8;10m')
+            item_row = next(i + 1 for i, row in enumerate(terminal.screen.display)
+                            if ordered[1][0][:12] in row)
+            terminal.send(f'\x1b[<0;8;{item_row}M\x1b[<32;9;{item_row}M'
+                          f'\x1b[<0;8;{item_row}m')
             frame('dragging a session does not resume', 2)
-            terminal.send('\x1b[<0;8;10M\x1b[<0;8;10m')
+            terminal.send(f'\x1b[<0;8;{item_row}M\x1b[<0;8;{item_row}m')
             restored = terminal.snapshot('mouse click resumes the selected session')
             assert 'resumed session: ' + ordered[1][0] in restored, restored
             terminal.send('/resume\r')
@@ -161,7 +172,7 @@ def main():
             resize(24, 120, 6)
             terminal.send('q')
             terminal.send('/resume\r')
-            terminal.send('\x1b[C' * 40)
+            terminal.send('\x1b[F\x1b[C')
             frame('last partial page and right boundary', 445)
             terminal.send('\x1b[B')
             frame('down stays at final session', 445)

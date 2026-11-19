@@ -1,5 +1,6 @@
 #include "sapi/cli/pages/memory.h"
 #include "sapi/cli/components/list.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 
 #include "sapi/cli/application.h"
@@ -23,6 +24,7 @@
 
 struct cli_memory_page {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	struct nt_view *list;
 	struct nt_view *document;
 	struct nt_view *search;
@@ -239,12 +241,8 @@ static int cli_memory_document(struct cli_memory_page *page, nb_buf *document)
 static int cli_memory_title(void *data, struct nt_value *value)
 {
 	struct cli_memory_page *page = data;
-	char title[96] = "morph / memory";
-	if (nt_component_state_get_bool(page->detail))
-		snprintf(title, sizeof(title), "morph / memory / %s",
-			 cli_memory_section_name((int)nt_list_view_selected(page->list)));
-
-	return nt_value_set_string(value, title);
+	return nt_value_set_string(value, nt_component_state_get_bool(page->detail)
+		? cli_memory_section_name((int)nt_list_view_selected(page->list)) : "");
 }
 
 static int cli_memory_description(void *data, struct nt_value *value)
@@ -325,23 +323,31 @@ static int cli_memory_action(void *data,
 	return rc ? rc : cli_memory_refresh(page);
 }
 
+static int cli_memory_back(void *data)
+{
+	struct cli_memory_page *page = data;
+	int rc = nt_component_state_set_bool(page->searching, false);
+	if (!rc)
+		rc = nt_component_state_set_bool(page->detail, false);
+
+	return rc ? rc : cli_memory_focus(page);
+}
+
 static void cli_memory_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
 	struct cli_memory_page *page = (struct cli_memory_page *)controller;
-	const struct nt_view_options inset = {.padding = {1, 1, 1, 1}};
 	const struct nt_view_options fill = {.grow = 1};
-	const struct nt_view_options heading = cli_panel_heading(NT_AUTO);
 	const struct nt_view_options hint = cli_panel_hint(NT_AUTO);
-	struct nt_view *root = nt_stack_view_add(builder, NULL, NT_STACK_VIEW_VERTICAL, 0, &inset);
-
-	struct nt_view *title = nt_label_add(builder, root, "morph / memory", &heading);
+	cli_page_layout_build(builder, &page->layout, "memory", &nt_stack_view_class,
+			      cli_memory_back, page);
+	struct nt_view *root = page->layout.body;
 	struct nt_view *description = nt_label_add(builder, root, "", NULL);
 	page->list = cli_list_add(builder, root, &fill);
 	page->document = nt_text_view_add(builder, root, "", &fill);
 	struct nt_view *status = nt_label_add(builder, root, "", NULL);
 	page->search = nt_text_field_add(builder, root,
 					 &(struct nt_text_field_options){.limit = 2049}, NULL);
-	struct nt_view *help = nt_label_add(builder, root, "", &hint);
+	struct nt_view *help = nt_label_add(builder, page->layout.footer, "", &hint);
 	if (!nt_builder_error(builder)) {
 		nt_builder_fail(builder, nt_label_set_wrap_mode(description, NT_TEXT_WRAP_CHAR));
 		nt_builder_fail(builder,
@@ -352,8 +358,7 @@ static void cli_memory_build(struct nt_view_controller *controller, struct nt_bu
 		cli_panel_hide_when(builder, page->list, page->detail);
 		cli_panel_show_when(builder, page->document, page->detail);
 		cli_panel_show_when(builder, page->search, page->searching);
-		nt_builder_fail(builder,
-				nt_view_bind_compute(title, NT_PROP_TEXT, cli_memory_title, page));
+		cli_page_layout_bind_subpage(builder, &page->layout, cli_memory_title, page);
 		nt_builder_fail(builder, nt_view_bind_compute(description, NT_PROP_TEXT,
 							      cli_memory_description, page->list));
 		nt_builder_fail(builder, nt_view_bind_compute(help, NT_PROP_TEXT, cli_memory_help,

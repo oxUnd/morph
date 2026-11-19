@@ -19,7 +19,9 @@ extern "C" {
 }
 
 #include <chrono>
+#include <atomic>
 #include <memory>
+#include <poll.h>
 #include <thread>
 #ifdef __APPLE__
 #include <util.h>
@@ -158,6 +160,16 @@ TEST(CliRewindPicker, EscapeClosesWithoutRestoringOrPrintingAReceipt)
 	ASSERT_EQ(cli_rewind_create_take(&listing, apply, &page), 0);
 	int shown = cli_application_show_page(&cli, &page, 0);
 	cli.application_command = shown == 0;
+	std::atomic<bool> draining{true};
+	std::thread reader([&] {
+		char buffer[BUFSIZ];
+		struct pollfd descriptor{master, POLLIN, 0};
+		while (draining.load()) {
+			if (poll(&descriptor, 1, 10) > 0 && (descriptor.revents & POLLIN))
+				(void)read(master, buffer, sizeof(buffer));
+		}
+	});
+
 	int stepped = shown == 0 ? nt_application_step(&cli.base, 0) : shown;
 	ssize_t written = write(master, "\033", 1);
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -169,6 +181,8 @@ TEST(CliRewindPicker, EscapeClosesWithoutRestoringOrPrintingAReceipt)
 
 	size_t depth = nt_application_depth(&cli.base);
 	nt_application_deinit(&cli.base);
+	draining.store(false);
+	reader.join();
 	std::string output = testing::internal::GetCapturedStdout();
 	fclose(terminal);
 	close(master);

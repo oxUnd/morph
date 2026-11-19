@@ -274,7 +274,7 @@ def main():
             service_id = next(pid for pid, data in records if json.loads(data)['service'])
             terminal.send('/jobs\r')
             text = until(terminal, lambda text: 'morph / jobs' in text)
-            terminal.assert_panel_heading('morph / jobs')
+            terminal.assert_navigation('jobs')
             assert 'running' in text, text
             assert not any(row.startswith('› /jobs') for row in terminal.screen.display), text
             terminal.send('\x1b')

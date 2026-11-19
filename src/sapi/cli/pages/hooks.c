@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/hooks.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include <nothing/tui/component_state.h>
 #include "cJSON.h"
@@ -58,7 +59,8 @@ enum cli_hooks_transition {
 	SHOW_HANDLERS,
 	REVIEW_BATCH,
 	CLOSE_BATCH,
-	GO_BACK
+	GO_BACK,
+	SHOW_ALL_HOOKS
 };
 
 struct cli_hooks_action_input {
@@ -68,8 +70,9 @@ struct cli_hooks_action_input {
 
 struct cli_hooks_page {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	cJSON *rows;
-	struct nt_view *root, *brand, *path, *title, *subtitle, *scope, *rule, *heading, *list,
+	struct nt_view *root, *title, *subtitle, *scope, *rule, *heading, *list,
 		*range, *divider, *viewport, *document, *choice_title, *choices, *message_view,
 		*help;
 	struct cli_hooks_navigation initial;
@@ -96,6 +99,9 @@ static int cli_hooks_reduce(const void *previous, const void *argument, size_t s
 	struct cli_hooks_navigation nav;
 	memcpy(&nav, previous, sizeof(nav));
 	switch (action.transition) {
+	case SHOW_ALL_HOOKS:
+		nav = (struct cli_hooks_navigation){.section = HOOKS_HANDLERS};
+		break;
 	case SHOW_EVENTS:
 		nav.section = HOOKS_EVENTS;
 		break;
@@ -736,7 +742,7 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 	s->syncing = 1;
 	const struct cli_hooks_navigation *nav = cli_hooks_navigation(s);
 	int h = s->height, w = s->width;
-	int small = h < (nav->batch ? 20 : 12) || w < (nav->batch ? 40 : 24);
+	int small = h < (nav->batch ? 18 : 10) || w < (nav->batch ? 40 : 24);
 	int count = cli_hooks_view_count(s, s->rows);
 	int batch = !small && nav->batch, events = !small && !batch && nav->section == HOOKS_EVENTS;
 	int empty = !small && !batch && !events && !count;
@@ -745,7 +751,7 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 	const cJSON *row = cli_hooks_view_row(s, s->rows, s->focus);
 	struct cli_hooks_action actions[4];
 	int choices = batch ? 3 : review ? cli_hooks_actions(row, actions) : 0;
-	int page = batch ? (h - 16) / 3 : list && h >= 24 ? (h - 20) / 2 : h - 10;
+	int page = batch ? (h - 12) / 3 : list && h >= 20 ? (h - 16) / 2 : h - 6;
 	s->page_size = page > 0 ? page : 1;
 	int total = events ? CLI_HOOKS_HOOK_EVENT_COUNT : count;
 	int selected = events ? s->event_focus : s->focus;
@@ -754,8 +760,8 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 	if (visible > s->page_size)
 		visible = s->page_size;
 
-	int document_y = batch ? 6 : empty ? 5 : review ? 5 : h >= 24 ? 8 + visible : h - 3;
-	int bottom = batch ? h - 9 : review ? h - choices - 5 : h - 3;
+	int document_y = batch ? 4 : empty ? 3 : review ? 3 : h >= 20 ? 6 + visible : h - 2;
+	int bottom = batch ? h - 7 : review ? h - choices - 3 : h - 1;
 	s->document_height =
 		(batch || review || list || empty) && bottom > document_y ? bottom - document_y : 0;
 	char title[160] = "", subtitle[200] = "", heading[200] = "", range[128] = "",
@@ -870,9 +876,10 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 		rc = cli_hooks_label(s->range, range, w, HOOK_DIM);
 
 	if (!rc)
-		rc = cli_hooks_label(s->path,
-				     nav->section == HOOKS_REVIEW ? "/ hooks / review" : "/ hooks",
-				     w - 6, HOOK_DIM);
+		rc = cli_page_layout_set_subpage(&s->layout,
+			nav->batch ? "review all" : nav->section == HOOKS_REVIEW ? "review"
+			: nav->section == HOOKS_EVENTS ? "events"
+			: nav->event_filter ? "handlers" : "");
 
 	if (!rc)
 		rc = cli_hooks_label(s->help, hint, w, HOOK_DIM);
@@ -895,25 +902,22 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 	struct {
 		struct nt_view *view;
 		int x, y, width, height;
-	} parts[] = {{s->brand, 2, 0, 5, 1},
-		     {s->path, 8, 0, w - 6, 1},
-		     {s->title, 2, 2, w, 1},
-		     {s->subtitle, 2, 3, w, *subtitle != 0},
-		     {s->scope, 2, 4, w, batch},
-		     {s->rule, 2, batch ? 5 : 4, w, !small && !empty},
-		     {s->heading, 2, 5, w, list || events},
-		     {s->list, 1, 6, w + 1, list || events ? visible : 0},
-		     {s->range, 2, batch ? h - 9 : 6 + visible, w, batch || list},
-		     {s->divider, 2,
-		      batch    ? h - 8
-		      : review ? h - choices - 5
+	} parts[] = {{s->title, 0, 0, w, 1},
+		     {s->subtitle, 0, 1, w, *subtitle != 0},
+		     {s->scope, 0, 2, w, batch},
+		     {s->rule, 0, batch ? 3 : 2, w, !small && !empty},
+		     {s->heading, 0, 3, w, list || events},
+		     {s->list, 0, 4, w, list || events ? visible : 0},
+		     {s->range, 0, batch ? h - 7 : 4 + visible, w, batch || list},
+		     {s->divider, 0,
+		      batch    ? h - 6
+		      : review ? h - choices - 3
 			       : document_y - 1,
-		      w, batch || review || (list && h >= 24)},
-		     {s->viewport, 2, document_y, w, s->document_height},
-		     {s->choice_title, 2, h - choices - 4, w, review},
-		     {s->choices, 1, batch ? h - 7 : h - choices - 3, w + 1, choices},
-		     {s->message_view, 2, h - (batch ? 3 : 2), w, batch || status[0] != 0},
-		     {s->help, 2, h - 1, w, 1}};
+		      w, batch || review || (list && h >= 20)},
+		     {s->viewport, 0, document_y, w, s->document_height},
+		     {s->choice_title, 0, h - choices - 2, w, review},
+		     {s->choices, 0, batch ? h - 5 : h - choices - 1, w, choices},
+		     {s->message_view, 0, h - 1, w, batch || status[0] != 0}};
 	for (size_t i = 0; !rc && i < sizeof(parts) / sizeof(parts[0]); i++)
 		rc = cli_hooks_place(parts[i].view, parts[i].x, parts[i].y, parts[i].width,
 				     parts[i].height);
@@ -1005,6 +1009,9 @@ static int cli_hooks_update(void *data, const struct nt_event *event)
 		return NT_NAVIGATION_BACK;
 
 	if (key == 27) {
+		if (nav.batch)
+			return cli_hooks_navigate(screen, CLOSE_BATCH);
+
 		if (nav.section == HOOKS_HANDLERS && !nav.event_filter)
 			return NT_NAVIGATION_BACK;
 
@@ -1028,7 +1035,7 @@ static int cli_hooks_update(void *data, const struct nt_event *event)
 		return NT_NAVIGATION_CHANGED;
 	}
 
-	if (screen->height < (nav.batch ? 20 : 12) || screen->width < (nav.batch ? 40 : 24) ||
+	if (screen->height < (nav.batch ? 18 : 10) || screen->width < (nav.batch ? 40 : 24) ||
 	    (nav.section == HOOKS_REVIEW && screen->document_height == 0))
 		return NT_NAVIGATION_UNHANDLED;
 
@@ -1194,15 +1201,30 @@ static int cli_hooks_size(void *data, const struct nt_view_event *event)
 	if (event->target != s->root)
 		return 0;
 
-	s->width = event->rect.width > 4 ? event->rect.width - 4 : 1;
+	s->width = event->rect.width > 0 ? event->rect.width : 1;
 	s->height = event->rect.height;
 	return cli_hooks_sync(s);
+}
+
+static int cli_hooks_back(void *data)
+{
+	struct cli_hooks_page *s = data;
+	int rc = cli_hooks_navigate(s, SHOW_ALL_HOOKS);
+	if (rc < 0)
+		return rc;
+
+	s->scroll = 0;
+	s->message[0] = '\0';
+	rc = cli_hooks_sync(s);
+	return rc ? rc : nt_view_focus(s->root);
 }
 
 static void cli_hooks_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
 	struct cli_hooks_page *s = (struct cli_hooks_page *)controller;
-	s->root = nt_view_add(builder, NULL, &nt_view_base_class, NULL);
+	cli_page_layout_build(builder, &s->layout, "hooks", &nt_view_base_class,
+			      cli_hooks_back, s);
+	s->root = s->layout.body;
 	nt_builder_fail(builder, nt_view_use_reducer(s->root,
 						     &(struct nt_component_state_options){
 							     .size = sizeof(s->initial),
@@ -1211,9 +1233,6 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 	if (nt_builder_error(builder))
 		return;
 
-	s->brand = nt_label_add(builder, s->root, "morph",
-				&(struct nt_view_options){.style = cli_hooks_style(HOOK_CYAN)});
-	s->path = nt_label_add(builder, s->root, "", NULL);
 	s->title = nt_label_add(builder, s->root, "", NULL);
 	s->subtitle = nt_label_add(builder, s->root, "", NULL);
 	const struct nt_view_options dim = {.style = cli_hooks_style(HOOK_DIM)};
@@ -1231,11 +1250,11 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 			     &(struct nt_view_options){.style = cli_hooks_style(HOOK_BOLD)});
 	s->choices = nt_list_view_add(builder, s->root, NULL, 0, 0, NULL);
 	s->message_view = nt_label_add(builder, s->root, "", NULL);
-	s->help = nt_label_add(builder, s->root, "", NULL);
+	s->help = nt_label_add(builder, s->layout.footer, "", &dim);
 	if (nt_builder_error(builder))
 		return;
 
-	struct nt_view *labels[] = {s->title,	     s->subtitle,     s->path,
+	struct nt_view *labels[] = {s->title,	     s->subtitle,
 				    s->scope,	     s->heading,      s->range,
 				    s->choice_title, s->message_view, s->help};
 	for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++)

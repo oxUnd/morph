@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/rewind.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
@@ -18,6 +19,8 @@
 
 struct cli_rewind_picker {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
+	size_t selected;
 	cJSON *listing;
 	cJSON *preview;
 	struct nt_view *heading[4], *list, *files, *footer;
@@ -100,12 +103,12 @@ static int cli_rewind_row(void *data, struct nt_canvas *canvas, size_t item, siz
 
 static int cli_rewind_layout(struct cli_rewind_picker *page)
 {
-	struct nt_terminal_environment env;
-	int rc = nt_application_environment(nt_view_controller_application(&page->base), &env);
-	if (rc)
+	struct nt_view_rect rect = nt_view_content_rect(page->layout.body);
+	int h = rect.height, w = rect.width;
+	int rc = cli_page_layout_set_subpage(&page->layout, page->stage ? "restore" : "");
+	if (rc || h <= 0 || w <= 0)
 		return rc;
 
-	int h = env.rows, w = env.columns;
 	int first = page->stage && h >= 10 ? 4 : page->stage && h >= 8 ? 3 : h >= 6 ? 2 : 1;
 	const cJSON *files = cJSON_GetObjectItem(page->preview, "files");
 	char counts[96];
@@ -138,7 +141,7 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 		}
 	}
 
-	int rows = h - first - 1;
+	int rows = h - first;
 	if (rows < 1)
 		rows = 1;
 
@@ -151,7 +154,7 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 	if (!rc)
 		rc = nt_view_set_frame(page->list, (struct nt_view_rect){0, first, w, rows});
 
-	int space = h - first - rows - 1;
+	int space = h - first - rows;
 	if (!rc)
 		rc = nt_view_set_hidden(page->files, !page->stage || space <= 0);
 
@@ -180,14 +183,11 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 	if (!rc) {
 		char text[BUFSIZ];
 		const char *hint =
-			page->stage ? "Up/Down Select · Enter Restore · Left Back · Esc Cancel"
+			page->stage ? "Up/Down Select · Enter Restore · Esc Back"
 				    : "Up/Down Select · Enter Preview · Esc Cancel";
 		cli_rewind_clip(text, sizeof(text), hint, w);
 		rc = nt_label_set_text(page->footer, text);
 	}
-
-	if (!rc)
-		rc = nt_view_set_frame(page->footer, (struct nt_view_rect){0, h - 1, w, 1});
 
 	return rc;
 }
@@ -221,6 +221,7 @@ static int cli_rewind_activate(void *data, const struct nt_view_event *event)
 
 	const cJSON *entry =
 		cJSON_GetArrayItem(cJSON_GetObjectItem(page->listing, "checkpoints"), (int)index);
+	page->selected = index;
 	page->id = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id"));
 	cJSON_DeleteOwner(&page->preview);
 	struct cli_application *ctx = cli_application_from_controller(&page->base);
@@ -239,10 +240,27 @@ static int cli_rewind_activate(void *data, const struct nt_view_event *event)
 						: 1);
 }
 
+static int cli_rewind_back(void *data)
+{
+	struct cli_rewind_picker *page = data;
+	page->stage = 0;
+	page->error[0] = '\0';
+	int rc = cli_rewind_choices(page, page->selected);
+	return rc ? rc : nt_view_focus(page->list);
+}
+
+static int cli_rewind_size(void *data, const struct nt_view_event *event)
+{
+	struct cli_rewind_picker *page = data;
+	return event->target == page->layout.body ? cli_rewind_layout(page) : 0;
+}
+
 static void cli_rewind_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
 	struct cli_rewind_picker *page = (struct cli_rewind_picker *)controller;
-	struct nt_view *root = nt_view_add(builder, NULL, &nt_view_base_class, NULL);
+	cli_page_layout_build(builder, &page->layout, "rewind", &nt_view_base_class,
+			      cli_rewind_back, page);
+	struct nt_view *root = page->layout.body;
 	const struct nt_view_options heading = cli_panel_heading(NT_AUTO);
 	const struct nt_view_options hint = cli_panel_hint(NT_AUTO);
 	for (int i = 0; i < 4; i++)
@@ -250,7 +268,7 @@ static void cli_rewind_build(struct nt_view_controller *controller, struct nt_bu
 
 	page->list = nt_list_view_add(builder, root, NULL, 0, 0, NULL);
 	page->files = nt_text_view_add(builder, root, "", NULL);
-	page->footer = nt_label_add(builder, root, "", &hint);
+	page->footer = nt_label_add(builder, page->layout.footer, "", &hint);
 	if (nt_builder_error(builder))
 		return;
 
@@ -259,26 +277,23 @@ static void cli_rewind_build(struct nt_view_controller *controller, struct nt_bu
 	if (!rc)
 		rc = nt_list_view_set_navigation(page->list, NT_LIST_VIEW_VIM | NT_LIST_VIEW_PAGED);
 
-	if (!rc && !nt_view_on(page->list, NT_VIEW_EVENT_ACTIVATE, cli_rewind_activate, page))
+	if (!rc && (!nt_view_on(page->list, NT_VIEW_EVENT_ACTIVATE, cli_rewind_activate, page) ||
+		    !nt_view_on(root, NT_VIEW_EVENT_SIZE_CHANGED, cli_rewind_size, page)))
 		rc = NB_ERR_NOMEM;
 
 	nt_builder_fail(builder, rc ? rc : cli_rewind_choices(page, 0));
+	nt_builder_fail(builder, nt_view_focus(page->list));
 }
 
 static int cli_rewind_event(struct nt_view_controller *controller, const struct nt_event *event)
 {
 	struct cli_rewind_picker *page = (struct cli_rewind_picker *)controller;
-	if (event->type == NT_EVENT_RESIZE)
-		return cli_rewind_layout(page);
-
 	if (event->type != NT_EVENT_KEY || event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return 0;
 
-	if (event->key == NT_KEY_LEFT && page->stage) {
-		page->stage = 0;
-		page->error[0] = '\0';
-		return cli_rewind_choices(page, 0);
-	}
+	if ((event->key == NT_KEY_LEFT || event->key == 27 || event->key == NT_KEY_ESCAPE) &&
+	    page->stage)
+		return cli_rewind_back(page);
 
 	if (event->key == 'q' || event->key == 27 || event->key == NT_KEY_ESCAPE ||
 	    event->key == 3 || event->key == 4 || event->key == NT_KEY_LEFT)

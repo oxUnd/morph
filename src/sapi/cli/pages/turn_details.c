@@ -2,6 +2,7 @@
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/components/report.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/panel.h"
@@ -20,6 +21,7 @@
 
 struct cli_turn_details {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	struct nt_view *counter, *scroll;
 	struct cli_report *body;
 	const struct cli_transcript_model *model;
@@ -71,8 +73,10 @@ static void cli_turn_details_build(struct nt_view_controller *controller,
 {
 	struct cli_turn_details *page = (struct cli_turn_details *)controller;
 	struct cli_application *ctx = cli_application_from_controller(controller);
-	struct nt_view *root = nt_stack_view_add(builder, NULL, NT_STACK_VIEW_VERTICAL, 0, NULL);
-	const struct nt_view_options header = {.padding = {.left = 2, .bottom = 1}};
+	cli_page_layout_build(builder, &page->layout, "turn details", &nt_stack_view_class,
+			      NULL, NULL);
+	struct nt_view *root = page->layout.body;
+	const struct nt_view_options header = {.padding = {.bottom = 1}};
 	struct nt_view *heading =
 		nt_stack_view_add(builder, root, NT_STACK_VIEW_HORIZONTAL, 0, &header);
 	struct nt_view_options title = {0}, counter = {0};
@@ -92,9 +96,9 @@ static void cli_turn_details_build(struct nt_view_controller *controller,
 		cli_report_add(builder, page->scroll, &cli_report_class, &document_options,
 			       cli_output_color_enabled(ctx), cli_turn_details_document_format);
 
-	const struct nt_view_options footer = {.margin = {.top = 1},
-					       .padding = {.left = 2, .right = 1}};
-	nt_label_add(builder, root, "Ctrl+T / Esc back · PgUp/PgDn scroll · End follow", &footer);
+	const struct nt_view_options footer = cli_panel_hint(1);
+	nt_label_add(builder, page->layout.footer,
+		     "Ctrl+T / Esc back · PgUp/PgDn scroll · End follow", &footer);
 }
 
 static int cli_turn_details_event(struct nt_view_controller *controller,

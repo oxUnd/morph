@@ -22,7 +22,7 @@ static void browser_fixture_close(FILE **file)
 static void browser_fixture_load(struct nt_view_controller *controller, struct nt_builder *builder)
 {
 	struct browser_fixture *fixture = controller->data;
-	fixture->view = cli_agents_browser_add(builder, NULL);
+	fixture->view = cli_agents_browser_add(builder, NULL, NULL);
 	nt_builder_fail(builder, cli_agents_browser_sync(fixture->view, fixture->state,
 							 fixture->data, fixture->styled));
 }

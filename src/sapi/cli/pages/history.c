@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/history.h"
+#include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
@@ -24,6 +25,7 @@ enum cli_history_mode { HISTORY_LIST, HISTORY_SEARCH, HISTORY_ENTRY, HISTORY_REQ
 
 struct cli_history_page {
 	struct nt_view_controller base;
+	struct cli_page_layout layout;
 	struct nt_component_state *mode, *width, *small;
 	struct nt_view *count, *budget, *scope, *filters, *heading, *list, *query, *document_view,
 		*range;
@@ -451,9 +453,9 @@ static int cli_history_empty_hidden(void *data, struct nt_value *value)
 
 static int cli_history_title(void *data, struct nt_value *value)
 {
-	return nt_value_set_string(value, nt_component_state_get_int(data) == HISTORY_REQUEST
-						  ? "  morph / history / last submitted input"
-						  : "  morph / history / entry details");
+	int64_t mode = nt_component_state_get_int(data);
+	return nt_value_set_string(value, mode == HISTORY_REQUEST ? "last submitted input"
+				       : mode == HISTORY_ENTRY ? "entry details" : "");
 }
 
 static int cli_history_help(void *data, struct nt_value *value)
@@ -488,7 +490,7 @@ static int cli_history_focus(struct cli_history_page *page)
 	return nt_view_focus(mode == HISTORY_SEARCH  ? page->query
 			     : mode >= HISTORY_ENTRY ? page->document_view
 			     : page->matches.len     ? page->list
-						     : root);
+						     : page->layout.body);
 }
 
 static int cli_history_set_mode(struct cli_history_page *page, enum cli_history_mode mode)
@@ -586,7 +588,7 @@ static int cli_history_key(void *data, const struct nt_view_event *key)
 static int cli_history_size(void *data, const struct nt_view_event *event)
 {
 	struct cli_history_page *page = data;
-	if (event->target != nt_view_controller_root_view(&page->base))
+	if (event->target != page->layout.body)
 		return 0;
 
 	int rc = nt_component_state_set_int(page->width, event->rect.width);
@@ -600,10 +602,17 @@ static int cli_history_size(void *data, const struct nt_view_event *event)
 	return rc ? rc : cli_history_summary(page);
 }
 
+static int cli_history_back(void *data)
+{
+	return cli_history_set_mode(data, HISTORY_LIST);
+}
+
 static void cli_history_build(struct nt_view_controller *controller, struct nt_builder *builder)
 {
 	struct cli_history_page *page = (struct cli_history_page *)controller;
-	struct nt_view *root = nt_column_add(builder, NULL, 0, NULL);
+	cli_page_layout_build(builder, &page->layout, "history", &nt_stack_view_class,
+			      cli_history_back, page);
+	struct nt_view *root = page->layout.body;
 	if (!root)
 		return;
 
@@ -617,11 +626,9 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	nt_builder_fail(builder, nt_view_set_focusable(root, 1));
 	const struct nt_view_options fill = {.grow = 1};
 	const struct nt_view_options dim = cli_panel_hint(1);
-	const struct nt_view_options bold = cli_panel_heading(1);
 	struct nt_view *narrow = nt_label_add(builder, root, "Widen terminal · Esc back", &dim);
 	struct nt_view *overview = nt_column_add(builder, root, 0, &fill);
 	struct nt_view *reader = nt_column_add(builder, root, 0, &fill);
-	nt_label_add(builder, overview, "  morph / history", &bold);
 	page->count = nt_label_add(builder, overview, "", &dim);
 	nt_label_add(builder, overview, "", &dim);
 	page->budget = nt_label_add(builder, overview, "", &dim);
@@ -636,15 +643,13 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	page->query = nt_text_field_add(
 		builder, overview, &(struct nt_text_field_options){.limit = CLI_HISTORY_QUERY_MAX},
 		&dim);
-	struct nt_view *help = nt_label_add(builder, overview, "", &dim);
-	struct nt_view *title = nt_label_add(builder, reader, "", &bold);
-	nt_label_add(builder, reader, "", &dim);
+	struct nt_view *help = nt_label_add(builder, page->layout.footer, "", &dim);
 	page->document_view = nt_document_view_add(
 		builder, reader, "", NULL,
 		&(struct nt_view_options){.grow = 1, .padding = {.left = 2, .right = 2}});
 	nt_label_add(builder, reader, "", &dim);
 	page->range = nt_label_add(builder, reader, "", &dim);
-	struct nt_view *detail_help = nt_label_add(builder, reader, "", &dim);
+	struct nt_view *detail_help = nt_label_add(builder, page->layout.footer, "", &dim);
 	if (nt_builder_error(builder))
 		return;
 
@@ -657,8 +662,11 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 						      cli_history_overview_hidden, page));
 	nt_builder_fail(builder, nt_view_bind_compute(reader, NT_PROP_HIDDEN,
 						      cli_history_reader_hidden, page));
-	nt_builder_fail(builder,
-			nt_view_bind_compute(title, NT_PROP_TEXT, cli_history_title, page->mode));
+	cli_page_layout_bind_subpage(builder, &page->layout, cli_history_title, page->mode);
+	nt_builder_fail(builder, nt_view_bind_compute(help, NT_PROP_HIDDEN,
+						      cli_history_overview_hidden, page));
+	nt_builder_fail(builder, nt_view_bind_compute(detail_help, NT_PROP_HIDDEN,
+						      cli_history_reader_hidden, page));
 	nt_builder_fail(builder,
 			nt_view_bind_compute(help, NT_PROP_TEXT, cli_history_help, page->width));
 	nt_builder_fail(builder, nt_view_bind_compute(detail_help, NT_PROP_TEXT,

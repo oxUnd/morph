@@ -34,7 +34,7 @@ def check_memory_panel(terminal, directory):
         terminal.stream = pyte.Stream(terminal.screen)
         terminal.send('/memory\r')
         menu = terminal.snapshot(f'memory list at {width} columns')
-        terminal.assert_panel_heading('morph / memory')
+        terminal.assert_navigation('memory')
         assert 'morph / memory' in menu and 'morph / memory /' not in menu, menu
         assert 'Saved facts (1)' in menu and 'Reusable tips (1)' in menu, menu
         assert 'Enter open' in menu and '1-8' not in menu, menu
@@ -44,7 +44,7 @@ def check_memory_panel(terminal, directory):
         assert all(terminal.screen.buffer[selected][x].bold and
                    not terminal.screen.buffer[selected][x].reverse and
                    terminal.screen.buffer[selected][x].fg == '00cdcd'
-                   for x in range(1, width - 1)), menu
+                   for x in range(2, width - 2)), menu
         terminal.send('3')
         assert 'morph / memory /' not in terminal.snapshot('digits do not open sections')
         terminal.send('\r')

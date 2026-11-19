@@ -88,9 +88,9 @@ def run(driver, port, columns):
                 visible = '\n'.join(stable_rows(terminal))
                 assert visible.count('Waiting for agents') == 1, visible
             terminal.send('/agents\r')
-            wait_for(terminal, lambda: 'Agents (1)' in terminal.screen.display[0])
+            wait_for(terminal, lambda: any('Agents (1)' in row for row in terminal.screen.display))
             assert hasattr(terminal.screen, '_main_screen')
-            assert 'Esc' in terminal.screen.display[-1]
+            assert 'Esc' in terminal.screen.display[-2]
             assert 'exercise collaboration' not in '\n'.join(terminal.screen.display)
             terminal.send('\t\t\t')
             wait_for(terminal, lambda: 'No matching agents.' in '\n'.join(terminal.screen.display))
@@ -102,44 +102,60 @@ def run(driver, port, columns):
             terminal.send('\x1b[B')
             wait_for(terminal, lambda: 'CHILD_ACTIVITY_TASK' in '\n'.join(terminal.screen.display))
             terminal.send('\x1b[C\x1b[6~')
-            wait_for(terminal, lambda: 'scroll details' in terminal.screen.display[-1])
-            assert any(row.startswith('> ') and '/root/worker' in row
+            wait_for(terminal, lambda: 'scroll details' in terminal.screen.display[-2])
+            assert any(row.lstrip().startswith('> ') and '/root/worker' in row
                        for row in terminal.screen.display)
             terminal.send('\x1b[D?')
-            wait_for(terminal, lambda: 'Shift+Tab' in terminal.screen.display[-1])
+            wait_for(terminal, lambda: 'Shift+Tab' in terminal.screen.display[-2])
             terminal.send('?')
             for width in (60, 120, 80, columns):
                 terminal.child.setwinsize(24, width)
                 terminal.screen.resize(lines=24, columns=width)
                 terminal.pump(.2)
                 rows = stable_rows(terminal)
-                assert 'Agents (1)' in rows[0], '\n'.join(rows)
-                selected = next(i for i, row in enumerate(rows) if row.startswith('> '))
+                terminal.assert_navigation('agents')
+                assert any('Agents (1)' in row for row in rows), '\n'.join(rows)
+                selected = next(i for i, row in enumerate(rows) if row.lstrip().startswith('> '))
                 assert '/root/worker' in rows[selected]
-                selected_end = (width - 1) * 3 // 5 - 1 if width >= 101 else width - 2
+                selected_end = 2 + (width - 4) * 3 // 5 - 1 if width >= 104 else width - 3
                 assert terminal.screen.buffer[selected][selected_end].bold
                 assert all(terminal.screen.buffer[row][column].bg == 'default'
                            and not terminal.screen.buffer[row][column].reverse
                            for row in range(terminal.screen.lines)
                            for column in range(terminal.screen.columns)), '\n'.join(rows)
-                if width >= 101:
+                if width >= 104:
                     assert 'Task details' in '\n'.join(rows), '\n'.join(rows)
                     assert not terminal.screen.buffer[selected][width - 2].bold
-                assert 'Esc' in rows[-1]
-            for height in (8, 4, 40, 24):
+                assert 'Esc' in rows[-2]
+            for height in (14, 10, 40, 24):
                 terminal.child.setwinsize(height, columns)
                 terminal.screen.resize(lines=height, columns=columns)
                 terminal.pump(.2)
                 rows = stable_rows(terminal)
-                assert 'Agents (1)' in rows[0], '\n'.join(rows)
-                assert any(row.startswith('> ') and '/root/worker' in row for row in rows), '\n'.join(rows)
-                assert 'Esc' in rows[-1], '\n'.join(rows)
+                terminal.assert_navigation('agents')
+                assert any('Agents (1)' in row for row in rows), '\n'.join(rows)
+                assert any(row.lstrip().startswith('> ') and '/root/worker' in row for row in rows), '\n'.join(rows)
+                assert 'Esc' in rows[-2], '\n'.join(rows)
+            for height in (4, 8):
+                terminal.child.setwinsize(height, columns)
+                terminal.screen.resize(lines=height, columns=columns)
+                terminal.pump(.2)
+                assert terminal.child.isalive(), terminal.raw[-2000:]
+                assert 'morph / agents' in '\n'.join(terminal.screen.display)
+            terminal.child.setwinsize(24, columns)
+            terminal.screen.resize(lines=24, columns=columns)
+            terminal.pump(.2)
+            terminal.assert_navigation('agents')
+            assert any(row.lstrip().startswith('> ') and '/root/worker' in row
+                       for row in terminal.screen.display)
             assert not any(line.startswith('» /agents') for line in terminal.screen.display)
             switches = terminal.raw.count('\x1b[?1049h')
             terminal.send('\r')
-            wait_for(terminal, lambda: 'Agents · /root/worker' in terminal.screen.display[0])
+            wait_for(terminal, lambda: 'morph / agents / worker' in '\n'.join(terminal.screen.display))
             assert terminal.raw.count('\x1b[?1049h') == switches, 'nested alternate screen'
             terminal.send('\x1b')
+            terminal.assert_navigation('agents')
+            terminal.click_navigation(0)
             wait_for(terminal, lambda: chat_visible(terminal))
             terminal.stream = StableComposerStream(terminal)
             terminal.send('keep my draft')
@@ -176,10 +192,12 @@ def run(driver, port, columns):
             wait_for(terminal, lambda: not any('Subagents' in row
                      for row in terminal.screen.display))
             terminal.send('/agents /root/worker\r')
-            wait_for(terminal, lambda: 'Agents · /root/worker' in terminal.screen.display[0])
+            wait_for(terminal, lambda: 'morph / agents / worker' in '\n'.join(terminal.screen.display))
             assert 'CHILD_VERIFIED_RESULT' in '\n'.join(stable_rows(terminal))
             assert hasattr(terminal.screen, '_main_screen')
-            terminal.send('\x1b')
+            terminal.click_navigation(1)
+            terminal.assert_navigation('agents')
+            terminal.click_navigation(0)
             wait_for(terminal, lambda: chat_visible(terminal))
             assert sum(line.startswith('» ') for line in terminal.screen.display) == 1
             if columns == 120:
