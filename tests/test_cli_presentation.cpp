@@ -2953,6 +2953,24 @@ TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
 		unsetenv("COLUMNS");
 }
 
+TEST(CliOutputStreamTest, SplitControlsAndUtf8RemainSafeAndFinalLinesAreSeparated)
+{
+	struct cli_application ctx = {};
+	struct cli_output_stream stream = {};
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_output_capture_begin(&ctx, &output), 0);
+	std::string input = "\033[2Jout\n\033]0;hidden\007err\n中文\nTAIL";
+
+	for (char byte : input)
+		EXPECT_EQ(cli_output_stream_write(&ctx, &stream, &byte, 1, 0), 0);
+
+	EXPECT_EQ(cli_output_stream_write(&ctx, &stream, "", 0, 1), 0);
+	EXPECT_STREQ(nb_buf_cstr(&output), "out\nerr\n中文\nTAIL\n");
+	EXPECT_EQ(cli_output_stream_write(&ctx, &stream, "", 0, 1), 0);
+	EXPECT_STREQ(nb_buf_cstr(&output), "out\nerr\n中文\nTAIL\n");
+	cli_output_capture_end(&ctx);
+}
+
 TEST(CliWelcomeTest, UsesSharedPurpleAccentWithoutCyan)
 {
 	struct cli_application context = {};

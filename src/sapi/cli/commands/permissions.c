@@ -152,8 +152,8 @@ static int cli_permissions_confirm_clear(struct cli_application *ctx, int all_pr
 				all_projects ? CLI_CONFIRM_PROMPT_CLEAR_ALL_PERMISSIONS
 					     : CLI_CONFIRM_PROMPT_CLEAR_PROJECT_PERMISSIONS,
 				NULL);
-	answer = all_projects ? cli_input_confirm_phrase("clear all")
-			      : cli_input_confirm_yes_no();
+	answer = all_projects ? cli_input_confirm_phrase(ctx, "clear all")
+			      : cli_input_confirm_yes_no(ctx);
 	if (answer == CLI_INPUT_CONFIRM_NO_TERMINAL || answer == CLI_INPUT_CONFIRM_READ_ERROR)
 		cli_confirm_prompt_end(ctx);
 

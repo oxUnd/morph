@@ -30,6 +30,14 @@ int cli_output_block_append(nb_buf *out, const char *text, struct nt_view_insets
 			    int *trailing_newlines);
 int cli_output_print_untrusted(struct cli_application *ctx, const char *text,
 			       enum morph_terminal_text_mode mode);
+/* Zero-initialize one state per byte stream. Finish flushes pending UTF-8 and
+ * controls and terminates a partial final line before the next receipt. */
+struct cli_output_stream {
+	struct morph_terminal_sanitizer sanitizer;
+	int unterminated;
+};
+int cli_output_stream_write(struct cli_application *ctx, struct cli_output_stream *stream,
+			    const char *bytes, size_t length, int finish);
 int cli_output_capture_begin(struct cli_application *ctx, nb_buf *output);
 int cli_output_capture_styled_begin(struct cli_application *ctx, nb_buf *output);
 void cli_output_capture_end(struct cli_application *ctx);

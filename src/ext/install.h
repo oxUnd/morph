@@ -27,6 +27,12 @@ struct ext_install_options {
 	int yes;
 	FILE *in;
 	FILE *out;
+	/* Optional frontend adapters. Output receives arbitrary byte chunks from
+	 * both child streams; a negative result aborts installation. Confirmation
+	 * returns positive to accept, zero to decline, or a negative status. */
+	int (*output)(const char *bytes, size_t length, void *user_data);
+	int (*confirm)(const char *name, const char *command, void *user_data);
+	void *user_data;
 };
 
 struct ext_install_result {

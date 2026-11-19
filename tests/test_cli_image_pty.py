@@ -25,7 +25,10 @@ def main():
         binaries.mkdir()
         # Exercise the production clipboard pipeline without touching the user's clipboard.
         scripts = {'pbpaste': 'exit 1',
-                   'osascript': 'cp "$MORPH_PTY_IMAGE" "$3"',
+                   'osascript': 'if read answer; then exit 9; fi; '
+                                'cp "$MORPH_PTY_IMAGE" "$3"; '
+                                'printf "\\033[2JCLIPBOARD_STDOUT"; '
+                                'printf "\\033[HCLIPBOARD_STDERR" >&2',
                    'sips': 'cp "$MORPH_PTY_IMAGE" "$6"',
                    'wl-paste': 'case "$*" in *image/png*) cat "$MORPH_PTY_IMAGE";; '
                                '*) exit 1;; esac',
@@ -50,6 +53,8 @@ def main():
                 terminal.pump(.05)
             screen = terminal.snapshot('two clipboard image chips')
             assert '[IMAGE#1][IMAGE#2]' in screen, screen
+            assert 'CLIPBOARD_STDOUT' not in terminal.raw
+            assert 'CLIPBOARD_STDERR' not in terminal.raw
             chip_backgrounds = set()
             for y, row in enumerate(terminal.screen.display):
                 for label in ('[IMAGE#1]', '[IMAGE#2]'):

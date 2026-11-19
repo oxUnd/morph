@@ -261,7 +261,7 @@ static int cli_sync_confirm_db_replace(struct cli_application *ctx, const char *
 	}
 
 	cli_confirm_prompt_show(ctx, CLI_CONFIRM_PROMPT_REPLACE_DATABASE, path);
-	answer = cli_input_confirm_yes_no();
+	answer = cli_input_confirm_yes_no(ctx);
 	if (answer == CLI_INPUT_CONFIRM_NO_TERMINAL)
 		cli_confirm_prompt_end(ctx);
 

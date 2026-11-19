@@ -479,3 +479,31 @@ int cli_output_print_untrusted(struct cli_application *ctx, const char *text,
 
 	return 0;
 }
+
+int cli_output_stream_write(struct cli_application *ctx, struct cli_output_stream *stream,
+			    const char *bytes, size_t length, int finish)
+{
+	nb_buf safe NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = morph_terminal_sanitize_feed(&stream->sanitizer, &safe, bytes, length, finish);
+
+	if (rc)
+		return rc;
+
+	if (safe.len)
+		stream->unterminated = safe.ptr[safe.len - 1] != '\n';
+
+	if (finish && stream->unterminated) {
+		if (!nb_buf_append_char(&safe, '\n'))
+			return NB_ERR_NOMEM;
+
+		stream->unterminated = 0;
+	}
+
+	if (!safe.len)
+		return 0;
+
+	if (cli_output_fputs(ctx, nb_buf_cstr(&safe), stdout) == EOF)
+		return NB_ERR_IO;
+
+	return 0;
+}

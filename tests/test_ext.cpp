@@ -355,7 +355,8 @@ TEST(ExtInstallTest, InstallsTaggedMonorepoPackageWithBuild)
 		   "entry = \"bin/demo\"\n"
 		   "fronts = [\"cli\"]\n"
 		   "[build]\n"
-		   "command = \"mkdir -p bin && cp run.sh bin/demo && chmod +x bin/demo\"\n");
+		   "command = \"printf build-stdout; printf build-stderr >&2; "
+		   "mkdir -p bin && cp run.sh bin/demo && chmod +x bin/demo\"\n");
 	write_text(pkg_dir + "/run.sh", "#!/bin/sh\necho demo\n");
 
 	ASSERT_EQ(test_cmd("git init " + src_dir + " >/dev/null"), 0);
@@ -374,15 +375,60 @@ TEST(ExtInstallTest, InstallsTaggedMonorepoPackageWithBuild)
 	memset(&opts, 0, sizeof(opts));
 	opts.install_dir = install_dir.c_str();
 	opts.github_base_url = base_url.c_str();
-	opts.yes = 1;
+	struct InstallCallbacks {
+		std::string output;
+		int confirmations = 0;
+		int confirmed = 1;
+		int output_error = 0;
+	} callbacks;
+	opts.output = [](const char *bytes, size_t length, void *opaque) {
+		auto *state = static_cast<InstallCallbacks *>(opaque);
+		state->output.append(bytes, length);
+		return state->output_error;
+	};
+	opts.confirm = [](const char *name, const char *command, void *opaque) {
+		auto *state = static_cast<InstallCallbacks *>(opaque);
+		EXPECT_STREQ(name, "demo-install");
+		EXPECT_NE(strstr(command, "cp run.sh"), nullptr);
+		state->confirmations++;
+		return state->confirmed;
+	};
+	opts.user_data = &callbacks;
 
 	struct ext_install_result res;
-	ASSERT_EQ(ext_install_source(NULL, "github:owner/repo@v0.1.0//packages/demo", &opts, &res),
-		  0);
+	testing::internal::CaptureStdout();
+	testing::internal::CaptureStderr();
+	int rc = ext_install_source(NULL, "github:owner/repo@v0.1.0//packages/demo", &opts, &res);
+	std::string leaked_output = testing::internal::GetCapturedStdout();
+	std::string leaked_errors = testing::internal::GetCapturedStderr();
+	ASSERT_EQ(rc, 0);
+	EXPECT_TRUE(leaked_output.empty()) << leaked_output;
+	EXPECT_TRUE(leaked_errors.empty()) << leaked_errors;
+	EXPECT_EQ(callbacks.confirmations, 1);
+	EXPECT_NE(callbacks.output.find("Initialized empty Git repository"), std::string::npos);
+	EXPECT_NE(callbacks.output.find("build-stdout"), std::string::npos);
+	EXPECT_NE(callbacks.output.find("build-stderr"), std::string::npos);
 	EXPECT_STREQ(res.name, "demo-install");
 	EXPECT_EQ(strlen(res.resolved_ref), 40u);
 	EXPECT_TRUE(nb_file_exists((install_dir + "/demo-install/bin/demo").c_str()));
 	EXPECT_FALSE(nb_file_exists((install_dir + "/demo-install/.git").c_str()));
+
+	callbacks.output.clear();
+	callbacks.confirmed = 0;
+	std::string declined_dir = root_dir + "/declined";
+	opts.install_dir = declined_dir.c_str();
+	EXPECT_EQ(ext_install_source(NULL, "github:owner/repo@v0.1.0//packages/demo", &opts, &res),
+		  NB_ERR_CANCELLED);
+	EXPECT_EQ(callbacks.confirmations, 2);
+	EXPECT_EQ(callbacks.output.find("build-stdout"), std::string::npos);
+	EXPECT_FALSE(nb_file_exists(declined_dir.c_str()));
+
+	callbacks.output_error = NB_ERR_IO;
+	opts.yes = 1;
+	EXPECT_EQ(ext_install_source(NULL, "github:owner/repo@v0.1.0//packages/demo", &opts, &res),
+		  NB_ERR_IO);
+	EXPECT_EQ(callbacks.confirmations, 2);
+	EXPECT_FALSE(nb_file_exists(declined_dir.c_str()));
 
 	ASSERT_EQ(test_cmd("rm -rf " + root_dir), 0);
 }

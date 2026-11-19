@@ -1,6 +1,8 @@
 #ifndef MORPH_CLI_ADAPTERS_INPUT_CONFIRM_H
 #define MORPH_CLI_ADAPTERS_INPUT_CONFIRM_H
 
+struct cli_application;
+
 enum cli_input_confirm_result {
 	CLI_INPUT_CONFIRM_DECLINED = 0,
 	CLI_INPUT_CONFIRM_ACCEPTED = 1,
@@ -8,8 +10,9 @@ enum cli_input_confirm_result {
 	CLI_INPUT_CONFIRM_READ_ERROR = 3,
 };
 
-/* Reads one answer from the controlling terminal. */
-enum cli_input_confirm_result cli_input_confirm_yes_no(void);
-enum cli_input_confirm_result cli_input_confirm_phrase(const char *phrase);
+/* Active chat uses its native prompt; plain output reads the controlling terminal. */
+enum cli_input_confirm_result cli_input_confirm_yes_no(struct cli_application *ctx);
+enum cli_input_confirm_result cli_input_confirm_phrase(struct cli_application *ctx,
+						      const char *phrase);
 
 #endif

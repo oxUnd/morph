@@ -172,17 +172,26 @@ int video_play(struct nb_log *logger, const char *path, const char *mpv_args)
 		.argv = (const char *const *)argv,
 		.search_path = true,
 		.close_fds = true,
-		.stdin_mode = NB_PROCESS_INHERIT,
-		.stdout_mode = NB_PROCESS_INHERIT,
-		.stderr_mode = NB_PROCESS_INHERIT,
+		.new_group = true,
+		.stdin_mode = NB_PROCESS_NULL,
+		.stdout_mode = NB_PROCESS_NULL,
+		.stderr_mode = NB_PROCESS_PIPE,
 	};
 	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
 	int rc = nb_process_spawn(&options, &child, NULL);
 	free(buf);
 	if (rc != NB_OK)
 		return rc;
+
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_process_exchange_options exchange = {.timeout_ms = -1, .max_output = BUFSIZ};
 	int code = 0;
-	rc = nb_process_wait(child, -1, &code, NULL, NULL);
+
+	rc = nb_process_exchange(child, "", 0, &exchange, &output, &errors, &code, NULL);
+	if (errors.len)
+		nb_log_write(logger, NB_LOG_DEBUG, "Video player diagnostics: %s", nb_buf_cstr(&errors));
+
 	if (rc == NB_OK && code != 0)
 		rc = code == 127 ? NB_ERR_NOT_FOUND : NB_ERR_IO;
 	return rc;

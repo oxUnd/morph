@@ -164,28 +164,52 @@ int ext_source_parse(const char *source, struct ext_source *out)
 	return 0;
 }
 
-static int run_cmd(char *const argv[], const char *cwd)
+static int run_cmd(char *const argv[], const char *cwd,
+		   const struct ext_install_options *opts)
 {
+	int captured = opts && opts->output;
 	nb_process_options options = {
 		.argv = (const char *const *)argv,
 		.cwd = cwd,
 		.search_path = true,
 		.close_fds = true,
-		.stdin_mode = NB_PROCESS_INHERIT,
-		.stdout_mode = NB_PROCESS_INHERIT,
-		.stderr_mode = NB_PROCESS_INHERIT,
+		.new_group = captured,
+		.stdin_mode = captured ? NB_PROCESS_NULL : NB_PROCESS_INHERIT,
+		.stdout_mode = captured ? NB_PROCESS_PIPE : NB_PROCESS_INHERIT,
+		.stderr_mode = captured ? NB_PROCESS_PIPE : NB_PROCESS_INHERIT,
+		.merge_stderr = captured,
 	};
 	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
 	int rc = nb_process_spawn(&options, &child, NULL);
 	if (rc != NB_OK)
 		return rc;
+
+	if (captured) {
+		nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
+		size_t length;
+
+		do {
+			nb_buf_clear(&output);
+			rc = nb_process_read(child, false, &output, BUFSIZ, -1, &length, NULL);
+			if (rc != NB_OK)
+				return rc;
+
+			if (length) {
+				rc = opts->output(output.ptr, output.len, opts->user_data);
+				if (rc < 0)
+					return rc;
+			}
+		} while (length);
+	}
+
 	int code = 0;
 	rc = nb_process_wait(child, -1, &code, NULL, NULL);
 	return rc != NB_OK ? rc : code == 0 ? NB_OK : MORPH_ERR_PROCESSING;
 }
 
 static int run_cmd_capture(char *const argv[], const char *cwd,
-			   char *dst, size_t dst_size)
+			   char *dst, size_t dst_size,
+			   const struct ext_install_options *opts)
 {
 	if (!dst || dst_size == 0)
 		return NB_ERR_INVAL;
@@ -197,7 +221,7 @@ static int run_cmd_capture(char *const argv[], const char *cwd,
 		.close_fds = true,
 		.new_group = true,
 		.stdin_mode = NB_PROCESS_NULL,
-		.stderr_mode = NB_PROCESS_INHERIT,
+		.stderr_mode = opts && opts->output ? NB_PROCESS_PIPE : NB_PROCESS_INHERIT,
 	};
 	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
 	int rc = nb_process_spawn(&options, &child, NULL);
@@ -205,14 +229,26 @@ static int run_cmd_capture(char *const argv[], const char *cwd,
 		return rc;
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
-	nb_process_exchange_options exchange = {.max_output = dst_size - 1};
+	bool truncated = false;
+	nb_process_exchange_options exchange = {.max_output = BUFSIZ,
+						 .stdout_truncated = &truncated};
 	int code = 0;
 	rc = nb_process_exchange(child, "", 0, &exchange, &output, &errors, &code, NULL);
+	if (opts && opts->output && errors.len) {
+		int output_rc = opts->output(errors.ptr, errors.len, opts->user_data);
+
+		if (output_rc < 0)
+			return output_rc;
+	}
+
 	if (rc != NB_OK)
 		return rc;
 	if (code != 0)
 		return MORPH_ERR_PROCESSING;
 	nb_str trimmed = nb_str_rtrim(nb_buf_str(&output));
+	if (truncated || trimmed.len >= dst_size)
+		return NB_ERR_TOO_BIG;
+
 	memcpy(dst, trimmed.ptr, trimmed.len);
 	dst[trimmed.len] = '\0';
 	return NB_OK;
@@ -220,7 +256,7 @@ static int run_cmd_capture(char *const argv[], const char *cwd,
 
 static int git_fetch_source(const struct ext_source *src, const char *repo_dir,
 			    const char *base_url, char *resolved_ref,
-			    size_t resolved_ref_size)
+			    size_t resolved_ref_size, const struct ext_install_options *opts)
 {
 	char url[PATH_MAX];
 	const char *base = base_url && base_url[0] ?
@@ -231,35 +267,35 @@ static int git_fetch_source(const struct ext_source *src, const char *repo_dir,
 		return NB_ERR_NAME_TOO_LONG;
 
 	char *init_argv[] = {"git", "init", (char *)repo_dir, NULL};
-	int rc = run_cmd(init_argv, NULL);
+	int rc = run_cmd(init_argv, NULL, opts);
 	if (rc < 0)
 		return rc;
 	char *remote_argv[] = {
 		"git", "-C", (char *)repo_dir, "remote", "add",
 		"origin", url, NULL
 	};
-	rc = run_cmd(remote_argv, NULL);
+	rc = run_cmd(remote_argv, NULL, opts);
 	if (rc < 0)
 		return rc;
 	char *fetch_argv[] = {
 		"git", "-C", (char *)repo_dir, "fetch", "--depth", "1",
 		"origin", (char *)src->ref, NULL
 	};
-	rc = run_cmd(fetch_argv, NULL);
+	rc = run_cmd(fetch_argv, NULL, opts);
 	if (rc < 0)
 		return rc;
 	char *checkout_argv[] = {
 		"git", "-C", (char *)repo_dir, "checkout", "--detach",
 		"FETCH_HEAD", NULL
 	};
-	rc = run_cmd(checkout_argv, NULL);
+	rc = run_cmd(checkout_argv, NULL, opts);
 	if (rc < 0)
 		return rc;
 	char *rev_argv[] = {
 		"git", "-C", (char *)repo_dir, "rev-parse", "HEAD", NULL
 	};
 	return run_cmd_capture(rev_argv, NULL, resolved_ref,
-			       resolved_ref_size);
+			       resolved_ref_size, opts);
 }
 
 static int find_manifest_path(const char *dir, char *dst, size_t dst_size)
@@ -301,6 +337,10 @@ static int prompt_confirm(const struct ext_install_options *opts,
 
 	if (opts && opts->yes)
 		return 1;
+
+	if (opts && opts->confirm)
+		return opts->confirm(m->name, m->build_command, opts->user_data);
+
 	fprintf(out, "Extension '%s' requires build:\n", m->name);
 	fprintf(out, "  %s\n", m->build_command);
 	fprintf(out, "Run build command? [y/N] ");
@@ -310,10 +350,11 @@ static int prompt_confirm(const struct ext_install_options *opts,
 	return answer[0] == 'y' || answer[0] == 'Y';
 }
 
-static int run_build_command(const char *package_dir, const char *command)
+static int run_build_command(const char *package_dir, const char *command,
+			     const struct ext_install_options *opts)
 {
 	char *argv[] = {"/bin/sh", "-c", (char *)command, NULL};
-	return run_cmd(argv, package_dir);
+	return run_cmd(argv, package_dir, opts);
 }
 
 static nb_status ext_package_copy_filter(const char *source, const char *destination,
@@ -368,7 +409,7 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 	if (rc < 0)
 		return rc;
 	rc = git_fetch_source(src, repo_dir, opts ? opts->github_base_url : NULL,
-			      resolved_ref, sizeof(resolved_ref));
+			      resolved_ref, sizeof(resolved_ref), opts);
 	if (rc < 0)
 		return rc;
 
@@ -400,11 +441,12 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 	}
 
 	if (m.build_command[0]) {
-		if (!prompt_confirm(opts, &m)) {
-			rc = NB_ERR_CANCELLED;
-			return rc;
-		}
-		rc = run_build_command(package_dir, m.build_command);
+		int confirmed = prompt_confirm(opts, &m);
+
+		if (confirmed <= 0)
+			return confirmed < 0 ? confirmed : NB_ERR_CANCELLED;
+
+		rc = run_build_command(package_dir, m.build_command, opts);
 		if (rc < 0)
 			return rc;
 	}

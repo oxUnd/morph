@@ -11,6 +11,76 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/presentation/list.h"
+#include "sapi/cli/pages/question.h"
+#include "sapi/cli/adapters/protocol/interaction.h"
+#include "cJSON.h"
+#include <nb/buf.h>
+#include <nb/cleanup.h>
+
+struct cli_ext_install {
+	struct cli_application *ctx;
+	struct cli_output_stream stream;
+};
+
+struct cli_ext_answers {
+	char **items;
+	int count;
+};
+
+static void cli_ext_answers_cleanup(struct cli_ext_answers *answers)
+{
+	for (int i = 0; i < answers->count; i++)
+		free(answers->items[i]);
+
+	free(answers->items);
+}
+
+static int cli_ext_install_output(const char *bytes, size_t length, void *user_data)
+{
+	struct cli_ext_install *install = user_data;
+	int rc = cli_output_stream_write(install->ctx, &install->stream, bytes, length, 0);
+
+	return rc ? rc : cli_application_flush_output(install->ctx);
+}
+
+static int cli_ext_install_confirm(const char *name, const char *command, void *user_data)
+{
+	struct cli_ext_install *install = user_data;
+	struct cli_application *ctx = install->ctx;
+	int rc = cli_output_stream_write(ctx, &install->stream, "", 0, 1);
+
+	if (rc)
+		return rc;
+
+	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		int confirmed = 0;
+
+		if (!request || !cJSON_AddStringToObject(request, "action", "build_extension") ||
+		    !cJSON_AddStringToObject(request, "name", name) ||
+		    !cJSON_AddStringToObject(request, "command", command))
+			return NB_ERR_NOMEM;
+
+		rc = cli_interaction_confirm(ctx, "command_confirmation", request, &confirmed);
+		return rc ? rc : confirmed;
+	}
+
+	nb_buf question NB_CLEANUP(nb_buf_cleanup) = {0};
+	const char *choices[] = {"Cancel", "Run build"};
+	struct cli_ext_answers answers NB_CLEANUP(cli_ext_answers_cleanup) = {0};
+	int confirmed = 0;
+
+	if (!nb_buf_printf(&question, "Extension '%s' requires build: %s. Run build command?",
+			   name, command))
+		return NB_ERR_NOMEM;
+
+	rc = cli_question_callback(nb_buf_cstr(&question), choices, 2, "single", 1, 1, NULL,
+				   &answers.items, &answers.count, ctx);
+	if (!rc && answers.count == 1)
+		confirmed = strcmp(answers.items[0], "Run build") == 0;
+
+	return rc ? rc : confirmed;
+}
 
 static int cli_ext_origin_rank(enum tool_origin origin)
 {
@@ -261,13 +331,20 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 
 		struct ext_install_options opts;
 		memset(&opts, 0, sizeof(opts));
+		struct cli_ext_install install = {.ctx = ctx};
 		const struct config *config = runtime_config_borrow(ctx->runtime);
 		opts.install_dir = config->ext.dir[0] ? config->ext.dir : "~/.morph/exts";
 		opts.yes = yes;
-		opts.in = stdin;
-		opts.out = stdout;
+		opts.output = cli_ext_install_output;
+		opts.confirm = cli_ext_install_confirm;
+		opts.user_data = &install;
 		struct ext_install_result res;
 		int rc = ext_install_source(ctx ? ctx->logger : NULL, source, &opts, &res);
+		int output_rc = cli_output_stream_write(ctx, &install.stream, "", 0, 1);
+
+		if (!rc)
+			rc = output_rc;
+
 		if (rc < 0) {
 			CMD_ERROR(ctx, "ext install failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));

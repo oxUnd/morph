@@ -238,6 +238,18 @@ struct nt_application *cli_application_tui_borrow(struct cli_application *ctx)
 	return ctx && ctx->base.state ? &ctx->base : NULL;
 }
 
+int cli_application_flush_output(struct cli_application *ctx)
+{
+	if (ctx && ctx->output.capture)
+		return 0;
+
+	struct nt_application *app = cli_application_tui_borrow(ctx);
+	if (app)
+		return nt_application_render(app);
+
+	return fflush(stdout) == 0 ? 0 : NB_ERR_IO;
+}
+
 static int cli_application_initialize(struct cli_application *ctx, const char *config_path,
 				      const char *db_path, const char *workdir,
 				      const char *session_name, const char *resume_ref,

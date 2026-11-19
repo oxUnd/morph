@@ -257,8 +257,8 @@ static int cli_clipboard_run(const char *const argv[], const char *stdout_path)
 		.argv = argv,
 		.search_path = true,
 		.close_fds = true,
-		.stdin_mode = NB_PROCESS_INHERIT,
-		.stdout_mode = stdout_path ? NB_PROCESS_FD : NB_PROCESS_INHERIT,
+		.stdin_mode = NB_PROCESS_NULL,
+		.stdout_mode = stdout_path ? NB_PROCESS_FD : NB_PROCESS_NULL,
 		.stdout_fd = output_fd,
 		.stderr_mode = NB_PROCESS_NULL,
 	};

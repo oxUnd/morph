@@ -228,8 +228,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		.argv = argv,
 		.search_path = !editor_path[0],
 		.close_fds = true,
-		.stdin_mode = NB_PROCESS_INHERIT,
-		.stderr_mode = NB_PROCESS_INHERIT,
+		.stdin_mode = NB_PROCESS_NULL,
+		.stderr_mode = NB_PROCESS_PIPE,
 	};
 	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
 	rc = nb_process_spawn(&options, &child, NULL);
@@ -240,6 +240,11 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		if (rc == NB_OK)
 			rc = nb_process_exchange(child, "", 0, &exchange, &buf, &errors, &status,
 						 NULL);
+
+		if (errors.len)
+			nb_log_write(result && result->runtime ? result->runtime->http.logger : NULL,
+				     NB_LOG_DEBUG, "Editor diagnostics: %s", nb_buf_cstr(&errors));
+
 		if (ctx && ctx->resume_fn)
 			ctx->resume_fn(ctx->cb_user_data);
 		if (rc != NB_OK) {

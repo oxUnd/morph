@@ -86,6 +86,8 @@ void cli_application_run(struct cli_application *ctx);
 void cli_application_run_once(struct cli_application *ctx, const char *prompt);
 void cli_application_shutdown(struct cli_application *ctx);
 struct nt_application *cli_application_tui_borrow(struct cli_application *);
+/* Owner-thread publication after a synchronous command updates output. */
+int cli_application_flush_output(struct cli_application *ctx);
 struct cli_application *cli_application_from_controller(const struct nt_view_controller *);
 struct cli_application *cli_application_from_view(const struct nt_view *);
 void cli_application_controller_cleanup(struct nt_view_controller **);
