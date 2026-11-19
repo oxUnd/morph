@@ -23,6 +23,12 @@ target_link_libraries(morph-runtime PUBLIC
 	morph-skill
 	morph-sync
 	morph-tools
+	morph-models
+	morph-http
+	morph-permission
+	morph-sandbox
+	morph-cjson
+	nbase::nbase
 	morph-ext
 	morph-ipc
 	morph-app-data

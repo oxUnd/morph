@@ -18,7 +18,7 @@ int ext_load_so(struct ext *ex, const char *path)
 
 	if (!ex || !path)
 		return NB_ERR_INVAL;
-	if (ex->dl_handle || ex->run)
+	if (ex->dl_handle || ex->run || ex->run_v2)
 		return NB_ERR_EXISTS;
 
 	char full_path[PATH_MAX];
@@ -47,11 +47,14 @@ int ext_load_so(struct ext *ex, const char *path)
 
 	typedef int (*run_fn)(const char *, char **);
 	const char *sym_name = ex->manifest.entry;
+	ext_run_v2_fn fn_v2 = NULL;
+	void *sym = dlsym(handle, "ext_run_v2");
+	memcpy(&fn_v2, &sym, sizeof(fn_v2));
 
-	void *sym = dlsym(handle, "ext_run");
+	sym = fn_v2 ? NULL : dlsym(handle, "ext_run");
 	run_fn fn = NULL;
 	memcpy(&fn, &sym, sizeof(fn));
-	if (!fn) {
+	if (!fn_v2 && !fn) {
 		const char *slash = strrchr(sym_name, '/');
 		const char *basename = slash ? slash + 1 : sym_name;
 		char sym_buf[256];
@@ -60,15 +63,15 @@ int ext_load_so(struct ext *ex, const char *path)
 		memcpy(&fn, &sym, sizeof(fn));
 	}
 
-	if (!fn) {
+	if (!fn_v2 && !fn) {
 		sym = dlsym(handle, sym_name);
 		memcpy(&fn, &sym, sizeof(fn));
 	}
 
-	if (!fn) {
+	if (!fn_v2 && !fn) {
 		nb_log_write(ex ? ex->logger : NULL, NB_LOG_ERROR,
 			     "ext_load_so: no entry symbol found in %s "
-			     "(tried ext_run, <entry>_run, <entry>)",
+			     "(tried ext_run_v2, ext_run, <entry>_run, <entry>)",
 			     full_path);
 		dlclose(handle);
 		return NB_ERR_NOT_FOUND;
@@ -76,6 +79,7 @@ int ext_load_so(struct ext *ex, const char *path)
 
 	ex->dl_handle = handle;
 	ex->run = fn;
+	ex->run_v2 = fn_v2;
 	nb_log_write(ex ? ex->logger : NULL, NB_LOG_INFO,
 		     "ext_load_so: loaded %s from %s (handle=%p)", ex->manifest.name, full_path,
 		     handle);
@@ -129,4 +133,5 @@ void ext_unload_so(struct ext *ex)
 	dlclose(ex->dl_handle);
 	ex->dl_handle = NULL;
 	ex->run = NULL;
+	ex->run_v2 = NULL;
 }

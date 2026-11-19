@@ -5,6 +5,7 @@ context_owner.c
 engine.c
 execute.c
 extensions.c
+extension_host.c
 lock.c
 lifecycle.c
 output.c

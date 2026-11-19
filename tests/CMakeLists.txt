@@ -79,6 +79,7 @@ set(TEST_SOURCES
 	test_agent_plan_control.cpp
 	test_agent_child_runtime.cpp
 	test_ext.cpp
+	test_extension_host.cpp
 	test_event.cpp
 	test_agent_ui.cpp
 	test_cli_share.cpp
@@ -113,6 +114,23 @@ set(TEST_SOURCES
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
+add_library(morph-ext-context-probe MODULE ../exts/context-probe/probe.c)
+target_include_directories(morph-ext-context-probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(morph-ext-context-probe PRIVATE nbase::nbase morph-cjson)
+set_target_properties(morph-ext-context-probe PROPERTIES
+	PREFIX "" OUTPUT_NAME "probe" SUFFIX ".so"
+	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ext-context-probe")
+configure_file(../exts/context-probe/manifest.toml ext-context-probe/manifest.toml COPYONLY)
+add_library(morph-ext-legacy-probe MODULE ../exts/demo-upper/upper.c)
+target_link_libraries(morph-ext-legacy-probe PRIVATE nbase::nbase)
+set_target_properties(morph-ext-legacy-probe PROPERTIES
+	PREFIX "" OUTPUT_NAME "upper" SUFFIX ".so"
+	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ext-legacy-probe")
+configure_file(../exts/demo-upper/manifest.toml ext-legacy-probe/manifest.toml COPYONLY)
+add_dependencies(morph-tests morph-ext-context-probe morph-ext-legacy-probe)
+target_compile_definitions(morph-tests PRIVATE
+	MORPH_TEST_CONTEXT_EXTENSION_DIR="${CMAKE_CURRENT_BINARY_DIR}/ext-context-probe"
+	MORPH_TEST_LEGACY_EXTENSION_DIR="${CMAKE_CURRENT_BINARY_DIR}/ext-legacy-probe")
 add_executable(morph-agent-eval-runner agent_eval_runner.c)
 target_include_directories(morph-agent-eval-runner PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(morph-agent-eval-runner PRIVATE morph-exec)

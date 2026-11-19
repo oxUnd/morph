@@ -379,6 +379,11 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	models->vision = runtime_create_model(profile->logger, &config->models.vision, 0);
 	models->image = runtime_create_model(profile->logger, &config->models.image, 1);
 	models->video = runtime_create_model(profile->logger, &config->models.video, 1);
+	models->react->tool_models = (struct tool_runtime_models){
+		.vision = models->vision,
+		.image = models->image,
+		.video = models->video,
+	};
 	struct model *all[] = {models->text, models->vision, models->image, models->video};
 
 	for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
@@ -838,6 +843,11 @@ int runtime_bootstrap_child(struct tool_registry *tools, struct plan_registry *p
 	if (rc != 0)
 		return rc;
 	react->skills = &state->skills;
+	react->tool_models = (struct tool_runtime_models){
+		.vision = state->vision,
+		.image = state->image,
+		.video = state->video,
+	};
 	react->tool_timeout_seconds = runtime->config->react.tool_timeout_seconds;
 	react->tool_max_retries = runtime->config->react.tool_max_retries;
 	return runtime_apply_guardrails(react, runtime->config, model);

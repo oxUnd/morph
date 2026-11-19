@@ -2014,6 +2014,10 @@ static void react_start_tool_calls(struct react_context *ctx, struct chat_respon
 			break;
 		}
 
+		int timeout = react_tool_call_timeout(ctx, tc);
+		slots[i].call->runtime.deadline_ms = timeout > 0
+			? slots[i].call->started_ms + (int64_t)timeout * 1000 : 0;
+
 		int thread_rc =
 			react_tool_worker_start(slots[i].call, &slots[i].thread, slots[i].hook_ask);
 		if (thread_rc != 0) {

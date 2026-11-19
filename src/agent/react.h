@@ -198,6 +198,7 @@ struct react_context {
 	char turn_id[64];
 	int turn_id_user_set;
 	struct tool_runtime_context tool_runtime;
+	struct tool_runtime_models tool_models;
 };
 
 struct session_store;

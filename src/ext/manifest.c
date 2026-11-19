@@ -68,7 +68,8 @@ static int parse_string_list(const nb_toml_value *arr, char ***out_list, int *ou
 static int manifest_output_occupied(const struct ext_manifest *out)
 {
 	return out->input_schema || out->output_schema || out->fronts || out->categories ||
-	       out->allowed_paths || out->allowed_env || out->allowed_mach_services;
+	       out->allowed_paths || out->allowed_env || out->allowed_mach_services ||
+	       out->settings_owner;
 }
 
 static enum ext_purpose parse_purpose(const char *s)
@@ -299,6 +300,28 @@ static int manifest_parse_table(struct nb_log *logger, const nb_toml_value *tbl,
 	return 0;
 }
 
+static int manifest_parse_document(struct nb_log *logger, nb_toml **document,
+				   struct ext_manifest *manifest)
+{
+	const nb_toml_value *root = nb_toml_root(*document);
+	const nb_toml_value *settings = nb_toml_table_get_cstr(root, "config");
+	int rc = manifest_parse_table(logger, root, manifest);
+
+	if (rc != NB_OK)
+		return rc;
+
+	if (nb_toml_type_of(settings) != NB_TOML_NONE) {
+		if (nb_toml_type_of(settings) != NB_TOML_TABLE)
+			return NB_ERR_INVAL;
+
+		manifest->settings = settings;
+		manifest->settings_owner = *document;
+		*document = NULL;
+	}
+
+	return NB_OK;
+}
+
 int manifest_parse(struct nb_log *logger, const char *toml_data, struct ext_manifest *out)
 {
 	nb_err parse_error = {0};
@@ -317,7 +340,7 @@ int manifest_parse(struct nb_log *logger, const char *toml_data, struct ext_mani
 		return NB_ERR_PARSE;
 	}
 
-	int rc = manifest_parse_table(logger, nb_toml_root(parsed), &manifest);
+	int rc = manifest_parse_document(logger, &parsed, &manifest);
 	nb_toml_cleanup(&parsed);
 	if (rc == 0) {
 		*out = manifest;
@@ -350,7 +373,7 @@ int manifest_parse_file(struct nb_log *logger, const char *path, struct ext_mani
 		return NB_ERR_PARSE;
 	}
 
-	rc = manifest_parse_table(logger, nb_toml_root(parsed), &manifest);
+	rc = manifest_parse_document(logger, &parsed, &manifest);
 	nb_toml_cleanup(&parsed);
 	if (rc == 0) {
 		*out = manifest;

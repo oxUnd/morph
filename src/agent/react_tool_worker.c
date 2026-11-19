@@ -138,6 +138,8 @@ struct async_tool_call *react_tool_worker_create(struct tool_registry *tools,
 	call->runtime.agent_depth = react->agent_depth;
 	call->runtime.agent_id = react->agent_id[0] ? react->agent_id : "/root";
 	call->runtime.workdir = react->workdir;
+	call->runtime.models = react->tool_models;
+	call->runtime.models.text = react->llm_model;
 	call->tool_name = strdup(tool_name ? tool_name : "");
 	call->tool_args = strdup(tool_args ? tool_args : "{}");
 	call->tool_call_id = strdup(tool_call_id ? tool_call_id : "");

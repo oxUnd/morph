@@ -10,6 +10,7 @@ extern "C" {
 #include <nb/err.h>
 #include "sandbox/sandbox.h"
 #include "agent/tool.h"
+#include "ext/context.h"
 
 enum ext_purpose {
 	EXT_PURPOSE_TOOL      = 0,
@@ -43,6 +44,8 @@ struct ext_manifest {
 	int max_open_files;
 	char *input_schema;
 	char *output_schema;
+	struct nb_toml *settings_owner;
+	const struct nb_toml_value *settings;
 };
 
 struct ext {
@@ -51,6 +54,7 @@ struct ext {
 	char path[PATH_MAX];
 	void *dl_handle;
 	int (*run)(const char *args_json, char **result_json);
+	ext_run_v2_fn run_v2;
 	char exec_path[PATH_MAX];
 	struct tool_desc tool_desc;
 	int enabled;
@@ -65,6 +69,11 @@ int ext_unload(struct ext *ex);
  * execution failure. Cancellation reaps exec children; native callbacks cooperate. */
 int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 	int (*cancelled)(void *), void *user, const struct sandbox_config *limits);
+/* v2 native calls require a matching context; legacy and exec calls ignore it.
+ * The same sandbox/owner/cancellation checks apply to both native entrypoints. */
+int ext_run_with_context(struct ext *ex, const struct ext_context *context,
+	const char *args_json, char **result_json, int (*cancelled)(void *), void *user,
+	const struct sandbox_config *limits);
 int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json,
 		       int (*cancelled)(void *), void *user);
 int ext_run(struct ext *ex, const char *args_json, char **result_json);

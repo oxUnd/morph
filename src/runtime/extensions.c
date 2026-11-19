@@ -20,6 +20,7 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 #else
 
 #include "runtime/context_owner.h"
+#include "runtime/extension_host.h"
 #include "agent/guardrail.h"
 #include "ext/ext.h"
 #include "agent/tool_runtime.h"
@@ -30,54 +31,6 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-
-static int runtime_ext_cancelled(void *opaque)
-{
-	const struct tool_result *result = opaque;
-	return result->runtime != NULL && http_wait_cancelable(&result->runtime->http, 0) != 0;
-}
-
-static int runtime_ext_exec(const char *args_json, struct tool_result *result, void *user_data)
-{
-	struct ext *extension = user_data;
-	char *output NB_CLEANUP(nb_charp_cleanup) = NULL;
-	int rc;
-
-	if (!extension)
-		return NB_ERR_INVAL;
-	struct tool_context *context = result->runtime ? result->runtime->permission_context : NULL;
-	struct sandbox_config limits NB_CLEANUP(sandbox_config_cleanup) = {0};
-	struct permission_policy policy = {0};
-
-	if (context) {
-		(void)tool_context_get_permission_policy(context, &policy);
-		struct tool_operation operation = {
-			.kind = TOOL_OP_TOOL_CALL,
-			.tool_name = extension->manifest.name,
-			.principal = extension->manifest.name,
-			.action = args_json,
-			.details_json = args_json,
-			.scope = extension->path,
-			.network = !!(extension->manifest.permissions & EXT_PERM_NETWORK),
-		};
-		rc = tool_context_check_operation(context, &operation);
-		if (rc == 0)
-			rc = tool_context_add_builtin_path(context, TOOL_PATH_READ,
-							   extension->path);
-		if (rc == 0)
-			rc = sandbox_permission_prepare(context, extension->manifest.name, NULL,
-							&limits);
-		limits.network_access = operation.network;
-	} else {
-		rc = NB_ERR_NOT_PERMITTED;
-	}
-	if (rc == 0)
-		rc = ext_run_bounded(extension, args_json, &output, runtime_ext_cancelled, result,
-				     permission_effective_access(&policy).host ? NULL : &limits);
-	if (output)
-		(void)tool_result_success_json_text_copy(result, output);
-	return rc;
-}
 
 static void runtime_ext_destroy(void *user_data)
 {
@@ -216,7 +169,7 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 		spec.description = owned->manifest.description;
 		spec.input_schema = owned->manifest.input_schema;
 		spec.output_schema = owned->manifest.output_schema;
-		spec.exec = runtime_ext_exec;
+		spec.exec = runtime_extension_exec;
 		spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
 		spec.user_data = owned;
 		spec.user_data_destroy = runtime_ext_destroy;

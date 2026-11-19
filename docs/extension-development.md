@@ -16,7 +16,7 @@ changing repository files.
 | Type | Execution contract | Dependencies and permissions |
 | --- | --- | --- |
 | `exec` | A fresh subprocess reads one JSON-RPC request on stdin and writes one response on stdout. | Build/link its own dependencies. Manifest capabilities are intersected with runtime authority and enforced by the subprocess sandbox. |
-| `so` | Morph loads the library and calls `ext_run` in its process. | Link dependencies into the module, or import compatible host exports. Native tools require effective host-execution access; the runtime rejects them when subprocess sandbox limits would be required. |
+| `so` | Morph loads the library and calls `ext_run_v2` (or legacy `ext_run`) in its process. | Link dependencies into the module, or import compatible host exports. Native tools require effective host-execution access; the runtime rejects them when subprocess sandbox limits would be required. |
 
 Choose `exec` for process isolation or a language/runtime outside the native
 ABI. Choose `so` for an in-process C ABI when the target permits host execution.
@@ -30,6 +30,8 @@ Existing packages to inspect:
   use a JSON library when creating a new tool with structured arguments.
 - `exts/demo-upper/`: small native ABI example. It only uses nbase error
   constants, which need headers but no nbase function implementation.
+- `exts/context-probe/`: context-aware native example with configuration,
+  paths, invocation identity, logging and progress.
 - `exts/demo-translate/`: executable JSON-RPC transport example, with fixed
   demonstration responses rather than real model calls.
 - `exts/locate/`: executable extension with a CMake nbase dependency and
@@ -112,8 +114,17 @@ dependencies actually used by the extension.
 
 ## Native ABI and ownership
 
-The loader looks for the symbol `ext_run`. Export a C function with this
-signature (C++ implementations need C linkage):
+The loader prefers the context-aware `ext_run_v2` symbol. Export a C function
+with this signature (C++ implementations need C linkage):
+
+```c
+#include "ext/context.h"
+
+int ext_run_v2(const struct ext_context *context,
+               const char *args_json, char **result_json);
+```
+
+Existing extensions retain the legacy signature:
 
 ```c
 int ext_run(const char *args_json, char **result_json);
@@ -134,11 +145,93 @@ int ext_run(const char *args_json, char **result_json);
 - Initialize owners to `NULL` or `{0}` and use typed scope cleanup. Do not
   install a global allocator/default logger or change process-wide signal state
   in the host. Finish workers before returning or unloading their code.
-- The current native entrypoint receives no host cancellation callback. Bound
-  its work explicitly; subprocess time/resource limits do not sandbox a native
-  call.
+- The legacy native entrypoint receives no cancellation callback. The v2 host
+  table supplies cooperative cancellation and a deadline. Subprocess
+  time/resource limits do not sandbox either native entrypoint.
 
-For a minimal no-argument example, create `exts/nbase-probe/probe.h`:
+### Native context and host services
+
+`ext/context.h` defines an actual borrowed C object, independent of the tool's
+JSON arguments/schema. Validate `abi_version` and `struct_size` on both context
+and host table. Context ABI version 1 accompanies the `ext_run_v2` entrypoint.
+If both symbols exist, v2 wins; the loader never calls a legacy symbol using
+the new signature.
+
+| Field | Meaning |
+| --- | --- |
+| `config` | Read-only snapshot of the invoking runtime's effective `struct config`, refreshed per call. Include `config/config.h` for its layout. |
+| `manifest`, `settings` | Package metadata and optional typed `[config]` manifest table. Read settings with the public `nb/toml.h` accessors. |
+| `logger` | Borrowed runtime logger; `host->log` also adds extension and call identity. |
+| `paths.workdir` | Current agent's working directory, including child-agent bindings. |
+| `paths.output_dir` | Effective output directory, including runtime overrides. Save final artifacts here. |
+| `paths.extension_dir` | Canonical package directory for bundled resources. |
+| `paths.data_dir` | Persistent extension/user-specific directory under the package parent's `.data/`. Its key hashes canonical package path and user identity; sessions of that user share it. |
+| `paths.temp_dir` | Private scratch directory removed when the call ends, including errors/cancellation. |
+| `call` | Current user, display session, agent/depth, turn, tool call and absolute monotonic deadline in milliseconds. Zero deadline means none. Unavailable IDs are empty strings. |
+| `permissions` | Access/approval/reviewer snapshot; operations still use the live shared policy. |
+| `host`, `host_data` | Synchronous service callbacks bound to this invocation. Pass `host_data` as the first argument. |
+
+Package settings can be declared without changing tool arguments:
+
+```toml
+[config]
+label = "my extension"
+retries = 3
+```
+
+These settings are read at discovery and require reloading after changes.
+The separate `config` field describes Morph's effective configuration.
+
+The host table provides:
+
+- `check_cancelled`: `NB_OK`, `NB_ERR_CANCELLED`/`NB_ERR_INTERRUPTED`, or
+  `NB_ERR_TIMEOUT`. Poll during CPU work and finish every extension worker
+  before returning.
+- `log` / `emit_stream`: runtime logs and existing `tool.stream.delta` events,
+  attributed to the current extension, turn and tool call. Use `status` for
+  progress and `text` for content.
+- `check_operation` / `authorize_path`: live shared permission and grant
+  handling. The host binds tool/principal identity to the extension. Full does
+  not add an approval requirement; explicit forbidden/mandatory-human flags
+  retain their meaning. Native code still requires host execution access and
+  is rejected when subprocess enforcement is needed.
+- `chat` / `vision`: configured text and vision requests using option types
+  from `models/llm.h`. Output goes to the supplied synchronous callback, or to
+  the extension's tool stream when no callback is supplied.
+- `image` / `video`: configured generation using `ext_image_request` /
+  `ext_video_request` and results from `models/image_gen.h` /
+  `models/video_gen.h`. Reference paths and the effective output directory
+  are authorized; attach generated files explicitly when appropriate.
+- Model services use request-local views with the invoking agent's
+  cancellation/deadline and usage/budget sinks, without mutating shared model
+  clients. HTTP success is normalized to `NB_OK`; missing configuration returns
+  `MORPH_ERR_NOT_CONFIGURED`. They do not append conversation messages.
+- `ask_user`: current frontend/parent-agent question callback, using the call's
+  cancellation token. Free every returned malloc-owned answer and its array,
+  including partial outputs on failure. An unavailable adapter returns
+  `NB_ERR_UNSUPPORTED`.
+- `add_artifact`: authorized file/image/video attachment with optional
+  dimensions/duration. Attachments survive JSON result conversion. Paths inside
+  the scratch directory are rejected because scratch is removed after return.
+
+Context, config, settings, host table and `host_data` remain host-owned and
+valid only until `ext_run_v2` returns. `result_json` keeps the legacy malloc/free
+contract. The config/manifest/model option layouts require headers matching the
+host build. Low-level callers use `ext_run_with_context`; calling a v2-only
+module through the context-free `ext_run` wrapper returns `NB_ERR_INVAL`.
+
+Build the example independently with:
+
+```sh
+cmake -S exts/context-probe -B build/exts/context-probe
+cmake --build build/exts/context-probe
+```
+
+Override `MORPH_SOURCE_DIR` and `NBASE_INCLUDE_DIR` for another matching checkout
+or build. The output directory contains `manifest.toml` and `probe.so`.
+The example links its own cJSON and calls Morph through the host table.
+
+For a minimal legacy no-argument example, create `exts/nbase-probe/probe.h`:
 
 ```c
 #ifndef NBASE_PROBE_H
@@ -433,24 +526,22 @@ For repository C/C++ source changes, also run the relevant behavior tests and
 `source_control_flow_conventions`. Add `cli_application_layout_conventions`
 when touching CLI layout, ownership, interfaces, or presentation.
 
-## Current host-service boundary
+## Host-service boundary
 
-The existing native ABI exposes only JSON input/output. The executable path
-performs a single request/response exchange without a reverse host-request
-dispatcher. Neither interface supplies the host's configured LLM, current
-effective configuration, session history, `tool_context`, or event callbacks.
+Native `ext_run_v2` receives the context/services above. Legacy native calls
+remain JSON input/output only. Executable extensions retain the original
+single-request/response JSON-RPC protocol without native pointers, configuration
+or a reverse host-service dispatcher; their argument schemas are unchanged.
 
-An extension can use nbase to read its own authorized configuration file or
-implement a network client. Parsing a file does not reveal Morph's merged,
-current runtime configuration, and a separate provider request does not
-automatically inherit Morph's model configuration, usage accounting, or
-cancellation. Importing other visible internal Morph symbols does not create
-a supported host-service API. Treat such requirements as a separate runtime
-interface change rather than assuming an `ext_context` or `llm.chat` service
-already exists.
+Neither interface exposes a raw runtime/database owner or automatic session
+history. History, memory/storage services and checkpoint integration are
+separate future interfaces. Direct native writes are not automatically tracked
+by `/rewind`. Independent network clients do not inherit host model accounting
+or cancellation. Importing private Morph symbols is not a supported host API.
 
 Implementation sources to consult in a matching checkout:
-`src/ext/ext.h`, `src/ext/ext.c`, `src/ext/manifest.c`, `src/ipc/jsonrpc.c`,
-`src/sandbox/loader.c`, and `src/runtime/extensions.c`. For repository ownership
+`src/ext/context.h`, `src/ext/ext.h`, `src/ext/ext.c`, `src/ext/manifest.c`,
+`src/ipc/jsonrpc.c`, `src/sandbox/loader.c`, `src/runtime/extensions.c`, and
+`src/runtime/extension_host.c`. For repository ownership
 rules read `docs/state-ownership.md`; for authorization read
 `docs/permissions-design.md` and `docs/sandbox.md`.

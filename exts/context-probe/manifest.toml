@@ -1,0 +1,12 @@
+name = "context_probe"
+version = "0.1.0"
+description = "Inspect the current Morph extension call context."
+type = "so"
+entry = "probe.so"
+categories = ["dev"]
+sandbox_capabilities = []
+input_schema = '{"type":"object","properties":{},"additionalProperties":false}'
+output_schema = '{"type":"object","properties":{"workdir":{"type":"string"},"model":{"type":"string"}}}'
+
+[config]
+label = "context example"

@@ -101,6 +101,13 @@ void runtime_context_update_models(struct runtime_context *ctx, const struct run
 	ctx->vision_llm = models->vision;
 	ctx->img_llm = models->image;
 	ctx->vid_llm = models->video;
+	if (ctx->react) {
+		ctx->react->tool_models = (struct tool_runtime_models){
+			.vision = models->vision,
+			.image = models->image,
+			.video = models->video,
+		};
+	}
 }
 
 void runtime_context_select_plan_session(struct runtime_context *ctx, int64_t session_id)

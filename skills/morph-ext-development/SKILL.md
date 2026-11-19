@@ -33,6 +33,10 @@ Inspect that checkout's `AGENTS.md` when changing repository files.
   `-bundle_loader` against the actual target executable to check imports at
   link time. Use the guide's self-linked CMake path for independent builds,
   standalone test processes, or hosts without the required exports.
+- Use `ext_run_v2(const struct ext_context *, const char *, char **)` for native
+  context and host services. Include `ext/context.h`, validate context/table ABI
+  version and size, and keep borrowed views, callbacks and workers within the
+  call lifetime. Existing `ext_run` modules remain supported.
 - Match the nbase headers and ABI to the target Morph build. Read the relevant
   public header and example before using an unfamiliar API. Do not infer that
   every function in a static library exists in the host's dynamic exports.
@@ -62,9 +66,14 @@ Inspect that checkout's `AGENTS.md` when changing repository files.
 
 ## Existing interface boundaries
 
-The native `ext_run` entrypoint receives JSON input and an output owner slot.
-The executable protocol has no reverse host-service dispatcher. Neither gives
-extensions a configured model, current runtime configuration, session history,
-or a permission context. nbase provides utilities, not these Morph services.
-When a requirement depends on such a service, explain the concrete gap and
-keep any host API redesign separate from ordinary extension implementation.
+Native `ext_run_v2` borrows a typed call context, a read-only effective config
+snapshot and optional manifest `[config]` settings. Its host table provides
+cancellation, logging/streams, permission checks, text/vision/image/video model
+calls, user questions and artifact attachment. Model services inherit the
+invoking agent's usage/budget sinks and cancellation. Use these callbacks
+instead of importing private runtime symbols.
+
+Legacy `ext_run` and executable JSON-RPC remain unchanged, without context or a
+reverse host-service dispatcher. Neither interface exposes session history,
+database access or automatic checkpoint tracking. nbase supplies utilities,
+not additional Morph services; explain remaining interface gaps explicitly.

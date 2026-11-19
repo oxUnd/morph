@@ -8,6 +8,7 @@
 #include <nb/file.h>
 #include <nb/log.h>
 #include <nb/buf.h>
+#include <nb/toml.h>
 #include "errors.h"
 #include "manifest.h"
 #include "ipc/jsonrpc.h"
@@ -30,10 +31,10 @@ int ext_load(struct nb_log *logger, struct ext *ex, const char *dir_path)
 
 	if (!ex || !dir_path)
 		return NB_ERR_INVAL;
-	if (ex->dl_handle || ex->run || ex->enabled || ex->manifest.input_schema ||
+	if (ex->dl_handle || ex->run || ex->run_v2 || ex->enabled || ex->manifest.input_schema ||
 	    ex->manifest.output_schema || ex->manifest.fronts || ex->manifest.categories ||
 	    ex->manifest.allowed_paths || ex->manifest.allowed_env ||
-	    ex->manifest.allowed_mach_services)
+	    ex->manifest.allowed_mach_services || ex->manifest.settings_owner)
 		return NB_ERR_EXISTS;
 	struct ext loaded NB_CLEANUP(ext_unload) = {0};
 	if (strlen(dir_path) >= sizeof(loaded.path))
@@ -121,6 +122,8 @@ void ext_manifest_cleanup(struct ext_manifest *m)
 		return;
 	free(m->input_schema);
 	free(m->output_schema);
+	nb_toml_cleanup(&m->settings_owner);
+	m->settings = NULL;
 	for (int i = 0; i < m->fronts_count; i++)
 		free(m->fronts[i]);
 	free(m->fronts);
@@ -297,8 +300,9 @@ static nb_status ext_prepare_child(void *opaque)
 	return (nb_status)rc;
 }
 
-int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
-		       int (*cancelled)(void *), void *user, const struct sandbox_config *limits)
+int ext_run_with_context(struct ext *ex, const struct ext_context *context,
+			 const char *args_json, char **result_json, int (*cancelled)(void *),
+			 void *user, const struct sandbox_config *limits)
 {
 	if (!ex || !args_json || !result_json)
 		return NB_ERR_INVAL;
@@ -309,8 +313,20 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 	}
 	if (!ex->enabled)
 		return NB_ERR_PERMISSION;
-	if (ex->run)
-		return limits ? NB_ERR_UNSUPPORTED : ex->run(args_json, result_json);
+	if (ex->run_v2 || ex->run) {
+		if (limits)
+			return NB_ERR_UNSUPPORTED;
+
+		if (ex->run_v2) {
+			if (!context || context->abi_version != EXT_CONTEXT_ABI_VERSION ||
+			    context->struct_size < sizeof(*context))
+				return NB_ERR_INVAL;
+
+			return ex->run_v2(context, args_json, result_json);
+		}
+
+		return ex->run(args_json, result_json);
+	}
 
 	if (strcmp(ex->manifest.type, "exec") == 0 && ex->exec_path[0]) {
 		nb_log_write(ex ? ex->logger : NULL, NB_LOG_INFO, "executing ext: %s",
@@ -462,7 +478,13 @@ int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
 	return MORPH_ERR_NOT_CONFIGURED;
 }
 
-/** \brief Execute an extension with the legacy non-cancellable contract. */
+/* Execute without a native context, retaining the legacy entrypoint contract. */
+int ext_run_bounded(struct ext *ex, const char *args_json, char **result_json,
+		    int (*cancelled)(void *), void *user, const struct sandbox_config *limits)
+{
+	return ext_run_with_context(ex, NULL, args_json, result_json, cancelled, user, limits);
+}
+
 int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json,
 	int (*cancelled)(void *), void *user)
 {

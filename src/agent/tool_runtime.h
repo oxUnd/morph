@@ -20,6 +20,14 @@ typedef int (*tool_runtime_session_visible_fn)(const char *display_id, const cha
 
 struct tool_context;
 struct agent_control;
+struct model;
+
+struct tool_runtime_models {
+	const struct model *text;
+	const struct model *vision;
+	const struct model *image;
+	const struct model *video;
+};
 
 /* Borrowed callbacks and state remain alive through the complete tool call.
  * begin serializes edits until finish, including failed patches. capture runs
@@ -64,6 +72,8 @@ struct tool_runtime_context {
 	const char *turn_id;
 	const char *tool_call_id;
 	struct tool_checkpoint_context checkpoint;
+	struct tool_runtime_models models;
+	int64_t deadline_ms;
 };
 
 struct tool_runtime_stream_sink {

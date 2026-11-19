@@ -5,6 +5,14 @@ only an opaque `struct runtime *`; they never own the database, models, ReAct
 context, tool registry, MCP registry, memory workers, credits, or session
 state.
 
+Native tool extensions enter through the runtime-owned extension adapter.
+`ext_run_v2` borrows an `ext_context` with a configuration snapshot, per-call
+identity/paths and synchronous host services. Tool workers bind the current
+agent's model clients, usage/budget sinks, cancellation and deadline before
+execution. Extension services use request-local model views and the shared
+permission context. The private runtime/database owner never crosses this ABI.
+Legacy native and executable extension entrypoints retain their contracts.
+
 ```text
  CLI / FastCGI / mobile hosts
           |
