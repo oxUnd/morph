@@ -228,7 +228,7 @@ if(Python3_Interpreter_FOUND)
 	set_tests_properties(js_runner_host_io_integration PROPERTIES TIMEOUT 30)
 	add_test(NAME cli_application_layout_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py
-			"${MORPH_NOTHING_TUI_SOURCE_DIR}")
+			"${nothing_tui_SOURCE_DIR}")
 	if(UNIX)
 		add_test(NAME cli_retained_chat_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_retained_chat_pty.py

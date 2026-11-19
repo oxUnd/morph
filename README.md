@@ -30,16 +30,14 @@ Unicode decoding, validation, and terminal widths use vendored [utf8proc](docs/u
 Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libuv ≥ 1.44, libffi, libwebp, libxml2, GNU readline ≥ 8, and
 [mathjax-c](https://github.com/oxUnd/mathjax-c).
 
-The CLI builds against the companion nothing-tui checkout at `../nothing-tui`
-at commit `52f7bf0276e3953faa23716a931bb413ed9ae425` on branch
-`feat/morph-cli-integration`. Use `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui`
-to select another checkout of that revision. Both libraries use the nbase snapshot in `vendor/nothing`.
+CMake fetches nothing-tui v0.1.0 for the CLI. Use
+`-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
+of that release. Both libraries use the nbase snapshot in `vendor/nothing`.
+[Release tag](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0)
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
 
 ```bash
-git clone --branch feat/morph-cli-integration https://codeberg.org/oxund/nothing-tui ../nothing-tui
-git -C ../nothing-tui checkout 52f7bf0276e3953faa23716a931bb413ed9ae425
 git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c
 git clone https://github.com/oxUnd/morph-markdown fronts/morph-markdown
 cmake -S . -B build

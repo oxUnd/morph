@@ -325,14 +325,26 @@ set(NB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(NB_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 add_subdirectory(vendor/nothing EXCLUDE_FROM_ALL)
 
-set(MORPH_NOTHING_TUI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../nothing-tui"
-    CACHE PATH "nothing-tui source checkout used by the CLI")
+set(MORPH_NOTHING_TUI_SOURCE_DIR "" CACHE PATH "Optional local nothing-tui source checkout")
 set(NT_BUILD_SAMPLES OFF)
 set(NT_BUILD_TESTS OFF)
 set(NT_INSTALL OFF)
 set(NT_STB_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 set(NT_STB_RESIZE_TARGET morph-media)
-add_subdirectory("${MORPH_NOTHING_TUI_SOURCE_DIR}" nothing-tui EXCLUDE_FROM_ALL)
+
+# A cache from an older build may still contain the old sibling-directory default.
+if(MORPH_NOTHING_TUI_SOURCE_DIR AND
+   NOT MORPH_NOTHING_TUI_SOURCE_DIR STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/../nothing-tui")
+	set(nothing_tui_SOURCE_DIR "${MORPH_NOTHING_TUI_SOURCE_DIR}")
+	add_subdirectory("${nothing_tui_SOURCE_DIR}" nothing-tui EXCLUDE_FROM_ALL)
+else()
+	FetchContent_Declare(
+		nothing_tui
+		GIT_REPOSITORY https://codeberg.org/oxund/nothing-tui.git
+		GIT_TAG 92231afbc452c06cacc35247a1a5cc4f0cba7bcf # v0.1.0
+	)
+	FetchContent_MakeAvailable(nothing_tui)
+endif()
 
 add_subdirectory(vendor)
 add_subdirectory(src)
