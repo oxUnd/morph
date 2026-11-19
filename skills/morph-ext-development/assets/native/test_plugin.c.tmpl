@@ -1,0 +1,52 @@
+#include <morph/ext.h>
+#include <nb/err.h>
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int ext_run_v2(const struct ext_context *context, const char *args_json,
+	       char **result_json);
+
+static int check_cancelled(void *data)
+{
+	return *(const int *)data;
+}
+
+int main(void)
+{
+	int status = NB_OK;
+	struct ext_host_api host = {0};
+	struct ext_context context = {0};
+	char *output = NULL;
+
+	host.abi_version = EXT_CONTEXT_ABI_VERSION;
+	host.struct_size = sizeof(host);
+	host.check_cancelled = check_cancelled;
+	context.abi_version = EXT_CONTEXT_ABI_VERSION;
+	context.struct_size = sizeof(context);
+	context.host = &host;
+	context.host_data = &status;
+
+	assert(ext_run_v2(NULL, "{}", &output) == NB_ERR_INVAL);
+	assert(ext_run_v2(&context, NULL, &output) == NB_ERR_INVAL);
+	assert(ext_run_v2(&context, "{}", NULL) == NB_ERR_INVAL);
+
+	context.abi_version++;
+	assert(ext_run_v2(&context, "{}", &output) == NB_ERR_INVAL);
+	context.abi_version = EXT_CONTEXT_ABI_VERSION;
+	host.struct_size = offsetof(struct ext_host_api, check_cancelled);
+	assert(ext_run_v2(&context, "{}", &output) == NB_ERR_INVAL);
+	host.struct_size = sizeof(host);
+
+	status = NB_ERR_CANCELLED;
+	assert(ext_run_v2(&context, "{}", &output) == NB_ERR_CANCELLED);
+	assert(output == NULL);
+	status = NB_OK;
+	assert(ext_run_v2(&context, "{}", &output) == NB_OK);
+	assert(strcmp(output, "{\"ok\":true,\"sdk_version\":\"" EXT_SDK_VERSION "\"}") == 0);
+	assert(ext_run_v2(&context, "{}", &output) == NB_ERR_EXISTS);
+	free(output);
+	puts("Native ABI, cancellation and ownership checks passed");
+	return 0;
+}

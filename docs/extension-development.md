@@ -45,8 +45,32 @@ inspect `docs/guardrails.md` and `exts/demo-guardrail-pii/` as well.
 
 ## Export and use the public ext SDK
 
+The `morph-ext-development` skill ships a complete versioned SDK snapshot and an
+offline scaffolder. From the activated skill directory:
+
+```sh
+python3 scripts/scaffold.py init /path/to/my-ext --name my_ext --sdk-version 1.1.0
+make -C /path/to/my-ext test all
+python3 scripts/scaffold.py check /path/to/my-ext
+```
+
+For an existing plugin use `scripts/scaffold.py sdk /path/to/ext --sdk-version
+1.1.0`; add `--replace` only when deliberately replacing its SDK. Only the skill
+package is required, not a Morph installation/source/build tree. The starter
+builds offline with a compiler and make. SDK files live in `assets/sdk/<version>/`
+inside the skill; the generated `sdk/manifest.json` pins the exact release, ABI,
+dependency provenance and SHA-256 hashes. Public nbase type/status headers are
+included; calling nbase functions still needs its implementation linked.
+
+SDK releases use SemVer independently of Morph application releases. Published
+snapshots are immutable: compatible fixes increment patch, additive APIs increment
+minor, and binary/layout breaks increment both SDK major and context ABI. Runtime
+ABI, table size and callback checks remain necessary. Existing projects select an
+exact SDK update rather than inheriting a newer package version automatically.
+
 The public headers are `include/morph/ext.h` and `include/morph/ext_types.h`.
-They are installed with Morph. To export just the SDK from a configured build:
+They are also installed with Morph. Host maintainers can export these headers
+from a configured build (this is not a prerequisite for plugin developers):
 
 ```sh
 cmake --install build --component ext-sdk --prefix "$PWD/exported-sdk"

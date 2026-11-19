@@ -1,0 +1,32 @@
+#define _POSIX_C_SOURCE 200809L
+
+#include <morph/ext.h>
+#include <nb/err.h>
+#include <stdlib.h>
+#include <string.h>
+
+int ext_run_v2(const struct ext_context *context, const char *args_json,
+	       char **result_json)
+{
+	if (!args_json || !result_json)
+		return NB_ERR_INVAL;
+
+	if (*result_json)
+		return NB_ERR_EXISTS;
+
+	if (!context || context->abi_version != EXT_CONTEXT_ABI_VERSION ||
+	    context->struct_size < sizeof(*context) || !context->host ||
+	    context->host->abi_version != EXT_CONTEXT_ABI_VERSION ||
+	    !EXT_HOST_HAS_CALLBACK(context->host, check_cancelled))
+		return NB_ERR_INVAL;
+
+	int rc = context->host->check_cancelled(context->host_data);
+	if (rc != NB_OK)
+		return rc;
+
+	if (EXT_HOST_HAS_CALLBACK(context->host, log))
+		context->host->log(context->host_data, NB_LOG_INFO, "@NAME@ called");
+
+	*result_json = strdup("{\"ok\":true,\"sdk_version\":\"" EXT_SDK_VERSION "\"}");
+	return *result_json ? NB_OK : NB_ERR_NOMEM;
+}

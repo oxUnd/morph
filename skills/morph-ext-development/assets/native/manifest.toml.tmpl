@@ -1,0 +1,13 @@
+name = "@NAME@"
+version = "0.1.0"
+description = "Native extension built with Morph ext SDK @SDK_VERSION@."
+type = "so"
+entry = "@NAME@.so"
+fronts = ["cli"]
+categories = ["dev"]
+sandbox_capabilities = []
+input_schema = '{"type":"object","properties":{},"additionalProperties":false}'
+output_schema = '{"type":"object","properties":{"ok":{"type":"boolean"},"sdk_version":{"type":"string"}},"required":["ok","sdk_version"]}'
+
+[build]
+command = "make && rm -f *.o"

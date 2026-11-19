@@ -1,0 +1,27 @@
+# @NAME@
+
+Native Morph extension generated with ext SDK @SDK_VERSION@ (context ABI @ABI_VERSION@).
+
+```sh
+make
+make test
+make install
+```
+
+The starter builds offline with a C11 compiler and make on macOS or Linux.
+It returns a fixed JSON object for empty-object input. Add a JSON library before
+implementing structured arguments or dynamic output. Native calls require host
+execution access in Morph.
+
+`sdk/manifest.json` pins the SDK version, ABI and SHA-256 of every bundled header.
+Commit the entire `sdk/` directory with the plugin. These are public declarations;
+they contain no Morph implementation and require no Morph source or build tree.
+The included nbase headers supply ABI types/status constants. If the tool starts
+calling nbase functions, add an independently linked nbase dependency or validate
+imports against the target host; this starter does not link a nbase implementation.
+
+Use the development skill's `scripts/scaffold.py check .` to verify the snapshot.
+SDK updates use `sdk . --sdk-version VERSION --replace` and change only `sdk/`.
+SDK releases follow SemVer; existing releases remain immutable. ABI changes are
+separate from Morph application versions. Check context ABI and `struct_size`,
+and guard required callbacks with `EXT_HOST_HAS_CALLBACK` before calling them.

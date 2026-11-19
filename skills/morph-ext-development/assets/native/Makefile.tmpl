@@ -1,0 +1,31 @@
+CC ?= cc
+CFLAGS ?= -O2
+CFLAGS += -std=c11 -fPIC -Wall -Wextra -Wpedantic -Wshadow -Wconversion
+CPPFLAGS += -Isdk/include
+PLUGIN := @NAME@
+SDK_HEADERS := $(wildcard sdk/include/morph/*.h sdk/include/nb/*.h)
+
+all: $(PLUGIN).so
+
+plugin.o: plugin.c $(SDK_HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(PLUGIN).so: plugin.o
+	$(CC) -shared $(LDFLAGS) -o $@ $< $(LDLIBS)
+
+test-plugin: plugin.c test_plugin.c $(SDK_HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ plugin.c test_plugin.c $(LDLIBS)
+
+test: test-plugin
+	./test-plugin
+
+install: all
+	mkdir -p "$(EXT_INSTALL_DIR)"
+	cp manifest.toml $(PLUGIN).so "$(EXT_INSTALL_DIR)/"
+
+EXT_INSTALL_DIR ?= $(HOME)/.morph/exts/$(PLUGIN)
+
+clean:
+	rm -f plugin.o $(PLUGIN).so test-plugin
+
+.PHONY: all test install clean

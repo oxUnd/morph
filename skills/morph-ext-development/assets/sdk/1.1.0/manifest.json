@@ -1,0 +1,25 @@
+{
+  "abi_version": 1,
+  "dependencies": {
+    "nbase": {
+      "headers": [
+        "nb/base.h",
+        "nb/err.h",
+        "nb/log.h"
+      ],
+      "repository": "https://codeberg.org/oxund/nothing",
+      "revision": "ef0ddba471bd82857f1cc74b9db795446b15e74d",
+      "version": "0.1.0"
+    }
+  },
+  "files": {
+    "include/morph/ext.h": "305f78e1241853623ee4a86c92282e724e80e6a6bf154e9a19ee507de85cf58f",
+    "include/morph/ext_types.h": "da68808e177a02218411e150e6b0d9dc48eba9d8c11d9c327b0e2f11ec9edffb",
+    "include/nb/base.h": "305d05be98914a4dd6856d7dd1b25fea4d314f5e45325956cc27c7ffde7eac62",
+    "include/nb/err.h": "f72054955be75c1cca89335c07048452d336e84e5f5b13e36c72eee18e5f0142",
+    "include/nb/log.h": "d90178540a7af049ec4c73c4784edfd29b8518a9f09d75581cd86e51a8f97e67"
+  },
+  "format_version": 1,
+  "name": "morph-ext-sdk",
+  "sdk_version": "1.1.0"
+}

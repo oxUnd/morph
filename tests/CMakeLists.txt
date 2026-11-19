@@ -225,6 +225,14 @@ add_test(NAME file_write_extension COMMAND morph-file-write-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+	if(UNIX AND Python3_VERSION VERSION_GREATER_EQUAL "3.9")
+		add_test(NAME ext_skill_scaffold
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ext_scaffold.py
+				--skill ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills/morph-ext-development
+				--public-include ${CMAKE_SOURCE_DIR}/include
+				--cc ${CMAKE_C_COMPILER})
+		set_tests_properties(ext_skill_scaffold PROPERTIES TIMEOUT 90)
+	endif()
 	if(UNIX AND Python3_VERSION VERSION_GREATER_EQUAL "3.11")
 		add_test(NAME multi_agent_task_evaluation
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/eval_multi_agents.py
