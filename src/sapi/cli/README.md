@@ -130,7 +130,7 @@ the app's runtime, command services and output policies without opening a TUI.
   construction. Flush pending state before a synchronous focus transfer.
 - Add a reusable app component in `components/` and keep its state and drawing local.
   The NT sample builds a custom control and presents pages through view controllers.
-  [Customization example](https://codeberg.org/oxund/nothing-tui/src/branch/main/samples/customization/main.c)
+  [Customization example](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0/samples/customization/main.c)
 - Add data operations in `models/`, business actions in `services/` and an
   external integration in `adapters/<integration>/`. Keep runtime access behind
   the runtime facade. Formatting belongs to `presentation/`.
@@ -212,8 +212,7 @@ threads in the child feed, `f` edits a follow-up, `k` interrupts, and `d` or
 Ctrl+T toggles tool details. Each child retains its own transcript, viewport,
 details setting and unsent draft across navigation. Primary output continues
 reducing in the background and is reduced into the retained primary feed while the child is visible;
-the primary draft is preserved. `/agents` remains
-the textual inspection command for scripts and quick queries.
+the primary draft is preserved. Scripts receive a text snapshot from `/agents`.
 
 ## Status presentation
 

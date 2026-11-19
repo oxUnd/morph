@@ -1,6 +1,8 @@
 # Hooks design
 
-Status: first implementation delivered. See [Hooks usage](hooks.md) for the
+> Historical rollout plan. For supported events, configuration and handler behavior, see [Lifecycle hooks](../hooks.md).
+
+Status: first implementation delivered. See [Hooks usage](../hooks.md) for the
 implemented contract and compatibility limits. This design also records future
 work: managed policy, sandbox profiles, immediate in-turn host revocation,
 additional lifecycle events, and complete upstream protocol parity.
@@ -57,7 +59,7 @@ Existing guardrails remain independently supported.
 Use Codex event names, nested matcher groups, command handlers, JSON field
 names, and exit-code conventions. The compatibility reference is the official
 hooks documentation retrieved on 2026-10-20, updated by the Codex 0.167.0
-source audit on 2026-11-08. See the pinned source links in [Hooks usage](hooks.md).
+source audit on 2026-11-08. See the pinned source links in [Hooks usage](../hooks.md).
 Future upstream changes require an explicit compatibility update.
 
 | Public event | Morph integration | First release |

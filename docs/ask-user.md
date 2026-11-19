@@ -107,8 +107,8 @@ questions require scoped answers so their late replies can be isolated.
 
 `ask_user_callback_fn` receives a borrowed `struct ask_user_options` before its
 answer outputs. Hosts must honor the policy, idle timeout, and cancellation token,
-returning `-ETIMEDOUT` only for an untouched optional prompt. Return cancellation
-as `-ECANCELED`/`-EINTR`. The shared tool computes fallback answers and result
+returning `NB_ERR_TIMEOUT` only for an untouched optional prompt. Return
+`NB_ERR_CANCELLED` when the user cancels. The shared tool computes fallback answers and result
 provenance, so hosts must not manufacture a user answer on timeout. Mobile
 presentation adapters must forward these options before exposing the timed
 question interaction in their own UI.

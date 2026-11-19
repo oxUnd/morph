@@ -1,9 +1,11 @@
 # src 稳定性、扩展性与鲁棒性改进设计
 
+> 本文记录 R01–R10 的实施、复核及当时尚未覆盖的验证项（第 13.3 节）。当前契约见[状态所有权](../state-ownership.md)。
+
 > 迁移后说明（2026-11-13）：本计划保留历史实施依据及原始路径。其底层容器、
 > 错误、取消、线程和进程 I/O 已由固定 nbase 原生 API 接管，旧 `src/util` 与
-> `morph-util` 已删除。现行契约见 [nbase 迁移结果](nothing-migration-assessment.zh-CN.md#10-实施进度2026-11-13分支-featnothing-migration)
-> 和 [所有权规范](state-ownership.md)；历史 helper 名称不再作为可调用接口。
+> `morph-util` 已删除。现行契约见 [nbase 迁移结果](nothing-migration-assessment.zh-CN.md)
+> 和 [所有权规范](../state-ownership.md)；历史 helper 名称不再作为可调用接口。
 
 - 状态：本次复核发现的实现遗漏已修复，本机可执行门禁通过；完整验证覆盖尚非 100%。
 - 文档版本：v4，补充二次复核、错误路径修复及验证边界。
@@ -637,13 +639,13 @@ CI 与分支保护未变更，全仓格式迁移仍是独立范围。
 - [上游首要原则：保持现有项目风格](https://github.com/MaJerle/c-code-style/blob/9eb29e4aed5b025a42358dcd1b2e38ad2b9cd614/CODING_RULES.md#the-single-most-important-rule)
 - [上游格式配置：用于对照，未经适配不直接采用](https://github.com/MaJerle/c-code-style/blob/9eb29e4aed5b025a42358dcd1b2e38ad2b9cd614/.clang-format)
 - [上游头文件模板：用于接口与文档对照](https://github.com/MaJerle/c-code-style/blob/9eb29e4aed5b025a42358dcd1b2e38ad2b9cd614/template.h)
-- [项目 Agent Guide](../AGENTS.md)
-- [Runtime 架构](runtime-architecture.md)
-- [状态所有权](state-ownership.md)
-- [异步命令契约](async-exec.md)
-- [事件系统](event-system.md)
-- [定时任务](scheduled-tasks.md)
-- [动态 JS 工具](quickjs-tools.md)
+- [项目 Agent Guide](../../AGENTS.md)
+- [Runtime 架构](../runtime-architecture.md)
+- [状态所有权](../state-ownership.md)
+- [异步命令契约](../async-exec.md)
+- [事件系统](../event-system.md)
+- [定时任务](../scheduled-tasks.md)
+- [动态 JS 工具](../quickjs-tools.md)
 
 ## 12. v3 历史验证记录（本次复核前）
 

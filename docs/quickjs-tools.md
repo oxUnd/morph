@@ -1,26 +1,9 @@
 # 基于 QuickJS 的 Agent 动态工具机制
 
-## 当前状态
-
-状态：第一版已实现并提交。
-
-提交：`a540a8c Add QuickJS dynamic tools`
-
-已验证：
-
-- `cmake --build build`
-- `cd build && ctest --output-on-failure`
-- CLI 场景：agent 使用 `tool_create` 创建 `fetch_baidu`，随后直接调用新工具获取 `www.baidu.com`。
-- 验证结果：请求状态 `200 OK`，HTML 长度 `2349`，内容包含 `<title>百度一下，你就知道</title>`。
-
-## 目标
-
-引入一种“agent 运行中自己创建工具”的机制：agent 可以生成 JS 工具代码，morph 使用内置 QuickJS 执行、注册并调用这些工具。
-
-能力不做一刀切限制，而是按运行形态配置：
-
-- local agent 默认可以拥有完整能力。
-- server agent 默认收紧能力，需要显式配置放开。
+Morph 通过 `tool_create` 注册 JavaScript 工具，模型可以在同一次任务的后续步骤调用它。
+runtime 为每个会话管理工具定义，独立的 `morph-js-runner` 进程用 QuickJS 执行源码。
+工具实际能访问的路径、命令和网络目标取决于动态工具 profile 和宿主权限策略。
+[注册接口](../src/agent/tools/dynamic_tools.c) · [执行器](../src/js_runner/main.c)
 
 ## 已实现能力
 
@@ -44,24 +27,31 @@ checkpoint、恢复与提升使用一致快照。直接修改已升级工具的 
 已提交版本，应通过管理接口发布。每次执行使用独立源码快照；执行中删除或替换
 工具不会释放仍在使用的绑定。子进程通信统一处理双流背压、整体超时和取消。
 
-新增内置工具 `tool_create`：
+`tool_create` 的必填字段是 `name`、`input_schema`、`output_schema` 和 `source_js`。
+`description` 可选。两个 schema 可以传 JSON 对象，也可以传序列化后的 JSON 字符串。
+下面的工具接受文本并返回其大写形式。
 
-- 参数包括：
-  - `name`
-  - `description`
-  - `args_schema`
-  - `source_js`
+```json
+{
+  "name": "upper_text",
+  "description": "Convert text to uppercase.",
+  "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+  "output_schema": {"type": "object", "properties": {"text": {"type": "string"}}},
+  "source_js": "function run(args) { return { text: args.text.toUpperCase() }; }"
+}
+```
+
 - 创建成功后立即注册到当前 `tool_registry`。
 - 保存到会话目录：`~/.morph/runtime/tools/<session_id>/<tool_name>/`。
 - 禁止覆盖内置工具、ext 工具和 MCP 工具；同名动态工具会被更新。
 - 每次成功创建/更新都会记录 checkpoint，返回 `checkpoint_id`、`old_hash` 和 `new_hash`。
 - 会校验：
   - 工具名格式。
-  - `args_schema` JSON。
+  - 输入和输出 schema 的 JSON。
   - JS 源码大小。
   - JS 源码可被 QuickJS 解析。
 
-新增内置工具 `tool_history` / `tool_diff` / `tool_rollback`：
+`tool_history`、`tool_diff` 和 `tool_rollback` 管理动态工具的版本。
 
 - `tool_history` 列出当前 session 动态工具的 checkpoints。
 - `tool_diff` 返回某个 checkpoint 与当前工具文件之间的 unified diff。
@@ -69,13 +59,13 @@ checkpoint、恢复与提升使用一致快照。直接修改已升级工具的 
 - 回滚创建操作会删除该 session 动态工具；如果同名 persistent 工具存在，则恢复 persistent 版本。
 - 回滚更新操作会恢复旧 `tool.json` / `tool.js`，重新校验并注册工具。
 
-新增内置工具 `tool_promote`：
+内置工具 `tool_promote`：
 
 - 将当前会话内的动态工具提升为持久工具。
 - 保存到：`~/.morph/tools/<tool_name>/`。
 - 后续启动 morph 时会自动加载持久动态工具。
 
-新增内置工具 `tool_delete`：
+内置工具 `tool_delete`：
 
 - 删除当前 registry 中的动态工具。
 - session 动态工具会删除会话工具目录。
@@ -84,8 +74,7 @@ checkpoint、恢复与提升使用一致快照。直接修改已升级工具的 
 
 ### ReAct 集成
 
-- CLI 初始化时注册动态工具系统。
-- FastCGI 初始化时注册动态工具系统。
+- CLI 和 FastCGI 共用 runtime 的动态工具注册流程。
 - FastCGI/server 形态如果没有显式配置 `dynamic_tools.mode`，默认强制使用 `server`。
 - ReAct 每轮 LLM 调用前重新收集 active tools。
 - 因此 `tool_create` 刚创建的新工具能在同一次任务后续步骤中被模型直接调用。
@@ -100,6 +89,7 @@ morph.fs.readText(path)
 morph.fs.writeText(path, text)
 morph.fs.readFile(path)
 morph.fs.writeFile(path, bytesOrText)
+morph.image.open(input)
 morph.image.metadata({ input })
 morph.image.resize({ input, output, width, height })
 morph.image.crop({ input, output, left, top, width, height })
@@ -263,7 +253,7 @@ streaming compile、threads、SIMD 或完整浏览器宿主对象。
 
 ## 配置
 
-新增 `[dynamic_tools]`：
+在配置文件中设置 `[dynamic_tools]`：
 
 ```toml
 [dynamic_tools]
@@ -320,11 +310,8 @@ allowed_network = []
   tool.json
 ```
 
-`tool.json` 保存：
-
-- `name`
-- `description`
-- `args_schema`
+`tool.json` 保存工具名称、说明、`input_schema`、`output_schema` 和已发布的 `source`。
+两个 schema 以 JSON 字符串存储。[存储实现](../src/agent/tools/dynamic_tool_store.c)
 
 ## 已有测试覆盖
 
@@ -341,31 +328,12 @@ allowed_network = []
 - `WebAssembly.instantiate()` 可调用导出函数。
 - server profile 默认拒绝 `image` 能力。
 
-当前已有人工/CLI 验证：
+可从仓库根目录运行 `build/bin/morph-tests --gtest_filter='DynamicToolsTest.*'`。
+[动态工具回归](../tests/test_dynamic_tools.cpp)
 
-- 创建 `fetch_baidu` 动态工具。
-- 使用 `morph.fetch()` 获取 `https://www.baidu.com`。
-- 同一轮 ReAct 中直接调用新创建的动态工具。
+## 执行边界
 
-## 未完成和后续项
-
-以下内容还没有完整实现，需要后续继续做：
-
-- `morph.tool.call()` 当前只是占位 API，会返回 `morph.tool.call is not available yet`。
-- 动态工具调用其他 morph 工具的安全模型尚未完成。
-- `sharp`、`canvas` 和 `WebAssembly` 当前是常用子集，不是 npm 包或浏览器
-  运行时的完整兼容实现；模型提示里已明确限制不要生成未支持 API。
-- “动态工具不能绕过 disabled tools”还没有完整链路，因为跨工具调用尚未开放。
-- runner 通过 `MORPH_RUNNER_MAX_CAPTURE_BYTES` 接收父进程捕获预算；独立启动时默认
-  1 MiB，显式配置必须为 `1..INT_MAX` 的整数。超限会明确报错，不能把部分 JSON 当成成功结果。
-- 缺少 mock LLM 集成测试覆盖“先 `tool_create`，再调用新工具”的完整 ReAct 流程。
-- active tools 目前每轮都会重新收集，后续可以给 `tool_registry` 加 version，只有工具集合变化时才重建。
-- 后续需要做工具裁剪，避免动态工具数量过多时增加模型请求 token。
-
-## 默认假设
-
-- 动态工具语言选 QuickJS。
-- 本地 agent 可以默认拥有完整能力。
-- server agent 默认收紧能力，需要配置显式放开。
-- morph 不从自己的服务器下载工具代码。
-- 工具代码由本地 agent 生成，保存在用户本机。
+- `morph.tool.call()` 是占位接口，调用会抛出异常。动态工具目前不能通过它调用其他 Morph 工具。
+- `sharp`、`canvas` 和 `WebAssembly` 提供本文列出的宿主 API 子集。
+- runner 通过 `MORPH_RUNNER_MAX_CAPTURE_BYTES` 接收捕获预算，独立启动时默认
+  1 MiB，显式值必须在 `1..INT_MAX` 范围内。超限会报错。

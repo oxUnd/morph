@@ -52,13 +52,13 @@ fields reconstructs the source text, excluding an initial UTF-8 BOM.
 Example continuation:
 
 ```json
-{"file_path":"src/main.c","limit":100}
+{"file_path":"src/sapi/cli/main.c","limit":100}
 ```
 
 If the result is truncated, use its cursor and version:
 
 ```json
-{"file_path":"src/main.c","byte_offset":4096,"expected_version":"<version from response>"}
+{"file_path":"src/sapi/cli/main.c","byte_offset":4096,"expected_version":"<version from response>"}
 ```
 
 The cursor above is illustrative: always use the returned `next_byte_offset`.

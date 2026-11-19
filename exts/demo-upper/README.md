@@ -1,42 +1,21 @@
 # demo-upper
 
-A `.so` ext that converts text to uppercase.
+The CLI loads this demo as the native `upper` tool. Its `ext_run` entry point
+accepts a JSON object with a `text` string. For example, `{"text":"hello"}`
+returns `{"result":"HELLO"}`.
 
-## Type
+## Build and install
 
-`so` — loaded via `dlopen`, runs in-process.
+From the Morph repository root after configuring the default build directory:
 
-## Install
-
-Copy to `~/.morph/exts/`:
-
-```bash
-cp -r exts/demo-upper ~/.morph/exts/
-# Build the .so (if not already compiled):
-cc -shared -fPIC -o ~/.morph/exts/demo-upper/upper.so ~/.morph/exts/demo-upper/upper.c
+```sh
+mkdir -p ~/.morph/exts/demo-upper
+cc -shared -fPIC -Ibuild/_deps/nbase-src/include exts/demo-upper/upper.c -o ~/.morph/exts/demo-upper/upper.so
+cp exts/demo-upper/manifest.toml ~/.morph/exts/demo-upper/
 ```
 
-## Usage
-
-The ReAct loop calls it automatically:
-
-```
-> convert "hello world" to uppercase
-[Action] upper({"text":"hello world"})
-[Obs]   {"result":"HELLO WORLD"}
-```
-
-## Manual test
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"run","params":{"text":"hello"}}' | \
-  upper.so  # not applicable — loaded via dlopen, not standalone
-```
-
-## Permission
-
-`permissions = 0` — no network, no filesystem, no exec. Runs fully constrained.
-
-## Entry point
-
-Exports `int ext_run(const char *args_json, char **result_json)` from `upper.so`.
+When using a local nbase checkout, point `-I` at its `include` directory.
+Restart Morph to discover the tool. Native extensions execute inside the host
+process. The desktop runtime refuses a native tool call under restricted access
+because it cannot impose a child-process sandbox on the call.
+[Extension manifest](manifest.toml) · [Permission policy](../../docs/permissions-design.md)

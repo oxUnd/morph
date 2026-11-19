@@ -4,8 +4,7 @@
 clipboard. It uses the saved Markdown text, preserving code fences, Unicode,
 line endings and trailing spaces. Tool results, preambles, reasoning and internal
 summaries are excluded. Answers remain available after resume or compression;
-switching to an empty session reports that there is no answer to copy. The command
-runs after an active turn finishes, like the other local session commands.
+switching to an empty session reports that there is no answer to copy. Use the command while the session is idle.
 
 macOS uses `pbcopy`. Linux tries `wl-copy`, `xclip`, then `xsel`; these tools retain
 clipboard ownership as needed. Native writes have a five-second deadline. In SSH
@@ -20,7 +19,7 @@ or cancel with Esc to return to a fresh composer. `morph resume <name|id>` accep
 session name, display ID or numeric ID and fails if it does not exist. Sessions
 remember their working directory: `morph resume <name|id>` restores it
 automatically, while an explicit `--workdir` overrides it and rebinds the session.
-Configuration options work before or after `resume`:
+Configuration options work before or after `resume`.
 
 The picker groups sessions by working directory. The current directory's group
 comes first; every other group follows by most recent activity, including a
@@ -138,10 +137,9 @@ mode's command-output envelope.
 /history --export path          Existing model-history JSON export
 ```
 
-The inspector handles narrow terminals, resizes, bracketed paste, Ctrl+C and EOF;
-it restores terminal modes and the main screen on return. Signal handlers restore
-the screen before forwarding termination signals to their previous handlers.
-Only changed viewport rows are painted, and idle inspection emits no bytes.
+The history inspector is a page on the chat application’s controller stack.
+Closing it restores the conversation and the unsent draft. Terminal modes and
+shutdown belong to the application. [CLI page lifecycle](../src/sapi/cli/README.md)
 
 Validation includes runtime and adapter tests plus `test_cli_history_pty.py`,
 which exercises 300 saved entries, summary ancestry, actual request capture,

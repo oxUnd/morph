@@ -33,7 +33,7 @@ export PATH="/usr/local/bin:$PATH"
 export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 ```
 
-From the Morph repository, configure and build:
+Prepare the MathJax and Markdown source checkouts from the [build instructions](../README.md#build). From the Morph repository, configure and build:
 
 ```sh
 cmake -S . -B out/cygwin -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF

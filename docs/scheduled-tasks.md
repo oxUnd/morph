@@ -50,7 +50,7 @@ Tasks 系统用于处理“现在不能立即完成、需要稍后或周期性�
 
 任务 claim 以状态、到期时间及旧 run_token 条件更新，并生成新的运行身份。
 完成必须匹配当前 running 状态和身份；运行中取消、更新或旧执行者迟到返回
-`-ESTALE`，不能覆写新状态。执行器在事务外运行，完成状态与通知在同一短
+`NB_ERR_STALE`，不能覆写新状态。执行器在事务外运行，完成状态与通知在同一短
 SAVEPOINT 中提交。事件回调失败会记录诊断，不使已提交任务重新执行；通知可从
 inbox 查询。这些保证不等于外部副作用 exactly-once，也没有引入租约或心跳。
 
@@ -157,7 +157,7 @@ scheduler finds next_run_at <= now
   -> claim task as running
   -> parse payload_json.prompt
   -> construct background ReAct input
-  -> react_run(...)
+  -> runtime_execute_turn(...)
   -> notification_create(final answer)
   -> once: mark completed
   -> interval: set waiting and next_run_at = now + interval_seconds
@@ -237,8 +237,8 @@ run_due     仅存在占位分支，调用即返回错误
 `run_due is scheduler-only for agent tasks`。due processing 是 scheduler-only，
 避免 agent 递归触发任务执行。真正的入口是
 `runtime_tasks_run_due_for_runtime()`（`src/runtime/task_controller.c`），
-由 `src/sapi/cli/scheduler.c`（交互式后台）和 `src/sapi/cli/commands/tasks.c`
-（`/tasks run`）调用；`src/runtime/task_worker.c` 走的是底层
+供手动处理到期任务使用。交互式 CLI 通过 `src/sapi/cli/services/scheduler.c`
+启动 runtime 调度线程；线程在 `src/runtime/task_worker.c` 中调用
 `runtime_task_run_due_collect()`。
 
 相对时间：
@@ -572,50 +572,12 @@ CLI 的 `/tasks add`、`/tasks every`、`/tasks update`、`/tasks cancel`、
 core event sink 发 task events。Android/iOS 仍需在后续适配中把 task events 接到
 现有系统通知/UI 刷新逻辑。
 
-## 当前限制
+## 当前执行边界
 
-- 后台 agent runner 复用 CLI 的 `react_context`，通过 `react_lock` 串行化。它能工作，
-  但不是最终的多 worker 架构。
-- 后台任务当前没有独立 tool registry，因此后台任务仍可能看到交互式工具。prompt 会
-  要求不要追问，但后续最好从工具层禁用 `ask_user` 和 `tasks`。
-- 没有结构化 agent result contract。现在用 ReAct 返回码判断成功/失败，用 final
-  answer 作为 notification body。
-- 没有 task-local state，例如 `last_result`、`state_json`、`last_success_at`。
-- 没有 cron 表达式；每日/每周任务暂时用 `next_run_at + interval_seconds` 表达。
-- 没有 session-scoped/global-scoped 的明确区分；当前任务存储在 Morph SQLite 中。
-- Android/iOS 仍然使用 task notification callback；后续应改为消费 `task.notification`
-  和 task terminal events。
+CLI 为每次到期的 agent 任务创建独立会话，用共享 runtime 执行 turn。执行结果的
+最终文本写入通知，失败时保留错误信息。任务提示会要求直接执行并给出简短结果。
+[CLI 任务执行器](../src/sapi/cli/services/scheduler.c)
 
-## 建议的下一步
-
-1. 增加结构化 agent result contract：
-
-```json
-{
-  "success": true,
-  "completed": false,
-  "message": "Notification body",
-  "next_run_after_seconds": 3600,
-  "state": {"last_seen_version":"1.2.3"}
-}
-```
-
-2. 给 task 增加持久状态字段：
-
-```text
-last_result
-last_success_at
-state_json
-```
-
-3. 后台 runner 使用独立 ReAct context 和后台专用 tool registry，默认禁用：
-
-```text
-ask_user
-tasks
-interactive UI tools
-```
-
-4. 增加 cron/date parser 层，而不是让 DB 层理解自然语言。
-
-5. 增加 daemon/FastCGI scheduler 入口，复用当前 due runner。
+调度器按 Unix 时间和间隔秒数判断到期。周期性任务只有在宿主继续处理到期任务时才会运行。
+退出 CLI 后任务和通知仍保存在数据库中，可以在下次启动后查看。
+[任务存储](../src/db/scheduled_task.c) · [调度线程](../src/runtime/task_worker.c)

@@ -21,7 +21,7 @@ metadata preservation.
 
 ## Purpose
 
-`file_write` exists for mobile frontends where `bash_exec` is unavailable or
+`file_write` exists for mobile frontends where `exec` is unavailable or
 intentionally disabled. It gives the agent a narrow, auditable way to mutate
 files while preserving the existing morph path authorization model.
 
@@ -111,8 +111,8 @@ All embedded writes use the host `struct tool_context`:
 - `rename` and `delete` treat `path` as a write target.
 
 Relative write paths resolve under `output_dir`, because this is the existing
-`tool_context` behavior for `TOOL_PATH_WRITE`. Paths outside `output_dir` can
-still be allowed by the frontend approval callback.
+`tool_context` behavior for `TOOL_PATH_WRITE`. The active access policy and grants determine whether another path is already
+authorized, needs review, or is denied.
 
 When no `tool_context` is available, the tool should not be exposed to the
 agent. The standalone ext entrypoint enforces this by returning `NB_ERR_UNSUPPORTED`.

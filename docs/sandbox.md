@@ -20,7 +20,7 @@ retain process groups, output limits, timeouts and `background` session control.
 The result reports `execution_mode: "host"` or `"sandbox"`. Model-supplied stdin writes
 to any existing session pass the shared review gate again, unless the effective
 policy or an explicit session grant already allows the call. This also covers
-processes retaining earlier filesystem grants after a turn ends. Policy changes return EBUSY while a
+processes retaining earlier filesystem grants after a turn ends. Policy changes return a busy status while a
 process or subagent remains active.
 
 Legacy `exec.allow_host_execution`, `exec.network` and `react.hitl_*` settings
@@ -165,10 +165,10 @@ to HOME or its ancestors are not granted. Unavailable directories are skipped.
 
 Runtime startup registers the same resolved presets with tool-context path
 approval even when exec is disabled. An explicit `skill.dir` is included too. Reads, writes, deletions, and explicit `request_permissions` requests
-inside these roots do not prompt again. Built-in paths use a dynamic collection
+inside these roots are evaluated against the effective access boundary. Read Only has no default project or tool-cache write grant. Built-in paths use a dynamic collection
 independent of user grant limits. Exec merges all matching scoped, persistent,
 profile, and built-in grants dynamically for each operation; bounded compatibility APIs report
-`ENOSPC` instead of silently dropping paths. Profile write/delete roots are
+`NB_ERR_NO_SPACE` instead of silently dropping paths. Profile write/delete roots are
 recognized by native tools as well. Native write and delete session grants are
 separate. `request_permissions` grants read, write, and delete access to directories
 and their descendants, shared by native tools and all command executables. Its
@@ -258,12 +258,9 @@ permissions. The source table is the authoritative list of supported paths and
 environment overrides; arbitrary project/tool configuration is not executed to
 discover additional directories.
 
-Direct networking is off by default and controlled by `[exec].network`:
-
-```toml
-[exec]
-network = false
-```
+Sandboxed `exec` calls request direct networking with the per-call `network`
+boolean. The shared policy checks that request. The legacy `[exec].network`
+setting is handled during configuration migration as described above.
 
 Sandbox resource ceilings are applied by the sandbox layer rather than the
 `[exec]` table. The memory value applies to `RLIMIT_DATA`. `RLIMIT_AS` is

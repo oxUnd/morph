@@ -1,24 +1,12 @@
 # Prompt templates
 
-## Scope and decisions
+## Scope
 
-This change implements the template foundation before adding role presets.
-The renderer is a general-purpose prompt module: callers supply template text
-or a file bundle and explicit typed bindings, and receive ordinary UTF-8 text.
-It is not specific to setup, system prompts, any model, or any front end.
-Setup, main agents, subagents, compaction, and other prompt producers can use
-the same API and choose their own rendering lifecycle and context.
-
-The implementation lives in `src/prompt/template.c`, with its API in
-`src/prompt/template.h`, in the `morph-prompt` static library. It depends only on
-`nbase::nbase`; `morph-agent` links it publicly for agent and frontend consumers.
-The renderer does not automatically reinterpret existing prompt files or change
-runtime behavior. The CLI setup consumer now renders shipped scenario templates
-into private snapshots; see [Setup](setup.md). Other producers opt in through
-the same API.
-
-This is a small, explicitly versioned Mustache-style subset, not a Mustache or
-Jinja compatibility implementation. It adds no dependency or scripting runtime.
+The `morph-prompt` library renders a UTF-8 string or file bundle using
+explicit string and boolean bindings. CLI setup uses it to compose the selected
+role and shared guidance into a private prompt snapshot. The runtime reads
+that snapshot as literal text. [Public API](../src/prompt/template.h) ·
+[Setup and reconfiguration](setup.md)
 
 ## Motivation
 
@@ -65,7 +53,7 @@ the call, and the renderer has no global state.
 
 Error details contain a bundle-relative source path (or `<string>`), a 1-based
 line and byte column, and an English explanation. The return value is a portable negative `NB_ERR_*` status for
-I/O, allocation, or resource limits, or the application `MORPH_ERR_FORMAT` code
+I/O, allocation, or resource limits, or `NB_ERR_FORMAT`
 for template errors. Callers display `nb_err_str` with the application error
 catalog and the optional diagnostic; they must not
 log variable values, which may contain user content.
@@ -236,52 +224,20 @@ from this library's syntax support. Preserve the literal meaning of existing
 prompt files rather than treating every system prompt as executable template
 source. Dynamic tool availability and permissions remain runtime-owned context.
 
-Setup is one consumer. Preset generation renders a prompt snapshot once:
+## Setup and role presets
 
-1. Collect a preset selection and model choices without writing files.
-2. Build an explicit variable context from preset metadata and setup settings.
-3. Render and validate the complete prompt in memory.
-4. Generate and schema-validate TOML referencing its final prompt snapshot.
-5. Publish the prompt and then configuration with no-overwrite behavior; handle
-   cleanup and crash leftovers as part of the setup save operation.
+Setup selects a shipped scenario template from the role catalog and binds
+`role.name`. Required text, vision, image and video workloads are properties of
+the role catalog. The wizard checks those requirements before saving.
+[Role catalog](../src/sapi/cli/services/configuration/role.c) · [Role prompts](role-prompts.md)
 
-The general template renderer implements step 3 only. It does not publish files,
-select append/replace mode, change configuration, or decide whether setup may finish.
-Template bundle resources can use the existing `prompts/` staging/install rules;
-setup resolves that installed bundle and selects its entry file.
-
-Do not freeze the current date, cwd, tool list, activated skills, current model
-availability, or granted permissions into setup snapshots. Those facts may
-change after setup. Enabling dynamic templates in persisted user prompts would
-require a separate opt-in format, runtime context contract, and integration with
-prompt loading; existing plain-text files must retain literal semantics.
-
-## Role presets need a separate configuration contract
-
-A role will likely comprise more than a template. Before adding roles, design a
-structured preset manifest covering these concerns:
-
-| Concern | Required distinction |
-| --- | --- |
-| Models | Required versus recommended text, vision, image, or video capability; never infer vision from image generation |
-| Permissions | Suggested narrowly scoped profiles versus explicit user grants; selecting a role cannot itself authorize access |
-| Key files | Shipped assets, generated starter files, and user-supplied inputs; required/optional, destination, collision and ownership rules |
-| Guidance files | Whether a file is instructions or reference material; preserve existing project guidance scopes and precedence |
-| Tools and skills | Recommended integrations versus capabilities actually registered and available at runtime |
-| Validation | Blocking unmet prerequisites versus optional limitations; define whether saving an incomplete draft is allowed |
-| Lifecycle | Existing config, customized snapshots, preset versions, upgrades, switching roles, and rollback |
-
-For example, a video role that writes scripts need not require a video model;
-a preset promising actual video generation may require one. Photo critique may
-require vision, whereas image generation needs an image model. Capability
-requirements belong in executable preset metadata and setup validation, not in
-natural-language prompt conditions. Configuring a model is also distinct from
-having valid credentials and a functioning endpoint.
-
-The current setup uses an explicit role catalog for required models and template
-entries. External skill sources, permission suggestions, and generated key-file
-policies still need a separate manifest design; a manifest can supply static
-bindings without changing template syntax.
+When the user selects role instructions, setup renders the template, reuses
+an identical snapshot or publishes a new private file, and points the
+configuration at its absolute path in replace mode. It validates the merged
+configuration before publishing it. Reconfiguration can keep an existing
+prompt. Changes to the working directory, available tools and permissions are
+supplied by the runtime on subsequent requests.
+[Configuration writer](../src/sapi/cli/pages/setup/wizard.c) · [Prompt assembly](prompt-architecture.md)
 
 ## Verification
 

@@ -44,7 +44,7 @@ Do not assume an older installed binary supports unreleased source changes.
   overrides it. Do not edit the default when a different active path is known.
 - Prefer the first-run wizard for a missing config. It uses append mode, keeps
   completed answers in scrollback, and puts technical fields in Advanced settings.
-  Existing configs are not overwritten or automatically reconfigured by setup.
+  Use `morph setup` to reconfigure an existing file. The final save backs it up and merges the changes.
 - Distinguish text, vision understanding, image generation, and video generation.
   Configuring one does not automatically configure the others.
 - Treat `adapter` as the wire-protocol selector, not another model/provider name.
@@ -63,7 +63,7 @@ Do not assume an older installed binary supports unreleased source changes.
 1. Inspect the current config and prepare a minimal edit to the requested settings.
 2. Explain the target path and change. Honor authorization already given for that
    exact change; do not add a redundant conversational approval step.
-3. Use `config_edit` when available. It enforces the active-file operation approval,
+3. Use `config_edit` when available. It checks the active permission policy,
    validates the full config, creates a backup, and writes atomically. Do not bypass
    its approval or denial by switching to another write tool.
 4. Report the tool's actual result. A changed config requires a normal Morph restart;

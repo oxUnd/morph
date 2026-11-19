@@ -22,7 +22,7 @@ The ReAct loop calls it automatically:
 ```
 > translate hello world to Chinese
 [Action] translate({"text":"hello world","target_lang":"zh"})
-[Obs]   {"result":"你好，世界"}
+[Obs]   {"translated":"你好，世界"}
 ```
 
 ## Manual test

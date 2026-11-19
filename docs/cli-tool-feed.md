@@ -125,9 +125,8 @@ retained controls above. Plain and JSON event modes keep their existing contract
 The legacy Markdown write adapter observes terminating newlines and normalizes
 the final boundary before duration output. The retained feed instead allocates
 spacing from View margins; final duration is a separate retained receipt.
-Composer replacement panels still use a shared row-rendering adapter on the same
-Application. In retained chat they preserve the current alternate-screen session;
-closing them restores the root tree, viewport and editor.
+Inline selectors mount native views in the chat page. Closing a selector restores
+the draft, viewport and input focus. [CLI implementation](../src/sapi/cli/README.md)
 
 The deterministic compatibility fixture remains available for reviewing the
 stateless renderer without commands or network requests:

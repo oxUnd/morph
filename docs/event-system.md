@@ -1,103 +1,22 @@
 # Unified Event System
 
-## Problem
+The runtime sends structured events to the CLI and FastCGI. Consumers dispatch
+on `type` and the dotted `name`, then read the event-specific fields in `data`.
+The optional `message` is display text. This lets the CLI update a tool row and
+FastCGI publish an SSE record from the same call and result.
 
-Morph now has multiple front ends and partial event paths:
+## Event contract
 
-- CLI renders ReAct progress through `react_output_cb`.
-- FastCGI converts the same callback into SSE events, sometimes by parsing
-  human text such as `tool(args)`.
-- Startup, MCP auto-connect, model initialization, tool registration, HITL,
-  artifacts, and background work do not share one event contract.
-
-This makes GUI and Android integrations fragile. They must either parse CLI
-text or duplicate internal state logic. A unified event system is required so
-CLI, GUI, Android, FastCGI, tests, and future front ends consume the same
-structured facts.
-
-## Goals
-
-- Provide one core event contract for CLI and GUI surfaces.
-- Preserve the existing CLI UX while making structured output available.
-- Stop requiring front ends to parse human-readable ReAct strings.
-- Cover startup, MCP, ReAct, tools, HITL, artifacts, background work, and
-  errors.
-- Keep existing behavior working during migration.
-- Make missed event paths visible through an implementation checklist and
-  tests.
-
-## Non-Goals
-
-- Do not build the full GUI in this change.
-- Do not remove the existing `react_output_cb` immediately.
-- Do not make every subsystem asynchronous as part of the initial event work.
-- Do not introduce a new container, buffer, string, or map implementation.
-
-## Hard Constraints
-
-- Use native foundational containers from `nbase::nbase` (`nb/*.h`):
-  - `nb_buf` for variable-length JSON/text assembly.
-  - `nb_vec` for event queues, subscriber lists, and dynamic batches.
-  - `nb_str` for string views when ownership is external.
-  - `nb_map *` for string-keyed subscriptions or event name lookup.
-- Do not hand-roll growable buffers, dynamic arrays, hash maps, or UTF-8 logic.
-- Use `cJSON` for structured event payloads in the first implementation.
-- Event `message` is for human fallback only. Front ends must depend on
-  `type`, `name`, `phase`, and `data`.
-- Event names and payload fields are a front-end protocol. Rename or remove
-  them only through an explicit compatibility plan.
-- Background threads must not directly mutate CLI/UI state or `tool_registry`.
-  If cross-thread events are needed, enqueue them through a thread-safe event
-  queue and drain them from the owner thread.
-- Error returns follow project convention: negative errno or `MORPH_ERR_*`.
-
-## Event Contract
-
-The core event object should be small and renderer-neutral:
-
-```c
-enum morph_event_type {
-	MORPH_EVENT_STARTUP,
-	MORPH_EVENT_REACT,
-	MORPH_EVENT_TOOL,
-	MORPH_EVENT_MCP,
-	MORPH_EVENT_HITL,
-	MORPH_EVENT_ARTIFACT,
-	MORPH_EVENT_BACKGROUND,
-	MORPH_EVENT_TASK,
-	MORPH_EVENT_ERROR,
-	MORPH_EVENT_COMMAND,
-	MORPH_EVENT_INTERACTION,
-};
-
-struct morph_event {
-	enum morph_event_type type;
-	const char *name;
-	const char *phase;
-	const char *message;
-	cJSON *data;
-};
-
-typedef int (*morph_event_cb)(const struct morph_event *ev, void *user_data);
-```
-
-Recommended source layout:
-
-```text
-src/event/event.h
-src/event/event.c
-```
-
-The event module should provide:
-
-- event type name conversion;
-- JSON serialization for NDJSON/SSE/trace output;
-- helper emit functions that build `cJSON` payloads safely;
-- optional recorder helpers for tests.
+A `morph_event_cb` borrows the event for the duration of the call. A consumer
+that queues work or retains a payload must copy it. The JSON serializer emits
+`type`, `name` and `data` (an empty object when absent). It includes `phase`,
+`message` and the top-level `turn_id` when supplied. Errors use portable nbase
+statuses and Morph application codes. [C interface](../src/event/event.h) ·
+[JSON serialization](../src/event/event.c)
 
 ## Event Names
 
-Event names are stable strings. Use dotted namespaces.
+The following groups list common events. Lifecycle hooks also emit hook-specific events described in [Lifecycle hooks](hooks.md).
 
 Startup:
 
@@ -106,6 +25,7 @@ startup.begin
 startup.config
 startup.database
 startup.models
+startup.hooks
 startup.tools
 startup.mcp
 startup.session
@@ -116,14 +36,11 @@ startup.failed
 MCP:
 
 ```text
-mcp.registered
-mcp.skipped
 mcp.connecting
 mcp.connected
 mcp.discovering
 mcp.registering
 mcp.ready
-mcp.timeout
 mcp.failed
 mcp.disconnected
 ```
@@ -147,6 +64,7 @@ react.final.delta
 react.final.retry
 react.user.steer
 react.hook.continue
+react.context.usage
 react.compaction.begin
 react.compaction.completed
 react.compaction.failed
@@ -190,7 +108,7 @@ as `Content` trace steps; the low-level output callback uses
 Android stores `CONTENT` and `REASONING` separately and renders assistant
 content as streaming Markdown. Legacy thought events remain supported.
 
-Stop hooks never suppress text deltas. `react.hook.continue` commits the completed
+Stop hooks can request a continuation. Output guardrails with a blocking policy may withhold streaming previews. `react.hook.continue` commits the completed
 response and presents the hook-generated continuation prompt before the next model
 request. Its `data.text` is the prompt, also stored as a user history item with
 `source: "hook"` and `hook_event_name: "Stop"`. The root `turn_id` stays unchanged;
@@ -234,7 +152,8 @@ Background work:
 background.started
 background.progress
 background.ready
-background.stopping
+background.wait.begin
+background.wait.end
 background.completed
 background.failed
 ```
@@ -344,264 +263,40 @@ Use these where applicable:
 All payloads should be JSON objects. Avoid arrays at the top level unless the
 event itself represents a batch.
 
-MCP event payload:
+MCP lifecycle events carry the server name, transport and auto-connect setting.
+Discovery results add available tool, resource and prompt counts. Failures can
+carry the error status and diagnostic. [MCP emitter](../src/runtime/mcp.c)
 
-```json
-{
-  "server": "filesystem",
-  "transport": "stdio",
-  "auto_connect": true,
-  "timeout_seconds": 3,
-  "tools": 4,
-  "resources": 2,
-  "prompts": 0,
-  "error_code": -260,
-  "error": "network error"
-}
-```
+The core `artifact.ready` data includes `kind`, `path` and an optional `source`.
+FastCGI registers the file for its web client and supplies the web-facing
+artifact reference. [FastCGI adapter](../src/sapi/fastcgi/adapters/turn_events.c)
 
-Tool event payload:
+A tool call includes `tool`, `tool_call_id` and `args`. Text-input tools wrap
+their input in `args.input`. A result event carries the result as a string.
+An observation can additionally carry structured data, UI and artifacts.
+Negative statuses add `error_code` and `error`.
+[ReAct event serialization](../src/agent/react_events.c)
 
-```json
-{
-  "tool": "img_gen",
-  "args": {"prompt": "..."},
-  "tool_call_id": "call_123",
-  "result": {"path": "..."},
-  "error_code": -5,
-  "error": "I/O error"
-}
-```
+A successful turn ends with `react.turn.end`. An unsuccessful turn emits a
+specific terminal event such as `react.cancelled`, followed by `react.turn.end`.
+The terminal data includes `outcome` and `text`, with `reason`, error fields
+and diagnostic detail when available. Consumers can finish a turn on
+`react.turn.end` in either case. [Turn completion](../src/agent/react.c)
 
-Task event payload:
+Task events identify the scheduled task and its state. A notification carries
+the inbox record that clients can inspect after restarting. See the
+[task event fields and examples](scheduled-tasks.md#task-events).
 
-```json
-{
-  "task_id": 8,
-  "title": "Hourly AI news",
-  "kind": "agent",
-  "trigger_type": "interval",
-  "status": "waiting",
-  "next_run_at": 1782117600,
-  "attempts": 2,
-  "max_attempts": 0,
-  "interval_seconds": 3600,
-  "reason": "interval",
-  "error_code": -5,
-  "notification_id": 42,
-  "notification_level": "warning",
-  "notification_title": "Hourly AI news",
-  "notification_body": "The search failed because ..."
-}
-```
+## Frontends and verification
 
-`reason` is the machine-readable outcome subtype. Current values include
-`completed`, `interval`, `retry`, `timeout`, `max_attempts`, `runner_error`,
-`condition_not_met`, `no_runner`, and `cancelled`.
-
-ReAct event payload:
-
-```json
-{
-  "turn_id": "optional-stable-id",
-  "iteration": 2,
-  "text": "partial or final text",
-  "state": "thinking",
-  "outcome": "timeout",
-  "reason": "step_timeout",
-  "error_code": -110,
-  "error": "Operation timed out"
-}
-```
-
-Terminal ReAct events (`react.turn.end`, `react.cancelled`,
-`react.timed_out`, `react.max_iterations`, and `react.failed`) include
-`outcome`. Failed terminal events also include `reason`, `error_code`, and
-`error`. Stable outcomes are `success`, `cancelled`, `timeout`,
-`max_iterations`, `llm_error`, `tool_error`, `guardrail_denied`, and
-`internal_error`.
-
-HITL event payload:
-
-```json
-{
-  "tool": "exec",
-  "args": {"command": "make test"},
-  "verdict": "approved"
-}
-```
-
-Artifact event payload:
-
-```json
-{
-  "id": "artifact-id",
-  "kind": "image",
-  "mime": "image/png",
-  "path": "/abs/path",
-  "url": "/api/artifacts/artifact-id"
-}
-```
-
-## Front-End Renderers
-
-CLI human renderer:
-
-- Renders startup and MCP progress as concise status lines.
-- Renders ReAct thinking/tool progress through the existing spinner behavior.
-- Renders final answers with markdown/media handling.
-
-CLI structured renderer:
-
-- Emits one JSON object per line.
-- Should be enabled by an explicit option such as `--events=json`.
-- Must not mix ANSI output into stdout in structured mode.
-
-FastCGI renderer:
-
-- Maps unified events to SSE records.
-- Must stop parsing `tool(args)` strings after React emits structured tool
-  events.
-
-GUI/Android renderer:
-
-- Consumes structured event objects.
-- Uses `message` only as fallback display text.
-- Should switch on stable `name` and read structured `data`.
-
-Test recorder:
-
-- Records events in `nb_vec`.
-- Supports assertions on event order, names, phases, and payload fields.
-
-## Required Migration Points
-
-The event module is implemented under `src/event/`. Consumers below reflect the
-current layout; keep them in sync when moving code.
-
-Core event module:
-
-- `src/event/event.h`
-- `src/event/event.c`
-- `src/event/CMakeLists.txt` and `src/` CMake integration
-
-Runtime owners:
-
-- `src/runtime/lifecycle.c`: all `startup.*` events (`startup.begin`,
-  `startup.config`, `startup.database`, `startup.models`, `startup.tools`,
-  `startup.mcp`, `startup.session`, `startup.ready`, `startup.failed`)
-- `src/runtime/mcp.c`: `mcp.connecting`, `mcp.connected`, `mcp.discovering`,
-  `mcp.ready`, `mcp.failed`, `mcp.disconnected`
-- `src/db/scheduled_task.c`: `task.created`, `task.updated`, `task.cancelled`,
-  `task.claimed`, `task.started`, `task.notification`, `task.completed`,
-  `task.rescheduled`, `task.timed_out`, `task.failed`,
-  `task.max_attempts_reached`
-- `src/runtime/task_worker.c`: drives the due-task pass that produces those
-  task events; it forwards the callback rather than emitting names itself
-
-`src/runtime/bootstrap.c` builds models and built-in tools but does not emit
-events itself; `lifecycle.c` reports the outcome. `src/runtime/engine.c` and
-`src/runtime/execute.c` wire the background callback and emit no event names
-directly.
-
-ReAct:
-
-- `src/agent/react.h`: event callback API on `react_context`
-- `src/agent/react.c`: turn begin/end
-- `src/agent/react.c`: streaming thought, reasoning, and final deltas
-- `src/agent/react.c`: action, tool call/running/result/failed/cancelled
-- `src/agent/react.c`: observation/reflection/final
-- `src/agent/react.c`: cancellation and timeout events
-- `src/agent/react.c`: HITL request/verdict events
-- `src/agent/react.c`: guardrail reflection events
-- `src/agent/react.c`: in-turn compaction and user-steer events
-- `src/agent/react.c`: artifact detection from structured tool results
-
-Tools and artifacts:
-
-- image/video tools that produce artifact paths through React artifact events
-- plan and ask_user tools that already produce UI JSON
-
-MCP:
-
-- `src/mcp/mcp_client.c`: register functions return structured counts
-- `src/runtime/mcp_background.c` adds concurrent startup and `mcp.registering`;
-  background events carry `data.background = true` and use the host event queue.
-- `src/runtime/mcp.c` emits connecting, connected, discovering, ready,
-  failed, and disconnected events; `src/sapi/cli/commands/mcp.c` surfaces the
-  register/skip results for the `/mcp` command
-
-FastCGI:
-
-- `src/sapi/fastcgi/handlers/turns.c` and
-  `src/sapi/fastcgi/handlers/events.c`: consume unified React/tool/artifact
-  events and map them to SSE records
-- `src/sapi/fastcgi/agent_bridge.c` and `src/sapi/fastcgi/event_sink.c`: bridge
-  the runtime event callback into those handlers
-
-Multi-agent/background work:
-
-- `src/agent/agent_control.c`: `agent.started` / `agent.completed` activity events.
-- Child events carry `agent_id` and `parent_session_id`, are persisted, and are
-  forwarded only for the selected agent.
-- `src/agent/tools/multi_agents.c`: Codex-compatible collaboration tool calls.
-
-
-Memory/compression:
-
-- `src/agent/turn.c`: background memory consolidation status is surfaced
-- compression remains a ReAct internal operation and is visible through the
-  enclosing turn events (`react.compaction.*`)
-
-Docs/tests:
-
-- `REQUIREMENTS.md`: mention unified events as multi-front-end foundation
-- tests for event JSON serialization
-- tests for React structured tool events
-- tests for React artifact events
-- CLI JSON smoke path for startup/background events
-- FastCGI build coverage for the unified event bridge
-
-## Compatibility Plan
-
-Phase 1:
-
-- Add event module.
-- Add event callback fields.
-- Emit MCP startup events.
-- Keep current `react_output_cb` unchanged.
-
-Phase 2:
-
-- Make React emit structured events while still calling `react_output_cb`.
-- CLI may keep old renderer during this phase.
-- FastCGI can prefer structured events and fall back to old callback.
-
-Phase 3:
-
-- Move CLI renderer to unified events.
-- Move FastCGI bridge fully to unified events.
-- Keep `react_output_cb` as a compatibility wrapper.
-
-Phase 4:
-
-- Remove text parsing of `tool(args)`.
-- Treat old callback as deprecated.
-
-## Acceptance Criteria
-
-- CLI default behavior remains usable and human-readable.
-- Structured CLI mode produces valid NDJSON with no ANSI escape sequences on
-  stdout.
-- FastCGI SSE receives structured tool name, args, result, and artifact data
-  without parsing human text.
-- MCP auto-connect progress, timeout, failure, and ready states are observable.
-- ReAct turn begin/end, streaming deltas, tool lifecycle, final, cancellation,
-  and failure states are observable.
-- Tests pass with `ctest --output-on-failure`.
-- No new hand-rolled buffers, arrays, maps, or UTF-8 helpers are introduced.
-- Existing public behavior remains compatible until the old callback is
-  explicitly deprecated.
+- Interactive CLI workers post events to the owner thread. It updates the
+  retained conversation, activity rows and tool transcript. [CLI tool feed](cli-tool-feed.md)
+- `morph --events json` writes NDJSON. Use `request_id` to correlate
+  interaction responses and `tool_call_id` to match tool calls and results.
+- FastCGI maps runtime events to the web client's SSE names and persists
+  frontend events for replay. [FastCGI API](../src/sapi/fastcgi/README.md#api-surface)
+- Tests can use the event recorder to inspect serialized events in arrival
+  order. [Recorder tests](../tests/test_event.cpp)
 
 ## Background command lifecycle
 

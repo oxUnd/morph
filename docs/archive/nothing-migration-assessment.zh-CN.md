@@ -1,5 +1,7 @@
 # nothing / nbase 全量替换评估与计划
 
+> 本文保留 nbase 迁移前后的评估和验收记录。当前依赖和构建方式见[构建说明](../../README.md#build)，分发许可事项见[开发指南](../../AGENTS.md#vendor)。
+
 - 日期：2026-11-14。
 - 状态：原生 API 迁移、旧库删除及再审 A01–A06、M01–M08 已逐项处理；有意保留的兼容与安全边界、最终验证见第 13 节。nbase 主库许可仍待明确。
 - morph 基线：`df7ca5a4cb4cc9d79713d4de17eff6c576f465f2`。
@@ -11,7 +13,7 @@
 
 本文的 TUI 目录、样例及基准数据均对应当时的提交。当前构建从发布版本获取
 `nothing-tui` 和 `nbase`，下文的 `vendor/nothing` 路径属于历史记录。
-[构建说明](../README.md#build) · [CLI 应用布局](tui-application-layout.md)
+[构建说明](../../README.md#build) · [CLI 应用布局](../tui-application-layout.md)
 
 ## 1. 评估目标与结论
 
@@ -110,15 +112,15 @@ morph 完整回归和性能基准见第 10–11 节；iOS/Android 未实测。
 
 位置：
 
-- [`file_write_atomic`](../src/util/file.c)：同目录临时文件、完整写入、文件 fsync、
+- [`file_write_atomic`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/util/file.c)：同目录临时文件、完整写入、文件 fsync、
   rename、父目录 fsync；新文件 0600，拒绝符号链接。
-- [`cli_management_atomic_write`](../src/sapi/cli/services/management.c:114)：
+- [`cli_management_atomic_write`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/cli/services/management.c#L114)：
   同样执行临时文件、写循环、fsync 和 rename，但没有父目录 fsync，使用 stat 读取模式。
-- [`atomic_write_config`](../src/agent/tools/config_write.c:211)：
+- [`atomic_write_config`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/agent/tools/config_write.c#L211)：
   再实现一遍写循环/临时文件/模式/rename，没有父目录 fsync。
-- [`cli_wizard_save_config`](../src/sapi/cli/pages/setup/wizard.c)：
+- [`cli_wizard_save_config`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/cli/pages/setup/wizard.c)：
   支持 create-only 的 link 发布、覆盖 rename、父目录 fsync，另外报告是否已经发布。
-- [`cli_share_store_share_publish`](../src/sapi/cli/services/share_store.c)：
+- [`cli_share_store_share_publish`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/cli/services/share_store.c)：
   临时文件完整写入后 link 为最终文件名，另有失败回收。
 
 **收敛方式：** 这些地方直接使用 `nb_file_write_all_atomic`，由调用方提供 mode、
@@ -134,10 +136,10 @@ checkpoint 的目录 fd / `openat` / `O_NOFOLLOW` 恢复流程属于更强的目
 
 ### D02：复制、递归遍历和删除在安装及同步中重复实现
 
-位置：[`ext/install.c`](../src/ext/install.c:331) 的 `copy_file/copy_tree/remove_tree`、
-[`skill_store.c`](../src/sapi/cli/services/skill_store.c:138) 的文件/目录复制与递归删除、
-[`sync.c`](../src/sync/sync.c:794) 的 `copy_file_plain`、
-[`db_backup.c`](../src/sync/db_backup.c:111) 的 `copy_plain`。
+位置：[`ext/install.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/ext/install.c#L331) 的 `copy_file/copy_tree/remove_tree`、
+[`skill_store.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/cli/services/skill_store.c#L138) 的文件/目录复制与递归删除、
+[`sync.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sync/sync.c#L794) 的 `copy_file_plain`、
+[`db_backup.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sync/db_backup.c#L111) 的 `copy_plain`。
 
 同步中的两份 plain copy 都是 fopen/fread/fwrite/flush/close 的同类实现。
 安装逻辑也是重复的 read/write、EINTR 处理和目录遍历，但策略不同：
@@ -158,13 +160,13 @@ SQLite 在线备份继续使用 SQLite backup API，不能用普通文件复制�
 
 ### D03：时间读取与 deadline 换算重复，单位和失败处理分叉
 
-位置：[`process_now_ms`](../src/exec/process.c:112)、
-[`mcp_stdio_now_ms`](../src/mcp/mcp_stdio.c:27)、
-[`runtime_mcp_now_ms`](../src/runtime/mcp_background.c:11)、
-[`hook_now_ms`](../src/runtime/hooks_executor.c:142)、
-[`cli_jobs_now`](../src/sapi/cli/models/jobs.c:8)、
-[`cli_transcript_now`](../src/sapi/cli/services/transcript.c)、
-[`morph_io_now_ms`](../src/util/child_io.c:52) 等。
+位置：[`process_now_ms`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/exec/process.c#L112)、
+[`mcp_stdio_now_ms`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/mcp/mcp_stdio.c#L27)、
+[`runtime_mcp_now_ms`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/runtime/mcp_background.c#L11)、
+[`hook_now_ms`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/runtime/hooks_executor.c#L142)、
+[`cli_jobs_now`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/cli/models/jobs.c#L8)、
+[`cli_transcript_now`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/cli/services/transcript.c)、
+[`morph_io_now_ms`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/util/child_io.c#L52) 等。
 
 这些实现反复读取 `CLOCK_MONOTONIC` 再转换成整数毫秒或浮点秒；有的检查失败，
 有的不检查，返回类型也有 signed/unsigned 差异。各等待循环还重复计算剩余时间。
@@ -176,10 +178,10 @@ deadline 的饱和相加、剩余超时裁剪若反复需要，应补进 nbase �
 
 ### D04：模型流式参数有两套相同的扩容与追加算法
 
-[`chat_codec.c`](../src/models/llm/chat_codec.c:195) 和
-[`responses_append_call_input`](../src/models/llm/responses_codec.c:146)
+[`chat_codec.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/models/llm/chat_codec.c#L195) 和
+[`responses_append_call_input`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/models/llm/responses_codec.c#L146)
 都在每个 delta 上执行 strlen、加法溢出检查、realloc、memcpy、NUL 终止。
-[`stream.c`](../src/models/llm/stream.c) 还手动增长 tool-call 数组。
+[`stream.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/models/llm/stream.c) 还手动增长 tool-call 数组。
 
 **收敛方式：** tool-call 的累积 arguments 使用原生 `nb_buf`，列表使用 `nb_vec`，
 两种 provider codec 使用同一领域对象的追加操作或直接追加到对象的 nbase 字段。
@@ -188,9 +190,9 @@ provider 的 item-id/call-id 路由规则仍各自负责；不能为了合并缓
 
 ### D05：流式输入反复“找换行、复制行、移动余下内容”
 
-[`mcp_stdio_recv`](../src/mcp/mcp_stdio.c:35) 每读一行后 memmove 剩余缓冲；
-[`http/sse.c`](../src/http/sse.c:100) 自行维护未完成行并移动尾部；
-[`exec/process.c`](../src/exec/process.c) 也有 pending/tail 的手动压缩逻辑。
+[`mcp_stdio_recv`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/mcp/mcp_stdio.c#L35) 每读一行后 memmove 剩余缓冲；
+[`http/sse.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/http/sse.c#L100) 自行维护未完成行并移动尾部；
+[`exec/process.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/exec/process.c) 也有 pending/tail 的手动压缩逻辑。
 
 **收敛方式：** 使用 `nb_buf` 的读游标、`nb_buf_next_line`、consume/compact，
 在消费时减少重复搬移。SSE 的空行分派、多条 data 合并、id/retry、CRLF 规则，
@@ -199,13 +201,13 @@ MCP 的请求匹配与最大帧限制，exec 的有界尾部保留策略都继�
 
 ### D06：编码、摘要与比较不仅在 util 内重写
 
-- [`fastcgi/security.c`](../src/sapi/fastcgi/security.c) 另有 Base64 decoder、HMAC-SHA256、
+- [`fastcgi/security.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/fastcgi/security.c) 另有 Base64 decoder、HMAC-SHA256、
   hex 编解码和常量时间比较；util 中又有 Base64 和 SHA-256。
-- [`runtime/hooks.c`](../src/runtime/hooks.c:29) 和
-  [`cli/commands/hooks.c`](../src/sapi/cli/commands/hooks.c) 都把工作目录做 SHA-256 再手写 hex。
-- [`sync/content_hash.c`](../src/sync/content_hash.c:8)、`util/id.c`、`skill_store.c`、
+- [`runtime/hooks.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/runtime/hooks.c#L29) 和
+  [`cli/commands/hooks.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/cli/commands/hooks.c) 都把工作目录做 SHA-256 再手写 hex。
+- [`sync/content_hash.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sync/content_hash.c#L8)、`util/id.c`、`skill_store.c`、
   `runtime/session_import.c` 等也手写相同的逐字节 hex 编码。
-- [`mcp_http.c`](../src/mcp/mcp_http.c:92) 和 `render/video.c` 都有 percent 编码，
+- [`mcp_http.c`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/mcp/mcp_http.c#L92) 和 `render/video.c` 都有 percent 编码，
   后者处理 file URL 路径时额外保留 `/`。
 
 **收敛方式：** 直接使用 `nb_base64_*`、`nb_sha256_*`、`nb_hmac_sha256`、
@@ -241,11 +243,11 @@ sandbox/pre-exec 配置入口。所读 POSIX child_setup 没有恢复 morph 屏�
 
 ### D08：路径包含判定重复，已存在与尚不存在路径的语义不一致
 
-[`path_within_root`](../src/sapi/fastcgi/handlers/artifacts.c:27) 和
-[`relative_under_root`](../src/sapi/fastcgi/presentation/media_refs.c:61)
+[`path_within_root`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/fastcgi/handlers/artifacts.c#L27) 和
+[`relative_under_root`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/sapi/fastcgi/presentation/media_refs.c#L61)
 都执行两次 realpath，再做前缀比较和 `/` 边界判断；`util/file.c` 又实现一份
 包含判断，且对不存在路径尝试解析父目录。
-[`scope_path_copy`](../src/agent/agent_control.c) 则逐级寻找最近存在的祖先。
+[`scope_path_copy`](https://github.com/oxUnd/morph/blob/df7ca5a4cb4cc9d79713d4de17eff6c576f465f2/src/agent/agent_control.c) 则逐级寻找最近存在的祖先。
 
 **收敛方式：** 已存在路径使用 nbase canonical/within；新建目标的安全解析需要
 nbase 补齐“已存在祖先 + 未创建尾部”的显式契约，不能用 lexical clean 冒充解析。

@@ -1,5 +1,7 @@
 # Memory and preference behavior
 
+> Historical memory design. See [Memory and search](../memory.md) for the active preference scopes, commands and storage behavior.
+
 Explicit preferences have one authoritative, versioned store. Model-extracted
 facts and rules are advisory candidates; they cannot overwrite explicit settings.
 The resolved settings are injected before each model request, including requests

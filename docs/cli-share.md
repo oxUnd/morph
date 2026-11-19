@@ -33,11 +33,13 @@ through the Markdown exporter resource callback and images remain hidden.
 Implementation boundaries:
 
 - `runtime_session_share_current()` owns read-only selection and holds the
-  runtime execution lock for a consistent snapshot, returning `-EBUSY` during
+  runtime execution lock for a consistent snapshot, returning `NB_ERR_BUSY` during
   an active turn. The query locates the latest answer and reads only its turn,
   without materializing unrelated history.
-- `src/sapi/cli/share.c` renders the immutable document; `share_save.c` handles
-  atomic publication of a uniquely named file. Markdown uses `morph-markdown-html`, including GFM, footnotes and native MathML.
+- The HTML renderer formats the immutable document. The share store publishes a
+  uniquely named file atomically. [Renderer](../src/sapi/cli/presentation/share.c) ·
+  [File publication](../src/sapi/cli/services/share_store.c)
+- Markdown uses `morph-markdown-html`, including GFM, footnotes and native MathML.
   Its resource resolver applies the share-specific image and link policy; the CLI
   does not parse or modify the Markdown AST.
 - `misc/share/` owns the approved visual tokens and offline theme behavior.

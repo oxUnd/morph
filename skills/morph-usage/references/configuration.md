@@ -29,20 +29,19 @@ Completed answers remain in scrollback. Small terminals use compact choices.
   Figma desktop entry for designers. Existing MCP definitions are preserved and
   deduplicated. Missing local launchers leave their defaults disconnected;
   packages may download on first connection. See `docs/setup-mcp.md`.
-- Setup enables `react.hitl_auto_approve_readonly`,
-  `react.hitl_auto_approve_media` and `exec.allow_host_execution`. These approval
-  exemptions preserve media mutation metadata, file access checks and exec's
-  per-program approval. Other existing policies and permission grants remain.
+- Setup writes legacy media, read-only and host settings. The runtime uses the
+  explicit `[permissions]` policy, or maps these legacy settings to Ask. Check
+  `/permissions status` to see the active policy.
 - Model settings expose Account, a Thinking choice for the DeepSeek adapter, and
   Advanced settings. Advanced contains the model/endpoint, URL, credentials,
   context window, and output limit. Unknown/custom endpoints need their required
   fields filled in before continuing.
-- DeepSeek thinking defaults to Off in setup without a mandatory confirmation.
+- The DeepSeek text preset enables thinking with high effort. The vision preset disables thinking.
   On means more time to reason; Off favors quicker replies. Text and Vision choices
   are independent. Switching providers resets provider-specific setup choices.
 - Model capabilities beyond the selected role requirements are optional and
   separately configurable. The final review can reopen any capability for changes.
-- Arrows/Tab move, Enter selects, Esc goes back, and Ctrl-C exits. Cancelling a
+- Arrows/Tab move, Enter selects, Esc goes back, and Ctrl+C exits. Cancelling a
   selection or edit preserves the previous accepted value. Cancelling setup writes
   no config. Explicit reconfiguration preserves other settings and backs up the
   old config before replacement. Unchanged fields, comments and table formatting
@@ -112,8 +111,7 @@ by the selected model/provider.
 The DeepSeek adapter replays available reasoning fields and handles synthetic
 context summaries for thinking requests. Thinking-specific tool-choice and message
 conversions are adapter-local; changing providers does not rewrite shared history.
-Setup explicitly writes On/Off, so its default differs from omitting thinking in
-a hand-written config. Inspect `extra_body_json` and the adapter before answering
+Setup writes an explicit thinking setting for each DeepSeek model role. Inspect `extra_body_json` and the adapter before answering
 whether thinking is enabled; do not infer it from a screenshot or filename.
 
 For DeepSeek vision, use a vision-capable model such as the source preset
@@ -147,7 +145,7 @@ the selected adapter rather than copying a different provider's thinking syntax.
   or periodic renaming. `/rename` controls the session name manually. No separate
   title-model setting exists.
 - Thinking is shown as a one-line live preview, with an ellipsis for hidden text.
-  Ctrl+O opens current-turn reasoning and tool details; Ctrl+O or Esc returns to
+  Ctrl+T opens current-turn reasoning and tool details; Ctrl+T or Esc returns to
   the conversation. Do not describe the preview as discarded reasoning.
 
 ## Process Wait Budgets
@@ -185,20 +183,11 @@ command failed; inspect its session status, exit code, and output.
 
 ## Explicit Host Execution
 
-Ordinary `exec` calls run inside the child OS sandbox. A trusted development
-setup can enable explicit host calls in the active user config:
-
-```toml
-[exec]
-allow_host_execution = true
-```
-
-This is disabled by default. Enabling it makes `host: true` available for individual
-`exec` calls; it does not change ordinary calls or executable-extension isolation.
-Host calls have the current user's filesystem and network access, without the
-child OS sandbox or its resource limits. Command approval, timeouts, output limits,
-and process-session management still apply. Explain that scope when enabling the
-option; honor authorization already given rather than asking again.
+Under workspace and read-only access, ordinary commands run in the child OS
+sandbox. `host: true` requests access to the user's host filesystem and network
+for one call. The active permission policy governs that request. Full access
+already runs commands on the host. Process sessions, timeouts and output limits
+apply in both modes. Use `/permissions status` to inspect the effective policy.
 
 For an authorized task requiring macOS host automation, explicit tool arguments
 can be:
@@ -208,11 +197,8 @@ can be:
 ```
 
 The initial result reports `execution_mode: "host"` or `"sandbox"`; inspect the
-command's `exit_code` and stderr to determine whether it succeeded. With the config
-option disabled, `host: true` returns `host_execution_disabled` without execution.
-Do not silently escalate a failed sandboxed command to host execution or enable
-the config merely because an error occurred. A config change requires a normal
-restart using the same active config path.
+command's `exit_code` and stderr to determine whether it succeeded. A rejected
+permission request and an OS error after a successful launch have different causes.
 
 For AppleScript errors, distinguish Morph's sandbox from macOS privacy consent.
 `sandbox_extension_issue_file ... Operation not permitted` with `-54`, or system

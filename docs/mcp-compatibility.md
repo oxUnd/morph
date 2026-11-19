@@ -77,7 +77,7 @@ headers. Legacy requests keep their handshake-based envelope and session headers
 
 Responses must be correlated JSON-RPC 2.0 objects. Recognized remote errors remain
 available for protocol decisions. Modern `resultType` may be absent or `complete`;
-`input_required` fails with `ENOTSUP` because Morph does not yet implement MRTR
+`input_required` fails with `NB_ERR_UNSUPPORTED` because Morph does not yet implement MRTR
 client interactions. Unknown result kinds fail explicitly and are never treated
 as successful tool execution. Tool calls are not automatically replayed.
 
@@ -155,7 +155,7 @@ To verify a local stdio server without invoking any of its tools:
 
 ```sh
 MORPH_TEST_MCP_COMMAND=/absolute/path/to/server-wrapper \
-  build/bin/morph-tests --gtest_filter=McpLiveServerTest.*
+  build/bin/morph-tests --gtest_filter='McpLiveServerTest.*'
 ```
 
 The opt-in test negotiates the protocol, registers tools/resources/prompts and

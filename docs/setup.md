@@ -104,7 +104,7 @@ be downloaded by their launchers on the first connection. After installing a
 missing launcher, use `/mcp connect NAME` or enable that server's `auto_connect`.
 Configured does not mean authenticated, OS-authorized or successfully connected.
 
-Setup writes these defaults, including during explicit reconfiguration:
+The setup writer still emits these legacy fields, including during explicit reconfiguration:
 
 ```toml
 [react]
@@ -115,15 +115,13 @@ hitl_auto_approve_media = true
 allow_host_execution = true
 ```
 
-Read-only tools, including MCP tools marked read-only, bypass tool-call approval.
-Built-in image/video generation, editing, conversion, annotation and analysis also
-bypass that approval when the media setting is enabled. These exemptions take
-precedence over `hitl_tools`. Media operations keep their mutation metadata and
-filesystem checks. Other tool approvals, pre-tool hooks and exec's per-program
-approval continue to apply. Host execution permits explicit `exec` calls with
-`host=true`; it does not make every command a host command or auto-approve it.
-Existing `hitl_enabled`, network settings, grants and permission profiles remain
-unchanged; a new installation retains setup's `exec.network=true` default.
+A new configuration also receives `exec.network = true`. On load, the runtime
+maps legacy permission settings to Ask (workspace access, on-request approval,
+human reviewer). An explicit `[permissions]` policy takes precedence. Tool
+metadata, the requested operation and existing grants determine which calls need
+review. For example, `host=true` requests host execution and a media operation can
+require permission to write its output. Inspect the effective policy with
+`/permissions status`. [Permission policy](permissions-design.md) · [Exec modes](sandbox.md)
 
 ## Prompt generation and skills
 

@@ -6,7 +6,7 @@ context, tool registry, MCP registry, memory workers, credits, or session
 state.
 
 ```text
- CLI / Android / future hosts
+ CLI / FastCGI / mobile hosts
           |
           | runtime_options + runtime_request
           v
@@ -119,13 +119,23 @@ credits, memory, tool registration, or shutdown.
 context. See `src/runtime/CMakeLists.txt` and `src/runtime/sources.list` for the
 authoritative file list. The `sources.cmake` wrapper exposes that list to CMake.
 
-The agent, runtime, persistence, and util modules each own a `sources.list`
+The agent, runtime, persistence and permission modules each own a `sources.list`
 manifest. Desktop CMake, Android CMake, and the iOS core build read the same
 manifests so splitting a core implementation into new files does not leave
 mobile builds behind. Keep each manifest to one relative source path per line.
-Platform adapters and optional tools remain selected by each frontend. The new
-permission library also owns a desktop source manifest. Mobile frontends pin
+Platform adapters and optional tools remain selected by each frontend. Mobile frontends pin
 a separate core revision; this change does not upgrade those release pins.
+
+## Session backups and import
+
+In the CLI, `/sync backups` lists snapshots. `/sync restore-db <snapshot-id> <destination>`
+restores a database to a specified path. Embedded hosts can import conversations into the
+active database through `runtime_session_import_file()`. Import remaps session IDs and
+related history in one transaction, skips source revisions already imported, and keeps a
+changed source revision as a separate conversation. Media files travel through the sync
+folders. The earlier mobile incident, compatibility limits and device checks are recorded
+in the [synchronization review](archive/session-sync-review.md).
+[Core importer](../src/runtime/session_import.c) · [CLI sync commands](../src/sapi/cli/commands/sync.c)
 
 ## Context budgets
 
@@ -304,7 +314,7 @@ wrong session. Shutdown cancels and joins the worker. Recaps do not write chat
 messages, model history, or compaction records.
 
 The CLI exposes `/recap`, maintains a lower-priority pending indicator, and
-renders a sanitized, width-aware `Recap` block in scrollback. It displays `Next`
+renders a sanitized, width-aware `Recap` block in the conversation feed. It displays `Next`
 only when the model supplies one. Manual failures are shown; automatic failures
 retry once after 30 seconds and otherwise stay silent. The automatic scheduler
 requires 3 completed turns, 2 new turns since the last displayed recap, and 30

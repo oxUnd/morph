@@ -59,8 +59,8 @@ delegation: `Agents: 0 running`
 means the model has not spawned an agent. Once work starts, rows show
 canonical agent paths and current activity such as `Thinking` or `Running exec`,
 with one row per active agent and a bounded `+N more` row when necessary.
-Full task prompts appear in `/agents` and expanded turn details. Targeted
-`/agents /root/name` output preserves complete multiline tasks and results,
+Full task prompts appear in the agent browser and expanded turn details. In
+noninteractive mode, `/agents /root/name` preserves complete multiline tasks and results,
 including content beyond 8 KB. Completion receipts wait for the active parent
 message to finish before entering history, keeping Markdown streams contiguous. Collaboration
 tool records follow the Codex `multi_agents.rs` presentation: `Spawned …`,

@@ -11,8 +11,10 @@ make -C exts/read-lines
 make -C exts/read-lines test
 ```
 
-CMake builds the vendored nbase static library with position independent code
-and links it directly into the extension. No dependencies are fetched. A
+The standalone build uses the repository’s `cmake/FetchNbase.cmake` to fetch
+the pinned nbase release and link its static library with position-independent
+code. Configure with `-DFETCHCONTENT_SOURCE_DIR_NBASE=/path/to/nothing`
+to reuse a local checkout of that release. A
 separate build directory supports ASan/UBSan without loading sanitizer code
 into the Python test runner:
 
@@ -56,6 +58,8 @@ cp exts/read-lines/manifest.toml \
 
 ## Path Access
 
+The desktop runtime only executes native tool extensions when the effective access
+permits host execution. Once called, this extension also checks its own roots.
 By default, the extension allows files under the current working directory,
 `~/.morph`, and `~/.agents`.
 

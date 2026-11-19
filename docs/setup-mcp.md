@@ -80,9 +80,7 @@ arrays are extended without serializing the other entries. A full server list
 fails saving with a capacity error rather than discarding an existing server.
 The final configuration is still backed up and published under the setup lock.
 
-The Save screen shows role MCP recommendations and the approval/host defaults.
-Actual connection occurs after restarting Morph; manually connected entries can
-be managed through `/mcp`. Read-only auto-approval uses registered metadata,
-including MCP annotations. Computer or browser actions that mutate state retain
-their normal approval behavior. Built-in media exemptions do not turn third-party
-editing tools into read-only operations or grant filesystem permissions.
+The Save screen lists the role's recommended integrations. After restarting,
+use `/mcp` to inspect or connect a server. The shared permission layer checks
+MCP calls using the registered tool metadata and the active policy.
+[Setup permissions](setup.md#mcp-and-approval-defaults)

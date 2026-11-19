@@ -58,7 +58,7 @@ so its memory use does not grow with the existing file size.
 
 ## Safety
 
-Relative write paths resolve under `output_dir`. Paths outside `output_dir`
-must be approved through the host `tool_context`. Recursive delete, chmod,
+Relative write paths resolve under `output_dir`. The host `tool_context` checks each
+path against the active policy and grants. Recursive delete, chmod,
 chown, ACL, xattr, symlink mutation, and metadata preservation are intentionally
 out of scope.

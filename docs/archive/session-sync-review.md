@@ -1,5 +1,7 @@
 # Session synchronization review and redesign
 
+> Historical incident review and rollout evidence. For current core backup and import entry points, see [Runtime architecture](../runtime-architecture.md#session-backups-and-import).
+
 Status: implemented fixes and conservative session import, 2026-10-09.
 
 ## Implemented behavior

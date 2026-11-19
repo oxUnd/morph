@@ -45,7 +45,7 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   Reusable state bindings and text-output policies live in presentation. Rendering,
   key handling and local interaction state belong here; business actions go
   through page bindings or services. Shared margin/padding behavior follows the
-  [NT layout guide](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md).
+  [NT layout guide](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0/docs/guide/layout.md).
 - Models carry app data and operations on that data. They do not depend on the
   Application, pages, widgets or external runtime callbacks. Services apply use
   cases to models and the opaque runtime facade; workers submit owner-thread
@@ -80,7 +80,7 @@ Application-internal conveniences own no function declarations or domain SDK
 collection. Headers must compile independently as C and C++ headers.
 
 Use an app prefix and semantic module name, for example `cli_application_run`,
-`cli_feed_create`, `cli_composer_model_expand_copy` and `cli_turn_execute`. Do not
+`cli_feed_init`, `cli_composer_model_expand_copy` and `cli_turn_execute_prompt`. Do not
 expose framework implementation layer names in application-facing TUI APIs.
 Private functions/types/constants also carry their module prefix; a runtime
 observer can use `cli_runtime_observer_*` to distinguish it from other observers.
@@ -93,4 +93,4 @@ interfaces, includes, tests and documentation together. Behavioral tests stay in
 whole application, including commands and services.
 
 See the [CLI application](../src/sapi/cli/README.md) for a full consumer and the
-[customization sample](https://codeberg.org/oxund/nothing-tui/src/branch/main/samples/customization/main.c) for a small one.
+[customization sample](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0/samples/customization/main.c) for a small one.

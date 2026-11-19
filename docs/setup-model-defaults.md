@@ -1,6 +1,7 @@
 # Setup model defaults
 
-Verified against the official provider documentation on 2026-11-03. These are
+The [setup implementation](../src/sapi/cli/services/configuration/model.c) defines
+the presets below. Provider limits were checked on 2026-11-03. These are
 Morph's deployment recommendations for new configurations. They balance room for
 tool use, reasoning and answers with response latency. Output limits are ceilings,
 not a request to generate that many tokens.

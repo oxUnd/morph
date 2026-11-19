@@ -43,13 +43,14 @@ dependencies and external environment changes cannot be detected.
 
 ## Process polling
 
-`background` retains `poll`, `write`, `interrupt`, and `kill`. Poll accepts optional
+`background` provides `list`, `poll`, `wait`, `write`, `interrupt`, and `kill`. Poll accepts optional
 `wait_ms` (integer from 0 to `[exec].max_wait_ms`, default maximum 600000) and
 `cursor` (the previous result's `next_cursor`). The model chooses the wait within
 that range; omitting the value defaults to 30000 ms, or a smaller configured maximum.
 It returns when new output arrives, the child exits, the wait expires, or the
 request is cancelled. Cancelling a low-level wait leaves the child running.
-Cancelling the agent turn (Esc or Ctrl+C in the CLI) also stops processes started
+In the CLI, Esc during a background wait ends the wait and retains the jobs.
+Esc with queued steering applies that input. Ctrl+C cancels the turn and stops processes started
 by that session and turn, including background, service, and notify-only jobs.
 Processes from earlier turns or other sessions retain their own lifecycle.
 The initial `exec` yield checks cancellation, and stop requests escalate from

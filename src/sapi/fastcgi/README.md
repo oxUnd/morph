@@ -8,9 +8,8 @@ without bringing an HTTP stack into the core binary.
 cannot connect to it directly; use nginx/Caddy/Apache in production, or the
 `cgi-fcgi` command for a local protocol-level smoke test. Docker is optional.
 
-> The CLI process and the FastCGI worker share the same SQLite database
-> in WAL mode, so an agent can be driven from either surface
-> simultaneously.
+Set `MORPH_FCGI_DB` to the CLI database path to share persisted sessions.
+The service defaults to `/var/lib/morph/morph.db`.
 
 ---
 
@@ -21,7 +20,8 @@ src/sapi/fastcgi/
 ├── CMakeLists.txt
 ├── PATCHES.md          # retired weak-symbol bridge notes
 ├── README.md
-├── main.c              # FCGX_Init + worker pool + signal handling
+├── main.c              # FCGX_Init, request workers and signal handling
+├── stream_pool.{c,h}   # bounded pool for long-lived streams
 ├── router.{c,h}        # /pattern/:id dispatcher (no regex)
 ├── auth.{c,h}          # session token + Basic Auth + X-Remote-User
 ├── security.{c,h}      # PBKDF2-SHA256, random ID, constant-time compare
@@ -107,7 +107,7 @@ install endpoint creates the initial admin user.
 ## Prerequisites and build
 
 The project vendors cJSON; do not install a separate cJSON development
-package. Besides libfcgi, the normal Morph dependencies are also required.
+package. Prepare the MathJax and Markdown source checkouts in the [root build instructions](../../../README.md#build), then configure with libfcgi installed.
 
 ### Debian/Ubuntu
 
@@ -115,7 +115,8 @@ package. Besides libfcgi, the normal Morph dependencies are also required.
 sudo apt update
 sudo apt install build-essential cmake pkg-config \
   libfcgi-dev libsqlite3-dev libcurl4-openssl-dev libvips-dev \
-  libcairo2-dev libpango1.0-dev libharfbuzz-dev libfreetype-dev
+  libcairo2-dev libpango1.0-dev libharfbuzz-dev libfreetype-dev \
+  libuv1-dev libreadline-dev libwebp-dev libffi-dev libxml2-dev git
 
 cmake -S . -B build -DBUILD_FASTCGI=ON
 cmake --build build -j
@@ -124,7 +125,7 @@ cmake --build build -j
 ### macOS/Homebrew
 
 ```bash
-brew install cmake pkgconf sqlite curl fcgi vips cairo pango harfbuzz freetype
+brew install cmake pkgconf sqlite curl fcgi vips cairo pango harfbuzz freetype libuv readline webp libffi libxml2
 
 cmake -S . -B build -DBUILD_FASTCGI=ON
 cmake --build build -j
@@ -311,8 +312,8 @@ support reconnection with `Last-Event-ID`.
 | HTTP 429 `quota_exceeded/turns` | User daily turn quota exhausted |
 | HTTP 429 `quota_exceeded/concurrent_turns` | User concurrency quota exhausted |
 | HTTP 503 `shutting_down` | Process is no longer accepting turn jobs |
-| SSE `error` with `Resource temporarily unavailable` | Runtime wait queue was full |
-| SSE `error` with `Operation timed out` | No runtime became available before the wait deadline |
+| SSE `error` after runtime queue saturation | Runtime wait queue was full |
+| SSE `error` after the runtime wait deadline | No runtime became available before the wait deadline |
 
 The built-in admin quota allows four concurrent turns; the free-user profile
 allows one. These per-user quotas are separate from the process-wide runtime
@@ -340,8 +341,7 @@ Interactive turns use `POST /api/sessions/:id/actions`:
 - `{"type":"reject","payload":{}}` denies it;
 - `{"type":"cancel","payload":{}}` cancels at the next ReAct checkpoint.
 
-Turn execution is driven by the shared structured event system documented in
-`docs/event-system.md`. FastCGI maps `react.*`, `tool.*`, and `artifact.ready`
+Turn execution uses the [shared event system](../../../docs/event-system.md). FastCGI maps `react.*`, `tool.*`, and `artifact.ready`
 events to the SSE names above for compatibility with existing GUI clients.
 
 ---
@@ -352,7 +352,9 @@ events to the SSE names above for compatibility with existing GUI clients.
 |----------|---------|-------------|
 | `MORPH_FCGI_LISTEN` | `unix:/run/morph-fastcgi.sock` | Listen spec: `unix:/path`, `:port`, `host:port` |
 | `MORPH_FCGI_DB` | `/var/lib/morph/morph.db` | Path to SQLite database |
-| `MORPH_FCGI_WORKERS` | `128` | FastCGI connection slots (1–512); every open SSE stream occupies one |
+| `MORPH_FCGI_WORKERS` | `128` | Request workers (1–512). SSE requests are handed to the stream pool. |
+| `MORPH_FCGI_STREAM_THREADS` | `32` | Workers serving long-lived streams (1–256) |
+| `MORPH_FCGI_STREAM_QUEUE` | `256` | Streams that may wait for a worker (1–65536) |
 | `MORPH_FCGI_RUNTIME_MIN_WORKERS` | `8` | Prewarmed agent runtimes (1–256) |
 | `MORPH_FCGI_RUNTIME_MAX_WORKERS` | `64` | Maximum elastic agent runtimes (1–256) |
 | `MORPH_FCGI_RUNTIME_WORKERS` | _(none)_ | Legacy alias for the minimum worker count |
@@ -361,7 +363,7 @@ events to the SSE names above for compatibility with existing GUI clients.
 | `MORPH_FCGI_RUNTIME_IDLE_SECONDS` | `300` | Elastic-worker idle lifetime; `0` disables shrinking |
 | `MORPH_FCGI_CONFIG` | `$HOME/.morph/config.toml` | Path to config file |
 | `MORPH_FCGI_OUTPUT_DIR` | _(from config)_ | Override artifact output directory |
-| `MORPH_FCGI_LOG_FILE` | _(from config)_ | Override log file path |
+| `MORPH_FCGI_LOG_FILE` | `/tmp/morph-fastcgi.log` for the runtime pool | Set the FastCGI log file |
 | `MORPH_FCGI_TRUST_HDR` | _(none)_ | Trusted proxy identity header |
 | `MORPH_FCGI_ALLOW_SIGNUP` | _(none)_ | Set to `1` to enable public signup |
 | `MORPH_FCGI_SIGNUP_CODE` | _(none)_ | Optional invite code for signup |
@@ -378,35 +380,23 @@ Examples in `web/deploy/`:
 - `morph-fastcgi.service` — hardened systemd unit
 - `Dockerfile`         — multi-stage debian:bookworm-slim build
 
-### Docker quick start
+### Docker image
 
-```bash
-# Build
-docker build -t morph-fastcgi -f web/deploy/Dockerfile .
+The [Dockerfile](../../../web/deploy/Dockerfile) builds the web frontend and
+copies its assets and the FastCGI executable into an nginx image. It omits the
+installed `share/morph` data tree (including prompt templates and bundled
+skills) and the `morph-js-runner` executable used by dynamic JavaScript tools.
+The [Docker build context](../../../.dockerignore) also excludes Markdown
+files, including bundled skill definitions.
 
-# Run (port 9000 → container 80)
-docker run -d --name morph -p 9000:80 \
-  -v ~/.morph/config.toml:/home/morph/.morph/config.toml:ro \
-  -v ~/.morph/skills:/home/morph/.morph/skills:ro \
-  -v ~/.morph/exts:/home/morph/.morph/exts:ro \
-  -v ~/.morph/output:/var/lib/morph/output \
-  -v ~/.morph/log:/var/lib/morph/log \
-  morph-fastcgi
-
-# Ensure the container user (uid 999) can write to output and log dirs
-chmod 777 ~/.morph/output ~/.morph/log
-```
-
-Environment variables `MORPH_FCGI_CONFIG`, `MORPH_FCGI_OUTPUT_DIR`, and
-`MORPH_FCGI_LOG_FILE` are set in the Dockerfile to point to the container
-paths. Config path values with `~` are expanded at load time, so
-`output_dir = "~/.morph/output"` resolves correctly inside the container.
+For an installation with these resources, follow the [native build and install
+steps](#prerequisites-and-build) and [local startup instructions](#run-without-docker).
 
 ---
 
 ## Multi-process consistency
 
-Both `morph` (CLI) and `morph-fastcgi` open the same SQLite DB with WAL +
+When configured to share a database, both frontends open it with WAL +
 `busy_timeout=5000`.  Writers serialise; readers don't block.  Within a
 single FastCGI process the pthread cond-var is broadcast on every event
 write so all SSE workers wake up immediately.  Across processes, the
@@ -427,10 +417,11 @@ authenticated user identity and session visibility into the selected tool
 runtime, so memory and credit queries remain tenant-scoped. Shutdown waits for
 accepted turn jobs before closing replicas and then the primary runtime.
 
-There are two separate kinds of workers:
+Three pools handle different workloads.
 
-- `MORPH_FCGI_WORKERS` accepts FastCGI connections. Long-lived SSE streams
-  occupy these threads, but they do not consume an agent runtime while idle.
+- `MORPH_FCGI_WORKERS` handles incoming requests.
+- `MORPH_FCGI_STREAM_THREADS` serves long-lived SSE connections. A full stream
+  queue returns HTTP 503 with `stream_queue_full`.
 - `MORPH_FCGI_RUNTIME_*_WORKERS` controls simultaneous model/ReAct execution.
   A runtime is a comparatively heavy independent agent instance.
 
@@ -448,9 +439,8 @@ Suggested starting points:
 | Small shared server | 128 | 4 / 32 | 256 |
 | Larger host | 256 | 8 / 64 | 512 |
 
-Treat these as initial values, not universal limits. Keep enough connection
-workers for all expected SSE clients plus short API requests, then size runtime
-workers from available memory and the upstream model provider's rate limits.
+Treat these as initial values, not universal limits. Size stream workers for concurrent SSE clients and request workers for short
+API calls. Size runtime workers from available memory and provider rate limits.
 Model latency naturally causes queued demand to accumulate.
 
 The turn submission endpoint returns `202` before runtime acquisition. If the

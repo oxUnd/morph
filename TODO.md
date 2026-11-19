@@ -8,8 +8,8 @@
   `<｜｜DSML｜｜ calls>...<｜｜DSML｜｜ invoke name="exec">...`。正常 ReAct 只解析
   OpenAI 结构化 `tool_calls`，因此该文本被当作最终答案；子代理返回原始标记，
   父代理收到“乱码”，且模型想执行的工具没有运行。
-- 现有防护：`src/agent/react_request.c:909` 只在 compaction 路径检测 DSML；
-  `tests/test_react.cpp:4535` 也只覆盖 compaction。
+- 现有防护：`src/agent/react_request.c` 只在 compaction 路径检测 DSML；
+  `tests/test_react.cpp` 中的 `CompactionRejectsTruncatedReasoningAndToolProtocol` 也只覆盖 compaction。
 
 ### 设计结论
 
@@ -40,7 +40,7 @@
 - `src/models/llm/adapter.h`
 - `src/models/llm/deepseek.c`
 - `src/agent/guardrail.h`
-- `src/agent/guardrail.c:882`
-- `src/agent/react.c:1151`
-- `src/runtime/bootstrap.c:196`
-- `src/agent/react_request.c:909`
+- `src/agent/guardrail.c`
+- `src/agent/react.c`
+- `src/runtime/bootstrap.c`
+- `src/agent/react_request.c`

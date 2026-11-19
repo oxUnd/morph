@@ -26,7 +26,7 @@ int guardrail_check(const char *text, const char *rule,
 - `rule` — the rule name from config
 - `description` — the rule description from config
 - `result_json` — must be set to a `malloc`'d JSON string: `{"pass":bool,"reason":"..."}`
-- Returns `0` on success, negative on error (error defaults to PASS)
+- Returns `0` on success, a negative status on error. The configured guardrail error policy determines how the runtime handles checker failure
 
 ## Detected patterns
 
@@ -40,10 +40,14 @@ int guardrail_check(const char *text, const char *rule,
 
 ## Install
 
+Run from the repository root after configuring the default build directory.
+For a local nbase checkout, point `-I` at its `include` directory.
+
 ```bash
-cp -r exts/demo-guardrail-pii ~/.morph/exts/
-cc -shared -fPIC -o ~/.morph/exts/demo-guardrail-pii/pii_check.so \
-   ~/.morph/exts/demo-guardrail-pii/pii_check.c
+mkdir -p ~/.morph/exts/demo-guardrail-pii
+cp exts/demo-guardrail-pii/manifest.toml ~/.morph/exts/demo-guardrail-pii/
+cc -shared -fPIC -Ibuild/_deps/nbase-src/include -o ~/.morph/exts/demo-guardrail-pii/pii_check.so \
+   exts/demo-guardrail-pii/pii_check.c
 ```
 
 ## Config
@@ -51,12 +55,14 @@ cc -shared -fPIC -o ~/.morph/exts/demo-guardrail-pii/pii_check.so \
 Just enable guardrails — auto-discovered from `~/.morph/exts/`:
 
 ```toml
+[react]
 guardrail_enabled = true
 ```
 
 Or manually (for scripts outside `~/.morph/exts/`):
 
 ```toml
+[react]
 guardrail_enabled = true
 
 [[react.guardrail_ext_rules]]
@@ -67,27 +73,8 @@ ext_entry = "/path/to/pii_check.so"
 action_text = "Do not include personal identifiable information."
 ```
 
-## Permission
+## Execution
 
-`permissions = 0` — no network, no filesystem, no exec. Runs fully constrained in-process.
-
-## Manual test
-
-```c
-/* Compile and test standalone:
-   cc -DTEST_MAIN -o pii_test pii_check.c && ./pii_test
-*/
-#ifdef TEST_MAIN
-#include <stdio.h>
-int main(void) {
-    char *result = NULL;
-    guardrail_check("My SSN is 123-45-6789", "pii", "PII check", &result);
-    printf("%s\n", result);  // {"pass":false,"reason":"..."}
-    free(result);
-    guardrail_check("Hello world", "pii", "PII check", &result);
-    printf("%s\n", result);  // {"pass":true,"reason":""}
-    free(result);
-    return 0;
-}
-#endif
-```
+The runtime loads the checker with `dlopen`. It executes with the permissions
+of the host process. Its manifest declares no subprocess sandbox capabilities.
+[Guardrail behavior and error policy](../../docs/guardrails.md)

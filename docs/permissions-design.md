@@ -1,7 +1,6 @@
 # Unified permission management
 
-Status: implemented; acceptance evidence is in [permissions-acceptance.md](permissions-acceptance.md). Branch: `feat/unified-permissions`.
-Baseline: `87a1c9b` (`refactor/fastcgi-optimization`).
+For the original rollout baseline, requirement coverage and reproduction commands, see [permissions acceptance](permissions-acceptance.md).
 
 ## Ownership and public contract
 
@@ -51,7 +50,7 @@ decisions never create session or persistent authority.
 | P09 | Isolated automatic reviewer | Independent model instance, visible user objective and exact action; structured allow/deny/defer with reason; no access to main-agent tools or hidden reasoning. |
 | P10 | Review failures and rejection limits | Default review timeout 30 seconds; errors/defer fall back to human, otherwise fail; three consecutive model denials pause automatic progression. |
 | P11 | Configuration has one effective policy | Persist access/approval/reviewer, retain path profiles, validate combinations and provide explicit migration handling for legacy settings; no two runtime policy engines. |
-| P12 | Runtime policy management is transactional | Get/set through runtime facade; reject active turns/incompatible processes with EBUSY; save failure preserves active policy; switching clears transient grants and prevents stale writes in read-only. |
+| P12 | Runtime policy management is transactional | Get/set through runtime facade; reject active turns/incompatible processes with a busy status; save failure preserves active policy; switching clears transient grants and prevents stale writes in read-only. |
 | P13 | Applications only compose and render | CLI input-area selection without switching/clearing the conversation, explicit policy arguments, Custom display, existing grant management and structured/FastCGI interactions work; no command bubbles or stale composer. |
 | P14 | Build, regression and evidence | Shared source manifests and supported host builds include the library; ordinary and sanitizer suites, layout/global-state checks and acceptance traceability are recorded. |
 

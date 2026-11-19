@@ -4,15 +4,15 @@
 
 A terminal-native multimodal AI agent written in pure C. Orchestrates text, image, and video generation and understanding through a ReAct loop.
 
-中文系统介绍: [docs/archive/introduction.zh-CN.md](docs/archive/introduction.zh-CN.md)
+[中文文档与使用指南](docs/README.md)
 
 ## Features
 
 - **Multimodal**: text chat, image generation/editing, and video generation under one entry point
 - **ReAct engine**: automatic Thought → Action → Observation orchestration
-- **Skills**: hot-loadable instruction packs (SKILL.md)
-- **Extensions**: hot-pluggable, sandboxed, any language
-- **Managed shell**: `exec` parses each command, asks approval scoped to the programs it would run, and hands long-running work to the `background` tool
+- **Skills**: instruction packs discovered at startup and activated on demand
+- **Extensions**: executable subprocess tools and native shared-library extensions
+- **Managed shell**: `exec` parses each command, checks its program set and requested access against the active permission policy, and hands long-running work to the `background` tool
 - **Dynamic tools**: create session JavaScript tools on the fly with `tool_create`
 - **Scheduled tasks**: recurring or one-shot agent runs deliver to a persistent inbox
 - **Local-first**: sessions and artifacts persisted to SQLite, replayable offline
@@ -27,8 +27,11 @@ Unicode decoding, validation, and terminal widths use vendored [utf8proc](docs/u
 
 ## Build
 
-Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libuv ≥ 1.44, libffi, libwebp, libxml2, GNU readline ≥ 8, and
-[mathjax-c](https://github.com/oxUnd/mathjax-c).
+Build with CMake ≥ 3.20 and a GCC or Clang toolchain with C11, C++17 and
+scope-cleanup support. Install pkg-config and the development files for SQLite3,
+libcurl ≥ 7.84, libuv ≥ 1.44, GNU Readline ≥ 8, libffi, libwebp, libxml2,
+FreeType, HarfBuzz, libvips, Cairo and PangoCairo. A fresh checkout also needs
+the MathJax and Markdown source trees at the paths shown below.
 
 CMake fetches nothing-tui v0.1.0 for the CLI. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
@@ -78,11 +81,11 @@ Setup chooses model-specific token budgets and timeout values. See the
 [setup model defaults](docs/setup-model-defaults.md) for the verified provider
 limits, reasoning settings and media presets.
 
-Run `morph` in a terminal; a missing config triggers an interactive wizard
-(↑/↓ choose, Enter select, Esc back, Ctrl-C/Ctrl-D cancel). Provider presets
-fill in model and API URL. Vision, image generation, and video generation are
-independent optional steps. The config is saved to `~/.morph/config.toml`
-(owner-only, 0600), or the path from `-c`; existing files are never overwritten.
+Run `morph` in a terminal with a missing config to start setup. Choose a role, review
+its required models and any optional capabilities, then save. Setup exits after
+saving. Start Morph again with the same config to begin a conversation. Use
+`morph setup` to edit an existing configuration with a backup.
+[Setup and reconfiguration](docs/setup.md)
 
 API keys already in environment variables are detected; you can paste a key to
 save in `api_key` or name an `api_key_env` instead. Non-interactive runs
@@ -94,7 +97,7 @@ cp config.toml.example ~/.morph/config.toml
 export OPENAI_API_KEY=sk-...
 ```
 
-Supported providers: `openai`, `volcengine`, `deepseek`.
+Setup offers OpenAI, Volcengine, DeepSeek and custom endpoints. Adapter support varies by model role. See [setup model defaults](docs/setup-model-defaults.md).
 
 ## Usage
 
@@ -111,7 +114,7 @@ Run `morph resume` to open the session list immediately, or `morph resume <name|
 to enter an existing session directly. `/resume` opens the same list during chat;
 `/resume <name|id>` and `/switch <name|id>` also restore the conversation. Interactive
 resumes (including `-s`) restore saved user messages, answers and tool summaries to
-terminal scrollback, including messages removed from the active model context by
+the interactive conversation feed, including messages removed from the active model context by
 compression. Restoring history does not call the model or execute saved tools.
 Sessions remember their working directory: `morph resume <name|id>` restores it
 automatically, and an explicit `-w` overrides and rebinds it.
@@ -145,8 +148,9 @@ See [the management command reference](docs/cli-management.md) for selection,
 update protection, configuration scope, and all options.
 
 The prompt stays editable while the agent runs. Enter submits a
-requirement adjustment, Esc/Ctrl+C cancels, Ctrl+J or Alt+Enter inserts a
-newline. Ctrl+T opens the turn's full-screen tool transcript. Pasted and typed
+requirement adjustment for the next loop boundary. Esc applies queued input immediately.
+With no queue it interrupts a background wait or cancels the turn. Ctrl+C cancels the turn and stops its commands. Ctrl+J inserts a newline.
+Ctrl+T opens the turn's full-screen tool transcript. Pasted and typed
 image paths become `[IMAGE#1]` chips (Backspace removes one); `/render <path>`
 previews, `/image <path>` attaches.
 
@@ -231,9 +235,9 @@ src/
   render/       Markdown / image / video terminal rendering
 fronts/         Extra front-end libraries (morph-markdown)
 exts/           Example exts (manifest.toml + entry script)
-vendor/         Third-party libraries (cJSON, stb_image, toml)
+vendor/         Third-party sources, assets and downstream patches (cJSON, stb, MathJax)
 ```
 
-See [AGENTS.md](AGENTS.md) for conventions and [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the full spec.
+See the [documentation index](docs/README.md) for feature guides and [AGENTS.md](AGENTS.md) for development conventions.
 
 Lifecycle command hooks and review/trust configuration: [Hooks](docs/hooks.md).

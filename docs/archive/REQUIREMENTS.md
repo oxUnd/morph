@@ -1,9 +1,11 @@
 # morph 需求文档
 
+> 需求开发已完成。本文保留需求、当时的实现基线和验收记录。当前用法和开发约定见[文档索引](../README.md)和[开发指南](../../AGENTS.md)。
+
 > **文档版本**：v0.7
-> **完成状态**：**已完成（与当前实现对齐）**
+> **完成状态**：**已完成（原需求验收记录）**
 > **实现基线**：v0.4.2，提交 `1d7d8ac`，更新日期 2026-11-08。
-> **范围**：本文仅记录仓库中已经实现的功能、接口职责和资源边界。完成状态指本次文档同步完成；具体接口以对应头文件和配置 schema 为准。
+> **范围**：下文中的“当前”均指上述实现基线。各项需求的验收方式、测试环境和当时的验证范围保留在正文中。
 
 ## 0. 术语与缩写
 
@@ -79,7 +81,7 @@ CLI 支持交互、单次执行和管道使用；可选 FastCGI 前端提供 HTT
 - 工具结果按 token 预算生成有效 JSON 和明确省略标记；原始结果不会先被固定字节前缀截断。
 - `/context` 查看用量，`/compress` 手动触发压缩，`/history` 检查上下文成员及摘要来源。
 
-完整边界见 [模型能力与资源限制](model-capability-limits.md) 和 [上下文与进程恢复](context-and-process-recovery.md)。
+完整边界见 [模型能力与资源限制](../model-capability-limits.md) 和 [上下文与进程恢复](../context-and-process-recovery.md)。
 
 ### 4.4 文字与提示模板
 
@@ -88,7 +90,7 @@ CLI 支持交互、单次执行和管道使用；可选 FastCGI 前端提供 HTT
 - 已有 general、developer、photographer、photo_editor、writer、designer、video_creator、researcher 场景角色模板。
 - Skill 目录先进入可用能力清单；激活后加载完整指令。
 
-实现位于 [提示模板](../src/prompt/template.c) 和 [场景角色模板](../prompts/scenarios/)。
+实现位于 [提示模板](../../src/prompt/template.c) 和 [场景角色模板](../../prompts/scenarios/)。
 
 ### 4.5 图片生成、理解与处理
 
@@ -127,7 +129,7 @@ ReAct 使用结构化 Function Calling，执行 Thought → Action → Observati
 - Hooks 支持配置加载、信任、启停、匹配、超时、取消、权限决定及上下文补充。
 - 大段 Hook 上下文保存到私有文件并附恢复路径；保存失败会阻断处理，不能丢失 deny/ask 决定后继续执行。
 
-参见 [事件系统](event-system.md) 与 [Hooks](hooks.md)。
+参见 [事件系统](../event-system.md) 与 [Hooks](../hooks.md)。
 
 ### 4.8 Ext 扩展
 
@@ -160,7 +162,7 @@ exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有
 - 当前协议常量为 `2026-07-28`，兼容回退版本为 `2025-11-25`；具体握手策略由客户端实现决定。
 - 工具描述和 schema 使用动态所有权；stdio 接收帧/缓冲上限 16 MiB，超限报错并断开连接。
 
-接口见 [mcp.h](../src/mcp/mcp.h)，后台发布见 [runtime MCP](../src/runtime/mcp_background.c)。
+接口见 [mcp.h](../../src/mcp/mcp.h)，后台发布见 [runtime MCP](../../src/runtime/mcp_background.c)。
 
 ### 4.11 多 agent 协作
 
@@ -170,7 +172,7 @@ exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有
 - `[agents]` 控制线程数、深度和委派模式；auto 模式随 ultra 推理强度启用主动委派。
 - 后代共享用户权限边界，拥有独立模型客户端、工具执行上下文、历史和取消状态。
 - 完成结果持久化后进入父 agent 上下文；主 agent 收齐活动 agent 的结果后整合答复。
-- 详细运行、恢复和迁移契约见 [多 agent 协作](multi-agent.md)。
+- 详细运行、恢复和迁移契约见 [多 agent 协作](../multi-agent.md)。
 
 ### 4.12 Guardrail
 
@@ -199,7 +201,7 @@ exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有
 - fetch 支持校验后的请求头，包括服务器支持时的 Range；拒绝头注入及非法 NUL 输入。
 - local/server 配置分别控制默认 capabilities 与允许范围。
 
-接口及运行语义见 [QuickJS 工具](quickjs-tools.md)。
+接口及运行语义见 [QuickJS 工具](../quickjs-tools.md)。
 
 ### 4.15 定时任务与通知
 
@@ -209,7 +211,7 @@ exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有
 - 到期 Agent 任务通过 runtime 进入 ReAct；结果写入通知 inbox。
 - CLI 动态保存完整任务 prompt 和命令参数；展示标题的缩短不改变执行内容。
 
-参见 [定时任务](scheduled-tasks.md)。
+参见 [定时任务](../scheduled-tasks.md)。
 
 ### 4.16 模型能力与资源限制治理
 
@@ -227,7 +229,7 @@ exec 扩展进入配置的进程沙箱和资源限制；共享库扩展不具有
 | 词表读取 | 动态读取和有界解码，支持最多 65535 字节的 token，超出表示范围拒绝加载 |
 | 文件修改 | checkpoint 在写入前验证 postimage 及总预算；seal 和 restore 再核验真实数据 |
 
-资源上限及超限行为汇总见 §10 和 [模型能力与资源限制](model-capability-limits.md)。
+资源上限及超限行为汇总见 §10 和 [模型能力与资源限制](../model-capability-limits.md)。
 
 ## 5. CLI 交互
 
@@ -262,11 +264,11 @@ cmake --build build
 - 未识别命令明确报错并清空编辑输入；已知但暂不能执行的命令保留重试输入。
 - 命令与首个结果之间、已完成结果组之后各有约定的空行；Readline 回忆历史独立保存。
 
-参见 [CLI 工具输出](cli-tool-feed.md)、[CLI 应用布局](tui-application-layout.md) 和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)。
+参见 [CLI 工具输出](../cli-tool-feed.md)、[CLI 应用布局](../tui-application-layout.md) 和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)。
 
 ### 5.4 已实现命令
 
-命令参数及别名以 `/help` 和 [commands](../src/sapi/cli/commands/) 注册表为准。
+命令参数及别名以 `/help` 和 [commands](../../src/sapi/cli/commands/) 注册表为准。
 
 | 类别 | 命令 | 功能 |
 | --- | --- | --- |
@@ -307,7 +309,7 @@ runtime_open / runtime_execute_turn / runtime_close
 
 前端持有 opaque `struct runtime *`，通过公开 DTO、快照和服务接口交互。runtime 创建完整依赖图，在失败或关闭时先停止 worker、回收借用，再按依赖逆序释放资源。
 
-每个 turn 使用统一 request、result 和临时绑定作用域；标题、回顾和模型审批使用隔离模型请求，避免共享可变请求状态。接口与源文件归属见 [Runtime 架构](runtime-architecture.md)。
+每个 turn 使用统一 request、result 和临时绑定作用域；标题、回顾和模型审批使用隔离模型请求，避免共享可变请求状态。接口与源文件归属见 [Runtime 架构](../runtime-architecture.md)。
 
 ### 6.2 ReAct 执行
 
@@ -337,7 +339,7 @@ runtime_open / runtime_execute_turn / runtime_close
 
 压缩先计算固定请求开销及可用历史预算，再生成和提交候选摘要；提交时检查历史是否仍有效。重复压缩可包含既有摘要，并继续记录来源关系。原始记录和可见上下文不混为同一存储视图。
 
-相关实现见 [history.h](../src/agent/history.h)、[history_compaction.c](../src/agent/history_compaction.c) 和 [react_request.c](../src/agent/react_request.c)。
+相关实现见 [history.h](../../src/agent/history.h)、[history_compaction.c](../../src/agent/history_compaction.c) 和 [react_request.c](../../src/agent/react_request.c)。
 
 ### 6.4 构建与技术选型
 
@@ -358,7 +360,7 @@ runtime_open / runtime_execute_turn / runtime_close
 | FastCGI | 可选 libfcgi 前端 |
 | 测试 | GoogleTest、Python/PTY 集成及 ASan/UBSan 构建开关 |
 
-具体依赖、版本和条件以 [根 CMakeLists.txt](../CMakeLists.txt) 及各模块构建文件为准。
+具体依赖、版本和条件以 [根 CMakeLists.txt](../../CMakeLists.txt) 及各模块构建文件为准。
 
 ### 6.5 模型与 adapter
 
@@ -387,11 +389,11 @@ adapter 决定请求序列化、响应解析和能力校验；供应商返回的
 | 产物与计费 | `outputs`、`credit_events` |
 | 文件与对话回退 | `code_checkpoints`、`code_checkpoint_files` 及 checkpoint 管理的会话快照 |
 
-数据库开启 WAL，schema/migration 由 [database.c](../src/db/database.c) 和对应持久层维护。产物记录包含实际请求、provider、工具/调用/turn 标识、recipe、媒体尺寸及字节信息。checkpoint 的捕获、seal、冲突检查和恢复由 [checkpoint_store.c](../src/persistence/checkpoint_store.c) 实现。
+数据库开启 WAL，schema/migration 由 [database.c](../../src/db/database.c) 和对应持久层维护。产物记录包含实际请求、provider、工具/调用/turn 标识、recipe、媒体尺寸及字节信息。checkpoint 的捕获、seal、冲突检查和恢复由 [checkpoint_store.c](../../src/persistence/checkpoint_store.c) 实现。
 
 ### 6.7 配置
 
-默认读取 `~/.morph/config.toml`，可用 `-c` / `--config` 指定文件。以下是已支持字段的节选，不替代 [完整示例](../config.toml.example) 或 [配置 schema](../src/config/schema.c)。
+默认读取 `~/.morph/config.toml`，可用 `-c` / `--config` 指定文件。以下是已支持字段的节选，不替代 [完整示例](../../config.toml.example) 或 [配置 schema](../../src/config/schema.c)。
 
 ```toml
 [model.text]
@@ -486,7 +488,7 @@ default_max_output_bytes = 1048576
 
 普通堆对象使用单一明确 owner，局部拥有者初始化为 `NULL` 或 `{0}`，使用 `NB_CLEANUP(fn)` 和 typed cleanup。允许部分初始化，销毁前先回收依赖它的异步任务。
 
-`*_borrow` 返回有生命周期限制的视图，`*_copy` / `*_clone` 创建独立副本，fallible `*_take` 仅成功时清空来源，typed `*_steal` 执行无分配转移。禁止浅拷贝拥有指针的结构。参见 [状态所有权](state-ownership.md)。
+`*_borrow` 返回有生命周期限制的视图，`*_copy` / `*_clone` 创建独立副本，fallible `*_take` 仅成功时清空来源，typed `*_steal` 执行无分配转移。禁止浅拷贝拥有指针的结构。参见 [状态所有权](../state-ownership.md)。
 
 #### 6.9.0a 基础容器
 
@@ -503,17 +505,17 @@ default_max_output_bytes = 1048576
 
 #### 6.9.1 ReAct
 
-[react.h](../src/agent/react.h) 定义执行上下文及生命周期；[react_output.h](../src/agent/react_output.h) 定义结构化输出。事件字段在回调期间借用。前端通过 runtime 执行 turn，不直接接管 ReAct 依赖。
+[react.h](../../src/agent/react.h) 定义执行上下文及生命周期；[react_output.h](../../src/agent/react_output.h) 定义结构化输出。事件字段在回调期间借用。前端通过 runtime 执行 turn，不直接接管 ReAct 依赖。
 
 #### 6.9.2 工具系统
 
-接口分为 [tool_registry.h](../src/agent/tool_registry.h)、[tool_execution.h](../src/agent/tool_execution.h)、[tool_result.h](../src/agent/tool_result.h)。注册表动态增长，注册时复制描述和 schema；JSON 与文本输入由 `input_kind` 区分。
+接口分为 [tool_registry.h](../../src/agent/tool_registry.h)、[tool_execution.h](../../src/agent/tool_execution.h)、[tool_result.h](../../src/agent/tool_result.h)。注册表动态增长，注册时复制描述和 schema；JSON 与文本输入由 `input_kind` 区分。
 
 `tool_register_borrow` 借用 user data，`tool_register_take` 仅成功时转移拥有权。异步执行通过 retained handle 保持执行能力，不跨注册表结构变更持有裸 entry。结果具有结构化 envelope、artifacts、错误和显式清理契约。
 
 #### 6.9.3 模型
 
-[llm.h](../src/models/llm.h) 提供 chat、工具调用、reasoning/content 流、图像问答、clone、请求视图和输入估计接口。响应及 clone 结果拥有动态字段，输入视图只在请求期间借用；分别使用相应 cleanup 释放。
+[llm.h](../../src/models/llm.h) 提供 chat、工具调用、reasoning/content 流、图像问答、clone、请求视图和输入估计接口。响应及 clone 结果拥有动态字段，输入视图只在请求期间借用；分别使用相应 cleanup 释放。
 
 `model_llm_clone` 创建独立并发客户端，`model_request_view_init` 借用源资源，不作为独立模型销毁。图像和视频生成使用各自 adapter 接口。
 
@@ -530,25 +532,25 @@ default_max_output_bytes = 1048576
 | 动态工具管理 | `tool_create`、`tool_promote`、`tool_delete`、`tool_history`、`tool_diff`、`tool_rollback` |
 | 子代理 | `spawn_agent`、`send_message`、`followup_task`、`interrupt_agent`、`list_agents`、`wait_agent` |
 
-工具是否对某个会话可见由配置、前端支持及注册状态决定。参数和输入格式以 [tools 源码](../src/agent/tools/) 中的 schema 为准。
+工具是否对某个会话可见由配置、前端支持及注册状态决定。参数和输入格式以 [tools 源码](../../src/agent/tools/) 中的 schema 为准。
 
 `file_read` 使用 `file_path`，支持行/字节游标、版本校验和长行连续读取；`file_list` 使用 `dir_path` 和 `after`，返回 `next_after`。进程的 `poll` / `wait` 返回游标、文件路径和捕获范围元数据。
 
 #### 6.9.5 压缩与恢复
 
-[context.h](../src/agent/context.h)、[compress.h](../src/agent/compress.h) 定义底层消息和压缩操作；主执行路径通过持久模型历史管理重放和来源链。历史默认工具结果预算为 8000 tokens，包含结构化控制字段和省略元数据。
+[context.h](../../src/agent/context.h)、[compress.h](../../src/agent/compress.h) 定义底层消息和压缩操作；主执行路径通过持久模型历史管理重放和来源链。历史默认工具结果预算为 8000 tokens，包含结构化控制字段和省略元数据。
 
 较大输出通过工具自身分页、进程 spool 或 artifact 路径恢复；压缩后的历史不作为完整输出副本。
 
 #### 6.9.6 Ext 生命周期
 
-[ext.h](../src/ext/ext.h) 和 [manifest.h](../src/ext/manifest.h) 定义加载、执行、取消和销毁接口。原生共享库直接调用；exec 类型使用受控子进程。共享库不能据其 manifest 推断已有 OS 进程隔离。
+[ext.h](../../src/ext/ext.h) 和 [manifest.h](../../src/ext/manifest.h) 定义加载、执行、取消和销毁接口。原生共享库直接调用；exec 类型使用受控子进程。共享库不能据其 manifest 推断已有 OS 进程隔离。
 
 #### 6.9.7 Ext IPC
 
 exec 扩展接收以换行结束的 JSON-RPC `run` 请求，返回最终 `result` 或 `error`，stderr 用于诊断。stdout 捕获上限 1 MiB，超限明确返回错误；大结果保存为文件后返回路径。通信失败或取消时终止并回收子进程。
 
-接口见 [jsonrpc.h](../src/ipc/jsonrpc.h)。原生共享库不经过此 IPC。
+接口见 [jsonrpc.h](../../src/ipc/jsonrpc.h)。原生共享库不经过此 IPC。
 
 #### 6.9.8 沙箱与权限
 
@@ -558,7 +560,7 @@ exec 扩展接收以换行结束的 JSON-RPC `run` 请求，返回最终 `result
 - 写入授权与删除授权分别判断；已有批准范围由具体工具复用，后代共享 authority。
 - 模型 reviewer 使用完整目标及独立请求；无法完成检查时按策略 defer，不以目标前缀替代完整审查。
 
-参见 [权限设计](permissions-design.md)、[验收记录](permissions-acceptance.md) 和 [sandbox.h](../src/sandbox/sandbox.h)。
+参见 [权限设计](../permissions-design.md)、[验收记录](../permissions-acceptance.md) 和 [sandbox.h](../../src/sandbox/sandbox.h)。
 
 #### 6.9.9 Function Calling
 
@@ -566,31 +568,31 @@ Chat compatible、Responses 和 DeepSeek 使用各自 codec 编解码工具调�
 
 #### 6.9.10 Guardrail 接口
 
-[guardrail.h](../src/agent/guardrail.h) 定义 hook、规则、pass/fail/error 结果及错误策略。配置、LLM 和 Ext 规则共用检查结果语义，检查器失败与检查不通过分别处理。
+[guardrail.h](../../src/agent/guardrail.h) 定义 hook、规则、pass/fail/error 结果及错误策略。配置、LLM 和 Ext 规则共用检查结果语义，检查器失败与检查不通过分别处理。
 
 #### 6.9.11 记忆接口
 
-[memory.h](../src/agent/memory.h) 定义偏好接收、上下文构建、同步/异步整合和 worker 生命周期。[memory_repository.h](../src/persistence/memory_repository.h) 与 [preferences.h](../src/persistence/preferences.h) 提供 typed 存储；显示摘要不能替代完整记录。
+[memory.h](../../src/agent/memory.h) 定义偏好接收、上下文构建、同步/异步整合和 worker 生命周期。[memory_repository.h](../../src/persistence/memory_repository.h) 与 [preferences.h](../../src/persistence/preferences.h) 提供 typed 存储；显示摘要不能替代完整记录。
 
 #### 6.9.12 MCP 接口
 
-[mcp.h](../src/mcp/mcp.h) 定义客户端、描述符及请求接口；工具、资源和提示词描述符使用独立动态所有权。runtime 负责连接、后台发现、原子发布和清理，前端通过 MCP 服务 DTO 访问。
+[mcp.h](../../src/mcp/mcp.h) 定义客户端、描述符及请求接口；工具、资源和提示词描述符使用独立动态所有权。runtime 负责连接、后台发现、原子发布和清理，前端通过 MCP 服务 DTO 访问。
 
 #### 6.9.13 子代理接口
 
-[agent_control.h](../src/agent/agent_control.h) 提供 Codex 风格的 agent 创建、消息、追加任务、打断、等待和快照接口。runtime 持有控制器；agent 历史及邮箱持久化，空闲时不占执行线程。
+[agent_control.h](../../src/agent/agent_control.h) 提供 Codex 风格的 agent 创建、消息、追加任务、打断、等待和快照接口。runtime 持有控制器；agent 历史及邮箱持久化，空闲时不占执行线程。
 
 #### 6.9.14 Tool Context
 
-工具运行时携带当前权限、HTTP/取消、数据库、会话和宿主服务上下文。权限 context 保持 opaque，通过 [permission/context.h](../src/permission/context.h) 使用；具体工具描述操作，opaque 工具使用注册表权限 gate。
+工具运行时携带当前权限、HTTP/取消、数据库、会话和宿主服务上下文。权限 context 保持 opaque，通过 [permission/context.h](../../src/permission/context.h) 使用；具体工具描述操作，opaque 工具使用注册表权限 gate。
 
 #### 6.9.15 Plan
 
-[plan.h](../src/agent/plan.h) 提供多步骤计划及状态操作，`plan` 工具向模型开放；会话计划独立持久化。
+[plan.h](../../src/agent/plan.h) 提供多步骤计划及状态操作，`plan` 工具向模型开放；会话计划独立持久化。
 
 #### 6.9.16 Tokenizer
 
-[tokenizer.h](../src/agent/tokenizer.h) 和 [bpe.h](../src/agent/bpe.h) 定义计数接口。分批只控制临时工作量，不截断剩余输入；长连续片段使用等价合并堆。分词失败或分配失败保留相应保守计数路径。
+[tokenizer.h](../../src/agent/tokenizer.h) 和 [bpe.h](../../src/agent/bpe.h) 定义计数接口。分批只控制临时工作量，不截断剩余输入；长连续片段使用等价合并堆。分词失败或分配失败保留相应保守计数路径。
 
 ### 6.10 Skill
 
@@ -601,7 +603,7 @@ Chat compatible、Responses 和 DeepSeek 使用各自 codec 编解码工具调�
 - 注册表动态增长并保持 entry 地址稳定；正文在激活时懒加载，每次请求临时注入。
 - 顶层 `morph skills add/list/remove/update` 支持 Skill 安装及管理；`/skill` 提供会话内查看、激活和停用，模型通过 `activate_skill` 加载完整指令。
 
-接口见 [skill.h](../src/skill/skill.h)、[skill_parse.c](../src/skill/skill_parse.c) 及 [CLI 管理](cli-management.md)。
+接口见 [skill.h](../../src/skill/skill.h)、[skill_parse.c](../../src/skill/skill_parse.c) 及 [CLI 管理](../cli-management.md)。
 
 ### 6.11 TUI 与进度呈现
 
@@ -611,7 +613,7 @@ View 使用四边 margin/padding：measure 返回含 margin 的外尺寸，arran
 
 CLI Application 复用该框架管理模式和页面，feed 显示 Working、耗时、推理、回答、工具与后台任务。
 
-参见 [CLI 应用布局](tui-application-layout.md) 和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)。
+参见 [CLI 应用布局](../tui-application-layout.md) 和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)。
 
 ### 6.12 C 编码规范
 
@@ -679,7 +681,7 @@ ctest --test-dir build --output-on-failure
 | 普通完整问答 PTY | 通过，含 600 汉字自由输入、1600 汉字自定义答案、尾部完整性和取消 |
 | ASan/UBSan 无 Readline 问答 PTY | 通过，覆盖长答案、粘贴及 optional 超时 |
 
-核心回归包括 [模型与流式响应](../tests/test_react.cpp)、[模型所有权](../tests/test_model_ownership.cpp)、[Token 预算](../tests/test_model_tokens.cpp)、[BPE](../tests/test_tokenizer.cpp)、[CLI 终端](../tests/test_cli_terminal.cpp)、[问答](../tests/test_ask_user.cpp)、[进程恢复](../tests/test_exec_process.cpp)、[checkpoint](../tests/test_checkpoint_store.cpp)、[记忆分页](../tests/test_runtime_query.cpp) 和 [长输入 PTY](../tests/test_cli_select_pty.py)。
+核心回归包括 [模型与流式响应](../../tests/test_react.cpp)、[模型所有权](../../tests/test_model_ownership.cpp)、[Token 预算](../../tests/test_model_tokens.cpp)、[BPE](../../tests/test_tokenizer.cpp)、[CLI 终端](../../tests/test_cli_terminal.cpp)、[问答](../../tests/test_ask_user.cpp)、[进程恢复](../../tests/test_exec_process.cpp)、[checkpoint](../../tests/test_checkpoint_store.cpp)、[记忆分页](../../tests/test_runtime_query.cpp) 和 [长输入 PTY](../../tests/test_cli_select_pty.py)。
 
 ## 10. 资源边界
 
@@ -739,12 +741,12 @@ ctest --test-dir build --output-on-failure
 
 本文以实现为依据；接口变更同步修改对应规格、测试和专项文档。详细契约集中在：
 
-- [Runtime 架构](runtime-architecture.md)
-- [权限设计](permissions-design.md)与[权限验收](permissions-acceptance.md)
-- [模型能力与资源限制](model-capability-limits.md)
-- [上下文与进程恢复](context-and-process-recovery.md)
-- [checkpoint](checkpointing.md)
-- [事件系统](event-system.md)与[Hooks](hooks.md)
-- [QuickJS 工具](quickjs-tools.md)与[定时任务](scheduled-tasks.md)
-- [CLI 应用布局](tui-application-layout.md)和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)
-- [内存与状态所有权](state-ownership.md)
+- [Runtime 架构](../runtime-architecture.md)
+- [权限设计](../permissions-design.md)与[权限验收](../permissions-acceptance.md)
+- [模型能力与资源限制](../model-capability-limits.md)
+- [上下文与进程恢复](../context-and-process-recovery.md)
+- [checkpoint](../checkpointing.md)
+- [事件系统](../event-system.md)与[Hooks](../hooks.md)
+- [QuickJS 工具](../quickjs-tools.md)与[定时任务](../scheduled-tasks.md)
+- [CLI 应用布局](../tui-application-layout.md)和 [nothing-tui 布局指南](https://codeberg.org/oxund/nothing-tui/src/branch/main/docs/guide/layout.md)
+- [内存与状态所有权](../state-ownership.md)

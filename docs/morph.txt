@@ -30,7 +30,9 @@ CONTENTS						*morph-contents*
 ==============================================================================
 QUICKSTART						*morph-quickstart*
 
-Build from source:
+From a source checkout with dependencies installed, place the companion source
+trees at vendor/mathjax-c and fronts/morph-markdown as described in the root
+README, then build:
 
 	cmake -S . -B build
 	cmake --build build
@@ -51,8 +53,9 @@ Text, Vision, Image or Video together with its provider and current model.
 Connect accounts and save asks only for missing credentials; models sharing the
 same missing provider credential reuse one entry. Save for later skips connecting.
 API URLs, context windows, and output limits remain under Advanced settings.
-DeepSeek thinking defaults to Off; enable it from the model's Thinking setting
-when needed. There is no mandatory thinking confirmation.
+The DeepSeek text preset enables high-effort thinking and uses a 65536-token
+output budget. The vision preset disables thinking and uses 16384 tokens.
+The Thinking setting can be changed independently for each model.
 Use arrows or Tab to move, Enter to select, Esc to go back, and Ctrl+C to exit
 without saving. Your config is written only after the final overview action
 (or Save for later when credentials are missing). Setup always exits after saving, even
@@ -112,8 +115,9 @@ Important sections:
 	[model.image]	Image generation/editing model.
 	[model.video]	Video generation model.
 	[credits]	Credit tracking and per-model prices.
-	[exec]		Shell, timeouts, output limits, and network for exec.
-	[react]		Tool loop, guardrails, HITL, and tool policy.
+	[exec]		Shell, timeouts and output limits for exec.
+	[permissions]	Access boundary, approval policy and reviewer.
+	[react]		Tool loop, guardrails and tool selection.
 	[react.permissions]	Permission profile selection.
 	[context]	Context compression settings.
 	[memory]	Persistent memory settings.
@@ -165,8 +169,7 @@ max_tokens, so extra_body_json cannot replace those fields:
 	api_key_env = "OPENAI_API_KEY"
 	extra_body_json = '''
 	{
-	  "reasoning_effort": "high",
-	  "chat_template_kwargs": {"enable_thinking": true}
+	  "temperature": 0.7
 	}
 	'''
 
@@ -312,6 +315,9 @@ Common interactive commands:
 	/rename <name>	Rename current session.
 	/delete <name|id>	Delete a session.
 	/history [n|--all]	Show, diagnose, repair, or export history.
+	/copy		Copy the last assistant answer as Markdown.
+	/jobs [id|stop id]	Inspect or stop a background process.
+	/rewind		Preview and restore a turn checkpoint.
 	/share			Save the latest answered turn as offline HTML in ~/Downloads.
 	/model [name|normal|ultra|status]	Choose the model or collaboration mode.
 	/agents [id]	Inspect agent assignments, status and results.
@@ -325,7 +331,11 @@ Common interactive commands:
 	/save [format]	Export the session to a file.
 	/clear		Clear the terminal screen.
 	/memory [show|history|explain|set|unset|clear|jobs]
-	/permissions [list|revoke <id|program>|clear ...]
+	/permissions	Select a policy. Use /permissions status to inspect it.
+	/permissions mode <ask|auto|full|read_only>
+	/permissions list	List saved grants.
+	/permissions revoke <id|program>
+	/permissions clear
 	/tasks [list|show|add|every|update|cancel|run]
 	/inbox [list [limit]|read <id>]
 	/sync [status|now|conflicts|restore <trash-id>|restore-db ...]
@@ -365,7 +375,7 @@ Task bodies use the same Markdown renderer as replies.
 ==============================================================================
 TOOLS AND PERMISSIONS					*morph-tools*
 
-Built-in read-only tools include:
+Inspection and session tools include:
 
 	file_read	Bounded UTF-8 reads with lossless byte-cursor continuation.
 	file_list	Sorted directory listing with bounded, resumable pages.
@@ -391,7 +401,9 @@ Creative and processing tools include:
 
 Workspace, task, and configuration tools include:
 
-	apply_patch	Patch text files inside the active work directory.
+	apply_patch	Patch authorized files and capture their changes in the turn checkpoint.
+	checkpoint	Inspect checkpoints and restore captured code changes.
+	memory_update	Remember, correct or forget explicit user information.
 	config_edit	Safely patch the active Morph configuration.
 	memory_preference	Persist an explicit user preference.
 	tasks		Create and manage scheduled tasks and the inbox.
@@ -404,14 +416,15 @@ Collaboration tools include:
 	send_message	Send a message without starting an idle agent.
 	followup_task	Continue an idle agent or steer a running agent.
 	interrupt_agent	Interrupt work while preserving its identity and history.
+	read_agent	Read a paginated agent report.
 	wait_agent	Wait for messages, completion, cancellation or timeout.
 
 Ultra enables proactive delegation; the model decides which tasks can usefully
 run in parallel. /subagents opens the thread overview: Enter views an agent,
 Tab or Left/Right switches, f sends a follow-up, k interrupts, and Esc returns.
 Children compile and test in MORPH_AGENT_SCRATCH with scoped workspace writes.
-The session tree shares a persistent weighted budget with warnings and a primary
-reserve. See docs/multi-agent.md for configuration and evaluation commands.
+An optional weighted token budget covers the session tree. Enable it under
+[features.rollout_budget] and configure its limit and reminder thresholds. See docs/multi-agent.md for configuration and evaluation commands.
 
 Shell and process tools include:
 
@@ -431,29 +444,27 @@ table:
 	max_inline_output = 32768
 	max_session_output = 1048576
 	kill_grace_ms = 500
-	network = false
-	allow_host_execution = false
 
-Each command is parsed before execution.  Morph derives the programs it would
-run, then asks for approval scoped to those programs.  If a command cannot be
-parsed safely, exec returns approval_required instead of running it.  A single
-approval can apply to this call only, to the whole session, or permanently.
-Persistent grants are stored per project and listed with /permissions.
+The active policy is visible in /permissions status. To select the default
+Ask policy explicitly, use:
 
-For trusted host automation, opt in with exec.allow_host_execution = true and
-pass host=true on the individual exec call. Ordinary calls remain sandboxed.
-Host calls retain command approval, timeouts, output limits, and process sessions,
-but run with the user's host filesystem and network access. macOS privacy consent
-still applies. See docs/sandbox.md for the contract and live verification.
+	[permissions]
+	access = "workspace"
+	approval = "on_request"
+	reviewer = "user"
 
-The sandbox grants read access to system toolchain paths (/usr, /bin, /sbin,
-/System, /Library, /opt/homebrew, /private) and read, write, and delete
-access to /tmp.  The command workdir also gets read, write, and delete
-rights.  Additional write or delete paths may be requested through approval
-and are never persisted unless you choose the permanent option.  Proxy
-variables (lowercase and uppercase) plus SSL_CERT_FILE,
-SSL_CERT_DIR, and CURL_CA_BUNDLE are inherited automatically; other
-non-essential variables are still filtered.
+Morph parses the shell command and checks its programs, working directory and
+requested access. Workspace commands inside existing authority run directly.
+Missing authority can go to a human (Ask) or model reviewer (Auto). Read Only
+uses a sandbox with separate scratch space and can request explicit upgrades.
+Full Access runs commands on the host. With approval = "never", any operation
+that still needs review is denied.
+
+A sandboxed command can request network=true or host=true for that call.
+Host execution uses the user's host filesystem and network permissions. The OS
+still controls access such as macOS Automation. The command's workdir selects
+where it starts. Existing roots and grants determine which paths it may modify.
+See docs/sandbox.md for filesystem presets and platform details.
 
 Commands that outlive yield_time_ms return a session_id.  Continue them with
 the background tool, whose action is one of list, poll, wait, write, interrupt,
@@ -485,26 +496,11 @@ trusted roots at startup and never weakens the OS sandbox:
 	write_paths = []
 	delete_paths = []
 
-PTY allocation, platform-scoped process inspection, and POSIX IPC are
-available to normal developer commands without granting access to arbitrary
-devices.  Networking stays off unless [exec].network is enabled.
-On Linux, process visibility follows the host /proc DAC because Morph does not
-create a PID namespace.
-See docs/sandbox.md for the extension capability names, platform policy, and
-macOS nested-sandbox testing caveat.
-
-Human-in-the-loop approval:
-
-	[react]
-	hitl_enabled = true
-	hitl_auto_approve_readonly = true
-	hitl_auto_approve_media = true
-
-Setup enables automatic approval for read-only tools and built-in media tools.
-These exemptions take precedence over hitl_tools. Media tools retain mutation
-metadata and filesystem checks; other tool approvals and exec command approval
-remain active. Setup also enables exec.allow_host_execution for explicit host
-commands. See docs/setup.md and docs/setup-mcp.md for role MCP defaults.
+Setup still writes legacy exec.network, exec.allow_host_execution and
+react.hitl_auto_approve_* fields. An explicit [permissions] table takes
+precedence. In its absence, the runtime maps the legacy settings to Ask.
+Use /permissions to select another preset and /permissions list to inspect
+saved grants.
 
 ==============================================================================
 SCHEDULED TASKS					*morph-tasks*
@@ -555,11 +551,12 @@ Tools:
 	tool_diff	Show a diff against a checkpoint.
 	tool_rollback	Rewind a tool to a checkpoint.
 
-A dynamic tool defines a global run(args) function, or async run(args).  Every
+tool_create requires name, input_schema, output_schema and source_js. Its
+description is optional. Define a global run(args) or async run(args). Every
 successful create or update records a checkpoint.
 
 Available host APIs include morph.fs (readText, writeText), morph.env.get,
-morph.tool.call, morph.exec, morph.fetch, morph.image (metadata, resize, crop,
+morph.exec, morph.fetch, morph.image (metadata, resize, crop,
 extend, rotate, convert, compose, frame, open), morph.canvas (create,
 loadImage, toFile, toBuffer), and WebAssembly.
 
@@ -571,8 +568,8 @@ by the tool itself:
 	                        "env", "mcp", "model", "shell", "image", "wasm"]
 
 The server profile starts from an empty capability list.  Set
-dynamic_tools.mode to "server" to use it; FastCGI and other non-interactive
-front-ends default to server mode when mode is not set explicitly.
+dynamic_tools.mode to "server" to use it. FastCGI selects server mode by
+default. A CLI invocation with -p still uses the CLI configuration.
 
 See docs/quickjs-tools.md for the full API surface and sandbox details.
 
@@ -730,7 +727,8 @@ Inspect or change it:
 	/memory set <key> <value> [personal|project|session]
 	/memory unset <key> [personal|project|session]
 	/memory jobs
-	/memory clear [all|facts|episodes|procedures]
+	/memory retry
+	/memory clear [all|facts|past_tasks|tips]
 
 Explicit preferences are stored by scope.  Session overrides project, which
 overrides personal.  Use /memory explain to see which value is effective.
@@ -779,24 +777,15 @@ Credits track estimated usage and optional warning limits:
 ==============================================================================
 CONFIG EDITS						*morph-config-edit*
 
-Morph can safely edit its active config when the user explicitly asks and
-approves. The config_edit tool prefers a minimal Codex-style patch targeting
-only config.toml. It preserves comments and formatting, validates the result,
-creates config.toml.bak, detects concurrent changes, and atomically replaces
-the config.
+When a user requests a configuration change, config_edit checks the active policy.
+Restricted access requires human approval. Full access permits the edit directly.
+The tool targets the active configuration (including one selected with -c). Its
+patch envelope names config.toml. A successful change preserves unrelated text,
+validates the complete TOML, backs up the original as <active-path>.bak and
+atomically replaces the file. A concurrent modification aborts the write.
 
-Safe workflow:
-
-	1. Read the current config or config.toml.example.
-	2. Explain the exact change.
-	3. Ask for user approval.
-	4. Patch only the active Morph config file.
-	5. Validate the complete resulting configuration.
-	6. Back up and atomically replace the file.
-	7. Tell the user to restart Morph.
-
-Configuration is not hot-reloaded. config_edit completes the current tool
-turn and returns restart_required = true; it does not terminate Morph.
+Restart Morph with the same config path when the result reports
+restart_required = true. An edit that makes no change does not require a restart.
 
 Do not put API key values into config unless the user explicitly provides
 that secret and insists. Prefer api_key_env and tell the user to export the
@@ -828,11 +817,10 @@ TROUBLESHOOTING					*morph-troubleshooting*
 
 	Check the returned error.code:
 
-	approval_required	The command could not be parsed safely, or it was
-				not approved.  Rewrite it without dynamic
-				construction, or approve it when prompted.
+	approval_required	Morph could not safely analyze the shell command or
+				complete review. Inspect its diagnostic.
 	approval_unavailable	This run has no interactive approval channel.
-	permission_denied	You denied the command.
+	permission_denied	The policy or reviewer denied the command.
 	spawn_failed / invalid_workdir	The process could not start, or the
 				workdir is invalid.
 

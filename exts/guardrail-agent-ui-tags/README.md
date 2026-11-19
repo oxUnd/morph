@@ -21,16 +21,21 @@ Any other `<m:...>` tag fails the guardrail. In particular, `ask_user` is a
 tool call and must not be rendered as `<m:ask_user>`, `<m:question>`, or
 `<m:choice>`.
 
-## Install
+## Build and enable
 
-```bash
-cp -r exts/guardrail-agent-ui-tags ~/.morph/exts/
-make -C ~/.morph/exts/guardrail-agent-ui-tags
+For a host build, run this from the Morph repository root after CMake has
+fetched nbase. A custom checkout can supply its own include path.
+
+```sh
+cc -shared -fPIC -Ibuild/_deps/nbase-src/include exts/guardrail-agent-ui-tags/agent_ui_tags.c -o agent_ui_tags.so
 ```
 
-Enable guardrails in the frontend that should use this card protocol:
+For deployment, build for the target architecture and package the library beside
+`manifest.toml` in the frontend's extensions directory. The manifest selects
+Android and iOS. Enable guardrails in that frontend's configuration.
 
 ```toml
+[react]
 guardrail_enabled = true
 ```
 
