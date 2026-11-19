@@ -2,17 +2,11 @@
 #define MORPH_PERMISSION_OPERATION_H
 
 #include <limits.h>
+#include <morph/ext_types.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-enum tool_path_op {
-	TOOL_PATH_READ = 0,
-	TOOL_PATH_LIST = 1,
-	TOOL_PATH_WRITE = 2,
-	TOOL_PATH_DELETE = 3,
-};
 
 enum tool_path_access {
 	TOOL_PATH_ACCESS_READ = 1u << 0,

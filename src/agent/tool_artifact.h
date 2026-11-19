@@ -2,6 +2,7 @@
 #define MORPH_TOOL_ARTIFACT_H
 
 #include "cJSON.h"
+#include <morph/ext_types.h>
 #include <limits.h>
 
 #ifdef __cplusplus
@@ -11,12 +12,6 @@ extern "C" {
 #define TOOL_ARTIFACT_MAX 32
 #define TOOL_ARTIFACT_LABEL_MAX 128
 #define TOOL_ARTIFACT_MIME_MAX 128
-
-enum tool_artifact_kind {
-	TOOL_ARTIFACT_FILE,
-	TOOL_ARTIFACT_IMAGE,
-	TOOL_ARTIFACT_VIDEO,
-};
 
 struct tool_artifact {
 	enum tool_artifact_kind kind;

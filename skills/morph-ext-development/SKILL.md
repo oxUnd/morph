@@ -34,9 +34,13 @@ Inspect that checkout's `AGENTS.md` when changing repository files.
   link time. Use the guide's self-linked CMake path for independent builds,
   standalone test processes, or hosts without the required exports.
 - Use `ext_run_v2(const struct ext_context *, const char *, char **)` for native
-  context and host services. Include `ext/context.h`, validate context/table ABI
+  context and host services. Include the exported `morph/ext.h`, validate context/table ABI
   version and size, and keep borrowed views, callbacks and workers within the
-  call lifetime. Existing `ext_run` modules remain supported.
+  call lifetime. Existing `ext_run` modules remain supported. Export the SDK with
+  `cmake --install build --component ext-sdk --prefix /path/to/sdk` and vendor
+  its public headers for independent builds; never require a Morph source tree
+  or copy private config layouts. Read effective model settings through
+  `get_config_string`, guarded by `EXT_HOST_HAS_CALLBACK` for older hosts.
 - Match the nbase headers and ABI to the target Morph build. Read the relevant
   public header and example before using an unfamiliar API. Do not infer that
   every function in a static library exists in the host's dynamic exports.

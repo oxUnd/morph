@@ -9,4 +9,4 @@ target_include_directories(morph-ext PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 	${CMAKE_SOURCE_DIR}/src/agent
 )
-target_link_libraries(morph-ext PUBLIC nbase::nbase morph-cjson morph-sandbox morph-ipc)
+target_link_libraries(morph-ext PUBLIC morph-ext-sdk nbase::nbase morph-cjson morph-sandbox morph-ipc)

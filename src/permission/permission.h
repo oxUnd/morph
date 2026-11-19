@@ -8,33 +8,11 @@
 extern "C" {
 #endif
 
-enum permission_access {
-	PERMISSION_READ_ONLY,
-	PERMISSION_WORKSPACE,
-	PERMISSION_FULL,
-};
-
-enum permission_approval {
-	PERMISSION_ON_REQUEST,
-	PERMISSION_NEVER,
-};
-
-enum permission_reviewer {
-	PERMISSION_USER,
-	PERMISSION_MODEL,
-};
-
 enum permission_requirement {
 	PERMISSION_ALLOW,
 	PERMISSION_REVIEW,
 	PERMISSION_REQUIRE_USER,
 	PERMISSION_DENY,
-};
-
-struct permission_policy {
-	enum permission_access access;
-	enum permission_approval approval;
-	enum permission_reviewer reviewer;
 };
 
 struct permission_access_state {

@@ -6,10 +6,10 @@ discovery, linking, packaging, and verification. The bundled
 `morph-ext-development` skill uses this guide; build and install rules include
 the same file as its offline `references/development.md`.
 
-Commands below run from a matching Morph source checkout unless stated
-otherwise. `build` is the example Morph build directory; substitute the actual
-directory and executable when using another build. Read `AGENTS.md` before
-changing repository files.
+Native extensions can build independently using the exported ext SDK; they do
+not need the Morph source tree or its private configuration layout. Repository
+examples below use `build` for the host build directory. Read `AGENTS.md` before
+changing host repository files.
 
 ## Choose the extension type
 
@@ -42,6 +42,31 @@ Existing packages to inspect:
 
 Guardrail extensions use a separate entrypoint and lifecycle. For those,
 inspect `docs/guardrails.md` and `exts/demo-guardrail-pii/` as well.
+
+## Export and use the public ext SDK
+
+The public headers are `include/morph/ext.h` and `include/morph/ext_types.h`.
+They are installed with Morph. To export just the SDK from a configured build:
+
+```sh
+cmake --install build --component ext-sdk --prefix "$PWD/exported-sdk"
+```
+
+This copies headers without building or linking Morph. Distribute the resulting
+`include/morph/` directory, or vendor those headers in an extension package.
+Compile with `-I/path/to/exported-sdk/include` and the separately supplied nbase
+public headers/libraries. No `src/` include path or Morph private library is
+needed. SDK 1.1 retains context ABI 1 and appends `get_config_string` to the host
+table; use `EXT_HOST_HAS_CALLBACK(host, get_config_string)` before accessing it.
+New callbacks are appended, and existing public layouts/enum values are stable.
+
+`host->get_config_string(host_data, path)` returns a borrowed string from the
+effective per-call configuration snapshot. Supported paths are
+`model.{text,vision,image,video}.{provider,adapter,model,api_base,api_key,api_key_env,extra_body_json}`.
+Unknown paths return NULL; a configured empty string remains empty. Views remain
+valid only until the native call returns. Do not free, retain or log credentials.
+Private config, manifest and model option/result pointers remain opaque in the
+SDK; their internal layouts are not a distributable ABI.
 
 ## Find the exact nbase API
 
@@ -118,7 +143,7 @@ The loader prefers the context-aware `ext_run_v2` symbol. Export a C function
 with this signature (C++ implementations need C linkage):
 
 ```c
-#include "ext/context.h"
+#include <morph/ext.h>
 
 int ext_run_v2(const struct ext_context *context,
                const char *args_json, char **result_json);
@@ -151,7 +176,7 @@ int ext_run(const char *args_json, char **result_json);
 
 ### Native context and host services
 
-`ext/context.h` defines an actual borrowed C object, independent of the tool's
+`morph/ext.h` defines an actual borrowed C object, independent of the tool's
 JSON arguments/schema. Validate `abi_version` and `struct_size` on both context
 and host table. Context ABI version 1 accompanies the `ext_run_v2` entrypoint.
 If both symbols exist, v2 wins; the loader never calls a legacy symbol using
@@ -159,7 +184,7 @@ the new signature.
 
 | Field | Meaning |
 | --- | --- |
-| `config` | Read-only snapshot of the invoking runtime's effective `struct config`, refreshed per call. Include `config/config.h` for its layout. |
+| `config` | Legacy opaque pointer. Independently built extensions read configuration through `host->get_config_string`, without including `config/config.h`. |
 | `manifest`, `settings` | Package metadata and optional typed `[config]` manifest table. Read settings with the public `nb/toml.h` accessors. |
 | `logger` | Borrowed runtime logger; `host->log` also adds extension and call identity. |
 | `paths.workdir` | Current agent's working directory, including child-agent bindings. |
@@ -180,7 +205,7 @@ retries = 3
 ```
 
 These settings are read at discovery and require reloading after changes.
-The separate `config` field describes Morph's effective configuration.
+The host configuration accessor describes Morph's effective configuration.
 
 The host table provides:
 
@@ -216,8 +241,8 @@ The host table provides:
 
 Context, config, settings, host table and `host_data` remain host-owned and
 valid only until `ext_run_v2` returns. `result_json` keeps the legacy malloc/free
-contract. The config/manifest/model option layouts require headers matching the
-host build. Low-level callers use `ext_run_with_context`; calling a v2-only
+contract. Public SDK consumers must not dereference private config/manifest/model
+layouts. Low-level callers use `ext_run_with_context`; calling a v2-only
 module through the context-free `ext_run` wrapper returns `NB_ERR_INVAL`.
 
 Build the example independently with:
@@ -227,8 +252,10 @@ cmake -S exts/context-probe -B build/exts/context-probe
 cmake --build build/exts/context-probe
 ```
 
-Override `MORPH_SOURCE_DIR` and `NBASE_INCLUDE_DIR` for another matching checkout
-or build. The output directory contains `manifest.toml` and `probe.so`.
+Override `MORPH_SDK_INCLUDE_DIR` and `NBASE_INCLUDE_DIR` for exported headers.
+The example also uses the repository's cJSON source; independently packaged
+extensions can carry their own JSON library. The output directory contains
+`manifest.toml` and `probe.so`.
 The example links its own cJSON and calls Morph through the host table.
 
 For a minimal legacy no-argument example, create `exts/nbase-probe/probe.h`:

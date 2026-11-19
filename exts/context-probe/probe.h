@@ -1,7 +1,7 @@
 #ifndef MORPH_CONTEXT_PROBE_H
 #define MORPH_CONTEXT_PROBE_H
 
-#include "ext/context.h"
+#include <morph/ext.h>
 
 #ifdef __cplusplus
 extern "C" {

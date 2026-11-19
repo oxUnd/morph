@@ -346,6 +346,13 @@ else()
 	FetchContent_MakeAvailable(nothing_tui)
 endif()
 
+add_library(morph-ext-sdk INTERFACE)
+target_include_directories(morph-ext-sdk INTERFACE
+	$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+	$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/morph
+	DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} COMPONENT ext-sdk)
+
 add_subdirectory(vendor)
 add_subdirectory(src)
 

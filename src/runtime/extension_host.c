@@ -450,6 +450,47 @@ static const char *runtime_extension_string(const char *value)
 	return value ? value : "";
 }
 
+static const char *runtime_extension_get_config_string(void *host_data, const char *path)
+{
+	const struct runtime_extension_call *call = host_data;
+	const struct config_model_entry *entry = NULL;
+	const char *field;
+
+	if (!path || strncmp(path, "model.", 6) != 0)
+		return NULL;
+
+	path += 6;
+	field = strchr(path, '.');
+	if (!field)
+		return NULL;
+
+	size_t length = (size_t)(field - path);
+#define MODEL_ENTRY(name) \
+	if (length == sizeof(#name) - 1 && strncmp(path, #name, length) == 0) \
+		entry = &call->config->models.name
+	MODEL_ENTRY(text);
+	MODEL_ENTRY(vision);
+	MODEL_ENTRY(image);
+	MODEL_ENTRY(video);
+#undef MODEL_ENTRY
+	if (!entry)
+		return NULL;
+
+	field++;
+#define MODEL_STRING(name) \
+	if (strcmp(field, #name) == 0) \
+		return entry->name
+	MODEL_STRING(provider);
+	MODEL_STRING(adapter);
+	MODEL_STRING(model);
+	MODEL_STRING(api_base);
+	MODEL_STRING(api_key);
+	MODEL_STRING(api_key_env);
+	MODEL_STRING(extra_body_json);
+#undef MODEL_STRING
+	return NULL;
+}
+
 static int runtime_extension_context_prepare(struct runtime_extension_call *call,
 					     const struct permission_policy *policy,
 					     const struct ext_host_api *host)
@@ -545,6 +586,7 @@ static int runtime_extension_native(struct runtime_extension_call *call,
 		.video = runtime_extension_video,
 		.ask_user = runtime_extension_ask_user,
 		.add_artifact = runtime_extension_add_artifact,
+		.get_config_string = runtime_extension_get_config_string,
 	};
 	int rc = runtime_extension_context_prepare(call, policy, &host);
 

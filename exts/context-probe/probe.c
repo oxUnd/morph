@@ -1,6 +1,5 @@
 #include "probe.h"
 
-#include "config/config.h"
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include <nb/err.h>
@@ -10,9 +9,9 @@
 int ext_run_v2(const struct ext_context *context, const char *args_json, char **result_json)
 {
 	if (!context || context->abi_version != EXT_CONTEXT_ABI_VERSION ||
-	    context->struct_size < sizeof(*context) || !context->config || !context->host ||
+	    context->struct_size < sizeof(*context) || !context->host ||
 	    context->host->abi_version != EXT_CONTEXT_ABI_VERSION ||
-	    context->host->struct_size < sizeof(*context->host) || !args_json || !result_json)
+	    !EXT_HOST_HAS_CALLBACK(context->host, get_config_string) || !args_json || !result_json)
 		return NB_ERR_INVAL;
 
 	if (*result_json)
@@ -38,7 +37,8 @@ int ext_run_v2(const struct ext_context *context, const char *args_json, char **
 	    !cJSON_AddStringToObject(output, "agent_id", context->call.agent_id) ||
 	    !cJSON_AddStringToObject(output, "turn_id", context->call.turn_id) ||
 	    !cJSON_AddStringToObject(output, "tool_call_id", context->call.tool_call_id) ||
-	    !cJSON_AddStringToObject(output, "model", context->config->models.text.model))
+	    !cJSON_AddStringToObject(output, "model", context->host->get_config_string(
+					context->host_data, "model.text.model")))
 		return NB_ERR_NOMEM;
 
 	context->host->log(context->host_data, NB_LOG_INFO, "Reading extension call context");

@@ -205,6 +205,36 @@ TEST_F(ExtensionHostTest, SettingsAreTypedAndContextBorrowsOnlyForTheCall)
 	EXPECT_EQ(Execute(), NB_OK);
 }
 
+TEST_F(ExtensionHostTest, PublicConfigStringsUseTheEffectivePerCallSnapshot)
+{
+	std::strcpy(config->models.text.adapter, "deepseek");
+	std::strcpy(config->models.text.api_key, "text-key");
+	std::strcpy(config->models.vision.api_key_env, "VISION_KEY");
+	extension.run_v2 = [](const struct ext_context *ctx, const char *, char **out) -> int {
+		EXPECT_TRUE(EXT_HOST_HAS_CALLBACK(ctx->host, get_config_string));
+		auto read = ctx->host->get_config_string;
+		EXPECT_STREQ(read(ctx->host_data, "model.text.adapter"), "deepseek");
+		EXPECT_STREQ(read(ctx->host_data, "model.text.api_key"), "text-key");
+		EXPECT_STREQ(read(ctx->host_data, "model.vision.api_key_env"), "VISION_KEY");
+		EXPECT_STREQ(read(ctx->host_data, "model.text.api_base"), "");
+		EXPECT_STREQ(read(ctx->host_data, "model.image.provider"), "");
+		EXPECT_STREQ(read(ctx->host_data, "model.video.model"), "");
+		EXPECT_EQ(read(ctx->host_data, nullptr), nullptr);
+		EXPECT_EQ(read(ctx->host_data, "model.text.unknown"), nullptr);
+		EXPECT_EQ(read(ctx->host_data, "model.unknown.api_key"), nullptr);
+		EXPECT_EQ(read(ctx->host_data, "model.text"), nullptr);
+		EXPECT_EQ(read(ctx->host_data, "model.text.api_key.trailing"), nullptr);
+		*out = strdup((std::string("{\"model\":\"") +
+			read(ctx->host_data, "model.text.model") + "\"}").c_str());
+		return *out ? NB_OK : NB_ERR_NOMEM;
+	};
+	ASSERT_EQ(Execute(), NB_OK);
+	EXPECT_EQ(Field("model"), "configured-model");
+	std::strcpy(config->models.text.model, "new-model");
+	ASSERT_EQ(Execute(), NB_OK);
+	EXPECT_EQ(Field("model"), "new-model");
+}
+
 struct ExtensionModelState {
 	struct model *source = nullptr;
 	struct config *original_config = nullptr;
@@ -257,6 +287,8 @@ TEST_F(ExtensionHostTest, ChatUsesRequestViewAndPreservesUsageBudgetCancellation
 		int rc = ctx->host->chat(ctx->host_data, "system", messages, 1, nullptr,
 					 nullptr, nullptr);
 		EXPECT_STREQ(ctx->config->models.text.model, "configured-model");
+		EXPECT_STREQ(ctx->host->get_config_string(ctx->host_data, "model.text.model"),
+			     "configured-model");
 		*out = strdup("{}");
 		return *out ? rc : NB_ERR_NOMEM;
 	};
