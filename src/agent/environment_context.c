@@ -147,6 +147,7 @@ int environment_context_render(const struct environment_context *ctx, nb_buf *ou
 		return NB_ERR_INVAL;
 	const struct { const char *name; const char *value; } fields[] = {
 		{ "cwd", ctx->cwd },
+		{ "morph_executable", ctx->morph_executable },
 		{ "shell", shell_name(ctx->shell) },
 		{ "os", normalize_os(ctx->os) },
 		{ "os_version", ctx->os_version },
@@ -784,6 +785,7 @@ int environment_context_create(struct environment_context *out,
 {
 	struct environment_collector state = {0};
 	struct environment_collector *collector = &state;
+	nb_buf executable NB_CLEANUP(nb_buf_cleanup) = {0};
 	time_t now;
 	struct tm local;
 	char date[ENV_DATE_CAP];
@@ -792,12 +794,22 @@ int environment_context_create(struct environment_context *out,
 
 	if (!out)
 		return NB_ERR_INVAL;
-	if (out->cwd || out->shell || out->os || out->os_version || out->distribution ||
+
+	if (out->cwd || out->morph_executable || out->shell || out->os ||
+	    out->os_version || out->distribution ||
 	    out->kernel_release || out->arch || out->runtime || out->runtime_version ||
 	    out->host_os || out->path_tools || out->current_date || out->timezone ||
 	    out->git_branch || out->git_root || out->sandbox)
 		return NB_ERR_STATE;
+
 	memset(out, 0, sizeof(*out));
+	nb_status status = nb_path_executable(&executable, NULL);
+	if (status == NB_ERR_NOMEM)
+		return status;
+
+	if (status == NB_OK)
+		out->morph_executable = copy_value(collector, nb_buf_cstr(&executable));
+
 	out->cwd = full_path(collector, input ? input->cwd : NULL);
 	if (out->cwd && path_kind(collector, out->cwd) != 2) {
 		free((void *)out->cwd);
@@ -849,6 +861,7 @@ void environment_context_cleanup(struct environment_context *ctx)
 	if (!ctx)
 		return;
 	free((void *)ctx->cwd);
+	free((void *)ctx->morph_executable);
 	free((void *)ctx->shell);
 	free((void *)ctx->os);
 	free((void *)ctx->os_version);

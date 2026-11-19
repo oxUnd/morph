@@ -11,6 +11,7 @@ extern "C" {
 /* Collected strings are owned until environment_context_cleanup(). */
 struct environment_context {
 	const char *cwd;
+	const char *morph_executable;
 	const char *shell;
 	const char *os;
 	const char *os_version;
