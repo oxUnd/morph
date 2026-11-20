@@ -24,11 +24,13 @@ struct patch_application {
 	int mutation_attempted;
 	int capture_error;
 	nb_buf authorization_detail;
+	nb_buf diff;
 };
 
 static void patch_application_cleanup(struct patch_application *application)
 {
 	nb_buf_cleanup(&application->authorization_detail);
+	nb_buf_cleanup(&application->diff);
 }
 
 static int authorize_patch_path(const char *path, int deletion, void *opaque)
@@ -193,7 +195,17 @@ static int patch_success(struct tool_result *result, const struct patch_applicat
 			      ? (checkpoint = NULL, NB_OK)
 			      : NB_ERR_NOMEM);
 	}
-	return rc != 0 ? rc : tool_result_success_take(result, &data);
+	if (rc == 0)
+		rc = tool_result_success_take(result, &data);
+
+	if (rc == 0 && nb_buf_ok(&application->diff) && application->diff.len) {
+		cJSON *ui NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		if (ui && cJSON_AddStringToObject(ui, "patch_diff",
+						nb_buf_cstr(&application->diff)))
+			(void)tool_result_set_ui_take(result, &ui);
+	}
+
+	return rc;
 }
 
 struct patch_agent_guard {
@@ -250,6 +262,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result, void 
 		.max_file_bytes = application.tracking ? application.checkpoint->max_file_bytes : 0,
 		.validate = validate_patch_postimage,
 		.user_data = &application,
+		.diff = &application.diff,
 	};
 	rc = patch_apply_authorized_with_policy(
 		tool_context_workdir_borrow(application.context), input, &patch_result,

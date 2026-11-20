@@ -113,6 +113,7 @@ add_library(morph-cli STATIC
 	presentation/shell_style.c
 	presentation/subagents.c
 	presentation/transcript.c
+	presentation/transcript_details.c
 	presentation/agent_tools.c
 	presentation/about.c
 	presentation/diagnostics.c

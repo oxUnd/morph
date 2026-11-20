@@ -36,6 +36,9 @@ struct patch_write_policy {
 	size_t max_file_bytes;
 	patch_validate_write_fn validate;
 	void *user_data;
+	/* Optional authorized preimage diff. Capture errors are sticky on this
+	 * buffer and do not change the patch's write or authorization result. */
+	nb_buf *diff;
 };
 /* Result owners must be zero-initialized; failures leave them empty. */
 int patch_apply_authorized(const char *workdir, const char *input,

@@ -3,6 +3,9 @@
 extern "C" {
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/presentation/transcript.h"
+#include "sapi/cli/presentation/transcript_details.h"
+#include <nb/cleanup.h>
+#include <nothing/tui/terminal/text.h>
 #include "session_history.h"
 #include "cJSON.h"
 #include "errors.h"
@@ -45,7 +48,109 @@ class CliTranscriptModelTest : public ::testing::Test
 	{
 		return static_cast<const cli_transcript_tool *>(nb_vec_at(&model->tools, index));
 	}
+
+	int Result(const char *id, const char *text)
+	{
+		cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		if (!data || !cJSON_AddStringToObject(data, "tool_call_id", id) ||
+		    !cJSON_AddStringToObject(data, "result", text))
+			return NB_ERR_NOMEM;
+
+		struct morph_event event{};
+		event.type = MORPH_EVENT_TOOL;
+		event.name = "tool.result";
+		event.data = data;
+		return cli_transcript_model_reduce(model, &event, 2, &change);
+	}
 };
+
+TEST_F(CliTranscriptModelTest, DetailsSeparateOutputsAndKeepCompleteEnvelopeInRawMode)
+{
+	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.call",
+		R"({"tool":"exec","tool_call_id":"shell","args":{"command":"printf test",)"
+		R"("options":{"enabled":true,"values":[1,null,"text"]}}})",
+		1), 0);
+	ASSERT_EQ(Result("shell", R"({"ok":true,"data":{"stdout":"OUTPUT_SENTINEL\n",)"
+		R"("stderr":"ERROR_SENTINEL\n","exit_code":0},"ui":{"label":"RAW_UI_ONLY"},)"
+		R"("meta":{"version":"RAW_META_ONLY"}})"), 0);
+	for (int columns : {120, 80, 60}) {
+		nb_buf formatted NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(cli_transcript_details_append(&formatted, model, columns, 0, 0), 0);
+		const std::string text = nb_buf_cstr(&formatted);
+		EXPECT_LT(text.find("Arguments"), text.find("Standard output"));
+		EXPECT_LT(text.find("Standard output"), text.find("OUTPUT_SENTINEL"));
+		EXPECT_LT(text.find("Standard error"), text.find("ERROR_SENTINEL"));
+		EXPECT_NE(text.find("Exit 0"), std::string::npos);
+		EXPECT_NE(text.find("\"enabled\":"), std::string::npos);
+		EXPECT_NE(text.find("null"), std::string::npos);
+		EXPECT_EQ(text.find("RAW_UI_ONLY"), std::string::npos);
+		EXPECT_EQ(text.find("RAW_META_ONLY"), std::string::npos);
+		for (size_t offset = 0; offset < text.size();) {
+			size_t end = text.find('\n', offset);
+			if (end == std::string::npos)
+				end = text.size();
+
+			const std::string row = text.substr(offset, end - offset);
+			EXPECT_LE(nt_terminal_display_width_ansi(row.c_str()),
+				static_cast<size_t>(columns));
+			offset = end + 1;
+		}
+
+		nb_buf raw NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(cli_transcript_details_append(&raw, model, columns, 0, 1), 0);
+		const std::string original = nb_buf_cstr(&raw);
+		EXPECT_NE(original.find("Arguments JSON"), std::string::npos);
+		EXPECT_NE(original.find("Result JSON"), std::string::npos);
+		EXPECT_NE(original.find("RAW_UI_ONLY"), std::string::npos);
+		EXPECT_NE(original.find("RAW_META_ONLY"), std::string::npos);
+	}
+}
+
+TEST_F(CliTranscriptModelTest, DetailsShowPatchOnceWithLineNumbersAndPreserveRawInput)
+{
+	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.call",
+		R"({"tool":"apply_patch","tool_call_id":"patch","args":{"input":)"
+		R"("*** Begin Patch\n*** Update File: file.c\n@@\n-old\n)"
+		R"(+NEW_SENTINEL\n*** End Patch"}})",
+		1), 0);
+	ASSERT_EQ(Result("patch", R"({"ok":true,"data":{"changed":true,"checkpoint":{"id":7}},)"
+		R"("ui":{"patch_diff":"*** Update File: file.c\n@@ -42,1 +73,1 @@\n-old\n)"
+		R"(+NEW_SENTINEL\n"}})"), 0);
+	nb_buf formatted NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_transcript_details_append(&formatted, model, 80, 0, 0), 0);
+	const std::string text = nb_buf_cstr(&formatted);
+	const size_t change = text.find("NEW_SENTINEL");
+	ASSERT_NE(change, std::string::npos);
+	EXPECT_EQ(text.find("NEW_SENTINEL", change + 1), std::string::npos);
+	EXPECT_NE(text.find("   42       -old"), std::string::npos);
+	EXPECT_NE(text.find("         73 +NEW_SENTINEL"), std::string::npos);
+	EXPECT_EQ(text.find("patch_diff"), std::string::npos);
+	EXPECT_EQ(text.find("checkpoint"), std::string::npos);
+	nb_buf raw NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_transcript_details_append(&raw, model, 80, 0, 1), 0);
+	EXPECT_NE(std::string(nb_buf_cstr(&raw)).find("*** Begin Patch"), std::string::npos);
+	EXPECT_NE(std::string(nb_buf_cstr(&raw)).find("checkpoint"), std::string::npos);
+	EXPECT_NE(std::string(nb_buf_cstr(&raw)).find("patch_diff"), std::string::npos);
+}
+
+TEST_F(CliTranscriptModelTest, DetailsKeepReasoningOrderAndNeutralizeTerminalControls)
+{
+	ASSERT_EQ(cli_transcript_model_reasoning_append(model, "FIRST_REASON", 12, 1), 0);
+	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.call",
+		R"({"tool":"file_read","tool_call_id":"read","args":{"file_path":"file.txt"}})",
+		1), 0);
+	ASSERT_EQ(Result("read",
+		R"({"ok":true,"data":{"content":"FILE_BODY\n","returned_lines":1}})"), 0);
+	const char *reason = "LAST_REASON\033[2J";
+	ASSERT_EQ(cli_transcript_model_reasoning_append(model, reason, strlen(reason), 1), 0);
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_transcript_details_append(&text, model, 60, 0, 0), 0);
+	const std::string document = nb_buf_cstr(&text);
+	EXPECT_LT(document.find("FIRST_REASON"), document.find("FILE_BODY"));
+	EXPECT_LT(document.find("FILE_BODY"), document.find("LAST_REASON"));
+	EXPECT_EQ(document.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(document.find("\033["), std::string::npos);
+}
 
 TEST_F(CliTranscriptModelTest, CreatePreservesExistingModelOwner)
 {
@@ -228,6 +333,35 @@ TEST_F(CliTranscriptModelTest, HistoricalFailuresKeepOriginalResultAndErrorMetad
 		     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, NB_ERR_TIMEOUT));
 	EXPECT_TRUE(Tool(index)->timed_out);
 	EXPECT_TRUE(Tool(index)->historical);
+}
+
+TEST_F(CliTranscriptModelTest, PatchExecutionDiffReplacesPreviewAndSurvivesHistoryReplay)
+{
+	ASSERT_EQ(Apply(MORPH_EVENT_TOOL, "tool.call",
+		"{\"tool\":\"apply_patch\",\"tool_call_id\":\"patch\",\"args\":{}}", 1), 0);
+	ASSERT_EQ(cli_transcript_model_set_preview(model, 0, "outdated preview"), 0);
+	const char *result_json = "{\"ok\":true,\"data\":{\"changed\":true},\"ui\":{"
+		"\"patch_diff\":\"*** Update File: file.c\\n@@ -40,1 +70,1 @@\\n-old\\n+new\\n\"}}";
+	cJSON *event NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	ASSERT_NE(event, nullptr);
+	cJSON_AddStringToObject(event, "tool_call_id", "patch");
+	cJSON_AddStringToObject(event, "result", result_json);
+	struct morph_event finished{};
+	finished.name = "tool.result";
+	finished.type = MORPH_EVENT_TOOL;
+	finished.data = event;
+	ASSERT_EQ(cli_transcript_model_reduce(model, &finished, 2, &change), 0);
+	EXPECT_NE(std::string(Tool(0)->patch_preview).find("@@ -40,1 +70,1 @@"),
+		std::string::npos);
+	cJSON *call NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
+		"{\"name\":\"apply_patch\",\"tool_call_id\":\"replay\",\"arguments\":\"{}\"}");
+	ASSERT_NE(call, nullptr);
+	struct model_history_item result{};
+	result.content = const_cast<char *>(result_json);
+	size_t index = SIZE_MAX;
+	ASSERT_EQ(cli_transcript_model_restore(model, call, &result, &index), 0);
+	EXPECT_TRUE(Tool(index)->historical);
+	EXPECT_STREQ(Tool(index)->patch_preview, Tool(0)->patch_preview);
 }
 
 TEST_F(CliTranscriptModelTest, FinishOnlyInterruptsUnresolvedLiveCallsAndIsIdempotent)

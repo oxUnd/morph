@@ -18,6 +18,7 @@
 #define PATCH_MAX_BYTES (64 * 1024)
 #define PATCH_DIFF_CONTEXT 1
 #define PATCH_DIFF_CELLS_MAX (1u << 20)
+#define PATCH_DIFF_BYTES_MAX (256u * 1024u)
 
 struct patch_chunk {
 	char *context;
@@ -1295,6 +1296,21 @@ static int patch_render_delete_preview(nb_buf *out, const char *path, const char
 	return rc;
 }
 
+static int patch_render_update_content_preview(nb_buf *out, struct patch_hunk *hunk,
+	const char *original, char *error, size_t error_size)
+{
+	nb_vec source NB_CLEANUP(patch_string_array_cleanup) = {0};
+	int rc = patch_content_lines(original, &source);
+	if (rc == 0)
+		rc = nb_buf_printf(out, "*** Update File: %s\n", hunk->path) ? NB_OK : NB_ERR_NOMEM;
+
+	if (rc == 0 && hunk->move_path)
+		rc = nb_buf_printf(out, "*** Move to: %s\n", hunk->move_path)
+			? NB_OK : NB_ERR_NOMEM;
+
+	return rc ? rc : patch_render_update_preview(out, &source, hunk, error, error_size);
+}
+
 static int patch_render_hunk_preview(nb_buf *out, const char *root, struct patch_hunk *hunk,
 				     char *error, size_t error_size)
 {
@@ -1304,7 +1320,6 @@ static int patch_render_hunk_preview(nb_buf *out, const char *root, struct patch
 
 	char source_path[PATH_MAX];
 	char *original;
-	nb_vec source;
 	int rc;
 
 	rc = patch_resolve_target(root, hunk->path, source_path,
@@ -1328,17 +1343,8 @@ static int patch_render_hunk_preview(nb_buf *out, const char *root, struct patch
 		return patch_error(error, error_size,
 			read_status_3 != NB_OK ? read_status_3 : NB_ERR_NOMEM,
 				   "failed to read file to update %s", source_path);
-	rc = patch_content_lines(original, &source);
+	rc = patch_render_update_content_preview(out, hunk, original, error, error_size);
 	free(original);
-	if (rc != 0)
-		return rc;
-	rc = (nb_buf_printf(out, "*** Update File: %s\n", hunk->path) ? 0 : NB_ERR_NOMEM);
-	if (rc == 0 && hunk->move_path)
-		rc = (nb_buf_printf(out, "*** Move to: %s\n", hunk->move_path) ? 0 : NB_ERR_NOMEM);
-	if (rc == 0)
-		rc = patch_render_update_preview(out, &source, hunk, error,
-			error_size);
-	patch_string_array_cleanup(&source);
 	return rc;
 }
 
@@ -1446,6 +1452,26 @@ static int patch_validate_write(const struct patch_write_policy *policy,
 	return 0;
 }
 
+static void patch_capture_diff(const struct patch_write_policy *policy, struct patch_hunk *hunk,
+	const char *source_path, const char *original)
+{
+	if (!policy || !policy->diff || !nb_buf_ok(policy->diff))
+		return;
+
+	int rc = hunk->action == PATCH_ACTION_ADD
+		? patch_render_add_preview(policy->diff, hunk)
+		: hunk->action == PATCH_ACTION_DELETE
+			? patch_render_delete_preview(policy->diff, hunk->path,
+				source_path, NULL, 0)
+			: patch_render_update_content_preview(policy->diff, hunk,
+				original, NULL, 0);
+	if (rc == 0 && nb_buf_len(policy->diff) > PATCH_DIFF_BYTES_MAX)
+		rc = NB_ERR_TOO_BIG;
+
+	if (rc != 0)
+		nb_buf_set_error(policy->diff, rc);
+}
+
 static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 			    struct patch_result *result, char *error,
 			    size_t error_size, const struct patch_write_policy *policy)
@@ -1475,6 +1501,7 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 		if (rc != 0)
 			return rc;
 
+		patch_capture_diff(policy, hunk, source_path, NULL);
 		rc = patch_parent_ensure(source_path);
 		if (rc == 0)
 			rc = patch_atomic_write(source_path, hunk->add_content, mode);
@@ -1487,6 +1514,8 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 		rc = patch_validate_write(policy, source_path, 0, NULL, error, error_size);
 		if (rc != 0)
 			return rc;
+
+		patch_capture_diff(policy, hunk, source_path, NULL);
 		rc = unlink(source_path) == 0 ? 0 : nb_status_from_errno(errno, NULL);
 		if (rc == 0)
 			rc = patch_result_add(result, hunk, hunk->path);
@@ -1511,9 +1540,11 @@ static int patch_apply_hunk(const char *root, struct patch_hunk *hunk,
 					   "failed to read file to update %s", source_path);
 		rc = patch_build_updated_content(original, hunk, &updated, error,
 			error_size);
-		nb_charp_cleanup(&original);
 		if (rc != 0)
 			return rc;
+
+		patch_capture_diff(policy, hunk, source_path, original);
+		nb_charp_cleanup(&original);
 		if (hunk->move_path) {
 			struct stat destination_stat;
 			mode_t mode = source_stat.st_mode & 0777;

@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/transcript.h"
+#include "sapi/cli/presentation/transcript_details.h"
 #include <nb/err.h>
 #include "sapi/cli/presentation/feed_block.h"
 #include "sapi/cli/models/transcript.h"
@@ -11,6 +12,7 @@
 #include "sapi/cli/presentation/shell_style.h"
 #include <nothing/tui/terminal/size.h>
 #include <nb/utf8.h>
+#include <nb/str.h>
 #include <nothing/tui/terminal/text.h>
 #include <nb/cleanup.h>
 #include "cJSON.h"
@@ -287,10 +289,33 @@ static void cli_transcript_print_inline(struct cli_application *ctx, const char 
 
 /* Compact feed lines share one width budget and never interpret shell text. */
 static void cli_transcript_append_feed_line(nb_buf *out, const char *prefix, const char *text,
-					    const char *color, int columns, int styled)
+					    const char *color, int columns, int styled, int wrap)
 {
 	if (columns < 8)
 		return;
+
+	if (wrap) {
+		size_t indent = nb_utf8_width_cstr(prefix);
+		int available = columns - (int)CLI_CONTENT_RIGHT_PADDING - (int)indent;
+		size_t width = available > 0 ? (size_t)available : 1;
+		nb_buf continuation NB_CLEANUP(nb_buf_cleanup) = {0};
+		for (size_t i = 0; i < indent; i++)
+			(void)nb_buf_append_char(&continuation, ' ');
+
+		const char *cursor = text;
+		do {
+			const char *end = nt_terminal_advance_display_width(cursor, width);
+			if (end == cursor && *cursor)
+				end += nb_utf8_next_codepoint_len(cursor, strnlen(cursor, 4));
+
+			(void)nb_buf_printf(out, "%s%s%.*s%s\n", styled ? color : "", prefix,
+				(int)(end - cursor), cursor, styled ? ANSI_RESET : "");
+			cursor = end;
+			prefix = nb_buf_cstr(&continuation);
+		} while (*cursor);
+
+		return;
+	}
 
 	(void)nb_buf_printf(out, "%s%s", styled ? color : "", prefix);
 	cli_transcript_append_clipped_text(out, text,
@@ -301,12 +326,116 @@ static void cli_transcript_append_feed_line(nb_buf *out, const char *prefix, con
 
 #define CLI_TRANSCRIPT_TOOL_PREVIEW_LINES 3
 
+struct cli_transcript_patch_position {
+	size_t old_line, new_line;
+	int old_known, new_known, in_hunk;
+};
+
+static void cli_transcript_patch_numbers(struct cli_transcript_patch_position *position,
+	const char *line, nb_buf *prefix)
+{
+	size_t old_line = 0, new_line = 0, old_count = 0, new_count = 0;
+	int end = 0;
+	if (sscanf(line, "@@ -%zu,%zu +%zu,%zu @@%n", &old_line, &old_count,
+		&new_line, &new_count, &end) == 4 && end) {
+		*position = (struct cli_transcript_patch_position){old_line, new_line, 1, 1, 1};
+		return;
+	}
+
+	if (!strncmp(line, "*** Add File: ", 14)) {
+		*position = (struct cli_transcript_patch_position){0, 1, 0, 1, 1};
+		return;
+	}
+
+	if (!strncmp(line, "*** ", 4) || !strncmp(line, "@@", 2)) {
+		*position = (struct cli_transcript_patch_position){.in_hunk = line[0] == '@'};
+		return;
+	}
+
+	if (!position->in_hunk || (*line != '-' && *line != '+' && *line != ' '))
+		return;
+
+	char old_number[32] = "", new_number[32] = "";
+	if (*line != '+') {
+		if (position->old_known)
+			(void)snprintf(old_number, sizeof(old_number), "%zu", position->old_line);
+		else
+			(void)snprintf(old_number, sizeof(old_number), "?");
+
+		if (position->old_line < SIZE_MAX)
+			position->old_line++;
+		else
+			position->old_known = 0;
+	}
+
+	if (*line != '-') {
+		if (position->new_known)
+			(void)snprintf(new_number, sizeof(new_number), "%zu", position->new_line);
+		else
+			(void)snprintf(new_number, sizeof(new_number), "?");
+
+		if (position->new_line < SIZE_MAX)
+			position->new_line++;
+		else
+			position->new_known = 0;
+	}
+
+	if (prefix)
+		(void)nb_buf_printf(prefix, "%5s %5s ", old_number, new_number);
+}
+
+static void cli_transcript_append_patch_input(nb_buf *text, const struct cli_transcript_tool *tool)
+{
+	cJSON *args NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(tool->args);
+	const char *line = cli_transcript_json_string(args, "input");
+	while (*line) {
+		size_t length = strcspn(line, "\r\n");
+		nb_str value = nb_str_from_parts(line, length);
+		if (!nb_str_eq(value, NB_STR_LIT("*** Begin Patch")) &&
+		    !nb_str_eq(value, NB_STR_LIT("*** End Patch")) &&
+		    !nb_str_eq(value, NB_STR_LIT("*** End of File"))) {
+			(void)nb_buf_append(text, line, length);
+			(void)nb_buf_append_char(text, '\n');
+		}
+
+		line += length;
+		if (*line == '\r')
+			line++;
+
+		if (*line == '\n')
+			line++;
+	}
+}
+
 /* Prefer human-readable payloads. The complete original stays in turn details. */
 static void cli_transcript_tool_preview_text(const struct cli_transcript_tool *tool,
-					     const cJSON *data, nb_buf *text)
+					     const cJSON *data, nb_buf *text, int inline_output)
 {
 	const char *value = tool->error;
 	const cJSON *content;
+
+	if (inline_output && !value[0] && strcmp(tool->name, "apply_patch") == 0) {
+		if (tool->patch_preview[0])
+			(void)nb_buf_append_cstr(text, tool->patch_preview);
+		else
+			cli_transcript_append_patch_input(text, tool);
+
+		if (text->len)
+			return;
+	}
+
+	if (inline_output && tool->shell) {
+		const char *output = cli_transcript_json_string(data, "stdout");
+		const char *error = cli_transcript_json_string(data, "stderr");
+		if (*output || *error) {
+			(void)nb_buf_append_cstr(text, output);
+			if (*error && text->len && text->ptr[text->len - 1] != '\n')
+				(void)nb_buf_append_char(text, '\n');
+
+			(void)nb_buf_append_cstr(text, error);
+			return;
+		}
+	}
 
 	if (!value[0] && cJSON_IsString(data))
 		value = data->valuestring;
@@ -362,7 +491,8 @@ static void cli_transcript_tool_preview_text(const struct cli_transcript_tool *t
 }
 
 static void cli_transcript_append_tool_preview(nb_buf *out, const struct cli_transcript_tool *tool,
-					       int columns, int styled)
+					       int columns, int styled, int expanded,
+					       struct cli_transcript_tool_preview *preview)
 {
 	cJSON *json = cJSON_Parse(tool->result);
 	const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
@@ -382,8 +512,11 @@ static void cli_transcript_append_tool_preview(nb_buf *out, const struct cli_tra
 		return;
 	}
 
-	if (!cli_agent_tools_preview(tool, &text))
-		cli_transcript_tool_preview_text(tool, data, &text);
+	int live = preview && cli_transcript_tool_is_running(tool);
+	if (live)
+		(void)nb_buf_append_str(&text, nb_buf_str(&tool->stream));
+	else if (!cli_agent_tools_preview(tool, &text))
+		cli_transcript_tool_preview_text(tool, data, &text, preview != NULL);
 
 	safe = nt_sanitize_dup(nb_buf_cstr(&text), text.len,
 					   NT_TEXT_MULTILINE, NULL);
@@ -404,7 +537,42 @@ static void cli_transcript_append_tool_preview(nb_buf *out, const struct cli_tra
 	if (*line)
 		total++;
 
-	while (*line && shown < CLI_TRANSCRIPT_TOOL_PREVIEW_LINES) {
+	if (preview)
+		preview->hidden_lines = total > CLI_TRANSCRIPT_TOOL_PREVIEW_LINES
+			? total - CLI_TRANSCRIPT_TOOL_PREVIEW_LINES : 0;
+
+	if (live && !expanded && total > CLI_TRANSCRIPT_TOOL_PREVIEW_LINES) {
+		for (size_t i = 0; i < total - CLI_TRANSCRIPT_TOOL_PREVIEW_LINES; i++)
+			line = strchr(line, '\n') + 1;
+	}
+
+	int patch = preview && tool->state > 0 && !tool->error[0] &&
+		!strcmp(tool->name, "apply_patch");
+	struct cli_transcript_patch_position position = {0};
+	if (patch) {
+		size_t skipped = 0;
+		for (char *cursor = line; cursor && *cursor;) {
+			if (*cursor == '+' || *cursor == '-') {
+				size_t remaining = total - skipped;
+				preview->hidden_lines = total -
+					(remaining < CLI_TRANSCRIPT_TOOL_PREVIEW_LINES
+						? remaining : CLI_TRANSCRIPT_TOOL_PREVIEW_LINES);
+				if (!expanded)
+					line = cursor;
+
+				break;
+			}
+
+			char *newline = strchr(cursor, '\n');
+			if (!expanded)
+				cli_transcript_patch_numbers(&position, cursor, NULL);
+
+			cursor = newline ? newline + 1 : NULL;
+			skipped++;
+		}
+	}
+
+	while (*line && (expanded || shown < CLI_TRANSCRIPT_TOOL_PREVIEW_LINES)) {
 		char *newline = strchr(line, '\n');
 
 		if (newline)
@@ -415,8 +583,19 @@ static void cli_transcript_append_tool_preview(nb_buf *out, const struct cli_tra
 			break;
 
 		cli_tree_prefix(&prefix, NULL, 0, 1, shown != 0, 2);
-		cli_transcript_append_feed_line(out, nb_buf_cstr(&prefix), line, color, columns,
-						styled);
+		if (patch)
+			cli_transcript_patch_numbers(&position, line, &prefix);
+
+		int width = columns - (int)CLI_CONTENT_RIGHT_PADDING -
+			(int)nb_utf8_width_cstr(nb_buf_cstr(&prefix));
+		if (preview && shown < CLI_TRANSCRIPT_TOOL_PREVIEW_LINES &&
+		    (width < 1 || *nt_terminal_advance_display_width(line, (size_t)width)))
+			preview->clipped = 1;
+
+		const char *style = patch && *line == '+' ? ANSI_GREEN
+			: patch && *line == '-' ? ANSI_RED : color;
+		cli_transcript_append_feed_line(out, nb_buf_cstr(&prefix), line, style, columns,
+						styled, expanded);
 		nb_buf_cleanup(&prefix);
 		shown++;
 		if (!newline)
@@ -425,14 +604,17 @@ static void cli_transcript_append_tool_preview(nb_buf *out, const struct cli_tra
 		line = newline + 1;
 	}
 
-	if (total > shown) {
+	if (preview && !expanded)
+		preview->hidden_lines = total - shown;
+
+	if (total > shown && !preview) {
 		nb_buf hint NB_CLEANUP(nb_buf_cleanup) = {0};
 
 		if ((nb_buf_init(&hint), nb_buf_reserve(&hint, 64) ? 0 : NB_ERR_NOMEM) == 0) {
 			(void)nb_buf_printf(&hint, "+ %zu %s (Ctrl+T to expand)", total - shown,
 					    total - shown == 1 ? "line" : "lines");
 			cli_transcript_append_feed_line(out, "    ", nb_buf_cstr(&hint), ANSI_DIM,
-							columns, styled);
+							columns, styled, 0);
 			nb_buf_cleanup(&hint);
 		}
 	}
@@ -502,6 +684,16 @@ static int cli_transcript_append_payload(nb_buf *out, const char *text, int colu
 		cli_transcript_append_lines(out, text, columns, styled);
 }
 
+int cli_transcript_tool_header_append(nb_buf *out, const struct cli_transcript_tool *tool,
+	int columns, int styled)
+{
+	if (!out || !tool)
+		return NB_ERR_INVAL;
+
+	cli_transcript_tool_row(tool, out, columns, styled);
+	return nb_buf_status(out);
+}
+
 int cli_transcript_tool_append(nb_buf *out, const struct cli_transcript_tool *tool, int columns,
 			       int styled, int details)
 {
@@ -519,7 +711,7 @@ int cli_transcript_tool_append(nb_buf *out, const struct cli_transcript_tool *to
 	cli_transcript_tool_row(tool, &document, columns, styled);
 	rc = (nb_buf_append_char(&document, '\n') ? 0 : NB_ERR_NOMEM);
 	if (rc == 0 && !details && tool->state)
-		cli_transcript_append_tool_preview(&document, tool, columns, styled);
+		cli_transcript_append_tool_preview(&document, tool, columns, styled, 0, NULL);
 
 	if (rc == 0 && details) {
 		if (*tool->args) {
@@ -550,6 +742,34 @@ int cli_transcript_tool_append(nb_buf *out, const struct cli_transcript_tool *to
 						  columns > 1 ? columns - 1 : 1, styled);
 
 	return rc;
+}
+
+int cli_transcript_tool_output_append(nb_buf *out, const struct cli_transcript_tool *tool,
+	int columns, int styled, int expanded, struct cli_transcript_tool_preview *preview)
+{
+	if (!out || !tool || !preview)
+		return NB_ERR_INVAL;
+
+	*preview = (struct cli_transcript_tool_preview){0};
+	if (cli_agent_tools_analytics_only(tool->name))
+		return 0;
+
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {0};
+	cli_transcript_tool_row(tool, &document, columns, styled);
+	(void)nb_buf_append_char(&document, '\n');
+	if (cli_transcript_tool_is_running(tool)) {
+		if (!tool->stream.len || cli_agent_tools_matches(tool->name))
+			(void)cli_transcript_tool_live_body(tool, &document, columns, styled);
+		else
+			cli_transcript_append_tool_preview(&document, tool, columns, styled,
+				expanded, preview);
+	} else if (tool->state)
+		cli_transcript_append_tool_preview(&document, tool, columns, styled, expanded,
+			preview);
+
+	int rc = nb_buf_status(&document);
+	return rc ? rc : cli_messages_append_rendered(out, nb_buf_cstr(&document), document.len,
+		columns > 1 ? columns - 1 : 1, styled);
 }
 
 void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_transcript_tool *tool,
@@ -779,47 +999,11 @@ void cli_transcript_render_tool_details(struct cli_application *ctx,
 int cli_transcript_render_details(struct cli_application *ctx,
 				  const struct cli_transcript_model *tr, nb_buf *page)
 {
-	const struct cli_transcript_tool *tool;
-	int rc;
-
 	if (!tr)
 		return NB_ERR_NOT_FOUND;
 
-	rc = cli_output_color_enabled(ctx) ? cli_output_capture_styled_begin(ctx, page)
-					   : cli_output_capture_begin(ctx, page);
-	if (rc)
-		return rc;
-
-	size_t reasoning_index = 0;
-
-	for (size_t i = 0; i <= tr->tools.len; i++) {
-		while (reasoning_index < tr->reasoning.len) {
-			const struct cli_transcript_reasoning *reasoning =
-				nb_vec_at(&tr->reasoning, reasoning_index);
-
-			if (reasoning->after_tools > i)
-				break;
-
-			cli_output_printf(ctx,
-					  ANSI_DIM CLI_FEED_SYSTEM " Reasoning\n" ANSI_RESET);
-			cli_transcript_print_lines(ctx, nb_buf_cstr(&reasoning->text));
-			cli_output_printf(ctx, "\n");
-			reasoning_index++;
-		}
-
-		if (i < tr->tools.len) {
-			tool = nb_vec_at(&tr->tools, i);
-			cli_transcript_render_tool(ctx, tool, 0);
-			cli_transcript_render_tool_details(ctx, tool, 1);
-			cli_output_printf(ctx, "\n");
-		}
-	}
-
-	if (!tr->tools.len && !tr->reasoning.len)
-		cli_output_printf(ctx, "  No activity yet.\n");
-
-	cli_output_capture_end(ctx);
-	return nb_buf_status(page);
+	return cli_transcript_details_append(page, tr, cli_transcript_columns(),
+		cli_output_color_enabled(ctx), 0);
 }
 
 /* Restore presentation state only; historical calls never enter the tool runtime. */

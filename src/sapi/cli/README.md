@@ -58,7 +58,15 @@ composer. `components/message` composes Label and content-sized TextView control
 `components/tool_call`, plan and notice bind domain state to rich text through
 `components/report`. View margin/padding determine
 spacing; pages and event handlers do not count terminal rows or move the cursor.
-Tool events update the existing control by call ID. Streaming messages keep their
+Tool events update the existing control by call ID. Truncated output has a
+clickable `show more` link; expanded output ends with `show less`. Each tool
+keeps its own expansion state, including while its output streams. `Ctrl+T`
+still opens the complete turn transcript. Patch cards preview the changed code
+with old/new line-number columns, additions in green and removals in red.
+Applied diffs retain their actual hunk ranges in the tool result's UI metadata
+for expansion and history replay. Older records fall back to stored patch input;
+unavailable positions use `?` instead of inferred line numbers. Rendering never
+reconstructs a past patch from the current workspace. Streaming messages keep their
 source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
 scroll within the feed; reaching the bottom resumes following.
 
@@ -184,7 +192,11 @@ terminal output, workspace access or a clock. The transcript service supplies th
 time and coordinates presentation. Widgets render const model/tool views; live
 rendering receives its width from the feed. Call-time patch previews are captured
 by `presentation/tool_preview`, so replay and redraw never reread today's files.
-The `turn_details` page hosts a native scroll view and a text view bound to the transcript revision. Application controls
+The `turn_details` page hosts a native scroll view and a text view bound to the
+transcript revision. `presentation/transcript_details` groups arguments, content,
+changes, stdout and stderr at the document's allocated width. Patch diffs appear
+once with their old/new line numbers. Press `R` to switch to complete, indented
+arguments and result JSON, including UI and metadata fields. Application controls
 its terminal session and input handoff just like other modal pages.
 
 The retained feed receives geometry from the framework. Legacy output adapters

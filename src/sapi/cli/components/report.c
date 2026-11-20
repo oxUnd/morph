@@ -62,8 +62,19 @@ static int cli_report_measure(struct nt_view *view, int width, struct nt_view_si
 {
 	struct cli_report *report = (struct cli_report *)view;
 	int rc = cli_report_reflow(report, width);
-	if (!rc)
+	if (!rc) {
 		*size = report->size;
+		if (report->footer) {
+			struct nt_view_size footer = {0};
+			rc = nt_view_measure(report->footer, width, &footer);
+			if (footer.height > INT_MAX - size->height)
+				return NB_ERR_RANGE;
+
+			size->height += footer.height;
+			if (footer.width > size->width)
+				size->width = footer.width;
+		}
+	}
 
 	return rc;
 }
@@ -82,6 +93,20 @@ static int cli_report_layout(struct nt_view *view)
 			return rc;
 
 		report->published_width = rect.width;
+	}
+
+	if (report->footer) {
+		struct nt_view_size footer = {0};
+		int rc = nt_view_measure(report->footer, rect.width, &footer);
+		if (rc)
+			return rc;
+
+		int height = footer.height < rect.height ? footer.height : rect.height;
+		rect.height -= height;
+		rc = nt_view_arrange(report->footer,
+			(struct nt_view_rect){rect.x, rect.y + rect.height, rect.width, height});
+		if (rc)
+			return rc;
 	}
 
 	return nt_view_arrange(report->text, rect);

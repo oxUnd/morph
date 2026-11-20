@@ -487,6 +487,17 @@ if(Python3_Interpreter_FOUND AND UNIX)
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_transcript_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 150)
+	add_test(NAME cli_transcript_layout_pty_integration
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_transcript_layout_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_transcript_layout_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_tool_output_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_tool_output_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_tool_output_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	add_test(NAME cli_history_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_history_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

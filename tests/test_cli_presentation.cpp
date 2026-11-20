@@ -1892,8 +1892,9 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 	testing::internal::CaptureStdout();
 	ToggleDetails();
 	std::string details = testing::internal::GetCapturedStdout();
-	EXPECT_NE(details.find("│     2 -old value"), std::string::npos);
-	EXPECT_NE(details.find("│     2 +new value"), std::string::npos);
+	std::string plain_details = cli_test_plain_text(details);
+	EXPECT_NE(plain_details.find("    2       -old value"), std::string::npos);
+	EXPECT_NE(plain_details.find("          2 +new value"), std::string::npos);
 
 	cJSON_Delete(call);
 	cJSON_Delete(result);
@@ -2001,11 +2002,14 @@ TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 	testing::internal::CaptureStdout();
 	ToggleDetails();
 	std::string expanded = testing::internal::GetCapturedStdout();
-	EXPECT_NE(expanded.find("hidden argument"), std::string::npos);
-	EXPECT_LT(expanded.find("first.txt"), expanded.find("FIRST OUTPUT"));
-	EXPECT_LT(expanded.find("FIRST OUTPUT"), expanded.find("Compare the two files"));
-	EXPECT_LT(expanded.find("Compare the two files"), expanded.find("second.txt"));
-	EXPECT_LT(expanded.find("second.txt"), expanded.find("SECOND OUTPUT"));
+	nb_buf document NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_transcript_render_details(&ctx, ctx.transcript, &document), 0);
+	std::string full = nb_buf_cstr(&document);
+	EXPECT_NE(full.find("hidden argument"), std::string::npos);
+	EXPECT_LT(full.find("first.txt"), full.find("FIRST OUTPUT"));
+	EXPECT_LT(full.find("FIRST OUTPUT"), full.find("Compare the two files"));
+	EXPECT_LT(full.find("Compare the two files"), full.find("second.txt"));
+	EXPECT_LT(full.find("second.txt"), full.find("SECOND OUTPUT"));
 	EXPECT_NE(expanded.find("Turn details"), std::string::npos);
 	EXPECT_EQ(nt_application_depth(&ctx.base), 2u);
 	EXPECT_EQ(expanded.find("Files checked"), std::string::npos);

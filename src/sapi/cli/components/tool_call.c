@@ -8,13 +8,17 @@
 #include <nb/cleanup.h>
 #include <nothing/tui/terminal/text.h>
 #include <nothing/tui/component_state.h>
+#include <nothing/tui/views/label.h>
+#include <nothing/tui/views/stack_view.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct cli_tool_call {
 	struct cli_report report;
-	struct nt_component_state *state;
+	struct nt_component_state *state, *expanded;
+	struct nt_view *count, *toggle;
 };
 
 struct cli_tool_call_snapshot {
@@ -91,31 +95,74 @@ static int cli_tool_call_format(struct cli_report *report, nb_buf *out, int widt
 	struct cli_tool_call *widget = (struct cli_tool_call *)report;
 	int columns = width + (int)CLI_CONTENT_RIGHT_PADDING;
 	const struct cli_tool_call_state *state = nt_component_state_get(widget->state);
-	int rc = cli_transcript_tool_append(out, &state->snapshot->tool, columns, state->styled,
-					    state->details);
+	int expanded = nt_component_state_get_int(widget->expanded) != 0;
+	struct cli_transcript_tool_preview preview = {0};
+	int rc = state->details
+		? cli_transcript_tool_append(out, &state->snapshot->tool, columns, state->styled, 1)
+		: cli_transcript_tool_output_append(out, &state->snapshot->tool, columns,
+			state->styled, expanded, &preview);
 	if (rc)
 		return rc;
 
 	while (out->len && out->ptr[out->len - 1] == '\n')
 		out->ptr[--out->len] = '\0';
 
-	if (out->len && !state->details && cli_transcript_tool_is_running(&state->snapshot->tool)) {
-		char *newline = strchr(out->ptr, '\n');
-		if (newline) {
-			out->len = (size_t)(newline - out->ptr);
-			*newline = '\0';
-		}
+	char count[64] = "";
+	if (!expanded && preview.hidden_lines)
+		snprintf(count, sizeof(count), "+ %zu %s · ", preview.hidden_lines,
+			preview.hidden_lines == 1 ? "line" : "lines");
 
-		nb_buf live NB_CLEANUP(nb_buf_cleanup) = {0};
-		(void)cli_transcript_tool_live_body(&state->snapshot->tool, &live, columns,
-						    state->styled);
-		rc = nb_buf_status(&live);
-		if (!rc && live.len &&
-		    (!nb_buf_append_char(out, '\n') || !nb_buf_append_str(out, nb_buf_str(&live))))
-			rc = NB_ERR_NOMEM;
-	}
+	rc = nt_label_set_text(widget->count, count);
+	const struct nt_text_style link = state->styled
+		? (struct nt_text_style){.attributes = NT_STYLE_UNDERLINE,
+			.foreground = {NT_COLOR_ANSI, 6}} : (struct nt_text_style){0};
+	if (!rc)
+		rc = nt_view_set_style(widget->toggle, link);
 
-	return rc;
+	if (!rc)
+		rc = nt_view_set_style(widget->count,
+			(struct nt_text_style){.attributes = state->styled ? NT_STYLE_DIM : 0});
+
+	return rc ? rc : nt_view_set_hidden(report->footer,
+		state->details || (!preview.hidden_lines && !preview.clipped));
+}
+
+static int cli_tool_call_toggle_text(void *data, struct nt_value *result)
+{
+	return nt_value_set_string(result, nt_component_state_get_int(data) ? "show less"
+		: "show more");
+}
+
+static int64_t cli_tool_call_invert(int64_t previous, int64_t argument)
+{
+	(void)argument;
+	return !previous;
+}
+
+static int cli_tool_call_toggle(void *data, const struct nt_view_event *event)
+{
+	struct cli_tool_call *widget = data;
+	if (event->type == NT_VIEW_EVENT_CLICK && event->input->mouse.button != NT_MOUSE_LEFT)
+		return NT_VIEW_EVENT_PASS;
+
+	if (event->type == NT_VIEW_EVENT_KEY &&
+	    (event->input->pasting || event->input->action == NT_KEY_ACTION_RELEASE ||
+	     (event->input->key != '\r' && event->input->key != '\n' &&
+	      event->input->key != ' ')))
+		return NT_VIEW_EVENT_PASS;
+
+	int rc = nt_component_state_update_int(widget->expanded, cli_tool_call_invert, 0);
+	if (!rc)
+		cli_report_invalidate(&widget->report, widget->report.styled);
+
+	return rc ? rc : NT_VIEW_EVENT_STOP;
+}
+
+static int cli_tool_call_pointer(void *data, const struct nt_view_event *event)
+{
+	(void)data;
+	/* Keep the draft focused while NT synthesizes the link click. */
+	return event->input->mouse.button == NT_MOUSE_LEFT;
 }
 
 static int cli_tool_call_state_copy(void *to, const void *from, void *data)
@@ -187,6 +234,13 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 		return NULL;
 
 	struct nt_view *view = &widget->report.base;
+	const struct nt_view_options footer = {.height = 1, .padding = {.left = 4}};
+	widget->report.footer = nt_row_add(builder, view, 0, &footer);
+	widget->count = nt_label_add(builder, widget->report.footer, "", NULL);
+	widget->toggle = nt_label_add(builder, widget->report.footer, "show more", NULL);
+	if (nt_builder_error(builder))
+		return NULL;
+
 	struct cli_tool_call_snapshot *snapshot NB_CLEANUP(cli_tool_call_snapshot_cleanup) = NULL;
 	int rc = tool ? cli_tool_call_snapshot_copy(tool, &snapshot) : NB_ERR_INVAL;
 	const struct cli_tool_call_state initial = {snapshot, styled, details};
@@ -200,8 +254,35 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 		rc = nt_view_use_state(view, &options_state, &widget->state);
 
 	if (!rc)
+		rc = nt_view_use_state_int(view, 0, &widget->expanded);
+
+	if (!rc)
 		rc = nt_view_bind_compute(view, NT_PROP_HIDDEN, cli_tool_call_hidden,
 					  widget->state);
+
+	if (!rc)
+		rc = nt_view_bind_compute(widget->toggle, NT_PROP_TEXT, cli_tool_call_toggle_text,
+			widget->expanded);
+
+	if (!rc)
+		rc = nt_label_set_wrap_mode(widget->count, NT_TEXT_WRAP_NONE);
+
+	if (!rc)
+		rc = nt_label_set_wrap_mode(widget->toggle, NT_TEXT_WRAP_NONE);
+
+	if (!rc)
+		rc = nt_view_set_selectable(widget->toggle, 0);
+
+	if (!rc)
+		rc = nt_view_set_focusable(widget->toggle, 1);
+
+	if (!rc && (!nt_view_on(widget->toggle, NT_VIEW_EVENT_CLICK,
+				cli_tool_call_toggle, widget) ||
+		    !nt_view_on(widget->toggle, NT_VIEW_EVENT_KEY, cli_tool_call_toggle, widget) ||
+		    !nt_view_on_full(widget->toggle, NT_VIEW_EVENT_MOUSE,
+			&(struct nt_view_listener_options){.flags = NT_VIEW_LISTEN_CAPTURE,
+				NT_VIEW_LISTENER(cli_tool_call_pointer, widget)})))
+		rc = NB_ERR_NOMEM;
 
 	nt_builder_fail(builder, rc);
 	return view;

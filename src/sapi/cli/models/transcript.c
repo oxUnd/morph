@@ -300,6 +300,13 @@ static void cli_transcript_summarize_result(struct cli_transcript_model *tr,
 	if (!cJSON_IsObject(data))
 		data = json;
 
+	if (strcmp(tool->name, "apply_patch") == 0) {
+		const cJSON *ui = cJSON_GetObjectItemCaseSensitive(json, "ui");
+		const char *diff = cli_transcript_json_string(ui, "patch_diff");
+		if (diff[0])
+			cli_transcript_set_text(tr, &tool->patch_preview, diff);
+	}
+
 	if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(json, "ok")) || cJSON_IsObject(error) ||
 	    cJSON_IsString(error))
 		tool->state = -1;

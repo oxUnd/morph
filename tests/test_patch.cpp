@@ -260,6 +260,60 @@ TEST_F(PatchTrackingTest, CapturesEveryPreimageBeforeEditsIncludingMoveDestinati
 	const cJSON *checkpoint = cJSON_GetObjectItem(result.data, "checkpoint");
 	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(checkpoint, "id")), 42);
 	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(checkpoint, "status")), "sealed");
+	const char *diff = cJSON_GetStringValue(cJSON_GetObjectItem(result.ui, "patch_diff"));
+	ASSERT_NE(diff, nullptr);
+	EXPECT_NE(std::string(diff).find("@@ -1,1 +1,1 @@\n-old first\n+new first\n"),
+		std::string::npos);
+	EXPECT_NE(std::string(result.text.ptr).find("patch_diff"), std::string::npos);
+}
+
+TEST_F(PatchTest, AppliedDiffRetainsPositionsAndDeletedContentBeforeMutation)
+{
+	write_file("update.txt", "one\ntwo\nthree\nfour\n");
+	write_file("delete.txt", "deleted one\ndeleted two\n");
+	const char *input = "*** Begin Patch\n*** Update File: update.txt\n@@\n-three\n"
+		"+changed\n+inserted\n*** Delete File: delete.txt\n"
+		"*** Add File: added.txt\n+created\n*** End Patch";
+	char error[512]{};
+	int preview_rc = 0;
+	const std::string expected = preview(input, &preview_rc, error, sizeof(error));
+	ASSERT_EQ(preview_rc, 0);
+	nb_buf diff NB_CLEANUP(nb_buf_cleanup) = {};
+	struct patch_write_policy policy{};
+	policy.diff = &diff;
+	struct patch_result result NB_CLEANUP(patch_result_cleanup) = {};
+	ASSERT_EQ(patch_apply_authorized_with_policy(dir, input, &result, error,
+		sizeof(error), nullptr, nullptr, &policy), 0) << error;
+	EXPECT_TRUE(nb_buf_ok(&diff));
+	EXPECT_EQ(nb_buf_cstr(&diff), expected);
+	EXPECT_EQ(read_file("update.txt"), "one\ntwo\nchanged\ninserted\nfour\n");
+	EXPECT_FALSE(std::filesystem::exists(path("delete.txt")));
+	EXPECT_NE(expected.find("@@ -1,2 +0,0 @@\n-deleted one\n-deleted two"),
+		std::string::npos);
+}
+
+TEST_F(PatchTest, OptionalDiffFailureDoesNotChangeWritesAndDenialNeverCapturesFiles)
+{
+	write_file("file.txt", "before\n");
+	const char *input = "*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n"
+		"+after\n*** End Patch";
+	nb_buf diff NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf_set_error(&diff, NB_ERR_NOMEM);
+	struct patch_write_policy policy{};
+	policy.diff = &diff;
+	struct patch_result result NB_CLEANUP(patch_result_cleanup) = {};
+	char error[512]{};
+	ASSERT_EQ(patch_apply_authorized_with_policy(dir, input, &result, error,
+		sizeof(error), nullptr, nullptr, &policy), 0);
+	EXPECT_EQ(read_file("file.txt"), "after\n");
+	patch_result_cleanup(&result);
+	nb_buf_clear(&diff);
+	write_file("file.txt", "before\n");
+	EXPECT_EQ(patch_apply_authorized_with_policy(dir, input, &result, error,
+		sizeof(error), +[](const char *, int, void *) { return int(NB_ERR_PERMISSION); },
+		nullptr, &policy), NB_ERR_PERMISSION);
+	EXPECT_EQ(diff.len, 0u);
+	EXPECT_EQ(read_file("file.txt"), "before\n");
 }
 
 TEST_F(PatchTrackingTest, BeginOrCaptureFailureNeverMutatesFiles)

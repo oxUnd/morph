@@ -4,10 +4,10 @@
 #include <nothing/tui/view.h>
 #include <nb/buf.h>
 
-/* An inline report reflows its domain snapshot into one styled NT text view. */
+/* An inline report reflows its domain snapshot above an optional native footer. */
 struct cli_report {
 	struct nt_view base;
-	struct nt_view *text;
+	struct nt_view *text, *footer;
 	nb_buf document;
 	struct nt_view_size size;
 	int measured_width, published_width, styled;

@@ -8,6 +8,11 @@ struct cli_application;
 struct cli_transcript_model;
 struct cli_transcript_tool;
 
+struct cli_transcript_tool_preview {
+	size_t hidden_lines;
+	int clipped;
+};
+
 int cli_transcript_live_text(const struct cli_transcript_model *model, nb_buf *text, int columns,
 			     int styled);
 int cli_transcript_live_body(const struct cli_transcript_model *model, nb_buf *text, int columns,
@@ -17,6 +22,10 @@ int cli_transcript_render_details(struct cli_application *ctx,
 				  const struct cli_transcript_model *model, nb_buf *output);
 int cli_transcript_tool_append(nb_buf *out, const struct cli_transcript_tool *tool, int columns,
 			       int styled, int details);
+int cli_transcript_tool_header_append(nb_buf *, const struct cli_transcript_tool *,
+	int columns, int styled);
+int cli_transcript_tool_output_append(nb_buf *, const struct cli_transcript_tool *, int columns,
+	int styled, int expanded, struct cli_transcript_tool_preview *);
 void cli_transcript_render_tool(struct cli_application *ctx, const struct cli_transcript_tool *tool,
 				int compact);
 void cli_transcript_render_tool_details(struct cli_application *ctx,

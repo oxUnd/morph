@@ -23,6 +23,7 @@ extern "C" {
 #include <nothing/tui/window.h>
 #include <nothing/tui/views/scroll_view.h>
 #include <nothing/tui/views/stack_view.h>
+#include <nothing/tui/views/label.h>
 #include <nothing/tui/controls/text_field.h>
 #include <nothing/tui/models/text_editor.h>
 #include <nothing/tui/models/list_navigation.h>
@@ -243,6 +244,22 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		ASSERT_EQ(columns_rendered, columns);
 	}
 
+	void Click(struct nt_view *view)
+	{
+		const std::string before = nt_label_text(view);
+		const struct nt_view_rect rect = nt_view_frame(view);
+		char input[128];
+		int length = snprintf(input, sizeof(input), "\033[<0;%d;%dM\033[<0;%d;%dm",
+			rect.x + 1, rect.y + 1, rect.x + 1, rect.y + 1);
+		ASSERT_EQ(write(master, input, static_cast<size_t>(length)), length);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (before == nt_label_text(view) && std::chrono::steady_clock::now() < deadline)
+			ASSERT_EQ(nt_application_step(app, 1), 0);
+
+		ASSERT_NE(before, nt_label_text(view));
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+	}
+
 	void ExpectLegacy(int columns)
 	{
 		EXPECT_EQ(nt_view_options(component).padding.right, 2);
@@ -262,8 +279,16 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		}
 
 		EXPECT_EQ(nt_view_frame(component).y, 1);
+		std::string expected_text = retained_normalized(nb_buf_cstr(&expected));
+		if (kind == Tool && !details) {
+			const std::string hint = "(Ctrl+T to expand)";
+			size_t offset = expected_text.find(hint);
+			if (offset != std::string::npos)
+				expected_text.replace(offset, hint.size(), "· show more");
+		}
+
 		EXPECT_EQ(retained_normalized(frame.c_str()).substr(1),
-			  retained_normalized(nb_buf_cstr(&expected)))
+			  expected_text)
 			<< columns;
 		nb_buf_cleanup(&expected);
 	}
@@ -300,7 +325,229 @@ TEST_F(CliRetainedWidgetsTest, ToolKeepsLegacyTreePreviewMixedStylesAndResize)
 	EXPECT_NE(frame.find("\033[1m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[38;5;2m"), std::string::npos);
 	EXPECT_NE(frame.find("\033[2m"), std::string::npos);
-	EXPECT_NE(retained_normalized(frame.c_str()).find("Ctrl+T to expand"), std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("+ 2 lines · show more"),
+		std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, ToolOutputExpandsInPlaceAndKeepsItsStateAcrossUpdatesAndResize)
+{
+	Present();
+	auto *footer = nt_view_child(component, 1);
+	ASSERT_NE(footer, nullptr);
+	auto *toggle = nt_view_child(footer, 1);
+	ASSERT_NE(toggle, nullptr);
+	Click(toggle);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		std::string plain = retained_normalized(frame.c_str());
+		EXPECT_NE(plain.find("first\n    second\n    third\n    fourth\n    fifth"),
+			std::string::npos);
+		EXPECT_NE(plain.find("fifth\n    show less"), std::string::npos);
+		EXPECT_EQ(plain.find("Arguments"), std::string::npos);
+		EXPECT_EQ(plain.find("show more"), std::string::npos);
+	}
+
+	tool.result = const_cast<char *>("{\"stdout\":\"first\\nsecond\\nthird\\nUPDATED_LAST\"}");
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("UPDATED_LAST"), std::string::npos);
+	EXPECT_NE(frame.find("show less"), std::string::npos);
+	Click(toggle);
+	EXPECT_EQ(frame.find("UPDATED_LAST"), std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("+ 1 line · show more"),
+		std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, ToolOutputExpandsClippedLinesAndHidesToggleForShortOutput)
+{
+	const std::string line = "LONG_BEGIN" + std::string(180, 'x') + "中文🙂LONG_END";
+	std::string result = "{\"stdout\":\"" + line + "\"}";
+	tool.result = result.data();
+	Present();
+	auto *footer = nt_view_child(component, 1);
+	ASSERT_NE(footer, nullptr);
+	auto *toggle = nt_view_child(footer, 1);
+	ASSERT_NE(toggle, nullptr);
+	EXPECT_EQ(frame.find("LONG_END"), std::string::npos);
+	EXPECT_NE(frame.find("show more"), std::string::npos);
+	Click(toggle);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		std::string plain = retained_normalized(frame.c_str());
+		EXPECT_NE(plain.find("LONG_END"), std::string::npos);
+		EXPECT_NE(plain.find("show less"), std::string::npos);
+		EXPECT_EQ(plain.find("…"), std::string::npos);
+	}
+
+	tool.result = const_cast<char *>("{\"stdout\":\"short\"}");
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 0, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("short"), std::string::npos);
+	EXPECT_TRUE(nt_view_is_hidden(footer));
+	EXPECT_EQ(frame.find("show more"), std::string::npos);
+	EXPECT_EQ(frame.find("show less"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, LiveToolOutputExpandsItsStreamAndKeepsFollowingUpdates)
+{
+	tool.state = 0;
+	tool.ended = tool.started;
+	ASSERT_TRUE(nb_buf_append_cstr(&tool.stream, "FIRST_STREAM\none\ntwo\nthree\n"));
+	Present();
+	EXPECT_EQ(frame.find("FIRST_STREAM"), std::string::npos);
+	EXPECT_NE(frame.find("show more"), std::string::npos);
+	auto *toggle = nt_view_child(nt_view_child(component, 1), 1);
+	ASSERT_NE(toggle, nullptr);
+	Click(toggle);
+	EXPECT_NE(frame.find("FIRST_STREAM"), std::string::npos);
+	ASSERT_TRUE(nb_buf_append_cstr(&tool.stream, "NEW_STREAM\n"));
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("FIRST_STREAM"), std::string::npos);
+	EXPECT_NE(frame.find("NEW_STREAM"), std::string::npos);
+	EXPECT_NE(frame.find("show less"), std::string::npos);
+	Click(toggle);
+	EXPECT_EQ(frame.find("FIRST_STREAM"), std::string::npos);
+	EXPECT_NE(frame.find("NEW_STREAM"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, InlineShellOutputIncludesBothStreamsAndFailureStyle)
+{
+	tool.state = -1;
+	tool.result = const_cast<char *>("{\"stdout\":\"out-one\\nout-two\\nout-three\","
+		"\"stderr\":\"ERROR_DETAIL\"}");
+	Present();
+	EXPECT_NE(frame.find("out-one"), std::string::npos);
+	EXPECT_EQ(frame.find("ERROR_DETAIL"), std::string::npos);
+	auto *toggle = nt_view_child(nt_view_child(component, 1), 1);
+	ASSERT_NE(toggle, nullptr);
+	Click(toggle);
+	EXPECT_NE(frame.find("out-one"), std::string::npos);
+	EXPECT_NE(frame.find("ERROR_DETAIL"), std::string::npos);
+	EXPECT_NE(frame.find("show less"), std::string::npos);
+	EXPECT_NE(frame.find("\033[1m"), std::string::npos);
+	EXPECT_NE(frame.find("\033[38;5;1m"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, PatchWithoutPreviewShowsStoredChangesAndExpandsEveryFile)
+{
+	tool.name = const_cast<char *>("apply_patch");
+	tool.shell = 0;
+	tool.subject = const_cast<char *>("example.c");
+	tool.summary = const_cast<char *>("+2 -1");
+	tool.patch_preview = const_cast<char *>("");
+	tool.args = const_cast<char *>("{\"input\":\"*** Begin Patch\\n"
+		"*** Update File: example.c\\n@@\\n context before\\n-old line\\n+new line\\n"
+		" context after\\n*** Add File: extra.txt\\n+extra line\\n*** End Patch\"}");
+	tool.result = const_cast<char *>("{\"data\":{\"changed\":true,\"files\":[]}}");
+	tool.historical = 1;
+	Present();
+	EXPECT_NE(frame.find("-old line"), std::string::npos);
+	EXPECT_NE(frame.find("+new line"), std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("    ?       -old line"),
+		std::string::npos);
+	EXPECT_NE(frame.find("show more"), std::string::npos);
+	EXPECT_EQ(frame.find("extra line"), std::string::npos);
+	EXPECT_NE(frame.find("\033[38;5;1m"), std::string::npos);
+	EXPECT_NE(frame.find("\033[38;5;2m"), std::string::npos);
+	auto *toggle = nt_view_child(nt_view_child(component, 1), 1);
+	ASSERT_NE(toggle, nullptr);
+	Click(toggle);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		std::string plain = retained_normalized(frame.c_str());
+		EXPECT_NE(plain.find("*** Update File: example.c"), std::string::npos);
+		EXPECT_NE(plain.find("context before"), std::string::npos);
+		EXPECT_NE(plain.find("-old line"), std::string::npos);
+		EXPECT_NE(plain.find("+new line"), std::string::npos);
+		EXPECT_NE(plain.find("*** Add File: extra.txt"), std::string::npos);
+		EXPECT_NE(plain.find("+extra line"), std::string::npos);
+		EXPECT_NE(plain.find("show less"), std::string::npos);
+		EXPECT_EQ(plain.find("*** Begin Patch"), std::string::npos);
+		EXPECT_EQ(plain.find("*** End Patch"), std::string::npos);
+	}
+
+	Click(toggle);
+	EXPECT_EQ(frame.find("extra line"), std::string::npos);
+	EXPECT_NE(frame.find("show more"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, PatchPrefersCapturedDiffAndShowsChangedLinesBeforeContext)
+{
+	tool.name = const_cast<char *>("apply_patch");
+	tool.shell = 0;
+	tool.args = const_cast<char *>("{\"input\":\"-RAW_OLD\\n+RAW_NEW\"}");
+	tool.patch_preview = const_cast<char *>("*** Update File: example.c\n@@ -1,4 +1,4 @@\n"
+		" context one\n context two\n-CAPTURED_OLD\n+CAPTURED_NEW\n context end\n");
+	tool.result = const_cast<char *>("{\"data\":{\"changed\":true}}");
+	Present();
+	EXPECT_NE(frame.find("-CAPTURED_OLD"), std::string::npos);
+	EXPECT_NE(frame.find("+CAPTURED_NEW"), std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("    3       -CAPTURED_OLD"),
+		std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("          3 +CAPTURED_NEW"),
+		std::string::npos);
+	EXPECT_EQ(frame.find("RAW_OLD"), std::string::npos);
+	EXPECT_EQ(frame.find("context one"), std::string::npos);
+	auto *toggle = nt_view_child(nt_view_child(component, 1), 1);
+	ASSERT_NE(toggle, nullptr);
+	Click(toggle);
+	EXPECT_NE(frame.find("context one"), std::string::npos);
+	EXPECT_NE(frame.find("@@ -1,4 +1,4 @@"), std::string::npos);
+	EXPECT_EQ(frame.find("RAW_NEW"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, PatchNumbersFollowOldAndNewRangesAcrossHunksAndWrappedRows)
+{
+	tool.name = const_cast<char *>("apply_patch");
+	tool.shell = 0;
+	const std::string long_line = "-WRAPPED_OLD_" + std::string(95, 'x') + "_END\n";
+	std::string diff = "*** Update File: first.c\n@@ -40,2 +70,3 @@\n context\n" + long_line +
+		"+FIRST_NEW\n+SECOND_NEW\n@@ -90,1 +121,1 @@\n-NEXT_OLD\n+NEXT_NEW\n"
+		"*** Add File: second.c\n@@ -0,0 +1,1 @@\n+ADDED_FILE\n";
+	tool.patch_preview = diff.data();
+	tool.result = const_cast<char *>("{\"data\":{\"changed\":true}}");
+	Present();
+	auto *toggle = nt_view_child(nt_view_child(component, 1), 1);
+	ASSERT_NE(toggle, nullptr);
+	Click(toggle);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		const std::string plain = retained_normalized(frame.c_str());
+		EXPECT_NE(plain.find("   40    70  context"), std::string::npos);
+		EXPECT_NE(plain.find("   41       -WRAPPED_OLD_"), std::string::npos);
+		EXPECT_NE(plain.find("         71 +FIRST_NEW"), std::string::npos);
+		EXPECT_NE(plain.find("         72 +SECOND_NEW"), std::string::npos);
+		EXPECT_NE(plain.find("   90       -NEXT_OLD"), std::string::npos);
+		EXPECT_NE(plain.find("        121 +NEXT_NEW"), std::string::npos);
+		EXPECT_NE(plain.find("          1 +ADDED_FILE"), std::string::npos);
+	}
+}
+
+TEST_F(CliRetainedWidgetsTest, ShortPatchKeepsCollapseLinkAndFailureKeepsItsError)
+{
+	tool.name = const_cast<char *>("apply_patch");
+	tool.shell = 0;
+	tool.patch_preview = const_cast<char *>("");
+	tool.args = const_cast<char *>("{\"input\":\"*** Begin Patch\\n"
+		"*** Add File: extra.txt\\n+ONLY_CHANGE\\n*** End Patch\"}");
+	tool.result = const_cast<char *>("{\"data\":{\"changed\":true}}");
+	Present();
+	EXPECT_NE(frame.find("+ONLY_CHANGE"), std::string::npos);
+	EXPECT_NE(frame.find("show more"), std::string::npos);
+	auto *toggle = nt_view_child(nt_view_child(component, 1), 1);
+	ASSERT_NE(toggle, nullptr);
+	Click(toggle);
+	EXPECT_NE(frame.find("*** Add File: extra.txt"), std::string::npos);
+	EXPECT_NE(frame.find("show less"), std::string::npos);
+	Click(toggle);
+	tool.state = -1;
+	tool.error = const_cast<char *>("Permission denied");
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(frame.find("Permission denied"), std::string::npos);
+	EXPECT_EQ(frame.find("ONLY_CHANGE"), std::string::npos);
+	EXPECT_EQ(frame.find("show more"), std::string::npos);
 }
 
 TEST_F(CliRetainedWidgetsTest, ScrollingReusesTheFormattedFeedAtTheViewportWidth)

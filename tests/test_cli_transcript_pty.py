@@ -641,7 +641,7 @@ def main():
             terminal.child.send('\x1b[A' * 200)
             terminal.pump(0.5)
             drained = terminal.snapshot('wheel burst drains without momentum backlog')
-            assert 'SECOND_LINE_000' in drained, drained
+            assert 'FIRST_PRIVATE_RESULT' in drained, drained
             assert len(terminal.raw) - burst_start < 30000, terminal.raw[burst_start:]
             terminal.send('\x1b[F')
             assert 'SECOND_PRIVATE_RESULT 中文🙂' in terminal.snapshot(
