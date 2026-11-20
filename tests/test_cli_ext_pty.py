@@ -4,12 +4,14 @@ import json
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 
 from test_cli_pty import Model, Terminal, pexpect, terminal_environment
 from test_cli_slash_pty import composer, wait_for
+from test_cli_resume_history_pty import seed
 from test_cli_transcript_pty import AlternateScreen
 import pyte
 
@@ -61,13 +63,22 @@ os.write(1, b'BUILD_LAST_WITHOUT_NEWLINE')
     return config
 
 
-def check_frames(terminal):
+def check_frames(terminal, command, answer_marker):
+    separated = False
     for frame, _ in terminal.published_frames:
+        rows = frame.splitlines()
+        headings = [i for i, row in enumerate(rows) if row.rstrip() == command]
+        answers = [i for i, row in enumerate(rows) if answer_marker in row]
+        if headings and answers:
+            assert headings[0] == answers[-1] + 2, frame
+            assert not rows[headings[0] - 1].strip(), frame
+            separated = True
         assert 'HIDDEN_TITLE' not in frame, frame
         if 'BUILD_STDOUT' not in frame:
             continue
         assert frame.count('› ') == 1, frame
         assert frame.count('perm: ') == 1, frame
+    assert separated, "No published frame showed the restored answer and command together"
     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
 
 
@@ -85,6 +96,17 @@ def exercise(driver, root, gitconfig, width, action):
     terminal.stream = pyte.Stream(terminal.screen)
     try:
         terminal.wait_for_composer()
+        answer_marker = 'RESTORED_EXT_ANSWER_END'
+        _, legacy = seed(directory / 'data.db')
+        with sqlite3.connect(directory / 'data.db') as database:
+            database.execute("UPDATE messages SET content=? WHERE session_id=? "
+                             "AND role='assistant'", (
+                'Export with `:TOhtml` or `pygmentize -f html -O full`.\n\n' + answer_marker,
+                legacy))
+            database.execute("DELETE FROM messages WHERE session_id=? AND role='user'",
+                             (legacy,))
+        terminal.send('/resume 8765fedc\r')
+        wait_for(terminal, lambda: answer_marker in '\n'.join(terminal.screen.display))
         terminal.published_frames.clear()
         if action == 'failure':
             (directory / 'fail').touch()
@@ -103,7 +125,7 @@ def exercise(driver, root, gitconfig, width, action):
                 assert text in frame, frame
             composer(terminal)
             assert not (installed / 'pty-install').exists()
-            check_frames(terminal)
+            check_frames(terminal, command, answer_marker)
             # Input queued while the synchronous command owns the terminal must
             # still become one intact draft when installation returns.
             terminal.send('draft中文')
@@ -111,6 +133,7 @@ def exercise(driver, root, gitconfig, width, action):
         expected = 'ext install failed:' if action in ('cancel', 'failure') else 'installed ext'
         wait_for(terminal, lambda: expected in '\n'.join(terminal.screen.display))
         terminal.pump(.15)
+        check_frames(terminal, command, answer_marker)
         composer(terminal, '' if action == 'cancel' else 'draft中文')
         screen = '\n'.join(terminal.screen.display)
         if action in ('success', 'confirm'):

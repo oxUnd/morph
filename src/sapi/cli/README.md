@@ -26,6 +26,7 @@ cli/
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
   components/                  NT views for the composer, messages, reports, lists and panels
+    command                    submitted slash commands, result spacing and outer margins
     page_layout                full-screen breadcrumb navigation, content and shortcut footer
   commands/                    options, slash actions, registry and management entry points
   services/
@@ -80,6 +81,10 @@ formats blocks for child transcripts and other text consumers and routes
 interactive blocks to the chat page. The page mounts NT components, whose
 margin and padding determine layout. Shared banner, list, plan and notice
 formatting lives in `presentation/`.
+`components/command` composes each submitted slash-command heading and its results.
+Its margins provide the surrounding blank rows, accounting for the preceding
+component's bottom margin. Native column spacing separates the heading from its
+first result when output arrives.
 Interactive trees reuse NT's tree view. Streaming and plain reports share
 `presentation/tree.c` for branch prefixes, continuation rows and column limits.
 Plain and JSON modes retain their separate output contracts.

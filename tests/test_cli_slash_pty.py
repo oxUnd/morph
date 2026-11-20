@@ -180,7 +180,28 @@ def main():
             composer(terminal)
             terminal.send('\x1b[A')
             composer(terminal, '/model-unknown')
-            terminal.send('\x15/quit\r')
+            terminal.send('\x15')
+            for columns in (120, 80, 60):
+                terminal.child.setwinsize(32, columns)
+                terminal.screen.resize(lines=32, columns=columns)
+                terminal.pump(.2)
+                terminal.send(f'Finish a turn before a command at {columns}\r')
+                _, release = terminal.request()
+                marker = f'COMPLETED_ANSWER_{columns}'
+                release.delta = {'content': '\n'.join(
+                    [f'Completed line {index}' for index in range(40)] + [marker])}
+                release.set()
+                wait_for(terminal, lambda: marker in '\n'.join(terminal.screen.display)
+                         and 'Working ·' not in '\n'.join(terminal.screen.display))
+                terminal.send('/model status\r')
+                heading = command_heading(terminal, '/model status')
+                rows = terminal.screen.display
+                duration = max(i for i, row in enumerate(rows[:heading])
+                               if 'Worked for' in row)
+                assert heading == duration + 2, '\n'.join(rows)
+                assert not rows[heading - 1].strip(), '\n'.join(rows)
+                result_gap(terminal, 'mode: normal')
+            terminal.send('/quit\r')
             terminal.child.expect_exact(pexpect.EOF)
             print('PASS: busy commands stay local; only known deferred commands retain input')
         finally:

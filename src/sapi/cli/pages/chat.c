@@ -10,6 +10,7 @@
 #include "sapi/cli/commands/media.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/components/banner.h"
+#include "sapi/cli/components/command.h"
 #include "sapi/cli/components/composer.h"
 #include "sapi/cli/components/list.h"
 #include "sapi/cli/components/mcp_tree.h"
@@ -446,18 +447,9 @@ int cli_chat_command_input(struct cli_application *ctx, const char *text)
 
 	struct cli_chat_page *page = ctx->chat;
 	cli_chat_page_boundary(page);
-	page->command_group = nt_stack_view_add(
-		page->builder, page->feed, NT_STACK_VIEW_VERTICAL, 1,
-		&(struct nt_view_options){.margin = {.bottom = 1}});
+	page->command_group = cli_command_add(page->builder, page->feed, text,
+					    cli_output_color_enabled(ctx));
 	page->command_tail = page->command_group;
-	struct nt_view_options style = {0};
-	if (cli_output_color_enabled(ctx))
-		style.style.foreground = (struct nt_color){NT_COLOR_INDEXED, 141};
-
-	struct nt_view *label = nt_label_add(page->builder, page->command_group, text, &style);
-	if (label)
-		nt_builder_fail(page->builder, nt_label_set_wrap_mode(label, NT_TEXT_WRAP_NONE));
-
 	return cli_chat_page_error(page);
 }
 

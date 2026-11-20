@@ -34,6 +34,7 @@ add_library(morph-cli STATIC
 	components/skill_tree.c
 	components/selector.c
 	components/composer.c
+	components/command.c
 	components/message.c
 	components/mcp_tree.c
 	components/media.c
