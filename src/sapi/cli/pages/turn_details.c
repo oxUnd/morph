@@ -140,15 +140,23 @@ static int cli_turn_details_event(struct nt_view_controller *controller,
 				  const struct nt_event *event)
 {
 	struct cli_turn_details *page = (struct cli_turn_details *)controller;
+	if (event->type == NT_EVENT_KEY && event->action == NT_KEY_ACTION_RELEASE)
+		return 0;
+
 	int key = event->type == NT_EVENT_TEXT && event->text_length == 1
 		? (unsigned char)event->text[0] : event->type == NT_EVENT_KEY ? event->key : 0;
-	if (!event->pasting && (key == 'r' || key == 'R') &&
-	    (event->type != NT_EVENT_KEY || event->action != NT_KEY_ACTION_RELEASE)) {
+	if (!event->pasting && (key == 'r' || key == 'R')) {
+		if (event->action != NT_KEY_ACTION_PRESS)
+			return 1;
+
 		int rc = cli_turn_details_set_raw(page, !nt_component_state_get_bool(page->raw));
 		return rc ? rc : 1;
 	}
 
 	if (event->type == NT_EVENT_KEY && !event->pasting) {
+		if (event->key == 20 && event->action != NT_KEY_ACTION_PRESS)
+			return 1;
+
 		if (event->key == 20 || event->key == 27 || event->key == NT_KEY_ESCAPE ||
 		    event->key == 3)
 			return nt_view_controller_dismiss(controller, 0);

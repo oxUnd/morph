@@ -1015,7 +1015,9 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 	}
 
 	if (key == 20) {
-		cli_turn_details_toggle(ctx);
+		if (event->action == NT_KEY_ACTION_PRESS)
+			cli_turn_details_toggle(ctx);
+
 		return 1;
 	}
 
