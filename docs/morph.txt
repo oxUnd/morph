@@ -322,6 +322,7 @@ Common interactive commands:
 	/model [name|normal|ultra|status]	Choose the model or collaboration mode.
 	/agents [id]	Inspect agent assignments, status and results.
 	/subagents [id]	Switch agent transcripts, follow up or interrupt.
+	/files [path]	Open conversation files in the sidebar; alias /sidebar.
 	/config		Print loaded configuration.
 	/trace [--from-db]	Show the latest ReAct trace.
 	/context	Show token context usage.

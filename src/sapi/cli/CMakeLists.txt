@@ -8,6 +8,7 @@ add_library(morph-cli STATIC
 	models/agents.c
 	models/jobs.c
 	models/transcript.c
+	models/files.c
 
 	# Page controllers
 	pages/approval.c
@@ -45,10 +46,12 @@ add_library(morph-cli STATIC
 	components/plan.c
 	components/recap.c
 	components/report.c
+	components/file_browser.c
 
 	# Commands
 	commands/agents.c
 	commands/ext.c
+	commands/files.c
 	commands/hooks.c
 	commands/input.c
 	commands/jobs.c
@@ -77,6 +80,7 @@ add_library(morph-cli STATIC
 	services/configuration/model.c
 	services/configuration/role.c
 	services/event_queue.c
+	services/file_preview.c
 	services/management.c
 	services/recap.c
 	services/scheduler.c
@@ -148,6 +152,7 @@ target_include_directories(morph-cli PUBLIC
 pkg_check_modules(CLI_WEBP REQUIRED IMPORTED_TARGET libwebp)
 pkg_check_modules(CLI_FFI REQUIRED IMPORTED_TARGET libffi)
 target_link_libraries(morph-cli PRIVATE PkgConfig::CLI_FFI)
+target_link_libraries(morph-cli PRIVATE libcmark-gfm_static)
 target_link_libraries(morph-cli PUBLIC PkgConfig::CLI_WEBP PRIVATE CURL::libcurl)
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(morph-cli PUBLIC

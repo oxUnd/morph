@@ -8,5 +8,7 @@ struct nt_view *cli_rich_document_add_borrow(struct nt_builder *,
 /* Trusted renderer output only. Terminal controls become structured content
  * and managed image widgets; they are never forwarded to the terminal. */
 int cli_rich_document_set_rendered_copy(struct nt_view *, const char *, int styled);
+int cli_rich_document_bind_markdown(struct nt_view *, const char *markdown);
+int cli_rich_document_has_link_at(struct nt_view *, int x, int y);
 
 #endif

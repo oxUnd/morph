@@ -12,6 +12,7 @@
 #include "sapi/cli/components/banner.h"
 #include "sapi/cli/components/command.h"
 #include "sapi/cli/components/composer.h"
+#include "sapi/cli/components/file_browser.h"
 #include "sapi/cli/components/list.h"
 #include "sapi/cli/components/mcp_tree.h"
 #include "sapi/cli/components/media.h"
@@ -24,6 +25,7 @@
 #include "sapi/cli/components/skill_tree.h"
 #include "sapi/cli/components/tool_call.h"
 #include "sapi/cli/models/composer.h"
+#include "sapi/cli/models/files.h"
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/pages/resume.h"
@@ -43,6 +45,7 @@
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/services/composer.h"
 #include "sapi/cli/services/event_queue.h"
+#include "sapi/cli/services/file_preview.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/services/transcript.h"
@@ -62,6 +65,7 @@
 #include <nothing/tui/views/label.h>
 #include <nothing/tui/views/scroll_view.h>
 #include <nothing/tui/views/stack_view.h>
+#include <nothing/tui/views/split_view.h>
 #include <nothing/tui/views/text_view.h>
 #include <nothing/tui/window.h>
 
@@ -82,6 +86,13 @@ struct cli_chat_panel {
 struct cli_chat_page {
 	struct nt_view_controller base;
 	struct nt_builder *builder;
+	struct nt_view *workspace, *primary, *files_view;
+	struct cli_files_model files;
+	struct cli_file_preview_job *file_job;
+	char *file_pending;
+	char files_workdir[PATH_MAX];
+	int64_t files_session;
+	int files_open, files_focus, file_line;
 	struct nt_component_state *modal;
 	struct nt_view *scroll, *feed, *composer, *editor, *status, *footer;
 	struct nt_view *bottom_button;
@@ -110,6 +121,158 @@ static int64_t cli_chat_now(void)
 	int64_t now = nb_time_monotonic_ns();
 
 	return now > 0 ? now / 1000000 : 0;
+}
+
+static void cli_chat_files_session(struct cli_chat_page *page)
+{
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	int64_t session = 0;
+	(void)runtime_session_current_id(ctx->runtime, &session);
+	if (page->files_session == session)
+		return;
+
+	cli_file_preview_stop(&page->file_job);
+	free(page->file_pending);
+	page->file_pending = NULL;
+	cli_files_cleanup(&page->files);
+	cli_files_init(&page->files);
+	page->files_session = session;
+	struct session current = {0};
+	const char *workdir = !runtime_session_current(ctx->runtime, &current) && current.workdir[0]
+		? current.workdir : ctx->workdir;
+	(void)nb_str_copy_to(nb_str_from_cstr(workdir), page->files_workdir,
+		sizeof(page->files_workdir));
+	if (page->files_view)
+		cli_file_browser_reset(page->files_view);
+}
+
+static int cli_chat_files_markdown(struct cli_application *ctx, const char *text)
+{
+	cli_chat_files_session(ctx->chat);
+	return cli_files_markdown(&ctx->chat->files, ctx->chat->files_workdir, text);
+}
+
+static int cli_chat_files_request(struct cli_chat_page *page, const char *path, int line)
+{
+	char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(path);
+	if (!copy)
+		return NB_ERR_NOMEM;
+
+	free(page->file_pending);
+	page->file_pending = nb_charp_steal(&copy);
+	page->file_line = line;
+	int rc = cli_file_browser_loading(page->files_view, path);
+	if (!rc && !page->file_job)
+		rc = cli_file_preview_start(path, &page->file_job);
+
+	return rc;
+}
+
+static int cli_chat_files_close(struct cli_chat_page *page)
+{
+	page->files_open = page->files_focus = 0;
+	int rc = nt_view_set_hidden(page->files_view, 1);
+	if (!rc)
+		rc = nt_view_set_hidden(page->primary, 0);
+
+	return rc ? rc : nt_view_focus(page->editor);
+}
+
+static int cli_chat_files_action(void *data, const struct nt_view_event *event)
+{
+	struct cli_chat_page *page = data;
+	if (event->target != page->files_view)
+		return 0;
+
+	if (event->type == NT_VIEW_EVENT_CANCEL) {
+		int rc = cli_chat_files_close(page);
+		return rc ? rc : NT_VIEW_EVENT_HANDLED;
+	}
+
+	if (event->type == NT_VIEW_EVENT_OPEN || event->type == NT_VIEW_EVENT_ACTIVATE) {
+		if (event->type == NT_VIEW_EVENT_OPEN && event->index == SIZE_MAX) {
+			int rc = cli_chat_files_show(cli_application_from_controller(&page->base),
+				event->text);
+			return rc ? rc : NT_VIEW_EVENT_HANDLED;
+		}
+
+		const struct cli_files_entry *entry = nb_vec_at(&page->files.entries, event->index);
+		int line = event->type == NT_VIEW_EVENT_OPEN && entry ? entry->line : 0;
+		int rc = event->text ? cli_chat_files_request(page, event->text, line) : 0;
+		if (!rc && event->type == NT_VIEW_EVENT_OPEN)
+			rc = cli_file_browser_focus_content(page->files_view);
+
+		return rc ? rc : NT_VIEW_EVENT_HANDLED;
+	}
+
+	return 0;
+}
+
+static int cli_chat_files_link(void *data, const struct nt_view_event *event)
+{
+	struct cli_chat_page *page = data;
+	if (!event->text || strcmp(nt_view_kind(event->target), "cli_rich_document"))
+		return 0;
+
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc = cli_files_resolve(page->files_workdir, event->text, &path, NULL);
+	if (rc)
+		return 0;
+
+	rc = cli_chat_files_show(ctx, event->text);
+	return rc ? rc : NT_VIEW_EVENT_HANDLED;
+}
+
+int cli_chat_files_show(struct cli_application *ctx, const char *url)
+{
+	if (!cli_chat_active(ctx))
+		return NB_ERR_UNSUPPORTED;
+
+	struct cli_chat_page *page = ctx->chat;
+	cli_chat_files_session(page);
+	page->files_open = page->files_focus = 1;
+	int rc = cli_file_browser_sync(page->files_view);
+	if (!rc)
+		rc = nt_view_set_hidden(page->files_view, 0);
+
+	if (!rc && url) {
+		nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
+		int line = 0;
+		rc = cli_files_resolve(page->files_workdir, url, &path, &line);
+		if (!rc)
+			rc = cli_files_add(&page->files, page->files_workdir,
+				url, CLI_FILES_REFERENCED);
+
+		if (!rc)
+			rc = cli_chat_files_request(page, nb_buf_cstr(&path), line);
+	}
+
+	if (!rc)
+		rc = cli_file_browser_sync(page->files_view);
+
+	if (!rc)
+		rc = url ? cli_file_browser_focus_content(page->files_view)
+			: cli_file_browser_focus(page->files_view);
+
+	return rc;
+}
+
+int cli_chat_files_event(struct cli_application *ctx, const struct morph_event *event)
+{
+	if (!cli_chat_active(ctx) || !event->name || strcmp(event->name, "output.created"))
+		return NB_OK;
+
+	const char *path = cJSON_GetStringValue(
+		cJSON_GetObjectItemCaseSensitive(event->data, "path"));
+	const cJSON *session = cJSON_GetObjectItemCaseSensitive(event->data, "session_id");
+	cli_chat_files_session(ctx->chat);
+	if (!path || (cJSON_IsNumber(session) &&
+		(int64_t)session->valuedouble != ctx->chat->files_session))
+		return NB_OK;
+
+	return cli_files_add(&ctx->chat->files, ctx->chat->files_workdir,
+		path, CLI_FILES_GENERATED);
 }
 
 int cli_chat_active(const struct cli_application *ctx)
@@ -364,6 +527,12 @@ int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
 		return 0;
 
 	struct cli_chat_page *page = ctx->chat;
+	if (kind != CLI_MESSAGE_REASONING) {
+		int rc = cli_chat_files_markdown(ctx, text);
+		if (rc)
+			return rc;
+	}
+
 	cli_chat_page_boundary(page);
 	page->last_assistant = NULL;
 	struct nt_view *view = cli_message_add_borrow(
@@ -382,6 +551,11 @@ int cli_chat_media(struct cli_application *ctx, const char *type, const char *pa
 		return NB_ERR_INVAL;
 
 	struct cli_chat_page *page = ctx->chat;
+	cli_chat_files_session(page);
+	int rc = cli_files_add(&page->files, page->files_workdir, path, CLI_FILES_GENERATED);
+	if (rc)
+		return rc;
+
 	cli_chat_page_boundary(page);
 	const struct nt_view_options options = {
 		.margin = {.top = page->command_group ? 0 : 1}};
@@ -566,6 +740,11 @@ int cli_chat_tool_changed(struct cli_application *ctx, const struct cli_transcri
 		return 0;
 
 	struct cli_chat_page *page = ctx->chat;
+	cli_chat_files_session(page);
+	int files_rc = cli_files_tool(&page->files, page->files_workdir, tool);
+	if (files_rc)
+		return files_rc;
+
 	struct nt_view *view = nb_map_get_cstr(page->tools, tool->id);
 	int rc;
 	if (!view) {
@@ -683,11 +862,13 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 		cli_chat_activity(ctx, "");
 		rc = cli_chat_page_stream(ctx, CLI_MESSAGE_ASSISTANT, text, 1);
 	} else if (!strcmp(name, "react.content.end") || !strcmp(name, "react.thought.end")) {
+		rc = cli_chat_files_markdown(ctx, text);
 		if (text && *text)
 			rc = cli_chat_page_stream(ctx, CLI_MESSAGE_ASSISTANT, text, 0);
 
 		cli_chat_page_boundary(page);
 	} else if (!strcmp(name, "react.final")) {
+		rc = cli_chat_files_markdown(ctx, text);
 		if (text && *text &&
 		    !(page->last_assistant && page->last_assistant_text &&
 		      !strcmp(page->last_assistant_text, text)))
@@ -752,6 +933,8 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 	if (input[0] == '/') {
 		cli_presentation_command_input(ctx, input);
 		if (ctx->input_job->active && strcmp(input, "/recap") && strcmp(input, "/jobs") &&
+		    strcmp(input, "/files") && strncmp(input, "/files ", 7) &&
+		    strcmp(input, "/sidebar") && strncmp(input, "/sidebar ", 9) &&
 		    strncmp(input, "/jobs ", 6) && strcmp(input, "/agents") &&
 		    strncmp(input, "/agents ", 8) && strcmp(input, "/subagents") &&
 		    strncmp(input, "/subagents ", 11)) {
@@ -912,20 +1095,32 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 		return 0;
 
 	int key = event->key;
+	unsigned mods = event->modifiers & ~(unsigned)(NT_MOD_CAPS_LOCK | NT_MOD_NUM_LOCK);
 	if (page->panel)
 		return key == 27 || key == NT_KEY_ESCAPE || key == 3 || key == 4
 			       ? cli_chat_panel_close(ctx, NB_ERR_CANCELLED)
 			       : 1;
 
-	if ((key == 27 || key == NT_KEY_ESCAPE) && !nt_view_is_hidden(page->bottom_button))
-		return nt_button_activate(page->bottom_button);
+	if (page->files_open && (key == 15 ||
+	    ((key == 'o' || key == 'O') && mods == NT_MOD_CTRL))) {
+		page->files_focus = !cli_file_browser_focused(page->files_view);
+		(void)nt_view_set_hidden(page->primary, 0);
+		int rc = page->files_focus ? cli_file_browser_focus(page->files_view)
+			: nt_view_focus(page->editor);
+		return rc ? rc : 1;
+	}
 
 	if (key == NT_KEY_FOCUS_IN || key == NT_KEY_FOCUS_OUT) {
 		cli_recap_focus(ctx, key == NT_KEY_FOCUS_IN, cli_recap_now());
 		return 1;
 	}
 
-	unsigned mods = event->modifiers & ~(unsigned)(NT_MOD_CAPS_LOCK | NT_MOD_NUM_LOCK);
+	if (page->files_open && cli_file_browser_focused(page->files_view))
+		return 0;
+
+	if ((key == 27 || key == NT_KEY_ESCAPE) && !nt_view_is_hidden(page->bottom_button))
+		return nt_button_activate(page->bottom_button);
+
 	int paste_letter = key == 22 || key == 'v' || key == 'V';
 	int image = paste_letter && mods == (NT_MOD_CTRL | NT_MOD_SUPER);
 	if (image || key == 22 || nt_shortcut_resolve(event) == NT_SHORTCUT_PASTE ||
@@ -1519,9 +1714,27 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 		.layout = cli_chat_page_layout,
 		.capture_event = cli_chat_capture_input,
 		.draw_overlay = cli_chat_panel_cursor};
-	struct nt_view *root = nt_view_add(builder, NULL, &cli_chat_layout_class, NULL);
+	page->workspace = nt_split_view_add(builder, NULL, NT_SPLIT_VIEW_HORIZONTAL, 64, NULL);
+	if (page->workspace && !nt_view_on(page->workspace, NT_VIEW_EVENT_OPEN,
+		cli_chat_files_link, page))
+		nt_builder_fail(builder, NB_ERR_NOMEM);
+
+	struct nt_view *root = nt_view_add(builder, page->workspace, &cli_chat_layout_class, NULL);
 	if (!root)
 		return;
+
+	page->primary = root;
+	(void)nb_str_copy_to(nb_str_from_cstr(ctx->workdir), page->files_workdir,
+		sizeof(page->files_workdir));
+	page->files_view = cli_file_browser_add(builder, page->workspace, &page->files,
+		page->files_workdir, cli_output_color_enabled(ctx));
+	if (page->files_view) {
+		nt_builder_fail(builder, nt_view_set_hidden(page->files_view, 1));
+		if (!nt_view_on(page->files_view, NT_VIEW_EVENT_ACTION,
+			cli_chat_files_action, page) ||
+		    !nt_view_on(page->files_view, NT_VIEW_EVENT_OPEN, cli_chat_files_action, page))
+			nt_builder_fail(builder, NB_ERR_NOMEM);
+	}
 
 	page->scroll = nt_scroll_view_add(builder, root, NULL);
 	nt_builder_fail(builder, nt_view_set_focusable(page->scroll, 0));
@@ -1647,6 +1860,44 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 		return 0;
 
 	int64_t now = cli_chat_now();
+	cli_chat_files_session(page);
+	int files_rc = cli_file_browser_sync(page->files_view);
+	if (files_rc)
+		return files_rc;
+
+	if (page->file_job) {
+		struct cli_file_preview *preview NB_CLEANUP(cli_file_preview_cleanup) = NULL;
+		files_rc = cli_file_preview_collect(&page->file_job, &preview);
+		if (files_rc != NB_ERR_AGAIN && files_rc)
+			return files_rc;
+
+		if (preview) {
+			if (page->file_pending && !strcmp(page->file_pending, preview->path)) {
+				files_rc = cli_file_browser_preview_take(page->files_view,
+					&preview, page->file_line);
+				free(page->file_pending);
+				page->file_pending = NULL;
+			} else if (page->file_pending)
+				files_rc = cli_file_preview_start(page->file_pending,
+					&page->file_job);
+
+			if (files_rc)
+				return files_rc;
+		}
+	}
+
+	struct nt_terminal_environment environment = {0};
+	(void)nt_application_environment(&ctx->base, &environment);
+	int showing = page->files_open && !page->panel && !page->prompt_rows;
+	int narrow = environment.columns < 100;
+	if (cli_file_browser_focused(page->files_view))
+		page->files_focus = 1;
+	else if (nt_view_is_focused(page->editor))
+		page->files_focus = 0;
+
+	(void)nt_view_set_hidden(page->files_view, !showing || (narrow && !page->files_focus));
+	(void)nt_view_set_hidden(page->primary, showing && narrow && page->files_focus);
+
 	if (ctx->jobs) {
 		int64_t session = 0;
 
@@ -1791,6 +2042,7 @@ static int cli_chat_page_init(struct nt_view_controller *controller)
 {
 	struct cli_chat_page *page = (struct cli_chat_page *)controller;
 	char *entry = NULL;
+	cli_files_init(&page->files);
 	nb_vec_init(&page->history, sizeof(entry));
 	page->tools = nb_map_new_with_cap(16);
 	return page->tools ? 0 : NB_ERR_NOMEM;
@@ -1799,6 +2051,9 @@ static int cli_chat_page_init(struct nt_view_controller *controller)
 static void cli_chat_page_deinit(struct nt_view_controller *controller)
 {
 	struct cli_chat_page *page = (struct cli_chat_page *)controller;
+	cli_file_preview_stop(&page->file_job);
+	free(page->file_pending);
+	cli_files_cleanup(&page->files);
 	for (size_t i = 0; i < page->history.len; i++)
 		free(*(char **)nb_vec_at(&page->history, i));
 

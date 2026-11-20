@@ -36,6 +36,7 @@ struct cli_rich_document {
 	struct nt_builder *builder;
 	struct nt_view *text, *media;
 	struct cli_rich_document_images images;
+	nb_vec links;
 	int styled;
 };
 
@@ -85,6 +86,27 @@ static int cli_rich_document_layout(struct nt_view *view)
 static void cli_rich_document_destroy(struct nt_view *view)
 {
 	cli_rich_document_images_cleanup(&((struct cli_rich_document *)view)->images);
+	cli_messages_links_cleanup(&((struct cli_rich_document *)view)->links);
+}
+
+static int cli_rich_document_link(void *data, const struct nt_view_event *event)
+{
+	struct cli_rich_document *document = data;
+	if (event->target != document->text)
+		return 0;
+
+	size_t start = 0, end = 0;
+	if (nt_text_view_selection_range(document->text, &start, &end) > 0 && start != end)
+		return 0;
+
+	size_t cursor = nt_text_view_cursor(document->text);
+	for (size_t i = 0; i < document->links.len; i++) {
+		const struct cli_messages_link *link = nb_vec_at(&document->links, i);
+		if (cursor >= link->start && cursor < link->end)
+			return nt_view_emit(&document->base, NT_VIEW_EVENT_OPEN, 0, link->url);
+	}
+
+	return 0;
 }
 
 static const struct nt_view_class cli_rich_document_class = {
@@ -365,6 +387,61 @@ static int cli_rich_document_leading_rows(const char *text)
 	return rows;
 }
 
+int cli_rich_document_bind_markdown(struct nt_view *view, const char *markdown)
+{
+	struct cli_rich_document *document = (struct cli_rich_document *)view;
+	return cli_messages_markdown_links(&document->links,
+		nt_text_view_text(document->text), markdown);
+}
+
+int cli_rich_document_has_link_at(struct nt_view *view, int x, int y)
+{
+	struct cli_rich_document *document = (struct cli_rich_document *)view;
+	if (!document->links.len)
+		return 0;
+
+	struct nt_view_rect frame = nt_view_content_rect(document->text);
+	if (frame.width < 1 || x < frame.x || y < frame.y || x >= frame.x + frame.width ||
+	    y >= frame.y + frame.height)
+		return 0;
+
+	const char *text = nt_text_view_text(document->text);
+	struct nt_text_layout layout NB_CLEANUP(nt_text_layout_deinit) = {0};
+	nt_text_layout_init(&layout);
+	if (nt_text_layout_build(&layout, text, (size_t)frame.width, NT_TEXT_WRAP_CHAR))
+		return 0;
+
+	size_t row = (size_t)(y - frame.y);
+	const struct nt_text_line *line = nb_vec_at(&layout.lines, row);
+	if (!line)
+		return 0;
+
+	nb_str bytes = nb_str_from_parts(text + line->offset, line->length);
+	size_t offset = 0;
+	int column = 0;
+	while (offset < bytes.len) {
+		size_t before = offset;
+		int width = 0;
+		if (!nb_utf8_width_at(bytes, &offset, &width))
+			return 0;
+
+		if (column + width > x - frame.x) {
+			offset = before;
+			break;
+		}
+
+		column += width;
+	}
+
+	for (size_t i = 0; i < document->links.len; i++) {
+		const struct cli_messages_link *link = nb_vec_at(&document->links, i);
+		if (line->offset + offset >= link->start && line->offset + offset < link->end)
+			return 1;
+	}
+
+	return 0;
+}
+
 int cli_rich_document_set_rendered_copy(struct nt_view *view, const char *source, int styled)
 {
 	if (!view || view->type != &cli_rich_document_class || !source)
@@ -390,7 +467,8 @@ int cli_rich_document_set_rendered_copy(struct nt_view *view, const char *source
 
 	/* Keep text controls stable: replacing each one would scan the owning
 	 * controller's entire View scope once per restored message. */
-	rc = cli_messages_set_rendered_view(document->text, nb_buf_cstr(&text), styled);
+	rc = cli_messages_set_rendered_links(document->text, nb_buf_cstr(&text), styled,
+		&document->links);
 	if (rc)
 		return rc;
 
@@ -456,5 +534,9 @@ struct nt_view *cli_rich_document_add_borrow(struct nt_builder *builder,
 
 	document->builder = builder;
 	document->text = cli_report_text_add(builder, &document->base, NULL);
+	if (document->text && !nt_view_on(document->text, NT_VIEW_EVENT_CLICK,
+		cli_rich_document_link, document))
+		nt_builder_fail(builder, NB_ERR_NOMEM);
+
 	return &document->base;
 }

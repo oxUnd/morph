@@ -3,6 +3,7 @@
 
 #include <nb/buf.h>
 #include <nb/cleanup.h>
+#include <nb/vec.h>
 #include <nothing/tui/view.h>
 
 enum cli_message_kind {
@@ -29,5 +30,15 @@ int cli_messages_append_rendered(nb_buf *out, const char *bytes, size_t length, 
 				 int styled);
 /* Bridges trusted Markdown renderer SGR into copied structured text spans. */
 int cli_messages_set_rendered_view(struct nt_view *, const char *text, int styled);
+struct cli_messages_link {
+	size_t start, end;
+	char *url;
+};
+void cli_messages_links_cleanup(nb_vec *);
+/* Also returns owned link ranges in the displayed UTF-8 byte coordinates. */
+int cli_messages_set_rendered_links(struct nt_view *, const char *, int styled, nb_vec *links);
+/* Recover link hit ranges from the renderer's visible destinations, using
+ * parsed Markdown URLs and labels. Wrapped destinations retain one target. */
+int cli_messages_markdown_links(nb_vec *links, const char *display, const char *markdown);
 
 #endif

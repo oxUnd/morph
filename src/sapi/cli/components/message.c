@@ -101,6 +101,13 @@ static int cli_message_layout(struct nt_view *view)
 		if (rc)
 			return rc;
 
+		if (message->kind == CLI_MESSAGE_ASSISTANT) {
+			rc = cli_rich_document_bind_markdown(message->body,
+				nt_component_state_get_string(message->text));
+			if (rc)
+				return rc;
+		}
+
 		message->published_width = rect.width;
 	}
 
@@ -143,9 +150,11 @@ static void cli_message_destroy(struct nt_view *view)
 
 static int cli_message_hit_test_overlay(struct nt_view *view, int x, int y)
 {
-	(void)view;
-	(void)x;
-	(void)y;
+	struct cli_message *message = (struct cli_message *)view;
+	if (message->kind == CLI_MESSAGE_ASSISTANT &&
+	    cli_rich_document_has_link_at(message->body, x, y))
+		return 0;
+
 	/* Read-only messages use window selection while the composer keeps focus. */
 	return 1;
 }

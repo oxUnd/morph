@@ -48,5 +48,7 @@ int cli_chat_panel_close(struct cli_application *, int result);
 void cli_chat_panel_set_refresh(struct cli_application *,
 				int (*refresh)(void *, const struct nt_event *));
 void cli_chat_transcript_reset(struct cli_application *);
+int cli_chat_files_show(struct cli_application *, const char *url);
+int cli_chat_files_event(struct cli_application *, const struct morph_event *);
 
 #endif

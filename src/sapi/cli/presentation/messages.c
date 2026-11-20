@@ -5,6 +5,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
+#include <cmark-gfm.h>
 #include <nb/utf8.h>
 #include "terminal/text.h"
 #include "sapi/cli/presentation/terminal_text.h"
@@ -44,6 +45,156 @@ static struct nt_color cli_messages_color_value(struct cli_messages_color color)
 			NT_COLOR_INDEXED, (unsigned)(color.code % 10)};
 
 	return (struct nt_color){NT_COLOR_DEFAULT, 0};
+}
+
+static void cli_messages_markdown_cleanup(cmark_node **node)
+{
+	cmark_node_free(*node);
+	*node = NULL;
+}
+
+static void cli_messages_iterator_cleanup(cmark_iter **iterator)
+{
+	cmark_iter_free(*iterator);
+	*iterator = NULL;
+}
+
+static const char *cli_messages_link_end(const char *display, const char *target)
+{
+	while (*target) {
+		if (*display == '\n' || *display == '\r') {
+			display++;
+			while (*display == ' ')
+				display++;
+
+			continue;
+		}
+
+		if (*display != *target)
+			return NULL;
+
+		display++;
+		target++;
+	}
+
+	return display;
+}
+
+static int cli_messages_link_range(nb_vec *links, size_t start, size_t end, const char *url)
+{
+	char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(url);
+	if (!copy)
+		return NB_ERR_NOMEM;
+
+	struct cli_messages_link *link = nb_vec_push(links);
+	if (!link)
+		return NB_ERR_NOMEM;
+
+	*link = (struct cli_messages_link){start, end, nb_charp_steal(&copy)};
+	return NB_OK;
+}
+
+int cli_messages_markdown_links(nb_vec *links, const char *display, const char *markdown)
+{
+	if (!markdown || !*markdown || !display || !*display)
+		return NB_OK;
+
+	if (!links->elem_size)
+		nb_vec_init(links, sizeof(struct cli_messages_link));
+
+	cmark_node *document NB_CLEANUP(cli_messages_markdown_cleanup) =
+		cmark_parse_document(markdown, strlen(markdown), CMARK_OPT_DEFAULT);
+	cmark_iter *iterator NB_CLEANUP(cli_messages_iterator_cleanup) =
+		document ? cmark_iter_new(document) : NULL;
+	if (!iterator)
+		return NB_ERR_NOMEM;
+
+	cmark_event_type event;
+	const char *after = display;
+	while ((event = cmark_iter_next(iterator)) != CMARK_EVENT_DONE) {
+		cmark_node *node = cmark_iter_get_node(iterator);
+		if (event != CMARK_EVENT_ENTER || cmark_node_get_type(node) != CMARK_NODE_LINK)
+			continue;
+
+		const char *url = cmark_node_get_url(node);
+		if (!url || !*url)
+			continue;
+
+		const char *start = after, *end = NULL;
+		while (*start) {
+			end = *start == *url ? cli_messages_link_end(start, url) : NULL;
+			const char *before = start;
+			while (before > display &&
+			       (before[-1] == ' ' || before[-1] == '\n' || before[-1] == '\r'))
+				before--;
+
+			if (end && *end == ')' && before > display && before[-1] == '(')
+				break;
+
+			end = NULL;
+			start++;
+		}
+
+		if (!end)
+			continue;
+
+		int rc = cli_messages_link_range(links, (size_t)(start - display),
+			(size_t)(end - display), url);
+		if (rc)
+			return rc;
+
+		/* The plain destination follows the label. Include the label's own
+		 * hit range when it can be identified without guessing its position. */
+		cmark_iter *label_iterator NB_CLEANUP(cli_messages_iterator_cleanup) =
+			cmark_iter_new(node);
+		if (!label_iterator)
+			return NB_ERR_NOMEM;
+
+		nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
+		cmark_event_type label_event;
+		while ((label_event = cmark_iter_next(label_iterator)) != CMARK_EVENT_DONE) {
+			cmark_node *child = cmark_iter_get_node(label_iterator);
+			cmark_node_type type = cmark_node_get_type(child);
+			if (label_event == CMARK_EVENT_ENTER &&
+			    (type == CMARK_NODE_TEXT || type == CMARK_NODE_CODE)) {
+				const char *text = cmark_node_get_literal(child);
+				if (text && !nb_buf_append_cstr(&label, text))
+					return nb_buf_status(&label);
+			}
+		}
+
+		for (const char *at = after; label.len && at < start; at++) {
+			const char *label_end = *at == *label.ptr
+				? cli_messages_link_end(at, nb_buf_cstr(&label)) : NULL;
+			if (!label_end || label_end > start)
+				continue;
+
+			const char *gap = label_end;
+			while (gap < start && (*gap == ' ' || *gap == '\n' || *gap == '\r'))
+				gap++;
+
+			if (gap >= start || *gap != '(')
+				continue;
+
+			gap++;
+			while (gap < start && (*gap == ' ' || *gap == '\n' || *gap == '\r'))
+				gap++;
+
+			if (gap != start)
+				continue;
+
+			rc = cli_messages_link_range(links, (size_t)(at - display),
+				(size_t)(label_end - display), url);
+			if (rc)
+				return rc;
+
+			break;
+		}
+
+		after = end;
+	}
+
+	return NB_OK;
 }
 
 static void cli_messages_sgr_apply(struct cli_messages_sgr *state, const int *values, size_t count)
@@ -454,7 +605,21 @@ int cli_messages_append(nb_buf *out, enum cli_message_kind kind, const char *tex
 				       &style->trailing_newlines);
 }
 
+void cli_messages_links_cleanup(nb_vec *links)
+{
+	for (size_t i = 0; i < links->len; i++)
+		free(((struct cli_messages_link *)nb_vec_at(links, i))->url);
+
+	nb_vec_cleanup(links);
+}
+
 int cli_messages_set_rendered_view(struct nt_view *view, const char *text, int styled)
+{
+	return cli_messages_set_rendered_links(view, text, styled, NULL);
+}
+
+int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int styled,
+	nb_vec *links)
 {
 	if (!view || !text)
 		return NB_ERR_INVAL;
@@ -571,5 +736,34 @@ int cli_messages_set_rendered_view(struct nt_view *view, const char *text, int s
 			break;
 	}
 
-	return nt_text_view_set_spans(view, ((void *)spans.data), spans.len);
+	nb_vec pending NB_CLEANUP(cli_messages_links_cleanup) = {0};
+	nb_vec_init(&pending, sizeof(struct cli_messages_link));
+	size_t position = 0;
+	for (size_t i = 0; links && i < spans.len; i++) {
+		const struct nt_text_span *slot = nb_vec_at(&spans, i);
+		size_t bytes_count = strlen(slot->text);
+		if (slot->hyperlink && bytes_count) {
+			char *url NB_CLEANUP(nb_charp_cleanup) = strdup(slot->hyperlink);
+			if (!url)
+				return NB_ERR_NOMEM;
+
+			struct cli_messages_link *link = nb_vec_push(&pending);
+			if (!link)
+				return NB_ERR_NOMEM;
+
+			*link = (struct cli_messages_link){position, position + bytes_count,
+				nb_charp_steal(&url)};
+		}
+
+		position += bytes_count;
+	}
+
+	rc = nt_text_view_set_spans(view, ((void *)spans.data), spans.len);
+	if (!rc && links) {
+		cli_messages_links_cleanup(links);
+		*links = pending;
+		memset(&pending, 0, sizeof(pending));
+	}
+
+	return rc;
 }

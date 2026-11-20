@@ -15,3 +15,12 @@ int cli_media_image_probe_info(const char *absolute_path, int *width, int *heigh
 
 	return 0;
 }
+
+int cli_media_image_probe_file(FILE *file, int *width, int *height)
+{
+	if (!file || !width || !height)
+		return NB_ERR_INVAL;
+
+	int channels = 0;
+	return stbi_info_from_file(file, width, height, &channels) ? NB_OK : NB_ERR_FORMAT;
+}

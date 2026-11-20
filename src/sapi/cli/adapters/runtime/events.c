@@ -6,6 +6,7 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/agents.h"
 #include "sapi/cli/pages/subagents.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/application_internal.h"
 
 int cli_runtime_events_callback(const struct morph_event *ev, void *user_data)
@@ -33,6 +34,10 @@ int cli_runtime_events_deliver(struct cli_application *ctx, const struct morph_e
 {
 	if (!ctx || !ev)
 		return NB_ERR_INVAL;
+
+	int files_rc = cli_chat_files_event(ctx, ev);
+	if (files_rc)
+		return files_rc;
 
 	if (ev->name && !strncmp(ev->name, "agent.", 6))
 		(void)cli_agents_refresh(ctx);

@@ -3,6 +3,11 @@
 
 extern "C" {
 #include "sapi/cli/components/message.h"
+#include "sapi/cli/components/file_browser.h"
+#include "sapi/cli/components/rich_document.h"
+#include "sapi/cli/models/files.h"
+#include "sapi/cli/services/file_preview.h"
+#include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/components/plan.h"
 #include "sapi/cli/components/notice.h"
 #include "sapi/cli/models/transcript.h"
@@ -24,6 +29,7 @@ extern "C" {
 #include <nothing/tui/views/scroll_view.h>
 #include <nothing/tui/views/stack_view.h>
 #include <nothing/tui/views/label.h>
+#include <nothing/tui/views/text_view.h>
 #include <nothing/tui/controls/text_field.h>
 #include <nothing/tui/models/text_editor.h>
 #include <nothing/tui/models/list_navigation.h>
@@ -92,7 +98,8 @@ static std::string retained_normalized(const char *text)
 class CliRetainedWidgetsTest : public ::testing::Test
 {
       protected:
-	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed } kind = Tool;
+	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed, Files, RichDocument } kind = Tool;
+	struct cli_files_model files{};
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
 	struct nt_application *app = nullptr;
@@ -146,6 +153,11 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			if (self->kind == Tool)
 				self->component = cli_tool_call_add_borrow(builder, root,
 					&self->tool, 1, self->details);
+			else if (self->kind == Files)
+				self->component = cli_file_browser_add(builder, root, &self->files,
+					"/workspace", 1);
+			else if (self->kind == RichDocument)
+				self->component = cli_rich_document_add_borrow(builder, root);
 			else if (self->kind == Notice)
 				self->component = cli_notice_add_borrow(builder, root,
 					&self->notice, 1);
@@ -166,6 +178,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 
 	void SetUp() override
 	{
+		cli_files_init(&files);
 		master = posix_openpt(O_RDWR | O_NOCTTY);
 		ASSERT_GE(master, 0);
 		ASSERT_EQ(grantpt(master), 0);
@@ -201,6 +214,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	void TearDown() override
 	{
 		nt_application_destroy(app);
+		cli_files_cleanup(&files);
 		cli_composer_model_cleanup(&ctx.composer);
 		cJSON_Delete(plan);
 		nb_buf_cleanup(&tool.stream);
@@ -890,4 +904,55 @@ TEST(CliEditorStateTest, TypedUtf8AndSecretEditingKeepUndoOwnershipSafe)
 	EXPECT_EQ(secret.undo.len, 0u);
 	EXPECT_EQ(nt_text_editor_state_undo(&secret), NT_NAVIGATION_UNHANDLED);
 	EXPECT_STREQ(secret.text.ptr, "secret");
+}
+
+TEST_F(CliRetainedWidgetsTest, FileSidebarRendersMarkdownAndSourceAcrossWidths)
+{
+	kind = Files;
+	ASSERT_EQ(cli_files_add(&files, "/workspace", "docs/readme.md", CLI_FILES_MODIFIED), 0);
+	Present();
+	ASSERT_EQ(cli_file_browser_sync(component), 0);
+	struct cli_file_preview *preview = nullptr;
+	preview = static_cast<cli_file_preview *>(calloc(1, sizeof(*preview)));
+	ASSERT_NE(preview, nullptr);
+	preview->path = strdup("/workspace/docs/readme.md");
+	preview->markdown = 1;
+	ASSERT_TRUE(nb_buf_append_cstr(&preview->content,
+		"# Preview heading\n\nSome **document content** and [source](../main.c:2).\n"));
+	ASSERT_EQ(cli_file_browser_preview_take(component, &preview, 0), 0);
+	EXPECT_EQ(preview, nullptr);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("Preview heading"), std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("docs/readme.md"), std::string::npos);
+	for (int columns : {80, 60, 120}) {
+		Resize(columns);
+		EXPECT_NE(retained_normalized(frame.c_str()).find("document content"),
+			std::string::npos);
+	}
+}
+
+TEST_F(CliRetainedWidgetsTest, RichDocumentLinksUseTrimmedDisplayOffsets)
+{
+	kind = RichDocument;
+	Present();
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(component,
+		"\n\n\033]8;;/workspace/main.c:12\033\\File link\033]8;;\033\\\n", 1), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	std::string opened;
+	ASSERT_NE(nt_view_on(component, NT_VIEW_EVENT_OPEN,
+		+[](void *data, const struct nt_view_event *event) -> int {
+			*static_cast<std::string *>(data) = event->text ? event->text : "";
+			return NT_VIEW_EVENT_HANDLED;
+		}, &opened), 0u);
+	auto *text = nt_view_child(component, 0);
+	const struct nt_view_rect rect = nt_view_frame(text);
+	char mouse[128];
+	int length = snprintf(mouse, sizeof(mouse), "\033[<0;%d;%dM\033[<0;%d;%dm",
+		rect.x + 3, rect.y + 1, rect.x + 3, rect.y + 1);
+	ASSERT_EQ(write(master, mouse, static_cast<size_t>(length)), length);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (opened.empty() && std::chrono::steady_clock::now() < deadline)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	EXPECT_EQ(opened, "/workspace/main.c:12");
 }
