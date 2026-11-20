@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "http/client.h"
+#include "http/request.h"
 
 static const char *history_compaction_text(const struct model_history_item *item, char **rendered)
 {

@@ -12,8 +12,8 @@
 #include <nb/buf.h>
 #include "errors.h"
 #include "media/image.h"
-#include "http/client.h"
-#include "http/sse.h"
+#include "http/request.h"
+#include <nb/sse.h>
 #include "cJSON.h"
 #include <errno.h>
 #include <limits.h>
@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #define LLM_IMAGE_QA_MAX_DIM 2048
 
@@ -94,12 +95,15 @@ static void model_set_last_error(struct model *self, const char *fmt, ...)
 }
 
 struct llm_http_ctx {
-	struct sse_parser *parser;
+	nb_sse *parser;
+	int callback_error;
+	long retry_after_seconds;
 	nb_buf error_buf;
 };
 
 static void llm_http_cleanup(struct llm_http_ctx *ctx)
 {
+	nb_sse_free(ctx->parser);
 	nb_buf_cleanup(&ctx->error_buf);
 }
 
@@ -109,16 +113,33 @@ static void llm_stream_move(struct llm_stream_ctx *destination, struct llm_strea
 	memset(source, 0, sizeof(*source));
 }
 
-static int llm_http_cb(const char *data, size_t len, void *ud)
+static nb_status llm_http_headers(nb_http_call *call, const nb_http_response *response, void *ud,
+				  nb_err *err)
+{
+	struct llm_http_ctx *ctx = ud;
+	nb_str value;
+	uint64_t seconds;
+
+	(void)call;
+	(void)err;
+	if (nb_http_headers_get(response->headers, NB_STR_LIT("Retry-After"), &value) &&
+	    nb_http_retry_after(value, (int64_t)time(NULL), &seconds, NULL) == NB_OK)
+		ctx->retry_after_seconds = seconds > 86400 ? 86400 : (long)seconds;
+
+	return NB_OK;
+}
+
+static nb_status llm_http_cb(nb_http_call *call, nb_str data, void *ud, nb_err *err)
 {
 	struct llm_http_ctx *hctx = ud;
-	if (hctx->parser) {
-		int rc = sse_parser_feed(hctx->parser, data, len);
-		if (rc != 0)
-			return rc;
-	}
-	(void)nb_buf_append(&hctx->error_buf, data, len);
-	return 0;
+
+	(void)call;
+	int rc = nb_sse_feed(hctx->parser, data.ptr, data.len, err);
+	if (rc == NB_OK && !nb_buf_append_str(&hctx->error_buf, data))
+		rc = NB_ERR_NOMEM;
+
+	hctx->callback_error = rc;
+	return rc;
 }
 
 static char *llm_extract_error(const char *raw)
@@ -196,14 +217,18 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 	if (info->kind == MODEL_ERROR_CONTEXT && started)
 		info->kind = MODEL_ERROR_INCOMPLETE;
 	info->retryable =
-		!started && (status == MORPH_ERR_NETWORK || status == NB_ERR_TIMEOUT ||
-			     status == NB_ERR_CONNECTION_RESET ||
-			     status == NB_ERR_CONNECTION_REFUSED || llm_retryable_status(status));
+		!started &&
+		(status == MORPH_ERR_NETWORK || status == NB_ERR_NETWORK ||
+		 status == NB_ERR_NOT_FOUND || status == NB_ERR_IO || status == NB_ERR_PROTOCOL ||
+		 status == NB_ERR_TIMEOUT || status == NB_ERR_CONNECTION_RESET ||
+		 status == NB_ERR_CONNECTION_REFUSED || llm_retryable_status(status));
 	if (status == NB_ERR_CANCELLED || status == NB_ERR_INTERRUPTED)
 		info->retryable = 0;
-	info->recoverable = started &&
-		(status == MORPH_ERR_NETWORK || status == NB_ERR_TIMEOUT ||
-		 status == NB_ERR_CONNECTION_RESET || status == NB_ERR_CONNECTION_REFUSED);
+	info->recoverable = started && (status == MORPH_ERR_NETWORK || status == NB_ERR_NETWORK ||
+					status == NB_ERR_NOT_FOUND || status == NB_ERR_IO ||
+					status == NB_ERR_PROTOCOL || status == NB_ERR_TIMEOUT ||
+					status == NB_ERR_CONNECTION_RESET ||
+					status == NB_ERR_CONNECTION_REFUSED);
 	cJSON_Delete(json);
 }
 
@@ -211,9 +236,9 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 				   const char *usage_phase, const char *url, const char *body,
 				   size_t body_len, const char **headers, long timeout,
 				   sse_callback cb, llm_stream_callback stream_cb,
-				   sse_event_cb event_cb, int requires_terminal_event,
-				   void *user_data,
-				   struct llm_stream_ctx *result, char **error_detail)
+				   nb_sse_callback event_cb, int requires_terminal_event,
+				   void *user_data, struct llm_stream_ctx *result,
+				   char **error_detail)
 {
 	int retries = self->retry_count;
 	if (retries < 0)
@@ -222,6 +247,13 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		retries = 10;
 	if (error_detail)
 		*error_detail = NULL;
+
+	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
+	int open_rc = http_client_open(&self->http, &http_client);
+	if (open_rc != NB_OK) {
+		llm_record_error(self, open_rc, NULL, 0, 0);
+		return open_rc;
+	}
 
 	for (int attempt = 0;; attempt++) {
 		struct llm_stream_ctx ctx NB_CLEANUP(llm_stream_cleanup) = {0};
@@ -233,33 +265,64 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		ctx.logger = self->http.logger;
 		snprintf(ctx.usage.phase, sizeof(ctx.usage.phase), "%s",
 			 usage_phase ? usage_phase : "turn");
-		struct sse_parser parser;
-		sse_parser_init(&parser, event_cb ? event_cb : llm_chat_decode_event, &ctx);
-		struct llm_http_ctx hctx NB_CLEANUP(llm_http_cleanup) = {
-			.parser = &parser,
-		};
-		int buffer_rc = (nb_buf_init(&hctx.error_buf),
-				 nb_buf_reserve(&hctx.error_buf, 4096) ? 0 : NB_ERR_NOMEM);
-		if (buffer_rc != 0 || nb_buf_status(&ctx.accumulated) ||
-		    nb_buf_status(&ctx.reasoning)) {
-			sse_parser_free(&parser);
-			return buffer_rc			 ? buffer_rc
-			       : nb_buf_status(&ctx.accumulated) ? nb_buf_status(&ctx.accumulated)
-								 : nb_buf_status(&ctx.reasoning);
-		}
+		struct llm_http_ctx hctx NB_CLEANUP(llm_http_cleanup) = {0};
+		nb_sse_options parser_options = {0};
+		int status = nb_sse_new(&parser_options, &hctx.parser, NULL);
+		if (status == NB_OK)
+			status = nb_sse_on(hctx.parser, NB_SSE_MESSAGE,
+					   event_cb ? event_cb : llm_chat_decode_event, &ctx, NULL,
+					   NULL);
 
-		struct http_sse_metadata metadata = {0};
-		int status = http_post_sse_ex_timeout_metadata(
-			&self->http, url, body, body_len, "application/json", headers, 1, timeout,
-			llm_http_cb, &hctx, &metadata);
-		int http_status = status;
+		if (status != NB_OK || !nb_buf_reserve(&hctx.error_buf, 4096) ||
+		    nb_buf_status(&ctx.accumulated) || nb_buf_status(&ctx.reasoning))
+			return status != NB_OK ? status : NB_ERR_NOMEM;
+
+		nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+		nb_vec_init(&native_headers, sizeof(nb_http_header));
+		status = http_headers_parse(&native_headers, headers, 1);
+		nb_http_header content_type = {NB_STR_LIT("Content-Type"),
+					       NB_STR_LIT("application/json")};
+		if (status == NB_OK && !nb_vec_push_copy(&native_headers, &content_type))
+			status = NB_ERR_NOMEM;
+
+		nb_http_header accept = {NB_STR_LIT("Accept"), NB_STR_LIT("text/event-stream")};
+		if (status == NB_OK && !nb_vec_push_copy(&native_headers, &accept))
+			status = NB_ERR_NOMEM;
+
+		nb_http_request request;
+		http_request_init(&request, "POST", url);
+		request.body = nb_str_from_parts(body, body_len);
+		request.headers = (nb_http_headers){(const nb_http_header *)native_headers.data,
+						    native_headers.len};
+		request.timeouts.total_ms = 0;
+		request.timeouts.idle_ms = http_timeout_ms(timeout);
+		nb_http_handler handler = {
+			.ctx = &hctx,
+			.on_headers = llm_http_headers,
+			.on_data = llm_http_cb,
+		};
+		nb_http_call *call NB_CLEANUP(http_call_cleanup) = NULL;
+		if (status == NB_OK)
+			status = http_request_run(&self->http, http_client, &request, &handler,
+						  &call);
+
+		const nb_http_result *http_result = nb_http_call_result(call);
+		if (status == NB_OK)
+			status = nb_sse_finish(hctx.parser, NULL);
+
+		if (status == NB_OK && http_result && http_result->response)
+			status = http_result->response->status_code;
+
+		int http_status = http_result && http_result->response
+					  ? http_result->response->status_code
+					  : 0;
 		int missing_terminal = 0;
-		sse_parser_free(&parser);
 
 		char *detail NB_CLEANUP(nb_charp_cleanup) = NULL;
 		if (status >= 400 && hctx.error_buf.len > 0)
 			detail = llm_extract_error(hctx.error_buf.ptr);
-		if (status >= 0 && status < 400 && requires_terminal_event) {
+		if (status >= 0 && status < 400 && requires_terminal_event &&
+		    !hctx.callback_error) {
 			if (!ctx.terminal_received) {
 				missing_terminal = 1;
 				ctx.terminal_error = NB_ERR_PROTOCOL;
@@ -277,7 +340,12 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		}
 
 		llm_record_error(self, status, hctx.error_buf.ptr, llm_stream_started(&ctx),
-				 metadata.retry_after_seconds);
+				 hctx.retry_after_seconds);
+		if (hctx.callback_error) {
+			self->error_info.retryable = 0;
+			self->error_info.recoverable = 0;
+		}
+
 		if (requires_terminal_event && ctx.terminal_error) {
 			self->error_info.kind = ctx.terminal_error == MORPH_ERR_API
 				? MODEL_ERROR_API : MODEL_ERROR_INCOMPLETE;
@@ -836,7 +904,7 @@ static int llm_generate(struct model *self, const char *prompt, const char *out_
 		return rc;
 	}
 
-	struct http_response resp = {0};
+	nb_buf resp_body NB_CLEANUP(nb_buf_cleanup) = {0};
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 	nb_buf auth_header NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -844,28 +912,50 @@ static int llm_generate(struct model *self, const char *prompt, const char *out_
 	if (rc != 0)
 		return rc;
 	const char *extra_headers[] = {nb_buf_cstr(&auth_header)};
-	rc = http_post_ex(&self->http, url, body, body_len, "application/json", extra_headers, 1,
-			  &resp);
+	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_http_request http_request;
+
+	nb_vec_init(&native_headers, sizeof(nb_http_header));
+	rc = http_headers_parse(&native_headers, extra_headers, 1);
+	if (rc == NB_OK) {
+		nb_http_header content_type = {NB_STR_LIT("Content-Type"),
+					       NB_STR_LIT("application/json")};
+		if (!nb_vec_push_copy(&native_headers, &content_type))
+			rc = NB_ERR_NOMEM;
+	}
+
+	http_request_init(&http_request, "POST", url);
+	http_request.body = nb_str_from_parts(body, body_len);
+	http_request.headers =
+		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
+	if (rc == NB_OK)
+		rc = http_client_open(&self->http, &http_client);
+
+	if (rc == NB_OK)
+		rc = http_request_run(&self->http, http_client, &http_request, NULL, &http_call);
+
+	const nb_http_result *http_result = nb_http_call_result(http_call);
+	const nb_http_response *resp = http_result ? http_result->response : NULL;
+	if (rc == NB_OK)
+		rc = nb_http_call_take_body(http_call, &resp_body, NULL);
 
 	if (rc < 0) {
-		http_response_free(&resp);
 		return rc;
 	}
 
-	if (resp.status_code != 200) {
+	if (resp->status_code != 200) {
 		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-			     "llm_generate: API returned %d", resp.status_code);
-		http_response_free(&resp);
+			     "llm_generate: API returned %d", resp->status_code);
 		return nb_err_trace(self ? self->http.logger : NULL, MORPH_ERR_API,
 				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
 				    __LINE__);
 	}
 
 	rc = 0;
-	if (out_path && resp.body.ptr)
-		rc = nb_file_write_all(out_path, resp.body.ptr, resp.body.len, NULL);
-
-	http_response_free(&resp);
+	if (out_path)
+		rc = nb_file_write_all(out_path, nb_buf_cstr(&resp_body), resp_body.len, NULL);
 	return rc;
 }
 

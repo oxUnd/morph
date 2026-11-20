@@ -24,8 +24,9 @@
 #include <nb/cleanup.h>
 #include <nb/buf.h>
 #include "cJSON.h"
-#include "http/client.h"
-#include "http/sse.h"
+#include "http/request.h"
+#include "http_test_support.hpp"
+#include <nb/sse.h>
 #include "config/config.h"
 #include "db/database.h"
 #include "session.h"
@@ -62,13 +63,6 @@ struct sse_test_info {
 	int count;
 	std::string last_data;
 };
-
-static int global_sse_write_adapter(const char *data, size_t len, void *user_data)
-{
-	struct sse_parser *parser = (struct sse_parser *)user_data;
-	sse_parser_feed(parser, data, len);
-	return 0;
-}
 
 /* ---- mock tools ---- */
 
@@ -3459,54 +3453,11 @@ TEST_F(ReactAgentConvergenceTest, RepeatedFinalProposalsAndInterimMailDoNotReset
 /* HTTP timeout tests                             */
 /* ============================================= */
 
-class HttpTimeoutTest : public ::testing::Test {
-protected:
-  void SetUp() override
-  {
-	  http_init(NULL);
-  }
-	void TearDown() override { http_cleanup(); }
-};
-
-TEST_F(HttpTimeoutTest, TimeoutFnNullUrl) {
-	struct sse_parser parser;
-	sse_parser_init(&parser, nullptr, nullptr);
-	int rc = http_post_sse_ex_timeout(NULL, nullptr, "", 0, "application/json", nullptr, 0, 10,
-					  global_sse_write_adapter, &parser);
-	EXPECT_NE(rc, 0);
-	sse_parser_free(&parser);
-}
-
-TEST_F(HttpTimeoutTest, TimeoutFnNullCallback) {
-	int rc = http_post_sse_ex_timeout(NULL, "http://127.0.0.1:1/test", "", 0,
-					  "application/json", nullptr, 0, 10, nullptr, nullptr);
-	EXPECT_NE(rc, 0);
-}
-
-TEST_F(HttpTimeoutTest, TimeoutFnConnectRefused) {
-	struct sse_parser parser;
-	sse_parser_init(&parser, nullptr, nullptr);
-	int rc = http_post_sse_ex_timeout(NULL, "http://127.0.0.1:1/test", "{}", 2,
-					  "application/json", nullptr, 0, 2,
-					  global_sse_write_adapter, &parser);
-	EXPECT_NE(rc, 0);
-	sse_parser_free(&parser);
-}
-
-static int global_global_sse_write_adapter(const char *data, size_t len, void *user_data) {
-	struct sse_parser *parser = (struct sse_parser *)user_data;
-	sse_parser_feed(parser, data, len);
-	return 0;
-}
-
-TEST_F(HttpTimeoutTest, ZeroTimeoutUsesDefault) {
-	struct sse_parser parser;
-	sse_parser_init(&parser, nullptr, nullptr);
-	int rc = http_post_sse_ex_timeout(NULL, "http://127.0.0.1:1/test", "{}", 2,
-					  "application/json", nullptr, 0, 0,
-					  global_sse_write_adapter, &parser);
-	EXPECT_NE(rc, 0);
-	sse_parser_free(&parser);
+TEST(HttpTimeoutTest, NativeCallsRejectInvalidUrlsAndRefusedConnections)
+{
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("POST", nullptr), NB_ERR_INVAL);
+	EXPECT_NE(probe.run("POST", "http://127.0.0.1:1/test", NB_STR_LIT("{}")), NB_OK);
 }
 
 /* ============================================= */
@@ -3712,12 +3663,10 @@ protected:
 	void SetUp() override {
 		memset(&srv, 0, sizeof(srv));
 		srv.server_fd = -1;
-		http_init(NULL);
 	}
 	void TearDown() override {
 		if (srv.running || srv.thread_started || srv.server_fd >= 0)
 			mock_server_stop(&srv);
-		http_cleanup();
 	}
 };
 
@@ -3727,140 +3676,158 @@ protected:
 			GTEST_SKIP() << "local HTTP mock server unavailable";	\
 	} while (0)
 
-TEST_F(MockServerTest, HttpGetSuccess) {
-	srv.response_body = "{\"status\":\"ok\"}";
+TEST_F(MockServerTest, HttpGetSuccess)
+{
+	srv.response_body = "{\"result\":\"ok\"}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
-	struct http_response resp3 = {0};
-	char url4[256];
-	snprintf(url4, sizeof(url4), "http://127.0.0.1:%d/test", srv.port);
-	int rc4 = http_get(NULL, url4, &resp3);
-	EXPECT_EQ(rc4, 0);
-	EXPECT_EQ(resp3.status_code, 200);
-	EXPECT_NE(resp3.body.ptr, nullptr);
-	EXPECT_TRUE(resp3.body.ptr && strstr(resp3.body.ptr, "ok"));
-	http_response_free(&resp3);
-	mock_server_stop(&srv);
-}
-
-TEST_F(MockServerTest, HttpPostSuccess) {
-	srv.response_body = "{\"result\":\"posted\"}";
-	srv.response_status = 200;
-	START_MOCK_OR_SKIP(&srv);
-	struct http_response resp = {0};
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/test", srv.port);
-	int rc = http_post(NULL, url, "{\"data\":1}", 10, "application/json", &resp);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(resp.status_code, 200);
-	EXPECT_STREQ(srv.request_method, "POST");
-	EXPECT_NE(resp.body.ptr, nullptr);
-	EXPECT_TRUE(resp.body.ptr && strstr(resp.body.ptr, "posted"));
-	http_response_free(&resp);
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("GET", url, NB_STR_LIT("")), NB_OK);
+	EXPECT_EQ(probe.status, 200);
+	EXPECT_STREQ(srv.request_method, "GET");
+	EXPECT_NE(probe.body.find("ok"), std::string::npos);
 	mock_server_stop(&srv);
 }
 
-TEST_F(MockServerTest, HttpPostEmptyBodyUsesPost) {
+TEST_F(MockServerTest, HttpPostSuccess)
+{
 	srv.response_body = "{\"result\":\"posted\"}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
-	struct http_response resp = {0};
 	char url[256];
-	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/empty", srv.port);
-	int rc = http_post(NULL, url, "", 0, "application/json", &resp);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(resp.status_code, 200);
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/test", srv.port);
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("POST", url, NB_STR_LIT("{\"data\":1}")), NB_OK);
+	EXPECT_EQ(probe.status, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
-	http_response_free(&resp);
+	EXPECT_NE(probe.body.find("posted"), std::string::npos);
 	mock_server_stop(&srv);
 }
 
-TEST_F(MockServerTest, HttpPostExAddsExtraHeadersAndClearsResponse) {
+TEST_F(MockServerTest, HttpPostEmptyBodyUsesPost)
+{
 	srv.response_body = "{\"result\":\"posted\"}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
-	struct http_response resp = {0};
-	resp.status_code = 999;
-	resp.body.len = 123;
-	resp.headers.len = 456;
-	const char *headers[] = { "X-Morph-Test: yes" };
 	char url[256];
-	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/headers", srv.port);
-	int rc = http_post_ex(NULL, url, "{}", 2, "application/json", headers, 1, &resp);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(resp.status_code, 200);
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/test", srv.port);
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("POST", url, NB_STR_LIT("")), NB_OK);
+	EXPECT_EQ(probe.status, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
+	EXPECT_NE(probe.body.find("posted"), std::string::npos);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, HttpPostExAddsExtraHeadersAndClearsResponse)
+{
+	srv.response_body = "{\"result\":\"posted\"}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char url[256];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/test", srv.port);
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("POST", url, NB_STR_LIT("{}"),
+			    {{NB_STR_LIT("X-Morph-Test"), NB_STR_LIT("yes")}}),
+		  NB_OK);
+	EXPECT_EQ(probe.status, 200);
+	EXPECT_STREQ(srv.request_method, "POST");
+	EXPECT_NE(probe.body.find("posted"), std::string::npos);
 	EXPECT_NE(strstr(srv.last_request, "X-Morph-Test: yes"), nullptr);
-	EXPECT_GT(resp.body.len, 0u);
-	http_response_free(&resp);
 	mock_server_stop(&srv);
 }
 
-TEST_F(MockServerTest, HttpSessionPostReusesHandleWithHeaders) {
+TEST_F(MockServerTest, NativeClientReusesPoolWithIndependentHeaders)
+{
 	srv.response_body = "{\"result\":\"posted\"}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
-	struct http_session session;
-	ASSERT_EQ(http_session_init(NULL, &session), 0);
 	char url[256];
-	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/session",
-		 srv.port);
-	const char *headers1[] = { "X-Morph-Session-Test: one" };
-	int rc = http_session_post(NULL, &session, url, "{\"n\":1}", 7, "application/json",
-				   headers1, 1, 5);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(http_session_status(&session), 200);
-	EXPECT_NE(strstr(srv.last_request, "X-Morph-Session-Test: one"),
-		  nullptr);
-
-	const char *headers2[] = { "X-Morph-Session-Test: two" };
-	rc = http_session_post(NULL, &session, url, "{\"n\":2}", 7, "application/json", headers2, 1,
-			       5);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(http_session_status(&session), 200);
-	EXPECT_NE(strstr(srv.last_request, "X-Morph-Session-Test: two"),
-		  nullptr);
-	http_session_cleanup(&session);
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/session", srv.port);
+	HttpProbe probe;
+	for (const char *value : {"one", "two"}) {
+		EXPECT_EQ(
+			probe.run("POST", url, NB_STR_LIT("{}"),
+				  {{NB_STR_LIT("X-Morph-Session-Test"), nb_str_from_cstr(value)}}),
+			NB_OK);
+		EXPECT_EQ(probe.status, 200);
+		std::string header = std::string("X-Morph-Session-Test: ") + value;
+		EXPECT_NE(strstr(srv.last_request, header.c_str()), nullptr);
+	}
 	mock_server_stop(&srv);
 }
 
-TEST_F(MockServerTest, SSEStreamingResponse) {
+TEST_F(MockServerTest, SSEStreamingResponse)
+{
 	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
-	struct sse_test_info info = {0, ""};
-	auto sse_cb = [](const char *event, const char *data, void *ud) -> int {
-		auto *i = (struct sse_test_info *)ud;
-		i->count++;
-		if (data) i->last_data = data;
-		return 0;
+	nb_sse *parser = nullptr;
+	ASSERT_EQ(nb_sse_new(nullptr, &parser, nullptr), NB_OK);
+	sse_test_info info{0, ""};
+	auto message = [](nb_sse *, const nb_sse_event *event, void *ctx, nb_err *) -> nb_status {
+		auto *state = static_cast<sse_test_info *>(ctx);
+		state->count++;
+		state->last_data.assign(event->value.message.data.ptr,
+					event->value.message.data.len);
+		return NB_OK;
 	};
-	struct sse_parser parser;
-	sse_parser_init(&parser, sse_cb, &info);
+	ASSERT_EQ(nb_sse_on(parser, NB_SSE_MESSAGE, message, &info, nullptr, nullptr), NB_OK);
+	nb_http_handler handler{};
+	handler.ctx = parser;
+	handler.on_data = [](nb_http_call *, nb_str data, void *ctx, nb_err *err) -> nb_status {
+		return nb_sse_feed(static_cast<nb_sse *>(ctx), data.ptr, data.len, err);
+	};
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
-	int rc = http_post_sse_ex(NULL, url, "{}", 2, "application/json", nullptr, 0,
-				  global_sse_write_adapter, &parser);
-	EXPECT_EQ(rc, 200);
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("POST", url, NB_STR_LIT("{}"),
+			    {{NB_STR_LIT("Accept"), NB_STR_LIT("text/event-stream")}}, &handler,
+			    5000),
+		  NB_OK);
+	EXPECT_EQ(probe.status, 200);
+	EXPECT_EQ(nb_sse_finish(parser, nullptr), NB_OK);
 	EXPECT_GT(info.count, 0);
 	EXPECT_STREQ(srv.request_method, "POST");
-	sse_parser_free(&parser);
+	nb_sse_free(parser);
 	mock_server_stop(&srv);
 }
 
-TEST_F(MockServerTest, SSEWithTimeout) {
-	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"test\"}}]}";
+TEST_F(MockServerTest, SSEWithTimeout)
+{
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
-	struct sse_parser parser2;
-	sse_parser_init(&parser2, nullptr, nullptr);
-	char url3[256];
-	snprintf(url3, sizeof(url3), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
-	int rc3 = http_post_sse_ex_timeout(NULL, url3, "{}", 2, "application/json", nullptr, 0, 30,
-					   global_sse_write_adapter, &parser2);
-	EXPECT_EQ(rc3, 200);
+	nb_sse *parser = nullptr;
+	ASSERT_EQ(nb_sse_new(nullptr, &parser, nullptr), NB_OK);
+	sse_test_info info{0, ""};
+	auto message = [](nb_sse *, const nb_sse_event *event, void *ctx, nb_err *) -> nb_status {
+		auto *state = static_cast<sse_test_info *>(ctx);
+		state->count++;
+		state->last_data.assign(event->value.message.data.ptr,
+					event->value.message.data.len);
+		return NB_OK;
+	};
+	ASSERT_EQ(nb_sse_on(parser, NB_SSE_MESSAGE, message, &info, nullptr, nullptr), NB_OK);
+	nb_http_handler handler{};
+	handler.ctx = parser;
+	handler.on_data = [](nb_http_call *, nb_str data, void *ctx, nb_err *err) -> nb_status {
+		return nb_sse_feed(static_cast<nb_sse *>(ctx), data.ptr, data.len, err);
+	};
+	char url[256];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("POST", url, NB_STR_LIT("{}"),
+			    {{NB_STR_LIT("Accept"), NB_STR_LIT("text/event-stream")}}, &handler,
+			    30000),
+		  NB_OK);
+	EXPECT_EQ(probe.status, 200);
+	EXPECT_EQ(nb_sse_finish(parser, nullptr), NB_OK);
+	EXPECT_GT(info.count, 0);
 	EXPECT_STREQ(srv.request_method, "POST");
-	sse_parser_free(&parser2);
+	nb_sse_free(parser);
 	mock_server_stop(&srv);
 }
 
@@ -4551,20 +4518,14 @@ TEST_F(MockServerTest, SseRetryMetadataBelongsToTheRequest)
 	START_MOCK_OR_SKIP(&srv);
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/test", srv.port);
-	struct http_sse_metadata first{};
-	struct http_sse_metadata second{};
-	auto sink = [](const char *, size_t, void *) -> int { return 0; };
-	EXPECT_EQ(http_post_sse_ex_timeout_metadata(NULL, url, "{}", 2, "application/json", nullptr,
-						    0, 5, sink, nullptr, &first),
-		  429);
-	EXPECT_EQ(first.retry_after_seconds, 3);
-	/* Reusing another request's output object cannot overwrite the first. */
-	second.retry_after_seconds = 99;
-	EXPECT_EQ(http_post_sse_ex_timeout_metadata(NULL, url, "{}", 2, "application/json", nullptr,
-						    0, 5, sink, nullptr, &second),
-		  429);
-	EXPECT_EQ(second.retry_after_seconds, 3);
-	EXPECT_EQ(first.retry_after_seconds, 3);
+	HttpProbe first;
+	HttpProbe second;
+	EXPECT_EQ(first.run("POST", url, NB_STR_LIT("{}")), NB_OK);
+	EXPECT_EQ(first.status, 429);
+	EXPECT_EQ(first.header("Retry-After"), "3");
+	EXPECT_EQ(second.run("POST", url, NB_STR_LIT("{}")), NB_OK);
+	EXPECT_EQ(second.header("Retry-After"), "3");
+	EXPECT_EQ(first.header("Retry-After"), "3");
 	mock_server_stop(&srv);
 }
 
@@ -4751,27 +4712,19 @@ TEST_F(MockServerTest, LlmUsesLargestCompatibleCachedTokenDetailOnce) {
 	mock_server_stop(&srv);
 }
 
-TEST_F(MockServerTest, SSECallbackErrorPropagates) {
+TEST_F(MockServerTest, SSECallbackErrorPropagates)
+{
 	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"test\"}}]}";
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
-	auto failing_cb = [](const char *data, size_t len, void *ud) -> int {
-		(void)data;
-		(void)len;
-		(void)ud;
-		return NB_ERR_IO;
-	};
+	nb_http_handler handler{};
+	handler.on_data = [](nb_http_call *, nb_str, void *, nb_err *) { return NB_ERR_IO; };
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
-	int rc = http_post_sse_ex(NULL, url, "{}", 2, "application/json", nullptr, 0, failing_cb,
-				  nullptr);
-	EXPECT_EQ(rc, NB_ERR_IO);
+	HttpProbe probe;
+	EXPECT_EQ(probe.run("POST", url, NB_STR_LIT("{}"), {}, &handler), NB_ERR_IO);
 	mock_server_stop(&srv);
 }
-
-/* ============================================= */
-/* System prompt tests                           */
-/* ============================================= */
 
 TEST_F(ReactTest, SystemPromptCreateDestroy) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -9130,4 +9083,34 @@ TEST_F(MockLlmTest, CompletionCheckerRejectsUnsupportedSuccessAndKeepsObjectiveO
 	ASSERT_NE(ctx->final_answer, nullptr);
 	EXPECT_NE(strstr(ctx->final_answer, "incomplete"), nullptr);
 	EXPECT_EQ(ctx->guardrail_retry_count, 1);
+}
+
+TEST_F(MockServerTest, LlmRetriesTruncatedTransportBeforeOutput)
+{
+	srv.transient_failures = 1;
+	srv.transient_sse_body = 1;
+	srv.transient_partial_file = 1;
+	srv.transient_error_status = 200;
+	srv.transient_error_body = "{}";
+	srv.response_status = 200;
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	struct model *model NB_CLEANUP(react_test_model_cleanup) =
+		model_llm_create(nullptr, "test", "mock", base, "test-key");
+	ASSERT_NE(model, nullptr);
+	model->retry_count = 1;
+	struct chat_message message{};
+	message.role = const_cast<char *>("user");
+	message.content = const_cast<char *>("hello");
+	struct chat_response response NB_CLEANUP(chat_response_free) = {};
+
+	EXPECT_EQ(model->chat_with_tools(model, nullptr, &message, 1, nullptr, 0, &response,
+					 nullptr, nullptr),
+		  200);
+	EXPECT_STREQ(response.content, "recovered");
+	EXPECT_EQ(srv.request_count, 2);
+	mock_server_stop(&srv);
 }

@@ -4,7 +4,7 @@
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/services/management.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "runtime/mcp.h"
 #include <nb/vec.h>
 #include "errors.h"
@@ -500,10 +500,7 @@ static int cli_mcp_manage_mcp_read_command(struct nb_log *logger,
 		free(config);
 		if (rc != 0)
 			return rc;
-
-		http_init(logger);
 		rc = mcp_test_connection(&connection, message, sizeof(message));
-		http_cleanup();
 		printf("%s: %s\n", nb_toml_string(name).ptr, message);
 		return rc;
 	}

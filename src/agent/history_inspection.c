@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "http/client.h"
+#include "http/request.h"
 
 static int history_result_exists(const struct model_history_item *items, const char *local_id,
 				 const char *provider_id)

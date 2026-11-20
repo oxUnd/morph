@@ -4,7 +4,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
-#include "http/client.h"
+#include "http/request.h"
 
 #include <sys/select.h>
 #include <termios.h>

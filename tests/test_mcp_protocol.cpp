@@ -467,7 +467,6 @@ protected:
 
 	void SetUp() override
 	{
-		ASSERT_EQ(http_init(NULL), 0);
 		client.config.transport = MCP_TRANSPORT_STREAMABLE_HTTP;
 		client.next_req_id = 1;
 		client.lock = nb_mutex_new(0);
@@ -478,7 +477,6 @@ protected:
 	{
 		mcp_disconnect(&client);
 		(nb_mutex_free(client.lock), client.lock = NULL);
-		http_cleanup();
 	}
 
 	int connect(McpProtocolHttpServer &server)
@@ -818,7 +816,7 @@ TEST_F(McpCodecTest, DecoderRejectsOccupiedOutputAndCreatesIndependentJson)
 
 TEST_F(McpHttpProtocolTest, ExchangeRejectsOccupiedAndPreservesFailedOutput)
 {
-	ASSERT_EQ(http_session_init(nullptr, &client.session), 0);
+	ASSERT_EQ(http_client_open(nullptr, &client.http_client), NB_OK);
 	struct mcp_wire_request request = {};
 	request.id = 1;
 	request.json = const_cast<char *>("{}");

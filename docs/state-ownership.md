@@ -163,9 +163,15 @@ through their normal output paths; CLI startup failures before UI initialization
 use explicit stderr messages. Diagnostic macros do not render UI or decide
 whether a returned error is fatal.
 
-libffi supplies the native callback adapters. libcurl 7.84 or newer is required
-for concurrent global initialization; each request or persistent HTTP session
-holds a balanced libcurl initialization reference.
+libffi supplies the native callback adapters. nbase owns HTTP transport and
+process-wide libcurl initialization (libcurl >= 7.85 with asynchronous DNS).
+Each native HTTP call is freed before its client; freeing a call releases its
+response storage, while the client retains the connection pool. MCP owns one
+client per connection, and model streaming retries share a client within the
+operation. Morph's HTTP helpers apply certificate environment settings and
+observe cancellation/steering while driving native calls. SSE framing belongs
+to `nb_sse`; model JSON, terminal events, retry policy and MCP sessions remain
+application concerns. No frontend initializes or cleans up global curl state.
 
 ## Audit and verification
 

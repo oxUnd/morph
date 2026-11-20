@@ -11,7 +11,7 @@
 #include "cJSON.h"
 #include <nb/buf.h>
 #include "errors.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -50,7 +50,7 @@ int image_provider_build_request_meta(const struct model *model, const char *pat
 int image_provider_post_json(struct model *model, const char *path, const char *label,
 			     const char *body, struct image_payload *payload)
 {
-	struct http_response response = {0};
+	nb_buf response_body NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf url NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf auth NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *headers[1];
@@ -64,45 +64,70 @@ int image_provider_post_json(struct model *model, const char *path, const char *
 	if (rc != 0)
 		return rc;
 	headers[0] = nb_buf_cstr(&auth);
-	rc = http_post_ex_timeout(&model->http, nb_buf_cstr(&url), body, strlen(body),
-				  "application/json", headers, 1, model->timeout_seconds,
-				  &response);
+	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_http_request http_request;
+
+	nb_vec_init(&native_headers, sizeof(nb_http_header));
+	rc = http_headers_parse(&native_headers, headers, 1);
+	if (rc == NB_OK) {
+		nb_http_header content_type = {NB_STR_LIT("Content-Type"),
+					       NB_STR_LIT("application/json")};
+		if (!nb_vec_push_copy(&native_headers, &content_type))
+			rc = NB_ERR_NOMEM;
+	}
+
+	http_request_init(&http_request, "POST", nb_buf_cstr(&url));
+	http_request.body = nb_str_from_cstr(body);
+	http_request.headers =
+		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
+	http_request.timeouts.total_ms = http_timeout_ms(model->timeout_seconds);
+	if (rc == NB_OK)
+		rc = http_client_open(&model->http, &http_client);
+
+	if (rc == NB_OK)
+		rc = http_request_run(&model->http, http_client, &http_request, NULL, &http_call);
+
+	const nb_http_result *http_result = nb_http_call_result(http_call);
+	const nb_http_response *response = http_result ? http_result->response : NULL;
+	if (rc == NB_OK)
+		rc = nb_http_call_take_body(http_call, &response_body, NULL);
+
 	nb_buf_cleanup(&auth);
 	nb_buf_cleanup(&url);
 	if (rc == 0) {
-		if (response.status_code != 200) {
+		if (response->status_code != 200) {
 			snprintf(model->last_error, sizeof(model->last_error),
-				 "%s returned HTTP %d: %.400s", label, response.status_code,
-				 response.body.ptr ? response.body.ptr : "");
+				 "%s returned HTTP %d: %.400s", label, response->status_code,
+				 response_body.ptr ? response_body.ptr : "");
 			rc = MORPH_ERR_API;
 		} else {
-			rc = image_provider_parse_response(model, response.body.ptr, payload);
+			rc = image_provider_parse_response(model, nb_buf_cstr(&response_body),
+							   payload);
 		}
 	}
-	http_response_free(&response);
 	return rc;
 }
 
-const char *image_gen_ext_from_content_type(const char *headers)
+const char *image_gen_ext_from_headers(nb_http_headers headers)
 {
-	if (!headers)
+	nb_str type;
+	if (!nb_http_headers_get(headers, NB_STR_LIT("Content-Type"), &type))
 		return NULL;
-	const char *p = headers;
-	while ((p = strcasestr(p, "content-type:")) != NULL) {
-		p += 13;
-		while (*p == ' ')
-			p++;
-		if (strncasecmp(p, "image/png", 9) == 0)
-			return "png";
-		if (strncasecmp(p, "image/jpeg", 10) == 0)
-			return "jpg";
-		if (strncasecmp(p, "image/webp", 10) == 0)
-			return "webp";
-		if (strncasecmp(p, "image/gif", 9) == 0)
-			return "gif";
-		if (strncasecmp(p, "image/bmp", 9) == 0)
-			return "bmp";
+
+	size_t separator = nb_str_find_char(type, ';');
+	if (separator != SIZE_MAX)
+		type.len = separator;
+
+	type = nb_str_trim(type);
+	const char *types[] = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"};
+	const char *extensions[] = {"png", "jpg", "webp", "gif", "bmp"};
+	for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+		if (nb_str_eq_icase(type, nb_str_from_cstr(types[i])))
+			return extensions[i];
 	}
+
 	return NULL;
 }
 
@@ -126,26 +151,45 @@ const char *image_gen_ext_from_magic(const unsigned char *data, size_t len)
 static int download_url(const struct http_control *control, const char *url, const char *out_dir,
 			char *out_path, size_t out_cap)
 {
-	struct http_response resp = {0};
-	int rc = http_get(control, url, &resp);
+	nb_buf resp_body NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc;
+	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_http_request http_request;
+
+	nb_vec_init(&native_headers, sizeof(nb_http_header));
+	rc = http_headers_parse(&native_headers, NULL, 0);
+	http_request_init(&http_request, "GET", url);
+	http_request.body = NB_STR_NULL;
+	http_request.headers =
+		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
+	if (rc == NB_OK)
+		rc = http_client_open(control, &http_client);
+
+	if (rc == NB_OK)
+		rc = http_request_run(control, http_client, &http_request, NULL, &http_call);
+
+	const nb_http_result *http_result = nb_http_call_result(http_call);
+	const nb_http_response *resp = http_result ? http_result->response : NULL;
+	if (rc == NB_OK)
+		rc = nb_http_call_take_body(http_call, &resp_body, NULL);
+
 	if (rc < 0) {
-		http_response_free(&resp);
 		nb_log_write(control ? control->logger : NULL, NB_LOG_ERROR, "download failed: %s",
 			     url);
 		return rc;
 	}
-	if (resp.status_code != 200) {
+	if (resp->status_code != 200) {
 		nb_log_write(control ? control->logger : NULL, NB_LOG_ERROR,
-			     "download returned HTTP %d", resp.status_code);
-		http_response_free(&resp);
+			     "download returned HTTP %d", resp->status_code);
 		return MORPH_ERR_API;
 	}
-	const char *ext = image_gen_ext_from_content_type(nb_buf_cstr(&resp.headers));
+	const char *ext = image_gen_ext_from_headers(resp->headers);
 	if (!ext)
-		ext = image_gen_ext_from_magic((const unsigned char *)resp.body.ptr, resp.body.len);
-	rc = media_output_write(out_dir, "img", ext, resp.body.ptr, resp.body.len, out_path,
-				out_cap);
-	http_response_free(&resp);
+		ext = image_gen_ext_from_magic((const unsigned char *)resp_body.ptr, resp_body.len);
+	rc = media_output_write(out_dir, "img", ext, nb_buf_cstr(&resp_body), resp_body.len,
+				out_path, out_cap);
 	return rc;
 }
 

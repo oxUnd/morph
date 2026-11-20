@@ -10,7 +10,7 @@
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/services/management.h"
 #include "runtime/services.h"
-#include "http/client.h"
+#include "http/request.h"
 #include <nb/log.h>
 #include <nb/file.h>
 #include "errors.h"
@@ -155,15 +155,6 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	rc = http_init(logger);
-	if (rc != 0) {
-		fprintf(stderr, "morph: failed to initialize HTTP: %s\n",
-			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
-		nb_log_free(logger);
-		logger = NULL;
-		return 1;
-	}
-
 	rc = cli_application_init(&ctx, logger, options.config_path, NULL, options.workdir,
 				  options.session_name, options.resume_ref, presentation_mode);
 	cli_output_set_color_enabled(&ctx, !options.no_color);
@@ -180,8 +171,6 @@ int main(int argc, char *argv[])
 		else
 			fprintf(stderr, "morph: failed to initialize: %s\n",
 				nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
-
-		http_cleanup();
 		nb_log_free(logger);
 		logger = NULL;
 		return 1;
@@ -232,7 +221,6 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "morph: failed to restart: %s\n",
 					nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
 						   rc));
-				http_cleanup();
 				nb_log_free(logger);
 				logger = NULL;
 				return 1;
@@ -249,7 +237,6 @@ int main(int argc, char *argv[])
 	}
 
 	cli_application_shutdown(&ctx);
-	http_cleanup();
 	nb_log_free(logger);
 	logger = NULL;
 	return 0;

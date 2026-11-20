@@ -338,7 +338,6 @@ TEST_F(ExtensionHostTest, MissingServicesAndInvalidMediaInputsReturnExplicitErro
 
 TEST_F(ExtensionHostTest, TextServiceUsesTheConfiguredHttpClientAndBillsOnce)
 {
-	ASSERT_EQ(http_init(logger), NB_OK);
 	AgentHttpServer server;
 	server.start();
 	std::string url = "http://127.0.0.1:" + std::to_string(server.port) + "/v1";
@@ -371,7 +370,6 @@ TEST_F(ExtensionHostTest, TextServiceUsesTheConfiguredHttpClientAndBillsOnce)
 	EXPECT_FALSE(events.empty());
 	runtime.models.text = nullptr;
 	model.reset();
-	http_cleanup();
 }
 
 TEST_F(ExtensionHostTest, VisionUsesItsOwnModelAndAnAuthorizedReferencePath)
@@ -766,5 +764,4 @@ TEST_F(ExtensionRuntimeTest, ModelToolCallLoadsTheNativeContextThroughTheRuntime
 	EXPECT_EQ(calls.load(), 2);
 	runtime_close(instance);
 	instance = nullptr;
-	http_cleanup();
 }

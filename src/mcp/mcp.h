@@ -11,7 +11,7 @@ extern "C" {
 #include <nb/thread.h>
 #include <sys/types.h>
 
-#include "http/client.h"
+#include "http/request.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/map.h>
@@ -111,7 +111,8 @@ struct mcp_client {
 	int stdout_fd;
 	nb_buf read_buffer;
 	/* http transport state */
-	struct http_session session;
+	nb_http_client *http_client;
+	int http_status;
 	char *session_id;
 	/* JSON-RPC id counter */
 	int next_req_id;

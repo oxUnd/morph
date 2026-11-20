@@ -1137,8 +1137,7 @@ TEST(McpHttpPayloadTest, LongBearerTokenAndSessionHeaderAreNotTruncated)
 	snprintf(client.config.http_url, sizeof(client.config.http_url),
 		"http://127.0.0.1:%u/mcp", static_cast<unsigned>(ntohs(address.sin_port)));
 	strcpy(client.config.http_auth_token_env, "MORPH_TEST_MCP_LONG_TOKEN");
-	int init_rc = http_init(NULL);
-	int connect_rc = init_rc == 0 ? mcp_connect_http(&client) : init_rc;
+	int connect_rc = mcp_connect_http(&client);
 	client.session_id = strdup(session.c_str());
 	client.protocol = mcp_protocol_borrow("2025-06-18");
 	int rc = connect_rc == 0 ? mcp_ping(&client) : connect_rc;
@@ -1149,7 +1148,6 @@ TEST(McpHttpPayloadTest, LongBearerTokenAndSessionHeaderAreNotTruncated)
 	EXPECT_NE(request.find("Mcp-Session-Id: " + session + "\r\n"), std::string::npos);
 	mcp_disconnect(&client);
 	(nb_mutex_free(client.lock), client.lock = NULL);
-	http_cleanup();
 	unsetenv("MORPH_TEST_MCP_LONG_TOKEN");
 }
 

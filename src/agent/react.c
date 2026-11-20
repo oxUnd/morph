@@ -21,7 +21,7 @@
 #include "permission/context.h"
 #include "tool_execution.h"
 #include "models/llm.h"
-#include "http/client.h"
+#include "http/request.h"
 #include <nb/log.h>
 #include <nb/cleanup.h>
 #include "cJSON.h"

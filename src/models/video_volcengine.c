@@ -14,7 +14,7 @@
 #include "cJSON.h"
 #include <nb/buf.h>
 #include "errors.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -146,23 +146,42 @@ static int volcengine_video_capabilities(const struct model *model, struct video
 static int download_url(struct model *self, const char *url, const char *output_dir, char *out_path,
 			size_t out_size)
 {
-	struct http_response resp = {0};
-	int rc = http_get(&self->http, url, &resp);
+	nb_buf resp_body NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc;
+	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_http_request http_request;
+
+	nb_vec_init(&native_headers, sizeof(nb_http_header));
+	rc = http_headers_parse(&native_headers, NULL, 0);
+	http_request_init(&http_request, "GET", url);
+	http_request.body = NB_STR_NULL;
+	http_request.headers =
+		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
+	if (rc == NB_OK)
+		rc = http_client_open(&self->http, &http_client);
+
+	if (rc == NB_OK)
+		rc = http_request_run(&self->http, http_client, &http_request, NULL, &http_call);
+
+	const nb_http_result *http_result = nb_http_call_result(http_call);
+	const nb_http_response *resp = http_result ? http_result->response : NULL;
+	if (rc == NB_OK)
+		rc = nb_http_call_take_body(http_call, &resp_body, NULL);
+
 	if (rc < 0) {
-		http_response_free(&resp);
 		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
 			     "video download failed: %s", url);
 		return rc;
 	}
-	if (resp.status_code != 200) {
+	if (resp->status_code != 200) {
 		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-			     "video download returned HTTP %d", resp.status_code);
-		http_response_free(&resp);
+			     "video download returned HTTP %d", resp->status_code);
 		return MORPH_ERR_API;
 	}
-	rc = media_output_write(output_dir, "vid", "mp4", resp.body.ptr, resp.body.len, out_path,
-				out_size);
-	http_response_free(&resp);
+	rc = media_output_write(output_dir, "vid", "mp4", nb_buf_cstr(&resp_body), resp_body.len,
+				out_path, out_size);
 	return rc;
 }
 
@@ -215,12 +234,34 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 		if (remaining <= wait_ms)
 			break;
 
-		struct http_response qresp = {0};
-		int qrc = http_get_ex_timeout(&self->http, query_url, hdrs, 1,
-					      (long)((remaining - wait_ms + 999) / 1000), &qresp);
+		nb_buf qresp_body NB_CLEANUP(nb_buf_cleanup) = {0};
+		int qrc;
+		nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
+		nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
+		nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+		nb_http_request http_request;
+
+		nb_vec_init(&native_headers, sizeof(nb_http_header));
+		qrc = http_headers_parse(&native_headers, hdrs, 1);
+		http_request_init(&http_request, "GET", query_url);
+		http_request.body = NB_STR_NULL;
+		http_request.headers = (nb_http_headers){
+			(const nb_http_header *)native_headers.data, native_headers.len};
+		http_request.timeouts.total_ms =
+			http_timeout_ms((long)((remaining - wait_ms + 999) / 1000));
+		if (qrc == NB_OK)
+			qrc = http_client_open(&self->http, &http_client);
+
+		if (qrc == NB_OK)
+			qrc = http_request_run(&self->http, http_client, &http_request, NULL,
+					       &http_call);
+
+		const nb_http_result *http_result = nb_http_call_result(http_call);
+		const nb_http_response *qresp = http_result ? http_result->response : NULL;
+		if (qrc == NB_OK)
+			qrc = nb_http_call_take_body(http_call, &qresp_body, NULL);
 
 		if (qrc < 0) {
-			http_response_free(&qresp);
 			if (qrc == NB_ERR_CANCELLED)
 				return qrc;
 			nb_log_write(self ? self->http.logger : NULL, NB_LOG_WARN,
@@ -228,14 +269,12 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 			continue;
 		}
 
-		if (qresp.status_code != 200 || !qresp.body.ptr) {
-			http_response_free(&qresp);
+		if (qresp->status_code != 200 || !qresp_body.ptr) {
 			continue;
 		}
 
-		cJSON *qroot = cJSON_Parse(qresp.body.ptr);
+		cJSON *qroot = cJSON_Parse(qresp_body.ptr);
 		if (!qroot) {
-			http_response_free(&qresp);
 			continue;
 		}
 
@@ -255,7 +294,6 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 						video_url, (video_url_size - 1) + 1);
 			}
 			cJSON_Delete(qroot);
-			http_response_free(&qresp);
 			break;
 		}
 
@@ -274,9 +312,8 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
 				     result->error_msg);
 			nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
-				     "video_gen: poll response body:\n%s", qresp.body.ptr);
+				     "video_gen: poll response body:\n%s", qresp_body.ptr);
 			cJSON_Delete(qroot);
-			http_response_free(&qresp);
 			return MORPH_ERR_API;
 		}
 
@@ -284,7 +321,6 @@ static int volcengine_video_poll(struct model *self, const char *query_url, cons
 			     "video_gen: task %s status=%s", task_id, st);
 
 		cJSON_Delete(qroot);
-		http_response_free(&qresp);
 	}
 
 	if (video_url[0])
@@ -445,12 +481,38 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		return auth_rc;
 	const char *hdrs[] = {nb_buf_cstr(&auth_header)};
 
-	struct http_response resp = {0};
-	int rc = http_post_ex(&self->http, submit_url, body_str, strlen(body_str),
-			      "application/json", hdrs, 1, &resp);
+	nb_buf resp_body NB_CLEANUP(nb_buf_cleanup) = {0};
+	int rc;
+	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_http_request http_request;
+
+	nb_vec_init(&native_headers, sizeof(nb_http_header));
+	rc = http_headers_parse(&native_headers, hdrs, 1);
+	if (rc == NB_OK) {
+		nb_http_header content_type = {NB_STR_LIT("Content-Type"),
+					       NB_STR_LIT("application/json")};
+		if (!nb_vec_push_copy(&native_headers, &content_type))
+			rc = NB_ERR_NOMEM;
+	}
+
+	http_request_init(&http_request, "POST", submit_url);
+	http_request.body = nb_str_from_cstr(body_str);
+	http_request.headers =
+		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
+	if (rc == NB_OK)
+		rc = http_client_open(&self->http, &http_client);
+
+	if (rc == NB_OK)
+		rc = http_request_run(&self->http, http_client, &http_request, NULL, &http_call);
+
+	const nb_http_result *http_result = nb_http_call_result(http_call);
+	const nb_http_response *resp = http_result ? http_result->response : NULL;
+	if (rc == NB_OK)
+		rc = nb_http_call_take_body(http_call, &resp_body, NULL);
 
 	if (rc < 0) {
-		http_response_free(&resp);
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: submit request failed: %s",
 			 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
@@ -464,11 +526,11 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	char task_status[32] = {0};
 	char video_url[2048] = {0};
 
-	if (resp.status_code == 200 && resp.body.ptr) {
+	if (resp->status_code == 200 && resp_body.ptr) {
 		nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
-			     "video_gen: submit response (%d):\n%s", resp.status_code,
-			     resp.body.ptr);
-		cJSON *root = cJSON_Parse(resp.body.ptr);
+			     "video_gen: submit response (%d):\n%s", resp->status_code,
+			     resp_body.ptr);
+		cJSON *root = cJSON_Parse(resp_body.ptr);
 		if (root) {
 			cJSON *id_item = cJSON_GetObjectItem(root, "id");
 			if (cJSON_IsString(id_item) && id_item->valuestring)
@@ -500,16 +562,15 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		} else {
 			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
 				     "video_gen: failed to parse submit response: %s",
-				     resp.body.ptr);
+				     resp_body.ptr);
 		}
 	} else {
 		snprintf(result->error_msg, sizeof(result->error_msg),
-			 "video_gen: submit HTTP %d, body: %s", resp.status_code,
-			 resp.body.ptr ? resp.body.ptr : "(empty)");
+			 "video_gen: submit HTTP %d, body: %s", resp->status_code,
+			 resp_body.ptr ? resp_body.ptr : "(empty)");
 		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR, "%s",
 			     result->error_msg);
 	}
-	http_response_free(&resp);
 
 	if (!task_id[0]) {
 		if (!result->error_msg[0])

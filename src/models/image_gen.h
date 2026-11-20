@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#include <nb/http.h>
+
 #include <limits.h>
 #include <stddef.h>
 
@@ -20,7 +22,7 @@ struct image_result {
 };
 
 /* Classifiers and adapter-name queries return immutable process-lifetime labels. */
-const char *image_gen_ext_from_content_type(const char *headers);
+const char *image_gen_ext_from_headers(nb_http_headers headers);
 const char *image_gen_ext_from_magic(const unsigned char *data, size_t len);
 int image_gen_validate_size(const char *size);
 int image_gen_validate_size_for_model(const struct model *model,

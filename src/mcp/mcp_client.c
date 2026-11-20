@@ -227,10 +227,9 @@ int mcp_test_connection(const struct mcp_server_config *cfg,
 		} else {
 			mcp_test_message(message, message_cap, "Connected");
 		}
-	} else if (cfg->transport == MCP_TRANSPORT_STREAMABLE_HTTP &&
-		   client && http_session_status(&client->session) >= 400) {
-		mcp_test_message(message, message_cap, "HTTP %ld",
-				 http_session_status(&client->session));
+	} else if (cfg->transport == MCP_TRANSPORT_STREAMABLE_HTTP && client &&
+		   client->http_status >= 400) {
+		mcp_test_message(message, message_cap, "HTTP %d", client->http_status);
 	} else {
 		mcp_test_message(message, message_cap, "%s",
 				 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));

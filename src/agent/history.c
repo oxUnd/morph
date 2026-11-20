@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "http/client.h"
+#include "http/request.h"
 
 int agent_history_record_request(struct react_context *ctx, const struct model *model,
 				 const char *system_prompt, const struct chat_message *messages,

@@ -10,7 +10,7 @@ extern "C" {
 #include "event/event.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
-#include "http/client.h"
+#include "http/request.h"
 #include "agent/tools/ask_user.h"
 #include "cJSON.h"
 #include <stdint.h>

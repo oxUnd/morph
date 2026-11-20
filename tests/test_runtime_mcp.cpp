@@ -3,7 +3,7 @@
 
 extern "C" {
 #include "runtime/runtime_internal.h"
-#include "http/client.h"
+#include "http/request.h"
 }
 
 #include <chrono>
@@ -37,7 +37,6 @@ protected:
 		directory = pattern;
 		config_path = directory + "/config.toml";
 		db_path = directory + "/data.db";
-		ASSERT_EQ(http_init(NULL), 0);
 		std::ofstream script(directory + "/server.sh");
 		script << R"SH(
 : > "$2"
@@ -82,7 +81,6 @@ done
 	void TearDown() override
 	{
 		runtime_close(instance);
-		http_cleanup();
 		std::filesystem::remove_all(directory);
 	}
 

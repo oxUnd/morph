@@ -6,14 +6,14 @@ if(NOT TARGET nbase::nbase)
 	set(NB_BUILD_EXAMPLES OFF)
 	set(NB_BUILD_BENCHMARKS OFF)
 	set(NB_BUILD_FUZZERS OFF)
-	# Morph supplies its own HTTP transport and retains its libcurl minimum.
-	set(NB_WITH_HTTP OFF)
+	# Morph uses nbase for HTTP, including streaming and multipart uploads.
+	set(NB_WITH_HTTP ON)
 
 	# Populate the source first so we can exclude the dependency's install rules.
 	FetchContent_Declare(
 		nbase
 		GIT_REPOSITORY https://codeberg.org/oxund/nothing.git
-		GIT_TAG 08b93a3fb613f7acfc30e36e1d72cbf5eb806b42
+		GIT_TAG fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3
 		SOURCE_SUBDIR include
 	)
 	FetchContent_MakeAvailable(nbase)

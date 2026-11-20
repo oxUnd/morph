@@ -16,6 +16,15 @@ extern "C" {
 #include <cstring>
 #include <string>
 
+static nb_status decode_message(nb_sse_callback callback, const char *data, void *ctx)
+{
+	nb_sse_event event{};
+	event.type = NB_SSE_MESSAGE;
+	event.value.message.event = NB_STR_LIT("message");
+	event.value.message.data = nb_str_from_cstr(data);
+	return callback(nullptr, &event, ctx, nullptr);
+}
+
 TEST(TestModelOwnership, MessageCloneOutlivesBorrowedSource)
 {
 	struct chat_message copy NB_CLEANUP(chat_message_cleanup) = {};
@@ -70,7 +79,7 @@ TEST(TestModelOwnership, ChatStreamAndClonePreserveLongToolIdentities)
 		{
 			struct llm_stream_ctx stream NB_CLEANUP(llm_stream_cleanup) = {};
 			llm_stream_init(&stream, nullptr, nullptr);
-			ASSERT_EQ(llm_chat_decode_event("message", event.c_str(), &stream), 0);
+			ASSERT_EQ(decode_message(llm_chat_decode_event, event.c_str(), &stream), 0);
 			ASSERT_EQ(stream.tool_call_count, 1);
 			EXPECT_STREQ(stream.tool_calls[0].id, id.c_str());
 			EXPECT_STREQ(stream.tool_calls[0].name, name.c_str());
@@ -97,18 +106,18 @@ TEST(TestModelOwnership, ResponsesKeepItemAndCallIdsAcrossInterleavedDeltas)
 			"\"type\":\"function_call\",\"id\":\"" + prefix + suffix +
 			"\",\"call_id\":\"call_" + prefix + suffix + "\",\"name\":\"" + name +
 			"\",\"arguments\":\"\"}}";
-		ASSERT_EQ(codec->event("message", event.c_str(), &stream), 0);
+		ASSERT_EQ(decode_message(codec->event, event.c_str(), &stream), 0);
 	}
 	for (int i : {1, 0}) {
 		std::string suffix = std::to_string(i);
 		std::string delta = "{\"type\":\"response.function_call_arguments.delta\","
 			"\"item_id\":\"" + prefix + suffix + "\",\"delta\":\"{}\"}";
-		ASSERT_EQ(codec->event("message", delta.c_str(), &stream), 0);
+		ASSERT_EQ(decode_message(codec->event, delta.c_str(), &stream), 0);
 		std::string done = "{\"type\":\"response.output_item.done\",\"item\":{"
 			"\"type\":\"function_call\",\"id\":\"" + prefix + suffix +
 			"\",\"call_id\":\"call_" + prefix + suffix + "\",\"name\":\"" + name +
 			"\",\"arguments\":\"{}\"}}";
-		ASSERT_EQ(codec->event("message", done.c_str(), &stream), 0);
+		ASSERT_EQ(decode_message(codec->event, done.c_str(), &stream), 0);
 	}
 	ASSERT_EQ(stream.tool_call_count, 2);
 	for (int i = 0; i < 2; i++) {
@@ -118,15 +127,15 @@ TEST(TestModelOwnership, ResponsesKeepItemAndCallIdsAcrossInterleavedDeltas)
 		EXPECT_STREQ(stream.tool_calls[i].name, name.c_str());
 		EXPECT_STREQ(stream.tool_calls[i].arguments, "{}");
 	}
-	EXPECT_EQ(codec->event("message",
-			       "{\"type\":\"response.function_call_arguments.delta\","
-			       "\"item_id\":\"unknown\",\"delta\":\"wrong\"}",
-			       &stream),
+	EXPECT_EQ(decode_message(codec->event,
+				 "{\"type\":\"response.function_call_arguments.delta\","
+				 "\"item_id\":\"unknown\",\"delta\":\"wrong\"}",
+				 &stream),
 		  NB_ERR_PROTOCOL);
-	EXPECT_EQ(codec->event("message",
-			       "{\"type\":\"response.function_call_arguments.delta\","
-			       "\"delta\":\"ambiguous\"}",
-			       &stream),
+	EXPECT_EQ(decode_message(codec->event,
+				 "{\"type\":\"response.function_call_arguments.delta\","
+				 "\"delta\":\"ambiguous\"}",
+				 &stream),
 		  NB_ERR_PROTOCOL);
 }
 
@@ -345,19 +354,19 @@ TEST(TestModelOwnership, ResponsesCompletedInputsReplaceIncompleteDeltaPrefixes)
 		std::string added = "{\"type\":\"response.output_item.added\","
 			"\"item\":{\"id\":\"item\","
 			"\"call_id\":\"call\",\"name\":\"probe\",\"type\":\"" + kind + "\"}}";
-		ASSERT_EQ(codec->event("message", added.c_str(), &stream), 0);
+		ASSERT_EQ(decode_message(codec->event, added.c_str(), &stream), 0);
 		std::string delta = "{\"type\":\"" + delta_type +
 			"\",\"item_id\":\"item\",\"delta\":\"prefix\"}";
-		ASSERT_EQ(codec->event("message", delta.c_str(), &stream), 0);
+		ASSERT_EQ(decode_message(codec->event, delta.c_str(), &stream), 0);
 		std::string done = "{\"type\":\"" + done_type +
 			"\",\"item_id\":\"item\",\"" + field + "\":\"complete input\"}";
-		ASSERT_EQ(codec->event("message", done.c_str(), &stream), 0);
+		ASSERT_EQ(decode_message(codec->event, done.c_str(), &stream), 0);
 		ASSERT_EQ(stream.tool_call_count, 1);
 		EXPECT_STREQ(stream.tool_calls[0].arguments, "complete input");
 		done = "{\"type\":\"response.output_item.done\",\"item\":{\"id\":\"item\","
 			"\"call_id\":\"call\",\"name\":\"probe\",\"type\":\"" + kind +
 			"\",\"" + field + "\":\"authoritative item input\"}}";
-		ASSERT_EQ(codec->event("message", done.c_str(), &stream), 0);
+		ASSERT_EQ(decode_message(codec->event, done.c_str(), &stream), 0);
 		EXPECT_STREQ(stream.tool_calls[0].arguments, "authoritative item input");
 	}
 }

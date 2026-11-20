@@ -92,21 +92,23 @@ int llm_chat_body_create(struct nb_log *logger, const char *model_id, const char
 	return 0;
 }
 
-int llm_chat_decode_event(const char *event, const char *data, void *ud)
+nb_status llm_chat_decode_event(nb_sse *parser, const nb_sse_event *event, void *ud, nb_err *err)
 {
 	struct llm_stream_ctx *ctx = ud;
-	(void)event;
-	if (!data || !*data)
-		return 0;
+	(void)parser;
+	(void)err;
+	nb_str data = event->value.message.data;
+	if (!data.len)
+		return NB_OK;
 
-	if (strcmp(data, "[DONE]") == 0) {
+	if (nb_str_eq_cstr(data, "[DONE]")) {
 		ctx->terminal_received = 1;
 		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_DEBUG,
 			     "llm_chat_decode_event: [DONE]");
 		return 0;
 	}
 
-	cJSON *root = cJSON_Parse(data);
+	cJSON *root = cJSON_ParseWithLength(data.ptr, data.len);
 	if (!root)
 		return 0;
 

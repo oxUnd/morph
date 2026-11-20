@@ -6,7 +6,7 @@ struct nb_log;
 extern "C" {
 #endif
 
-#include "http/client.h"
+#include "http/request.h"
 #include "agent/tool.h"
 #include <stdint.h>
 

@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "http/client.h"
+#include "http/request.h"
 
 static struct chat_message *history_push_message(nb_vec *messages)
 {

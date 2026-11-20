@@ -8,7 +8,7 @@ extern "C" {
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/input/callbacks.h"
-#include "http/client.h"
+#include "http/request.h"
 #include <nb/signal.h>
 }
 

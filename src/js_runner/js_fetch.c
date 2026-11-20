@@ -1,6 +1,6 @@
 #include "js_fetch.h"
 #include "runner_api.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "errors.h"
 #include <nb/vec.h>
 #include <nb/cleanup.h>
@@ -258,7 +258,10 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 		.interrupt_check = fetch_interrupted,
 		.interrupt_user_data = state,
 	};
-	struct http_response response = {0};
+	nb_buf response_body NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_http_client *client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
 	struct fetch_headers headers NB_CLEANUP(fetch_headers_cleanup) = {
 		.ctx = ctx,
 		.object = JS_UNDEFINED,
@@ -293,9 +296,26 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 		JS_FreeCString(ctx, url);
 		return JS_EXCEPTION;
 	}
-	rc = http_get_ex_timeout_limit(&control, url, ((void *)headers.lines.data),
-				       (int)headers.lines.len, 30, runner_capture_limit(ctx),
-				       &response);
+	nb_vec_init(&native_headers, sizeof(nb_http_header));
+	rc = http_headers_parse(&native_headers, (const char *const *)headers.lines.data,
+				headers.lines.len);
+	nb_http_request request;
+
+	http_request_init(&request, "GET", url);
+	request.headers =
+		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
+	request.timeouts.total_ms = 30000;
+	request.max_body_bytes = runner_capture_limit(ctx);
+	if (rc == NB_OK)
+		rc = http_client_open(&control, &client);
+
+	if (rc == NB_OK)
+		rc = http_request_run(&control, client, &request, NULL, &call);
+
+	const nb_http_result *result = nb_http_call_result(call);
+	if (rc == NB_OK)
+		rc = nb_http_call_take_body(call, &response_body, NULL);
+
 	if (rc == NB_ERR_TOO_BIG)
 		value = JS_ThrowRangeError(ctx, "fetch failed: response exceeded the configured "
 					 "capture limit of %zu bytes; use headers with Range "
@@ -305,9 +325,8 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 			ctx, "fetch failed: %s",
 			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	else
-		value = make_fetch_response(ctx, url, response.body.ptr ? response.body.ptr : "",
-					    response.body.len, response.status_code);
-	http_response_free(&response);
+		value = make_fetch_response(ctx, url, response_body.ptr ? response_body.ptr : "",
+					    response_body.len, result->response->status_code);
 	JS_FreeCString(ctx, url);
 	return value;
 }

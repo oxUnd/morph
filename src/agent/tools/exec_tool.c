@@ -2,7 +2,7 @@
 #include "agent/agent_control.h"
 #include "exec_jobs.h"
 #include "agent/tool_runtime.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "agent/environment_context.h"
 #include "agent/tool_context.h"
 #include "config/config.h"

@@ -4,7 +4,7 @@
 #include "models/llm.h"
 #include "adapter.h"
 #include "stream.h"
-#include "http/sse.h"
+#include <nb/sse.h>
 #include "cJSON.h"
 
 #ifdef __cplusplus
@@ -19,7 +19,7 @@ struct llm_codec {
 			const struct chat_message *messages, int count);
 	cJSON *(*tools)(const struct tool_desc *tools, int count);
 	void (*configure)(const struct model *model, cJSON *request, int tool_count);
-	sse_event_cb event;
+	nb_sse_callback event;
 	int requires_terminal_event;
 };
 

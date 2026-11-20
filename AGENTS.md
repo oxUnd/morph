@@ -169,7 +169,7 @@ morph-db → morph-session → morph-persistence → morph-credits
 morph-app-data (runtime/resources), morph-bpe (agent/bpe)
 morph-command-analysis (permission/command_analysis; tree-sitter-bash)
 morph-media (media/image; stb), morph-terminal (terminal/text; nbase)
-morph-http (libcurl, SSE) → morph-models
+morph-http (nbase HTTP policy/cancellation helpers) → morph-models
 morph-event, morph-exec (→ morph-sandbox), morph-render, morph-ipc
 morph-permission (policy, operations, grants; nbase, db, command analysis)
 morph-agent (react, context, compress, tokenizer, tool, plan)
@@ -179,7 +179,7 @@ nothing-tui ← nbase, libuv, GNU Readline, morph-markdown-render
 morph-cli ← nothing-tui, morph-terminal, morph-runtime → morph (executable)
 ```
 Declare the dependencies actually consumed by a target. There is no shared
-`morph-util` facade. Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config,
+`morph-util` facade. Entrypoint: `src/sapi/cli/main.c` → logging, config,
 open runtime, `cli_application_run()`.
 
 Treat nbase as a third-party dependency: include its public headers with
@@ -188,6 +188,8 @@ Treat nbase as a third-party dependency: include its public headers with
 ## Vendor
 `cmake/FetchNbase.cmake` pins a post-v0.1.0 nothing revision and applies the
 executable-path patch on Cygwin. Morph and nothing-tui share `nbase::nbase`.
+Morph enables its HTTP backend (libcurl >= 7.85 with asynchronous DNS) and uses
+`nb/http.h` and `nb/sse.h`.
 The nbase Unicode backend vendors utf8proc 2.12.0 (Unicode 18.0.0). cJSON and
 stb remain dedicated dependencies. TOML uses `nb/toml.h`. The pinned nbase
 main library is MIT licensed; retain its license when distributing it.

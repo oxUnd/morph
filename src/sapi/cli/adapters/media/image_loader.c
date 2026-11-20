@@ -1,6 +1,6 @@
 #include "sapi/cli/adapters/media/image_loader.h"
 #include "stb_image.h"
-#include "http/client.h"
+#include "http/request.h"
 #include <nb/buf.h>
 #include <nb/file.h>
 #include <nb/cleanup.h>
@@ -8,7 +8,6 @@
 #include "media/image.h"
 #include "stb_image_write.h"
 
-#include <curl/curl.h>
 #include <webp/decode.h>
 #include <errno.h>
 #include <limits.h>
@@ -37,34 +36,27 @@ static size_t cli_image_loader_receive(char *data, size_t size, size_t count, vo
 
 static int cli_image_loader_fetch(const char *url, nb_buf *buffer)
 {
-	CURL *curl = curl_easy_init();
-	CURLcode result;
-	long status = 0;
+	nb_http_client *client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_http_request request;
 
-	if (!curl)
-		return NB_ERR_NOMEM;
+	http_request_init(&request, "GET", url);
+	request.redirect = NB_HTTP_REDIRECT_FOLLOW_PUBLIC;
+	request.timeouts.total_ms = 30000;
+	request.max_body_bytes = CLI_IMAGE_LOADER_IMAGE_MAX_BYTES;
+	int rc = http_client_open(NULL, &client);
 
-	http_apply_ca_env(curl);
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
-	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
-	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
-	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cli_image_loader_receive);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, buffer);
-	result = curl_easy_perform(curl);
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-	curl_easy_cleanup(curl);
-	if (result != CURLE_OK)
-		return MORPH_ERR_NETWORK;
+	if (rc == NB_OK)
+		rc = http_request_run(NULL, client, &request, NULL, &call);
 
-	if (status < 200 || status >= 300)
+	if (rc != NB_OK)
+		return rc;
+
+	const nb_http_result *result = nb_http_call_result(call);
+	if (!result->ok)
 		return MORPH_ERR_API;
 
-	return 0;
+	return nb_http_call_take_body(call, buffer, NULL);
 }
 
 static int cli_image_loader_read(const char *url, nb_buf *buffer)

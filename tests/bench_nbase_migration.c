@@ -1,5 +1,5 @@
 #include "models/llm/stream.h"
-#include "http/sse.h"
+#include <nb/sse.h>
 #include <nb/cleanup.h>
 #include <nb/file.h>
 #include <nb/map.h>
@@ -104,31 +104,41 @@ static nb_status bench_model_deltas(struct bench_result *result)
 	bench_end(result);
 	return NB_OK;
 }
-static int bench_sse_event(const char *event, const char *data, void *opaque)
+static nb_status bench_sse_event(nb_sse *parser, const nb_sse_event *event, void *opaque,
+				 nb_err *err)
 {
 	uint64_t *received = opaque;
-	if (strcmp(event, "tool") != 0 || strcmp(data, "{\"delta\":\"0123456789\"}") != 0)
+	(void)parser;
+	(void)err;
+	if (!nb_str_eq_cstr(event->value.message.event, "tool") ||
+	    !nb_str_eq_cstr(event->value.message.data, "{\"delta\":\"0123456789\"}"))
 		return NB_ERR_STATE;
 	(*received)++;
 	return NB_OK;
 }
-static void bench_sse_cleanup(struct sse_parser *parser)
+static void bench_sse_cleanup(nb_sse **parser)
 {
-	sse_parser_free(parser);
+	nb_sse_free(*parser);
 }
 static nb_status bench_sse_chunks(struct bench_result *result)
 {
-	struct sse_parser parser NB_CLEANUP(bench_sse_cleanup) = {0};
+	nb_sse *parser NB_CLEANUP(bench_sse_cleanup) = NULL;
 	const char *frame = "event: tool\r\ndata: {\"delta\":\"0123456789\"}\r\n\r\n";
 	const size_t frame_bytes = strlen(frame);
 	const uint64_t frames = 200000;
 	uint64_t received = 0;
 	bench_begin(result, frames, frames * frame_bytes);
-	sse_parser_init(&parser, bench_sse_event, &received);
+	int rc = nb_sse_new(NULL, &parser, NULL);
+	if (rc == NB_OK)
+		rc = nb_sse_on(parser, NB_SSE_MESSAGE, bench_sse_event, &received, NULL, NULL);
+
+	if (rc != NB_OK)
+		return rc;
+
 	for (uint64_t i = 0; i < frames; i++) {
 		for (size_t at = 0; at < frame_bytes; at += 17) {
 			size_t size = frame_bytes - at < 17 ? frame_bytes - at : 17;
-			int status = sse_parser_feed(&parser, frame + at, size);
+			int status = nb_sse_feed(parser, frame + at, size, NULL);
 			if (status != NB_OK)
 				return (nb_status)status;
 		}

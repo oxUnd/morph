@@ -234,7 +234,8 @@ static int responses_terminal(struct llm_stream_ctx *ctx, cJSON *root, const cha
 	return llm_stream_string_copy(&ctx->terminal_detail, detail);
 }
 
-static int llm_responses_sse_event_cb(const char *event, const char *data, void *user_data)
+static nb_status llm_responses_sse_event_cb(nb_sse *parser, const nb_sse_event *event,
+					    void *user_data, nb_err *err)
 {
 	struct llm_stream_ctx *ctx = user_data;
 	cJSON *root;
@@ -242,12 +243,14 @@ static int llm_responses_sse_event_cb(const char *event, const char *data, void 
 	const char *event_type;
 	int rc = 0;
 
-	(void)event;
-	if (!data || !*data || strcmp(data, "[DONE]") == 0)
+	(void)parser;
+	(void)err;
+	nb_str data = event->value.message.data;
+	if (!data.len || nb_str_eq_cstr(data, "[DONE]"))
 		return 0;
 	if (ctx->terminal_received)
 		return 0;
-	root = cJSON_Parse(data);
+	root = cJSON_ParseWithLength(data.ptr, data.len);
 	if (!root)
 		return 0;
 	type = cJSON_GetObjectItem(root, "type");

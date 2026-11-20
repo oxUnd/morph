@@ -13,7 +13,7 @@ static int header_needs_encoding(const char *value)
 {
 	size_t length = strlen(value);
 
-	/* libcurl treats a plain empty field as header removal. Encode it explicitly. */
+	/* Preserve an empty value explicitly in the protocol wire representation. */
 	if (length == 0)
 		return 1;
 	if (length && (value[0] == ' ' || value[0] == '\t' ||

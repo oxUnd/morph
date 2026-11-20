@@ -96,7 +96,7 @@ SDK; their internal layouts are not a distributable ABI.
 
 nbase is an independent library from the `nothing` repository. Morph pins it
 in `cmake/FetchNbase.cmake`, currently to a post-v0.1.0 revision at commit
-`08b93a3fb613f7acfc30e36e1d72cbf5eb806b42`. Match the headers and ABI to the
+`fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3`. Match the headers and ABI to the
 Morph executable you intend to load into; do not substitute the latest upstream
 headers for an older host.
 
@@ -135,9 +135,9 @@ rg -n 'nb_buf_detach' build/_deps/nbase-src/docs build/_deps/nbase-src/tests
 
 The pinned sources are also available online:
 
-- [Public headers](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42/include/nb)
-- [API ownership conventions](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42/docs/api-conventions.md)
-- [Examples](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42/examples)
+- [Public headers](https://codeberg.org/oxund/nothing/src/commit/fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3/include/nb)
+- [API ownership conventions](https://codeberg.org/oxund/nothing/src/commit/fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3/docs/api-conventions.md)
+- [Examples](https://codeberg.org/oxund/nothing/src/commit/fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3/examples)
 
 Use public includes such as `#include <nb/buf.h>`. The compiler's include search
 path supplies the directory containing `nb/`; do not write build/vendor paths

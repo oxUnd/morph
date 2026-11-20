@@ -1289,51 +1289,61 @@ TEST(ImageRender, KittyPngProtocol) {
 }
 
 TEST(ImageGenExtContentType, Png) {
-	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n";
-	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "png");
+	nb_http_header header = {NB_STR_LIT("Content-Type"), NB_STR_LIT("image/png")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_STREQ(image_gen_ext_from_headers(headers), "png");
 }
 
 TEST(ImageGenExtContentType, Jpeg) {
-	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n\r\n";
-	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "jpg");
+	nb_http_header header = {NB_STR_LIT("Content-Type"), NB_STR_LIT("image/jpeg")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_STREQ(image_gen_ext_from_headers(headers), "jpg");
 }
 
 TEST(ImageGenExtContentType, Webp) {
-	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/webp\r\n\r\n";
-	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "webp");
+	nb_http_header header = {NB_STR_LIT("Content-Type"), NB_STR_LIT("image/webp")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_STREQ(image_gen_ext_from_headers(headers), "webp");
 }
 
 TEST(ImageGenExtContentType, Gif) {
-	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\n\r\n";
-	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "gif");
+	nb_http_header header = {NB_STR_LIT("Content-Type"), NB_STR_LIT("image/gif")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_STREQ(image_gen_ext_from_headers(headers), "gif");
 }
 
 TEST(ImageGenExtContentType, Bmp) {
-	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/bmp\r\n\r\n";
-	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "bmp");
+	nb_http_header header = {NB_STR_LIT("Content-Type"), NB_STR_LIT("image/bmp")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_STREQ(image_gen_ext_from_headers(headers), "bmp");
 }
 
 TEST(ImageGenExtContentType, CaseInsensitive) {
-	const char *headers = "HTTP/1.1 200 OK\r\nCONTENT-TYPE: IMAGE/JPEG\r\n\r\n";
-	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "jpg");
+	nb_http_header header = {NB_STR_LIT("CONTENT-TYPE"), NB_STR_LIT("IMAGE/JPEG")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_STREQ(image_gen_ext_from_headers(headers), "jpg");
 }
 
 TEST(ImageGenExtContentType, WithCharset) {
-	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/png; charset=utf-8\r\n\r\n";
-	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "png");
+	nb_http_header header = {NB_STR_LIT("Content-Type"),
+				 NB_STR_LIT("image/png; charset=utf-8")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_STREQ(image_gen_ext_from_headers(headers), "png");
 }
 
 TEST(ImageGenExtContentType, UnknownType) {
-	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n";
-	EXPECT_EQ(image_gen_ext_from_content_type(headers), nullptr);
+	nb_http_header header = {NB_STR_LIT("Content-Type"),
+				 NB_STR_LIT("application/octet-stream")};
+	nb_http_headers headers = {&header, 1};
+	EXPECT_EQ(image_gen_ext_from_headers(headers), nullptr);
 }
 
 TEST(ImageGenExtContentType, NullHeaders) {
-	EXPECT_EQ(image_gen_ext_from_content_type(NULL), nullptr);
+	EXPECT_EQ(image_gen_ext_from_headers({nullptr, 0}), nullptr);
 }
 
 TEST(ImageGenExtContentType, EmptyHeaders) {
-	EXPECT_EQ(image_gen_ext_from_content_type(""), nullptr);
+	EXPECT_EQ(image_gen_ext_from_headers({nullptr, 0}), nullptr);
 }
 
 TEST(ImageGenExtMagic, Png) {

@@ -1,6 +1,6 @@
 #include "agent/history_internal.h"
 #include "models/llm/stream.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "sapi/cli/adapters/media/asset.h"
 #include <nb/cleanup.h>
 #include <nb/mem.h>
@@ -93,21 +93,32 @@ static int bench_streams(struct bench_allocator *stats)
 
 static int bench_http(struct bench_allocator *stats)
 {
-	struct http_session session NB_CLEANUP(http_session_cleanup) = {0};
-	if (!nb_buf_reserve(&session.resp_body, 16u * 1024u * 1024u) ||
-	    !nb_buf_append_cstr(&session.resp_body, "response"))
-		return NB_ERR_NOMEM;
+	nb_http_client *client NB_CLEANUP(http_client_cleanup) = NULL;
+	nb_http_call *call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_buf payload NB_CLEANUP(nb_buf_cleanup) = {0};
+	char chunk[BUFSIZ] = {0};
+	for (size_t bytes = 0; bytes < 16u * 1024u * 1024u; bytes += sizeof(chunk)) {
+		if (!nb_buf_append(&payload, chunk, sizeof(chunk)))
+			return NB_ERR_NOMEM;
+	}
 
+	int rc = http_client_open(NULL, &client);
+	nb_http_request request;
+	http_request_init(&request, "POST", "http://127.0.0.1:1/");
+	request.body = nb_buf_str(&payload);
+	if (rc == NB_OK)
+		rc = nb_http_client_send(client, &request, NULL, &call, NULL);
+
+	if (rc != NB_OK)
+		return rc;
+
+	nb_buf_cleanup(&payload);
 	size_t before = stats->live;
-	http_session_reset(&session);
-	printf("http_reset_after_16m,before_native_bytes=%zu,after_native_bytes=%zu\n",
-	       before, stats->live);
-	if (!nb_buf_empty(&session.resp_body) ||
-	    !nb_buf_append_cstr(&session.resp_body, "next") ||
-	    strcmp(nb_buf_cstr(&session.resp_body), "next"))
-		return NB_ERR_STATE;
 
-	return NB_OK;
+	http_call_cleanup(&call);
+	printf("http_call_release_after_16m,before_native_bytes=%zu,after_native_bytes=%zu\n",
+	       before, stats->live);
+	return stats->live < before && nb_http_client_pending(client) == 0 ? NB_OK : NB_ERR_STATE;
 }
 
 static void bench_asset_cleanup(struct nt_media_asset **asset)

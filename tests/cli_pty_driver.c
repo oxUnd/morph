@@ -7,7 +7,7 @@
 #include <nothing/tui/terminal/size.h>
 /* Exercise the real CLI with an isolated database and a local model server. */
 #include "sapi/cli/application.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
@@ -191,8 +191,6 @@ int main(int argc, char **argv)
 		if (rc != NB_OK)
 			return 1;
 	}
-
-	http_init(NULL);
 	rc = cli_application_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL, NULL,
 				  CLI_PRESENT_INTERACTIVE);
 	if (rc == 0) {
@@ -201,7 +199,5 @@ int main(int argc, char **argv)
 		(void)nb_signal_listener_stop(&recap_clock, NULL);
 		cli_application_shutdown(&ctx);
 	}
-
-	http_cleanup();
 	return rc == 0 ? 0 : 1;
 }

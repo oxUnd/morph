@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "http/client.h"
+#include "http/request.h"
 
 #define HISTORY_DEFAULT_TOOL_RESULT_MAX_TOKENS 8000
 

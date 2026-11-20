@@ -1,11 +1,13 @@
+#include "http/request.h"
 #include <gtest/gtest.h>
-#include <nb/err.h>
-#include "http/client.h"
-#include <nb/cleanup.h>
-#include <cerrno>
+#include <nb/file.h>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
+#include <cstdlib>
+#include <string>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <thread>
@@ -13,359 +15,301 @@
 
 class HttpTest : public ::testing::Test {
 protected:
+  nb_http_client *client = nullptr;
+  nb_http_call *call = nullptr;
+
   void SetUp() override
   {
-	  http_init(NULL);
+	  ASSERT_EQ(http_client_open(nullptr, &client), NB_OK);
   }
-	void TearDown() override { http_cleanup(); }
+  void TearDown() override
+  {
+	  nb_http_call_free(call);
+	  nb_http_client_free(client);
+  }
 };
 
-TEST_F(HttpTest, InitCleanup) {
-	EXPECT_NO_FATAL_FAILURE(http_cleanup());
-	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
+TEST_F(HttpTest, DefaultsPreserveApplicationPolicy)
+{
+	nb_http_request request;
+	http_request_init(&request, "GET", "http://localhost/");
+	EXPECT_EQ(request.redirect, NB_HTTP_REDIRECT_MANUAL);
+	EXPECT_EQ(request.timeouts.connect_ms, 10000);
+	EXPECT_EQ(request.timeouts.total_ms, 30000);
+	EXPECT_EQ(request.timeouts.response_ms, 0);
+	EXPECT_EQ(request.timeouts.idle_ms, 0);
+	EXPECT_EQ(request.max_body_bytes, 0u);
 }
 
-TEST_F(HttpTest, GetInvalid) {
-	struct http_response resp NB_CLEANUP(http_response_free) = {};
-	int rc = http_get(NULL, "http://127.0.0.1:1/nonexistent", &resp);
-	EXPECT_NE(rc, 0);
+TEST_F(HttpTest, RejectsInvalidRequestsWithoutQueueing)
+{
+	nb_http_request request;
+	http_request_init(&request, "GET", nullptr);
+	EXPECT_EQ(http_request_run(nullptr, client, &request, nullptr, &call), NB_ERR_INVAL);
+	EXPECT_EQ(call, nullptr);
+	EXPECT_EQ(nb_http_client_pending(client), 0u);
+	http_request_init(&request, "GET", "file:///etc/passwd");
+	EXPECT_EQ(http_request_run(nullptr, client, &request, nullptr, &call), NB_ERR_INVAL);
+	EXPECT_EQ(call, nullptr);
 }
 
-TEST_F(HttpTest, ResponseFree) {
-	struct http_response resp = {0};
-	EXPECT_NO_FATAL_FAILURE(http_response_free(&resp));
+TEST_F(HttpTest, PreservesOccupiedCallWithoutStartingTransfer)
+{
+	nb_http_request request;
+	http_request_init(&request, "GET", "http://127.0.0.1:1/");
+	ASSERT_EQ(nb_http_client_send(client, &request, nullptr, &call, nullptr), NB_OK);
+	auto *saved = call;
+	EXPECT_EQ(http_request_run(nullptr, client, &request, nullptr, &call), NB_ERR_EXISTS);
+	EXPECT_EQ(call, saved);
+	EXPECT_EQ(nb_http_call_get_state(call), NB_HTTP_CALL_QUEUED);
 }
 
-TEST_F(HttpTest, ResponseFreeNull) {
-	EXPECT_NO_FATAL_FAILURE(http_response_free(nullptr));
+TEST_F(HttpTest, ConfiguredHeadersKeepDuplicateNamesAndRejectInjection)
+{
+	nb_vec headers NB_CLEANUP(nb_vec_cleanup) = {};
+	nb_vec_init(&headers, sizeof(nb_http_header));
+	const char *lines[] = {"Authorization: Bearer token", "X-Test: first", "x-test: second"};
+	ASSERT_EQ(http_headers_parse(&headers, lines, 3), NB_OK);
+	auto *values = reinterpret_cast<nb_http_header *>(headers.data);
+	EXPECT_TRUE(nb_str_eq_cstr(values[0].name, "Authorization"));
+	EXPECT_TRUE(nb_str_eq_cstr(values[0].value, "Bearer token"));
+	EXPECT_TRUE(nb_str_eq_cstr(values[2].value, "second"));
+	nb_http_request request;
+	http_request_init(&request, "GET", "http://127.0.0.1:1/");
+	values[0].value = NB_STR_LIT("token\r\nInjected: bad");
+	request.headers = {values, headers.len};
+	EXPECT_EQ(http_request_run(nullptr, client, &request, nullptr, &call), NB_ERR_INVAL);
+	EXPECT_EQ(call, nullptr);
 }
 
-TEST_F(HttpTest, GetNullUrl) {
-	struct http_response resp NB_CLEANUP(http_response_free) = {};
-	EXPECT_NE(http_get(NULL, nullptr, &resp), 0);
-}
+class SilentPeer
+{
+      public:
+	int listener = -1;
+	unsigned port = 0;
+	std::thread worker;
+	std::mutex mutex;
+	std::condition_variable condition;
+	bool finished = false;
 
-TEST_F(HttpTest, PostNullUrl) {
-	struct http_response resp NB_CLEANUP(http_response_free) = {};
-	EXPECT_NE(http_post(NULL, nullptr, "", 0, "", &resp), 0);
-}
+	bool open()
+	{
+		listener = socket(AF_INET, SOCK_STREAM, 0);
+		if (listener < 0)
+			return false;
 
-TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
-	int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-	ASSERT_GE(server_fd, 0);
-	struct sockaddr_in addr = {};
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	addr.sin_port = 0;
-	ASSERT_EQ(bind(server_fd, reinterpret_cast<struct sockaddr *>(&addr),
-		       sizeof(addr)), 0);
-	socklen_t addr_len = sizeof(addr);
-	ASSERT_EQ(getsockname(server_fd,
-			      reinterpret_cast<struct sockaddr *>(&addr),
-			      &addr_len), 0);
-	ASSERT_EQ(listen(server_fd, 1), 0);
-
-	std::thread server([server_fd]() {
-		int client_fd = accept(server_fd, nullptr, nullptr);
-		if (client_fd >= 0) {
-			std::this_thread::sleep_for(std::chrono::seconds(2));
-			close(client_fd);
-		}
-		close(server_fd);
-	});
-	char url[128];
-	snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
-		 static_cast<unsigned>(ntohs(addr.sin_port)));
-	struct http_response resp NB_CLEANUP(http_response_free) = {};
-	int rc = http_post_ex_timeout(NULL, url, "{}", 2, "application/json", nullptr, 0, 1, &resp);
-
-	EXPECT_EQ(rc, NB_ERR_TIMEOUT);
-	http_response_free(&resp);
-	server.join();
-}
-
-TEST_F(HttpTest, DoubleInit) {
-	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
-	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
-}
-
-TEST_F(HttpTest, CancellationInterruptsSilentPeersPromptly) {
-	for (int kind = 0; kind < 4; kind++) {
-		SCOPED_TRACE(kind);
-		int listener = socket(AF_INET, SOCK_STREAM, 0);
-		ASSERT_GE(listener, 0);
 		sockaddr_in address{};
 		address.sin_family = AF_INET;
 		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-		ASSERT_EQ(bind(listener, reinterpret_cast<sockaddr *>(&address),
-			sizeof(address)), 0);
-		socklen_t length = sizeof(address);
-		ASSERT_EQ(getsockname(listener, reinterpret_cast<sockaddr *>(&address),
-			&length), 0);
-		ASSERT_EQ(listen(listener, 1), 0);
-		std::mutex mutex;
-		std::condition_variable condition;
-		bool finished = false;
-		std::thread server([&] {
+		socklen_t size = sizeof(address);
+		if (bind(listener, reinterpret_cast<sockaddr *>(&address), size) ||
+		    getsockname(listener, reinterpret_cast<sockaddr *>(&address), &size) ||
+		    listen(listener, 1))
+			return false;
+
+		port = ntohs(address.sin_port);
+		worker = std::thread([this] {
 			int peer = accept(listener, nullptr, nullptr);
 			std::unique_lock<std::mutex> lock(mutex);
-			condition.wait_for(lock, std::chrono::seconds(3), [&] { return finished; });
-			if (peer >= 0) close(peer);
-			close(listener);
+			condition.wait_for(lock, std::chrono::seconds(4),
+					   [this] { return finished; });
+			if (peer >= 0)
+				close(peer);
 		});
-		nb_cancel token{};
-		http_control control{};
-		control.cancel_token = &token;
-		std::thread canceller([&] {
-			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-			nb_cancel_request(&token);
-		});
-		char url[128];
-		snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
-			static_cast<unsigned>(ntohs(address.sin_port)));
-		http_response response{};
-		http_session session{};
-		EXPECT_EQ(http_session_init(nullptr, &session), 0);
-		http_multipart_part part{HTTP_MULTIPART_TEXT, "text", "test", nullptr};
-		auto start = std::chrono::steady_clock::now();
-		int rc;
-		if (kind == 0)
-			rc = http_post(&control, url, "{}", 2, "application/json", &response);
-		else if (kind == 1)
-			rc = http_post_sse(&control, url, "{}", 2, "application/json",
-				[](const char *, size_t, void *) { return 0; }, nullptr);
-		else if (kind == 2)
-			rc = http_post_multipart_ex(&control, url, &part, 1,
-				nullptr, 0, 3, &response);
-		else
-			rc = http_session_post(&control, &session, url, "{}", 2,
-				"application/json", nullptr, 0, 3);
-		auto elapsed = std::chrono::steady_clock::now() - start;
-		canceller.join();
+		return true;
+	}
+
+	~SilentPeer()
+	{
 		{
 			std::lock_guard<std::mutex> lock(mutex);
 			finished = true;
 		}
 		condition.notify_all();
-		server.join();
-		http_response_free(&response);
-		http_session_cleanup(&session);
-		EXPECT_EQ(rc, NB_ERR_CANCELLED);
-		EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+		if (listener >= 0)
+			shutdown(listener, SHUT_RDWR);
+
+		if (worker.joinable())
+			worker.join();
+
+		if (listener >= 0)
+			close(listener);
+	}
+};
+
+TEST_F(HttpTest, CancellationInterruptsSilentPeersPromptly)
+{
+	for (int kind = 0; kind < 3; kind++) {
+		for (int signal = 0; signal < 3; signal++) {
+			SCOPED_TRACE(kind);
+			SCOPED_TRACE(signal);
+			SilentPeer server;
+			ASSERT_TRUE(server.open());
+			nb_cancel token{};
+			nb_atomic_int flag = 0;
+			std::atomic<bool> interrupted{false};
+			http_control control{};
+			control.cancel_token = &token;
+			control.cancel_flag = &flag;
+			control.interrupt_user_data = &interrupted;
+			control.interrupt_check = [](void *ctx) -> int {
+				return static_cast<std::atomic<bool> *>(ctx)->load();
+			};
+			char url[128];
+			snprintf(url, sizeof(url), "http://127.0.0.1:%u/", server.port);
+			nb_http_request request;
+			http_request_init(&request, "POST", url);
+			nb_http_part part{};
+			part.name = "text";
+			part.data = NB_STR_LIT("test");
+			if (kind == 2) {
+				request.parts = &part;
+				request.part_count = 1;
+			} else {
+				request.body = NB_STR_LIT("{}");
+			}
+
+			nb_http_handler handler{};
+			if (kind == 1)
+				handler.on_data = [](nb_http_call *, nb_str, void *, nb_err *) {
+					return NB_OK;
+				};
+
+			std::thread canceller([&] {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				if (signal == 0)
+					nb_cancel_request(&token);
+				else if (signal == 1)
+					__atomic_store_n(&flag, 1, __ATOMIC_RELAXED);
+				else
+					interrupted.store(true);
+			});
+			auto start = std::chrono::steady_clock::now();
+			int rc = http_request_run(&control, client, &request, &handler, &call);
+			auto elapsed = std::chrono::steady_clock::now() - start;
+			canceller.join();
+			EXPECT_EQ(rc, NB_ERR_CANCELLED);
+			EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+			nb_http_call_free(call);
+			call = nullptr;
+		}
 	}
 }
 
-TEST(CancelTokenTest, ResetCancelAndQuery) {
-	struct nb_cancel token;
-	nb_cancel_reset(&token);
-	EXPECT_EQ(nb_cancel_requested(&token), 0);
-	nb_cancel_request(&token);
-	EXPECT_EQ(nb_cancel_requested(&token), 1);
-	nb_cancel_reset(&token);
-	EXPECT_EQ(nb_cancel_requested(&token), 0);
+TEST_F(HttpTest, BufferedStreamingAndMultipartPreserveTimeoutErrors)
+{
+	for (int kind = 0; kind < 3; kind++) {
+		SCOPED_TRACE(kind);
+		SilentPeer server;
+		ASSERT_TRUE(server.open());
+		char url[128];
+		snprintf(url, sizeof(url), "http://127.0.0.1:%u/", server.port);
+		nb_http_request request;
+		http_request_init(&request, "POST", url);
+		request.timeouts.total_ms = 100;
+		nb_http_part part{};
+		part.name = "text";
+		part.data = NB_STR_LIT("test");
+		if (kind == 2) {
+			request.parts = &part;
+			request.part_count = 1;
+		} else {
+			request.body = NB_STR_LIT("{}");
+		}
+
+		nb_http_handler handler{};
+		if (kind == 1)
+			handler.on_data = [](nb_http_call *, nb_str, void *, nb_err *) {
+				return NB_OK;
+			};
+
+		EXPECT_EQ(http_request_run(nullptr, client, &request, &handler, &call),
+			  NB_ERR_TIMEOUT);
+		nb_http_call_free(call);
+		call = nullptr;
+	}
 }
 
-TEST(CancelTokenTest, RetryWaitStopsWhenCancelled) {
-	struct nb_cancel token;
-	nb_cancel_reset(&token);
-	struct http_control control{};
+TEST_F(HttpTest, AlreadyCancelledNeverStartsTransfer)
+{
+	nb_cancel token{};
+	nb_cancel_request(&token);
+	http_control control{};
 	control.cancel_token = &token;
-	std::thread canceller([&token]() {
+	nb_http_request request;
+	http_request_init(&request, "GET", "http://127.0.0.1:1/");
+	EXPECT_EQ(http_request_run(&control, client, &request, nullptr, &call), NB_ERR_CANCELLED);
+	EXPECT_EQ(call, nullptr);
+	EXPECT_EQ(nb_http_client_pending(client), 0u);
+}
+
+TEST(CancelTokenTest, ResetCancelAndQuery)
+{
+	nb_cancel token{};
+	EXPECT_FALSE(nb_cancel_requested(&token));
+	nb_cancel_request(&token);
+	EXPECT_TRUE(nb_cancel_requested(&token));
+	nb_cancel_reset(&token);
+	EXPECT_FALSE(nb_cancel_requested(&token));
+}
+
+TEST(CancelTokenTest, RetryWaitStopsWhenCancelled)
+{
+	nb_cancel token{};
+	http_control control{};
+	control.cancel_token = &token;
+	std::thread canceller([&] {
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		nb_cancel_request(&token);
 	});
 	auto started = std::chrono::steady_clock::now();
 	EXPECT_EQ(http_wait_cancelable(&control, 5000), NB_ERR_CANCELLED);
-	auto elapsed = std::chrono::steady_clock::now() - started;
-	EXPECT_LT(elapsed, std::chrono::seconds(1));
+	EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
 	canceller.join();
 }
 
-/* ----- http_session tests ----- */
+class SavedHttpEnvironment
+{
+      public:
+	const char *name;
+	std::optional<std::string> value;
 
-class HttpSessionTest : public ::testing::Test {
-protected:
-	struct http_session session;
-
-	void SetUp() override {
-		http_init(NULL);
-		memset(&session, 0, sizeof(session));
+	explicit SavedHttpEnvironment(const char *key) : name(key)
+	{
+		if (const char *current = getenv(name))
+			value = current;
 	}
 
-	void TearDown() override {
-		http_session_cleanup(&session);
-		http_cleanup();
+	~SavedHttpEnvironment()
+	{
+		if (value)
+			setenv(name, value->c_str(), 1);
+		else
+			unsetenv(name);
 	}
 };
 
-TEST_F(HttpSessionTest, InitCleanup) {
-	EXPECT_EQ(http_session_init(NULL, &session), 0);
-	EXPECT_NE(session.curl, nullptr);
-	EXPECT_EQ(session.initialized, 1);
-	http_session_cleanup(&session);
-	EXPECT_EQ(session.curl, nullptr);
-	EXPECT_EQ(session.initialized, 0);
-}
-
-TEST_F(HttpSessionTest, InitNull) {
-	EXPECT_NE(http_session_init(NULL, nullptr), 0);
-}
-
-TEST_F(HttpSessionTest, CleanupNull) {
-	EXPECT_NO_FATAL_FAILURE(http_session_cleanup(nullptr));
-}
-
-TEST_F(HttpSessionTest, ResetClearsBuffers) {
-	ASSERT_EQ(http_session_init(NULL, &session), 0);
-	nb_buf_append_cstr(&session.resp_body, "hello");
-	nb_buf_append_cstr(&session.resp_headers, "X-Test: hi\r\n");
-	session.status_code = 200;
-	http_session_reset(&session);
-	EXPECT_EQ(session.resp_body.len, 0);
-	EXPECT_EQ(session.resp_headers.len, 0);
-	EXPECT_EQ(session.status_code, 0);
-}
-
-TEST_F(HttpSessionTest, ResetReusesSmallResponsesAndReleasesExceptionalCapacity)
+TEST_F(HttpTest, CertificateEnvironmentPriorityIsPreserved)
 {
-	ASSERT_EQ(http_session_init(NULL, &session), 0);
-	ASSERT_TRUE(nb_buf_append_cstr(&session.resp_body, "small response"));
-	char *body = session.resp_body.ptr;
-	char *headers = session.resp_headers.ptr;
-	http_session_reset(&session);
-	EXPECT_EQ(session.resp_body.ptr, body);
-	EXPECT_EQ(session.resp_headers.ptr, headers);
-	ASSERT_TRUE(nb_buf_reserve(&session.resp_body, 8u * 1024u * 1024u));
-	ASSERT_TRUE(nb_buf_reserve(&session.resp_headers, 128u * 1024u));
-	ASSERT_TRUE(nb_buf_append_cstr(&session.resp_body, "large response"));
-	session.status_code = 200;
-	http_session_reset(&session);
-	EXPECT_EQ(session.resp_body.cap, 0u);
-	EXPECT_EQ(session.resp_headers.cap, 0u);
-	EXPECT_EQ(session.status_code, 0);
-	size_t size = 123;
-	EXPECT_STREQ(http_session_body_borrow(&session, &size), "");
-	EXPECT_EQ(size, 0u);
-	ASSERT_TRUE(nb_buf_append_cstr(&session.resp_body, "next response"));
-	EXPECT_STREQ(http_session_body_borrow(&session, &size), "next response");
-	EXPECT_EQ(size, strlen("next response"));
-}
+	SavedHttpEnvironment curl_ca("CURL_CA_BUNDLE");
+	SavedHttpEnvironment ssl_ca("SSL_CERT_FILE");
+	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(nb_file_temp(&path, nullptr), NB_OK);
+	nb_http_client *configured NB_CLEANUP(http_client_cleanup) = nullptr;
+	const char *missing = "/morph-missing-test-ca-file";
 
-TEST_F(HttpSessionTest, PostInvalidUrl) {
-	ASSERT_EQ(http_session_init(NULL, &session), 0);
-	int rc = http_session_post(NULL, &session, "http://127.0.0.1:1/nonexistent", "{}", 2,
-				   "application/json", nullptr, 0, 5);
-	EXPECT_NE(rc, 0);
-}
-
-TEST_F(HttpSessionTest, PostNullUrl) {
-	ASSERT_EQ(http_session_init(NULL, &session), 0);
-	EXPECT_NE(http_session_post(NULL, &session, nullptr, "{}", 2, "application/json", nullptr,
-				    0, 30),
-		  0);
-}
-
-TEST_F(HttpSessionTest, SessionNullArgs) {
-	EXPECT_NE(http_session_post(NULL, nullptr, "http://localhost/", "{}", 2, "application/json",
-				    nullptr, 0, 30),
-		  0);
-}
-
-TEST_F(HttpSessionTest, BodyAndStatus) {
-	ASSERT_EQ(http_session_init(NULL, &session), 0);
-	const char *body = http_session_body_borrow(&session, nullptr);
-	ASSERT_NE(body, nullptr);
-	EXPECT_EQ(body[0], '\0');
-	EXPECT_EQ(http_session_status(&session), 0);
-	EXPECT_EQ(http_session_status(nullptr), 0);
-}
-
-/* ----- http_response with nb_buf ----- */
-
-TEST_F(HttpTest, ResponseFreeWithMorphBuf) {
-	struct http_response resp NB_CLEANUP(http_response_free) = {};
-	EXPECT_EQ(resp.body.ptr, nullptr);
-	EXPECT_EQ(resp.headers.ptr, nullptr);
-	EXPECT_NO_FATAL_FAILURE(http_response_free(&resp));
-}
-
-TEST_F(HttpTest, SessionAndMultipartPreserveTimeoutErrors)
-{
-	for (bool persistent : {false, true}) {
-		SCOPED_TRACE(persistent);
-		int listener = socket(AF_INET, SOCK_STREAM, 0);
-		ASSERT_GE(listener, 0);
-		sockaddr_in address{};
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-		ASSERT_EQ(bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)),
-			  0);
-		socklen_t length = sizeof(address);
-		ASSERT_EQ(getsockname(listener, reinterpret_cast<sockaddr *>(&address), &length),
-			  0);
-		ASSERT_EQ(listen(listener, 1), 0);
-		std::mutex mutex;
-		std::condition_variable condition;
-		bool finished = false;
-		std::thread server([&] {
-			int peer = accept(listener, nullptr, nullptr);
-			std::unique_lock<std::mutex> lock(mutex);
-			condition.wait_for(lock, std::chrono::seconds(3), [&] { return finished; });
-			if (peer >= 0)
-				close(peer);
-			close(listener);
-		});
-		char url[128];
-		snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
-			 static_cast<unsigned>(ntohs(address.sin_port)));
-		http_response response{};
-		http_session session{};
-		http_multipart_part part{HTTP_MULTIPART_TEXT, "text", "test", nullptr};
-		int rc;
-
-		EXPECT_EQ(http_session_init(nullptr, &session), 0);
-		if (persistent)
-			rc = http_session_post(nullptr, &session, url, "{}", 2, "application/json",
-					       nullptr, 0, 1);
-		else
-			rc = http_post_multipart_ex(nullptr, url, &part, 1, nullptr, 0, 1,
-						    &response);
-		{
-			std::lock_guard<std::mutex> lock(mutex);
-			finished = true;
-		}
-		condition.notify_all();
-		server.join();
-		http_response_free(&response);
-		http_session_cleanup(&session);
-		EXPECT_EQ(rc, NB_ERR_TIMEOUT);
-	}
-}
-
-TEST_F(HttpTest, RequestsPreserveOccupiedResponseWithoutStartingTransfer)
-{
-	struct http_response response = {};
-	ASSERT_EQ((nb_buf_init(&response.body),
-		   nb_buf_reserve(&response.body, 16) ? 0 : NB_ERR_NOMEM),
-		  0);
-	ASSERT_EQ((nb_buf_append_cstr(&response.body, "owned") ? 0 : NB_ERR_NOMEM), 0);
-	response.status_code = 201;
-	char *saved = response.body.ptr;
-	const char *url = "http://127.0.0.1:1/";
-	EXPECT_EQ(http_get(nullptr, url, &response), NB_ERR_EXISTS);
-	EXPECT_EQ(http_get_ex_timeout_limit(nullptr, url, nullptr, 0, 1, 16, &response),
-		  NB_ERR_EXISTS);
-	EXPECT_EQ(http_post(nullptr, url, "", 0, nullptr, &response), NB_ERR_EXISTS);
-	EXPECT_EQ(http_post_ex(nullptr, url, "", 0, nullptr, nullptr, 0, &response), NB_ERR_EXISTS);
-	EXPECT_EQ(http_post_ex_timeout(nullptr, url, "", 0, nullptr, nullptr, 0, 1, &response),
-		  NB_ERR_EXISTS);
-	http_multipart_part part{};
-	part.name = "field";
-	part.value = "input";
-	EXPECT_EQ(http_post_multipart_ex(nullptr, url, &part, 1, nullptr, 0, 1, &response),
-		  NB_ERR_EXISTS);
-	EXPECT_EQ(response.body.ptr, saved);
-	EXPECT_STREQ(response.body.ptr, "owned");
-	EXPECT_EQ(response.status_code, 201);
-	http_response_free(&response);
+	setenv("CURL_CA_BUNDLE", missing, 1);
+	setenv("SSL_CERT_FILE", nb_buf_cstr(&path), 1);
+	EXPECT_EQ(http_client_open(nullptr, &configured), NB_ERR_NOT_FOUND);
+	EXPECT_EQ(configured, nullptr);
+	setenv("CURL_CA_BUNDLE", nb_buf_cstr(&path), 1);
+	setenv("SSL_CERT_FILE", missing, 1);
+	EXPECT_EQ(http_client_open(nullptr, &configured), NB_OK);
+	http_client_cleanup(&configured);
+	setenv("CURL_CA_BUNDLE", "", 1);
+	EXPECT_EQ(http_client_open(nullptr, &configured), NB_ERR_NOT_FOUND);
+	EXPECT_EQ(configured, nullptr);
+	setenv("SSL_CERT_FILE", nb_buf_cstr(&path), 1);
+	EXPECT_EQ(http_client_open(nullptr, &configured), NB_OK);
+	EXPECT_EQ(nb_file_remove(nb_buf_cstr(&path), nullptr), NB_OK);
 }

@@ -38,7 +38,7 @@ extern "C" {
 #include "agent/react.h"
 #include "agent/tool_context.h"
 #include "event/event.h"
-#include "http/client.h"
+#include "http/request.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 

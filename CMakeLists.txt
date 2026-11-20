@@ -56,7 +56,6 @@ endif()
 
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
-find_package(CURL 7.84 REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
@@ -341,7 +340,7 @@ else()
 	FetchContent_Declare(
 		nothing_tui
 		GIT_REPOSITORY https://codeberg.org/oxund/nothing-tui.git
-		GIT_TAG df3b0172a65843b414da110b7a76264acd2f301a
+		GIT_TAG 01e4ed51ee2f578b776c3a008cacce1630ce0221
 	)
 	FetchContent_MakeAvailable(nothing_tui)
 endif()

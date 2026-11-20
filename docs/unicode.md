@@ -8,9 +8,9 @@ handling and token estimation retain their application owners.
 The pinned nbase revision bundles utf8proc 2.12.0 (Unicode 18.0.0), pinned to
 upstream commit `79cdd5ab40c79afa559f689ffc13b76812dee1ac`. The generated
 database and MIT/Unicode data license ship with the backend, which compiles
-once into nbase. [Bundled utf8proc](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42/vendor/utf8proc)
+once into nbase. [Bundled utf8proc](https://codeberg.org/oxund/nothing/src/commit/fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3/vendor/utf8proc)
 
-The public header defines the following contracts. [nb/utf8.h](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42/include/nb/utf8.h)
+The public header defines the following contracts. [nb/utf8.h](https://codeberg.org/oxund/nothing/src/commit/fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3/include/nb/utf8.h)
 
 - `nb_utf8_decode` consumes a bounded `nb_str` through a caller-owned byte index.
   `nb_utf8_read` decodes a single bounded code point and reports its byte length.

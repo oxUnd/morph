@@ -154,7 +154,7 @@ pkg_check_modules(CLI_WEBP REQUIRED IMPORTED_TARGET libwebp)
 pkg_check_modules(CLI_FFI REQUIRED IMPORTED_TARGET libffi)
 target_link_libraries(morph-cli PRIVATE PkgConfig::CLI_FFI)
 target_link_libraries(morph-cli PRIVATE libcmark-gfm_static)
-target_link_libraries(morph-cli PUBLIC PkgConfig::CLI_WEBP PRIVATE CURL::libcurl)
+target_link_libraries(morph-cli PUBLIC PkgConfig::CLI_WEBP)
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(morph-cli PUBLIC
 	morph-runtime

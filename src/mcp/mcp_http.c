@@ -1,6 +1,6 @@
 #include "mcp/mcp_internal.h"
 #include "cJSON.h"
-#include "http/sse.h"
+#include <nb/sse.h>
 #include <nb/log.h>
 #include <nb/buf.h>
 #include <nb/encoding.h>
@@ -24,17 +24,19 @@ static void mcp_sse_extract_cleanup(struct mcp_sse_extract *ctx)
 	nb_buf_cleanup(&ctx->data);
 }
 
-static int mcp_sse_extract_cb(const char *event, const char *data,
-			      void *user_data)
+static nb_status mcp_sse_extract_cb(nb_sse *parser, const nb_sse_event *event, void *user_data,
+				    nb_err *err)
 {
 	struct mcp_sse_extract *ctx = user_data;
 	int rc;
 
-	(void)event;
-	if (!ctx || !data)
-		return 0;
+	(void)parser;
+	(void)err;
+	nb_str data = event->value.message.data;
+	if (!ctx || !data.len)
+		return NB_OK;
 	if (ctx->expected_id >= 0) {
-		cJSON *object = cJSON_Parse(data);
+		cJSON *object = cJSON_ParseWithLength(data.ptr, data.len);
 		cJSON *id = cJSON_GetObjectItemCaseSensitive(object, "id");
 		cJSON *error = cJSON_GetObjectItemCaseSensitive(object, "error");
 		int matches = (cJSON_IsNumber(id) && id->valuedouble == ctx->expected_id) ||
@@ -45,7 +47,7 @@ static int mcp_sse_extract_cb(const char *event, const char *data,
 			return 0;
 	}
 	nb_buf_clear(&ctx->data);
-	rc = (nb_buf_append_cstr(&ctx->data, data) ? 0 : NB_ERR_NOMEM);
+	rc = (nb_buf_append_str(&ctx->data, data) ? 0 : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
 	ctx->seen_data = 1;
@@ -55,7 +57,7 @@ static int mcp_sse_extract_cb(const char *event, const char *data,
 static char *mcp_http_sse_response(const char *raw, size_t len, int expected_id)
 {
 	struct mcp_sse_extract ctx NB_CLEANUP(mcp_sse_extract_cleanup) = {0};
-	struct sse_parser parser;
+	nb_sse *parser = NULL;
 	char *json = NULL;
 	int rc;
 
@@ -68,11 +70,22 @@ static char *mcp_http_sse_response(const char *raw, size_t len, int expected_id)
 	ctx.seen_data = 0;
 	ctx.expected_id = expected_id;
 
-	sse_parser_init(&parser, mcp_sse_extract_cb, &ctx);
-	rc = sse_parser_feed(&parser, raw, len);
-	if (rc == 0)
-		rc = sse_parser_feed(&parser, "\n", 1);
-	sse_parser_free(&parser);
+	nb_sse_options options = {0};
+	rc = nb_sse_new(&options, &parser, NULL);
+	if (rc == NB_OK)
+		rc = nb_sse_on(parser, NB_SSE_MESSAGE, mcp_sse_extract_cb, &ctx, NULL, NULL);
+
+	if (rc == NB_OK)
+		rc = nb_sse_feed(parser, raw, len, NULL);
+
+	/* Preserve MCP's tolerance of a missing final event separator. */
+	if (rc == NB_OK)
+		rc = nb_sse_feed(parser, "\n", 1, NULL);
+
+	if (rc == NB_OK)
+		rc = nb_sse_finish(parser, NULL);
+
+	nb_sse_free(parser);
 
 	if (rc == 0 && ctx.seen_data)
 		json = (nb_buf_ok(&ctx.data) ? strdup(nb_buf_cstr(&ctx.data)) : NULL);
@@ -230,7 +243,7 @@ int mcp_http_exchange(struct mcp_client *client,
 	char *url NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int rc;
 
-	if (!client || !request || !request->json || !reply || !client->session.initialized)
+	if (!client || !request || !request->json || !reply || !client->http_client)
 		return NB_ERR_INVAL;
 	if (reply->json || reply->session_id)
 		return NB_ERR_EXISTS;
@@ -281,21 +294,47 @@ int mcp_http_exchange(struct mcp_client *client,
 		.interrupt_check = client->interrupt_check,
 		.interrupt_user_data = client->interrupt_user_data,
 	};
-	rc = http_session_post(&control, &client->session, url, request->json,
-			       strlen(request->json), "application/json", ((void *)headers.data),
-			       (int)headers.len, timeout);
-	if (rc != 0)
-		return rc;
-	received.http_status = http_session_status(&client->session);
-	received.session_id = http_session_header_copy(&client->session, "Mcp-Session-Id");
-	const char *body = http_session_body_borrow(&client->session, NULL);
+	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_http_call *call NB_CLEANUP(http_call_cleanup) = NULL;
+	nb_buf body NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_http_request http_request;
 
-	if (body && body[0]) {
-		received.json = mcp_http_sse_response(body, strlen(body), request->id);
+	nb_vec_init(&native_headers, sizeof(nb_http_header));
+	rc = http_headers_parse(&native_headers, (const char *const *)headers.data, headers.len);
+	nb_http_header content_type = {NB_STR_LIT("Content-Type"), NB_STR_LIT("application/json")};
+	if (rc == NB_OK && !nb_vec_push_copy(&native_headers, &content_type))
+		rc = NB_ERR_NOMEM;
+
+	http_request_init(&http_request, "POST", url);
+	http_request.body = nb_str_from_cstr(request->json);
+	http_request.headers =
+		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
+	http_request.timeouts.total_ms = http_timeout_ms(timeout);
+	if (rc == NB_OK)
+		rc = http_request_run(&control, client->http_client, &http_request, NULL, &call);
+
+	const nb_http_result *result = nb_http_call_result(call);
+	client->http_status = result && result->response ? result->response->status_code : 0;
+	if (rc != NB_OK)
+		return rc;
+
+	received.http_status = client->http_status;
+	nb_str session_id;
+	if (nb_http_headers_get(result->response->headers, NB_STR_LIT("Mcp-Session-Id"),
+				&session_id)) {
+		received.session_id = strndup(session_id.ptr, session_id.len);
+		if (!received.session_id)
+			return NB_ERR_NOMEM;
+	}
+
+	rc = nb_http_call_take_body(call, &body, NULL);
+	if (rc == NB_OK && body.len) {
+		received.json = mcp_http_sse_response(body.ptr, body.len, request->id);
 		if (!received.json)
-			received.json = strdup(body);
+			received.json = strdup(nb_buf_cstr(&body));
+
 		if (!received.json)
-			rc = (NB_ERR_NOMEM);
+			rc = NB_ERR_NOMEM;
 	}
 
 	if (rc == 0) {
@@ -315,7 +354,8 @@ int mcp_http_connect(struct mcp_client *client)
 	if (!client || !client->config.http_url[0])
 		return NB_ERR_INVAL;
 
-	rc = http_session_init(client ? client->config.logger : NULL, &client->session);
+	struct http_control control = {.logger = client->config.logger};
+	rc = http_client_open(&control, &client->http_client);
 	if (rc < 0) {
 		nb_log_write(client ? client->config.logger : NULL, NB_LOG_ERROR,
 			     "mcp http: session init failed: %s",
@@ -338,7 +378,9 @@ void mcp_http_disconnect(struct mcp_client *client)
 {
 	if (!client)
 		return;
-	http_session_cleanup(&client->session);
+	nb_http_client_free(client->http_client);
+	client->http_client = NULL;
+	client->http_status = 0;
 	free(client->session_id);
 	client->session_id = NULL;
 	client->connected = 0;
