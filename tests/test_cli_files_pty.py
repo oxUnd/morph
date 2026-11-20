@@ -67,7 +67,7 @@ def plain_case(driver, directory, port):
                         extra_env={'NO_COLOR': '1'}, extra_arguments=('--no-color',))
     try:
         terminal.wait_for_composer()
-        terminal.send('/files 文件.txt\r')
+        terminal.send('/side 文件.txt\r')
         wait_for(terminal, lambda text: 'PLAIN_FILE_CONTENT' in text, 'plain viewer')
         check_rules(terminal)
         terminal.send('\x1b')
@@ -76,7 +76,7 @@ def plain_case(driver, directory, port):
         assert all(cell.fg == 'default' and cell.bg == 'default'
                    for cell in terminal.screen.buffer[row].values()), listed
         terminal.send('\x1b')
-        terminal.send('/files preview.png\r')
+        terminal.send('/side preview.png\r')
         image = wait_for(terminal, lambda text: '· Image' in text, 'image viewer')
         assert '2 open' in image and 'M source' not in image, image
         check_rules(terminal)
@@ -178,7 +178,7 @@ def main():
                 wait_for(terminal, lambda text: 'Files (3)' not in text and '< Files' not in text,
                          f'close at {columns} columns')
 
-            terminal.send('/files\r')
+            terminal.send('/side\r')
             wait_for(terminal, lambda text: '- notes.md (./)' in text, 'list first')
             click_text(terminal, '- notes.md')
             wait_for(terminal, lambda text: 'SIDEBAR_HEADING' in text, 'reopen existing tab')
@@ -224,7 +224,7 @@ def main():
 
             terminal.send('Continue working while I inspect files\r')
             _, release = terminal.request()
-            terminal.send('/files\r')
+            terminal.send('/side\r')
             wait_for(terminal, lambda text: 'Files (3)' in text, 'list during turn')
             click_text(terminal, '- notes.md')
             wait_for(terminal, lambda text: 'SIDEBAR_HEADING' in text, 'preview during turn')
@@ -244,14 +244,14 @@ def main():
             assert '- extra.txt (./)' in listed, listed
             terminal.send('\x1b')
             wait_for(terminal, lambda text: 'Files (4)' not in text, 'return to main')
-            terminal.send('/new empty-files\r/files\r')
+            terminal.send('/new empty-files\r/side\r')
             wait_for(terminal, lambda text: 'Files (0)' in text, 'session inventory isolation')
             terminal.send('\x1b')
             wait_for(terminal, lambda text: 'Files (0)' not in text, 'close empty sidebar')
             terminal.send('/switch files-test\r')
             wait_for(terminal, lambda text: 'switched to session: files-test' in text,
                      'switch back to saved session')
-            terminal.send('/files\r')
+            terminal.send('/side\r')
             wait_for(terminal, lambda text: 'Files (4)' in text, 'restored inventory')
             assert 'Open:' not in display(terminal), 'session changes must close old tabs'
             terminal.send('\x1b')
@@ -259,7 +259,7 @@ def main():
             for index in range(4):
                 name = f'tab_{index}_long_file_name.txt'
                 (directory / name).write_text(f'TAB_CONTENT_{index}')
-                terminal.send('/files ' + name + '\r')
+                terminal.send('/side ' + name + '\r')
                 frame = wait_for(terminal, lambda text: f'TAB_CONTENT_{index}' in text,
                                  'overflowing native tabs')
                 if index:

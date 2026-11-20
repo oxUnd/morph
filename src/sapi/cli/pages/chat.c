@@ -970,7 +970,7 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 	if (input[0] == '/') {
 		cli_presentation_command_input(ctx, input);
 		if (ctx->input_job->active && strcmp(input, "/recap") && strcmp(input, "/jobs") &&
-		    strcmp(input, "/files") && strncmp(input, "/files ", 7) &&
+		    strcmp(input, "/side") && strncmp(input, "/side ", 6) &&
 		    strcmp(input, "/sidebar") && strncmp(input, "/sidebar ", 9) &&
 		    strncmp(input, "/jobs ", 6) && strcmp(input, "/agents") &&
 		    strncmp(input, "/agents ", 8) && strcmp(input, "/subagents") &&

@@ -46,7 +46,7 @@ def run_case(binary, modern, plain):
             resize(terminal, 120)
             terminal.wait_for_composer()
             start = len(terminal.published_frames)
-            terminal.send('/files pane.c\r')
+            terminal.send('/side pane.c\r')
             wait_for(terminal, lambda text: 'SPLIT_CONTENT' in text, 'open file sidebar')
             terminal.pump(.2)
             original = divider(display(terminal))
@@ -102,7 +102,7 @@ def run_case(binary, modern, plain):
             assert display(terminal).count('UNSENT_SPLIT_DRAFT') == 1, display(terminal)
             terminal.send('\x15')
             start = len(terminal.published_frames)
-            terminal.send('/files pane.c\r')
+            terminal.send('/side pane.c\r')
             wait_for(terminal, lambda text: 'SPLIT_CONTENT' in text, 'reopen at chosen width')
             terminal.pump(.2)
             check_opening(terminal, start, chosen, not plain)
@@ -122,7 +122,7 @@ def run_case(binary, modern, plain):
             if modern:
                 assert '\x1b]22;default\x1b\\' in terminal.raw[output:]
 
-            terminal.child.send('/files pane.c\r')
+            terminal.child.send('/side pane.c\r')
             terminal.pump(.04)
             terminal.child.send('\x1b')
             terminal.pump(.06)
@@ -130,7 +130,7 @@ def run_case(binary, modern, plain):
             wait_for(terminal, lambda text: divider(text) is None, 'close during opening')
             terminal.pump(.3)
             assert divider(display(terminal)) is None, display(terminal)
-            terminal.send('/files pane.c\r')
+            terminal.send('/side pane.c\r')
             wait_for(terminal, lambda text: 'SPLIT_CONTENT' in text, 'reopen after cancellation')
             terminal.pump(.2)
             assert divider(display(terminal)) == chosen, display(terminal)

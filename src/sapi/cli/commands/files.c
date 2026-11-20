@@ -10,7 +10,7 @@
 static int cli_files_command(struct cli_application *ctx, int argc, char **argv)
 {
 	if (argc > 2) {
-		CMD_ERROR(ctx, "usage: /files [path]");
+		CMD_ERROR(ctx, "usage: /side [path]");
 		return NB_ERR_INVAL;
 	}
 
@@ -30,8 +30,8 @@ static int cli_files_command(struct cli_application *ctx, int argc, char **argv)
 struct cli_command_group cli_files_commands(void)
 {
 	static const struct cli_command cli_files_entries[] = {
-		{"/files", cli_files_command, "Open conversation files in the sidebar",
-		 "/files [path]"},
+		{"/side", cli_files_command, "Open conversation files in the sidebar",
+		 "/side [path]"},
 		{"/sidebar", cli_files_command, "Open the file sidebar", "/sidebar [path]"},
 	};
 	return (struct cli_command_group){

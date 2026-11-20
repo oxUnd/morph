@@ -206,10 +206,10 @@ its terminal session and input handoff just like other modal pages.
 The retained feed receives geometry from the framework. Legacy output adapters
 use the shared terminal-size helper, including row fallback.
 
-`/files` (alias `/sidebar`) opens a file sidebar beside the conversation. The
+`/side` (alias `/sidebar`) opens a file sidebar beside the conversation. The
 inventory comes from local Markdown references, successful patch receipts and
 generated artifacts, and is rebuilt when saved history is restored. It is scoped
-to the current session. `/files "path:line"` opens a file directly; local links
+to the current session. `/side "path:line"` opens a file directly; local links
 in assistant messages also open here. The sidebar does not start another agent.
 `models/files` owns the inventory and URL/location resolution, `services/file_preview`
 reads regular files on a worker, and `components/file_browser` composes the native
