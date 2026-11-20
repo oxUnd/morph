@@ -931,6 +931,10 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 	if (image || key == 22 || nt_shortcut_resolve(event) == NT_SHORTCUT_PASTE ||
 	    (paste_letter && (mods == NT_MOD_SUPER || mods == (NT_MOD_SHIFT | NT_MOD_CTRL))) ||
 	    (key == NT_KEY_INSERT && mods == NT_MOD_SHIFT)) {
+		int focus_rc = nt_view_focus(page->editor);
+		if (focus_rc)
+			return focus_rc;
+
 		if (!image) {
 			nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 			int rc = cli_clipboard_read_text(&text);
@@ -1410,6 +1414,49 @@ static int cli_chat_editor_key(void *data, const struct nt_view_event *event)
 	return cli_chat_page_key(data, event->input);
 }
 
+static int cli_chat_capture_input(struct nt_view *view, const struct nt_event *event)
+{
+	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(view);
+	if (page->panel || page->prompt_rows || nt_view_is_focused(page->editor))
+		return 0;
+
+	struct nt_event input = *event;
+	if (event->type != NT_EVENT_TEXT && event->type != NT_EVENT_PASTE) {
+		unsigned shortcuts = NT_MOD_CTRL | NT_MOD_ALT | NT_MOD_SUPER | NT_MOD_HYPER |
+				     NT_MOD_META;
+		if (event->type != NT_EVENT_KEY || event->pasting ||
+		    event->action == NT_KEY_ACTION_RELEASE || (event->modifiers & shortcuts))
+			return 0;
+
+		switch (event->key) {
+		case ' ':
+		case 8:
+		case 0x7F:
+		case NT_KEY_BACKSPACE:
+		case NT_KEY_DELETE:
+		case NT_KEY_LEFT:
+		case NT_KEY_RIGHT:
+		case NT_KEY_HOME:
+		case NT_KEY_END:
+			break;
+		default:
+			return 0;
+		}
+
+		/* Space must edit before a focused button can consume its KEY.
+		 * Consuming that KEY suppresses the following TEXT event. */
+		input.flags &= ~(unsigned)NT_EVENT_TEXT_FOLLOWS;
+	}
+
+	int rc = nt_view_focus(page->editor);
+	if (rc)
+		return rc;
+
+	/* Preserve native selection, undo, paste sanitization and change actions. */
+	rc = nt_view_class_methods(page->editor)->handle_event(page->editor, &input);
+	return rc < 0 ? rc : 1;
+}
+
 static struct nt_text_style cli_chat_bottom_style(int hovered)
 {
 	return (struct nt_text_style){
@@ -1470,6 +1517,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 		.superclass = &nt_view_base_class,
 		.instance_size = sizeof(struct nt_view),
 		.layout = cli_chat_page_layout,
+		.capture_event = cli_chat_capture_input,
 		.draw_overlay = cli_chat_panel_cursor};
 	struct nt_view *root = nt_view_add(builder, NULL, &cli_chat_layout_class, NULL);
 	if (!root)

@@ -70,6 +70,10 @@ reconstructs a past patch from the current workspace. Streaming messages keep th
 source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
 scroll within the feed; reaching the bottom resumes following.
 
+Typing, pasting or editing from another chat control returns focus to the composer
+at its saved caret and applies the first input. Shortcuts and modal or inline
+panel input retain their own routing.
+
 Session navigation restores the complete display history without loading or
 repairing the model replay window; that work belongs to the next turn. Rich
 documents retain their TextView while content changes, and TextView reuses its

@@ -96,6 +96,34 @@ def check_inline_tool_output(driver):
                         if 'Turn details' not in frame:
                             assert frame.count('draft中文🙂') == 1, frame
                             assert 'tail' in frame or 'taXil' in frame, frame
+
+                    # Shift+Tab moves focus from the composer to a tool link.
+                    # Typing must restore the saved caret, including the first
+                    # space that would otherwise activate the focused link.
+                    terminal.send('\x1b[Z\r')
+                    focused = terminal.snapshot(f'{width}: keyboard focus reaches tool link')
+                    assert focused.count('show less') == 1, focused
+                    terminal.send('\r')
+                    assert 'show less' not in terminal.snapshot(f'{width}: Enter toggles link')
+                    for value in (' ', 'A', '中文🙂',
+                                  '\x1b[200~粘贴\nnext\x1b[201~'):
+                        terminal.send('\x1b[Z' + value)
+                        focused = terminal.snapshot(f'{width}: typing restores composer focus')
+                        assert focused.count('show more') == 2, focused
+                        assert 'show less' not in focused, focused
+                    typed = ''.join(terminal.screen.display)
+                    assert 'taX A中文🙂粘贴' in typed and 'nextil' in typed, typed
+                    terminal.send('\x1b[Z\x7fZ')
+                    edited = terminal.snapshot(f'{width}: editing restores composer focus')
+                    assert 'nexZil' in edited, edited
+                    terminal.send('\x1b[Z\x14')
+                    details = terminal.snapshot(f'{width}: shortcut retains transcript action')
+                    assert 'Turn details' in details, details
+                    terminal.send('\x1b')
+                    assert 'nexZil' in terminal.snapshot(f'{width}: transcript restores draft')
+                    for frame, _ in terminal.published_frames[frame_start:]:
+                        if 'Turn details' not in frame:
+                            assert frame.count('draft中文🙂') == 1, frame
                     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
                 finally:
                     if chunks is not None:
