@@ -53,7 +53,7 @@ size_t cli_terminal_text_width(const char *text)
 
 		int32_t cp;
 		text = nb_utf8_next_cstr(text, &cp);
-		columns += (size_t)nb_utf8_width_cp((unsigned)cp);
+		columns += (size_t)nb_utf8_width_codepoint((unsigned)cp);
 	}
 
 	return columns;
@@ -67,7 +67,7 @@ const char *cli_terminal_text_advance(const char *text, size_t columns)
 	while (*text && columns) {
 		int32_t cp;
 		const char *next = nb_utf8_next_cstr(text, &cp);
-		size_t width = (size_t)nb_utf8_width_cp((unsigned)cp);
+		size_t width = (size_t)nb_utf8_width_codepoint((unsigned)cp);
 		if (width > columns)
 			break;
 

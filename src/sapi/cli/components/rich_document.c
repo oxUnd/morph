@@ -354,7 +354,8 @@ static int cli_rich_document_parse(struct cli_rich_document *document,
 				x = 0;
 				y++;
 			} else if (cp != '\r')
-				x += nb_utf8_width_cp(cp) > 0 ? nb_utf8_width_cp(cp) : 0;
+				x += nb_utf8_width_codepoint(cp) > 0
+					? nb_utf8_width_codepoint(cp) : 0;
 		}
 
 		if (rc)

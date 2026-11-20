@@ -40,7 +40,7 @@ static const char *terminal_suffix_display_width(const char *text, size_t column
 	while (*text) {
 		int32_t cp;
 		const char *next = nb_utf8_next_cstr(text, &cp);
-		size_t cells = (size_t)nb_utf8_width_cp((unsigned)cp);
+		size_t cells = (size_t)nb_utf8_width_codepoint((unsigned)cp);
 		if (cells > skip)
 			break;
 
@@ -78,7 +78,7 @@ size_t morph_terminal_copy_sanitized_display_width(char *dst, size_t dst_cap, co
 			continue;
 		}
 
-		w = (size_t)nb_utf8_width_cp(cp);
+		w = (size_t)nb_utf8_width_codepoint(cp);
 		if (vis + w > max_width)
 			break;
 

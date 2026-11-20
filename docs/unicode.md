@@ -5,12 +5,12 @@ The morph Unicode wrapper and its compatibility names have been removed.
 Generic UTF-8 handling and Unicode properties belong to nbase; terminal protocol
 handling and token estimation retain their application owners.
 
-The nbase v0.1.0 release bundles utf8proc 2.12.0 (Unicode 18.0.0), pinned to
+The pinned nbase revision bundles utf8proc 2.12.0 (Unicode 18.0.0), pinned to
 upstream commit `79cdd5ab40c79afa559f689ffc13b76812dee1ac`. The generated
 database and MIT/Unicode data license ship with the backend, which compiles
-once into nbase. [Bundled utf8proc](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/vendor/utf8proc)
+once into nbase. [Bundled utf8proc](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42/vendor/utf8proc)
 
-The public header defines the following contracts. [nb/utf8.h](https://codeberg.org/oxund/nothing/src/tag/v0.1.0/include/nb/utf8.h)
+The public header defines the following contracts. [nb/utf8.h](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42/include/nb/utf8.h)
 
 - `nb_utf8_decode` consumes a bounded `nb_str` through a caller-owned byte index.
   `nb_utf8_read` decodes a single bounded code point and reports its byte length.
@@ -23,7 +23,7 @@ The public header defines the following contracts. [nb/utf8.h](https://codeberg.
   decoding fails, allowing display traversal to make progress.
 - `nb_utf8_encode` writes one to four bytes and returns zero for an invalid scalar
   or null destination. It does not append a terminator.
-- `nb_utf8_width_cp` uses utf8proc's Unicode width data, independently of locale.
+- `nb_utf8_width_codepoint` uses utf8proc's Unicode width data, independently of locale.
   Combining and nonprinting characters have zero width; ambiguous characters
   use narrow width. Invalid scalars return -1. This measures code points, not
   complete grapheme/emoji rendering by a particular terminal.

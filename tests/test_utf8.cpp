@@ -224,13 +224,13 @@ TEST(Utf8ProcTest, BoundedHelpersDoNotReadPastInputOrSplitCharacters)
 
 TEST(Utf8ProcTest, WidthComesFromUnicodeDataWithoutLocaleSetup)
 {
-	EXPECT_EQ(nb_utf8_width_cp('A'), 1);
-	EXPECT_EQ(nb_utf8_width_cp(0x4e2d), 2);
-	EXPECT_EQ(nb_utf8_width_cp(0x1f600), 2);
-	EXPECT_EQ(nb_utf8_width_cp(0x0301), 0);
-	EXPECT_EQ(nb_utf8_width_cp(0x200d), 0);
-	EXPECT_EQ(nb_utf8_width_cp(0x1b), 0);
-	EXPECT_EQ(nb_utf8_width_cp(0xd800), -1);
+	EXPECT_EQ(nb_utf8_width_codepoint('A'), 1);
+	EXPECT_EQ(nb_utf8_width_codepoint(0x4e2d), 2);
+	EXPECT_EQ(nb_utf8_width_codepoint(0x1f600), 2);
+	EXPECT_EQ(nb_utf8_width_codepoint(0x0301), 0);
+	EXPECT_EQ(nb_utf8_width_codepoint(0x200d), 0);
+	EXPECT_EQ(nb_utf8_width_codepoint(0x1b), 0);
+	EXPECT_EQ(nb_utf8_width_codepoint(0xd800), -1);
 	EXPECT_EQ(nb_utf8_width_cstr("e\xcc\x81中"), 3u);
 	EXPECT_EQ(nb_utf8_is_unicode_space_cp(0x202f), 1);
 	EXPECT_EQ(nb_utf8_is_unicode_space_cp(' '), 0);

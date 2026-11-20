@@ -368,7 +368,7 @@ int cli_messages_append_rendered(nb_buf *out, const char *bytes, size_t length, 
 			column = 0;
 			started = 0;
 		} else if (cp == '\t' || (cp >= 0x20u && !(cp >= 0x7fu && cp <= 0x9fu))) {
-			int cell_width = cp == '\t' ? 1 : nb_utf8_width_cp(cp);
+			int cell_width = cp == '\t' ? 1 : nb_utf8_width_codepoint(cp);
 			size_t cells = cell_width > 0 ? (size_t)cell_width : 0u;
 			if (column && cells > width - column) {
 				if (styled)

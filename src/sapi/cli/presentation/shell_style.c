@@ -98,7 +98,7 @@ static void cli_shell_style_shell_span(nb_buf *out, const char *start, const cha
 		int32_t cp;
 
 		p = nb_utf8_next_cstr(p, &cp);
-		span_width += nb_utf8_width_cp((unsigned)cp);
+		span_width += nb_utf8_width_codepoint((unsigned)cp);
 	}
 
 	if (width > 0 && *column > 0 && span_width <= width && *column + span_width > width) {
@@ -110,7 +110,7 @@ static void cli_shell_style_shell_span(nb_buf *out, const char *start, const cha
 	while (start < end) {
 		int32_t cp;
 		const char *next = nb_utf8_next_cstr(start, &cp);
-		int columns = nb_utf8_width_cp((unsigned)cp);
+		int columns = nb_utf8_width_codepoint((unsigned)cp);
 
 		if (cp == '\n' || (width > 0 && *column > 0 && *column + columns > width)) {
 			(void)nb_buf_append_cstr(out, ANSI_RESET "\n    ");

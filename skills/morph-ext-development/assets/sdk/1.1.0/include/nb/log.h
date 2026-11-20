@@ -62,12 +62,15 @@ NB_EXPORT void nb_log_file_close(nb_log_file *file);
 /* nb_log_sink callback. Pass the returned handle as ctx. */
 NB_EXPORT void nb_log_file_sink(void *ctx, nb_log_level level, const char *record, size_t len);
 
-/* Process-wide logger writing to stderr. It is created on first use and is
- * safe to call from multiple threads. */
+/* Borrows the current process-wide logger. If no default has been set, the
+ * first successful call creates a stderr logger. Returns NULL if explicitly
+ * disabled or if creation fails. Concurrent callers must coordinate the
+ * lifetime of any custom logger they install. */
 NB_EXPORT nb_log *nb_log_default(void);
 
-/* Replaces the process-wide logger and returns the previous one. The caller
- * keeps ownership of log and must keep it alive while it is installed. */
+/* Sets the process-wide logger and returns the previous pointer. NULL
+ * disables the default logger. The caller retains ownership of an installed
+ * logger. Replace it and wait for its users before freeing it. */
 NB_EXPORT nb_log *nb_log_set_default(nb_log *log);
 
 #ifdef __cplusplus

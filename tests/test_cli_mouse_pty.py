@@ -102,9 +102,14 @@ def main():
                     assert content.splitlines()[0] == 'COPY_中文 é END', repr(content)
                     assert content.splitlines()[1].strip() == 'SECOND_COPY_LINE', repr(content)
                     assert '\x1b' not in content and not content.endswith(' '), repr(content)
+                    assert not terminal.screen.buffer[y1][x1].reverse, (
+                        'right-click copy must dismiss the native selection')
                     assert not Model.requests.qsize(), 'mouse input unexpectedly submitted draft'
                     mouse(terminal, 2, x1, y1)
                     assert copied.read_text() == content
+                    mouse(terminal, 0, x1, y1)
+                    mouse(terminal, 32, x2, y2)
+                    mouse(terminal, 0, x2, y2, release=True)
                     for key in ('\x1b[99;9u', '\x1b[67;6u', '\x1b[2;5~', '\x03'):
                         copied.unlink()
                         terminal.send(key)

@@ -33,14 +33,17 @@ libcurl ≥ 7.84, libuv ≥ 1.44, GNU Readline ≥ 8, zlib, libffi, libwebp, lib
 FreeType, HarfBuzz, libvips, Cairo and PangoCairo. A fresh checkout also needs
 the MathJax and Markdown source trees at the paths shown below.
 
-CMake fetches a pinned nothing-tui revision based on v0.1.0, including native
-image memory fixes and text selection across views, for the CLI. Use
+CMake fetches a pinned post-v0.1.0 nothing-tui revision, including native
+text selection, draggable split views, resize pointers and view-owned animations,
+for the CLI. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/276e7788a35e1f96859b505fff0dd7e57d1fbc9a)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/df3b0172a65843b414da110b7a76264acd2f301a)
 
-Morph and nothing-tui share one `nbase::nbase` target built from the nothing v0.1.0
-release. Cygwin builds apply the executable-path patch in `vendor/patches`.
-[nothing release](https://codeberg.org/oxund/nothing/src/tag/v0.1.0)
+Morph and nothing-tui share one `nbase::nbase` target built from a pinned
+post-v0.1.0 nothing revision under the MIT license. Morph uses its existing HTTP
+transport, so nbase's optional HTTP backend is disabled. Cygwin builds apply the
+executable-path patch in `vendor/patches`.
+[nothing source](https://codeberg.org/oxund/nothing/src/commit/08b93a3fb613f7acfc30e36e1d72cbf5eb806b42)
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
 

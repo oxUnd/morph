@@ -222,6 +222,14 @@ directories. Enter or click opens the viewer page. A single file has no tab bar;
 multiple files use horizontally scrolling tabs, with a purple active tab. Opening
 the same path reuses its tab. Each tab preserves scrolling, source mode and search.
 Both pages have shaded top/bottom toolbars and exactly two horizontal separators.
+On wide terminals, the native split divider resizes the chat and file panes by
+dragging. Its hover highlight and `ew-resize` mouse pointer come from NT; terminals
+without pointer-shape support retain the highlight and drag behavior. The chosen
+split ratio survives closing/reopening the sidebar and narrow/wide terminal changes.
+Opening the sidebar uses NT's view-owned 180 ms ease-out ratio animation. Grabbing
+the divider cancels that animation and hands control to the native drag behavior.
+Narrow terminals and no-color mode show the sidebar immediately. Morph adds no
+animation timer, pointer protocol writer or drag/layout implementation.
 Markdown is rendered by default; `M` switches to source, `R` reloads, and `Ctrl+F`
 searches. `Esc` dismisses an active search, returns from the viewer to the list,
 then closes the sidebar. The `Open` button returns to the retained viewer.

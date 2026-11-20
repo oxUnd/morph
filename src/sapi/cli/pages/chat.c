@@ -54,6 +54,7 @@
 #include <nb/err.h>
 #include <nb/map.h>
 #include <nb/time.h>
+#include <nothing/tui/animation.h>
 #include <nothing/tui/choice_prompt.h>
 #include <nothing/tui/controls/button.h>
 #include <nothing/tui/controls/list_view.h>
@@ -72,6 +73,8 @@
 #include <unistd.h>
 
 #define CLI_CHAT_BOTTOM_LABEL "↓ Back to bottom · Esc"
+#define CLI_CHAT_FILES_ANIMATION_CHANNEL 1u
+#define CLI_CHAT_FILES_ANIMATION_MS 180
 
 struct cli_chat_panel {
 	struct nt_stack_view base;
@@ -146,10 +149,62 @@ static int cli_chat_files_markdown(struct cli_application *ctx, const char *text
 	return cli_files_markdown(&ctx->chat->files, ctx->chat->files_workdir, text);
 }
 
+static int cli_chat_files_animate_ratio(struct nt_view *view, double value, void *data)
+{
+	(void)data;
+	return nt_split_view_set_ratio(view, (int)(value + 0.5));
+}
+
+static int cli_chat_files_reveal(struct cli_chat_page *page)
+{
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	struct nt_terminal_environment environment = {0};
+	(void)nt_application_environment(&ctx->base, &environment);
+	if (environment.columns < 100 || !cli_output_color_enabled(ctx))
+		return NB_OK;
+
+	int ratio = nt_split_view_ratio(page->workspace);
+	if (ratio == 99)
+		return NB_OK;
+
+	int rc = nt_split_view_set_ratio(page->workspace, 99);
+	if (!rc)
+		rc = nt_view_animate(page->workspace, CLI_CHAT_FILES_ANIMATION_CHANNEL,
+			&(struct nt_animation_options){.from = 99, .to = ratio,
+				.duration_ms = CLI_CHAT_FILES_ANIMATION_MS,
+				.easing = NT_EASE_OUT, .update = cli_chat_files_animate_ratio});
+
+	if (rc)
+		(void)nt_split_view_set_ratio(page->workspace, ratio);
+
+	return rc;
+}
+
+static int cli_chat_files_pointer(void *data, const struct nt_view_event *event)
+{
+	struct cli_chat_page *page = data;
+	if (!event->input || event->input->mouse.action != NT_MOUSE_PRESS ||
+	    event->input->mouse.button != NT_MOUSE_LEFT ||
+	    !nt_view_animation_running(page->workspace, CLI_CHAT_FILES_ANIMATION_CHANNEL))
+		return 0;
+
+	const struct nt_view_class *methods = nt_view_class_methods(page->workspace);
+	if (methods->pointer_shape(page->workspace, event->input->mouse.x,
+		event->input->mouse.y) != NT_POINTER_DEFAULT)
+		return nt_view_cancel_animation(page->workspace,
+			CLI_CHAT_FILES_ANIMATION_CHANNEL, 0);
+
+	return 0;
+}
+
 static int cli_chat_files_close(struct cli_chat_page *page)
 {
+	int rc = nt_view_cancel_animation(page->workspace, CLI_CHAT_FILES_ANIMATION_CHANNEL, 1);
+	if (rc)
+		return rc;
+
 	page->files_open = page->files_focus = 0;
-	int rc = nt_view_set_hidden(page->files_view, 1);
+	rc = nt_view_set_hidden(page->files_view, 1);
 	if (!rc)
 		rc = nt_view_set_hidden(page->primary, 0);
 
@@ -209,6 +264,7 @@ int cli_chat_files_show(struct cli_application *ctx, const char *url)
 
 	struct cli_chat_page *page = ctx->chat;
 	cli_chat_files_session(page);
+	int opening = !page->files_open;
 	page->files_open = page->files_focus = 1;
 	int rc = cli_file_browser_sync(page->files_view);
 	if (!rc)
@@ -232,6 +288,9 @@ int cli_chat_files_show(struct cli_application *ctx, const char *url)
 	if (!rc)
 		rc = url ? cli_file_browser_focus(page->files_view)
 			: cli_file_browser_list(page->files_view);
+
+	if (!rc && opening)
+		rc = cli_chat_files_reveal(page);
 
 	return rc;
 }
@@ -1693,8 +1752,11 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 		.capture_event = cli_chat_capture_input,
 		.draw_overlay = cli_chat_panel_cursor};
 	page->workspace = nt_split_view_add(builder, NULL, NT_SPLIT_VIEW_HORIZONTAL, 64, NULL);
-	if (page->workspace && !nt_view_on(page->workspace, NT_VIEW_EVENT_OPEN,
-		cli_chat_files_link, page))
+	if (page->workspace &&
+	    (!nt_view_on(page->workspace, NT_VIEW_EVENT_OPEN, cli_chat_files_link, page) ||
+	     !nt_view_on_full(page->workspace, NT_VIEW_EVENT_MOUSE,
+		&(struct nt_view_listener_options){.flags = NT_VIEW_LISTEN_CAPTURE,
+			NT_VIEW_LISTENER(cli_chat_files_pointer, page)})))
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 
 	struct nt_view *root = nt_view_add(builder, page->workspace, &cli_chat_layout_class, NULL);
@@ -1845,6 +1907,13 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 	(void)nt_application_environment(&ctx->base, &environment);
 	int showing = page->files_open && !page->panel && !page->prompt_rows;
 	int narrow = environment.columns < 100;
+	if (narrow) {
+		int rc = nt_view_cancel_animation(page->workspace,
+			CLI_CHAT_FILES_ANIMATION_CHANNEL, 1);
+		if (rc)
+			return rc;
+	}
+
 	if (cli_file_browser_focused(page->files_view))
 		page->files_focus = 1;
 	else if (nt_view_is_focused(page->editor))
