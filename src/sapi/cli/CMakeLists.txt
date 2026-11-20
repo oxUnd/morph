@@ -47,6 +47,7 @@ add_library(morph-cli STATIC
 	components/recap.c
 	components/report.c
 	components/file_browser.c
+	components/file_viewer.c
 
 	# Commands
 	commands/agents.c

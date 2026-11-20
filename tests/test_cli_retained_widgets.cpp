@@ -6,7 +6,6 @@ extern "C" {
 #include "sapi/cli/components/file_browser.h"
 #include "sapi/cli/components/rich_document.h"
 #include "sapi/cli/models/files.h"
-#include "sapi/cli/services/file_preview.h"
 #include "sapi/cli/presentation/messages.h"
 #include <morph_markdown_highlight.h>
 #include "sapi/cli/components/plan.h"
@@ -40,6 +39,8 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <chrono>
 #include <regex>
@@ -115,6 +116,44 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	cJSON *plan = nullptr;
 	bool details = false;
 	std::string frame;
+	std::string file_directory;
+
+	static struct nt_view *FindKind(struct nt_view *view, const char *kind)
+	{
+		if (!strcmp(nt_view_kind(view), kind))
+			return view;
+
+		for (size_t i = 0; i < nt_view_child_count(view); i++) {
+			if (auto *found = FindKind(nt_view_child(view, i), kind))
+				return found;
+		}
+
+		return nullptr;
+	}
+
+	void OpenFile(const char *name, const char *source)
+	{
+		if (file_directory.empty()) {
+			char directory[] = "/tmp/morph-file-widget-XXXXXX";
+			ASSERT_NE(mkdtemp(directory), nullptr);
+			file_directory = directory;
+		}
+
+		const std::string path = file_directory + "/" + name;
+		std::ofstream(path) << source;
+		ASSERT_EQ(cli_files_add(&files, "/workspace", path.c_str(), CLI_FILES_MODIFIED), 0);
+		ASSERT_EQ(cli_file_browser_open(component, path.c_str(), 0), 0);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		do {
+			ASSERT_EQ(cli_file_browser_sync(component), 0);
+			ASSERT_EQ(nt_application_step(app, 1), 0);
+			auto *document = FindKind(component, "text_view");
+			if (document && strcmp(nt_text_view_text(document), "Loading file preview..."))
+				return;
+		} while (std::chrono::steady_clock::now() < deadline);
+
+		FAIL() << "file preview did not finish";
+	}
 	struct nt_renderer renderer = {
 		+[](struct nt_renderer *backend, struct nt_surface *surface, FILE *) {
 			auto *self = static_cast<CliRetainedWidgetsTest *>(backend->data);
@@ -215,6 +254,9 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	void TearDown() override
 	{
 		nt_application_destroy(app);
+		if (!file_directory.empty())
+			std::filesystem::remove_all(file_directory);
+
 		cli_files_cleanup(&files);
 		cli_composer_model_cleanup(&ctx.composer);
 		cJSON_Delete(plan);
@@ -910,23 +952,16 @@ TEST(CliEditorStateTest, TypedUtf8AndSecretEditingKeepUndoOwnershipSafe)
 TEST_F(CliRetainedWidgetsTest, FileSidebarRendersMarkdownAndSourceAcrossWidths)
 {
 	kind = Files;
-	ASSERT_EQ(cli_files_add(&files, "/workspace", "docs/readme.md", CLI_FILES_MODIFIED), 0);
 	Present();
-	ASSERT_EQ(cli_file_browser_sync(component), 0);
-	struct cli_file_preview *preview = nullptr;
-	preview = static_cast<cli_file_preview *>(calloc(1, sizeof(*preview)));
-	ASSERT_NE(preview, nullptr);
-	preview->path = strdup("/workspace/docs/readme.md");
-	preview->markdown = 1;
-	ASSERT_TRUE(nb_buf_append_cstr(&preview->content,
+	OpenFile("readme.md",
 		"# Preview heading\n\nSome **document content** and [source](../main.c:2).\n\n"
-		"```c\nint value = 42;\n```\n"));
-	ASSERT_EQ(cli_file_browser_preview_take(component, &preview, 0), 0);
-	EXPECT_EQ(preview, nullptr);
-	ASSERT_EQ(nt_application_step(app, 0), 0);
+		"```c\nint value = 42;\n```\n");
 	EXPECT_NE(retained_normalized(frame.c_str()).find("Preview heading"), std::string::npos);
-	EXPECT_NE(retained_normalized(frame.c_str()).find("docs/readme.md"), std::string::npos);
-	auto *document = nt_view_child(component, 3);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("readme.md"), std::string::npos);
+	auto *document = FindKind(component, "text_view");
+	auto *viewer = FindKind(component, "cli_file_viewer");
+	ASSERT_NE(document, nullptr);
+	ASSERT_NE(viewer, nullptr);
 	EXPECT_EQ(std::string(nt_text_view_text(document)).find("```c"), std::string::npos);
 	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
 	for (int columns : {80, 60, 120}) {
@@ -938,31 +973,40 @@ TEST_F(CliRetainedWidgetsTest, FileSidebarRendersMarkdownAndSourceAcrossWidths)
 	struct nt_event toggle{};
 	toggle.type = NT_EVENT_KEY;
 	toggle.key = 'm';
-	ASSERT_EQ(nt_view_class_methods(component)->handle_event(component, &toggle), 1);
+	ASSERT_EQ(nt_view_class_methods(viewer)->handle_event(viewer, &toggle), 1);
 	ASSERT_EQ(nt_application_step(app, 0), 0);
 	EXPECT_NE(std::string(nt_text_view_text(document)).find("# Preview heading"),
 		std::string::npos);
 	EXPECT_NE(std::string(nt_text_view_text(document)).find("```c"), std::string::npos);
-	ASSERT_EQ(nt_view_class_methods(component)->handle_event(component, &toggle), 1);
+	ASSERT_EQ(nt_view_class_methods(viewer)->handle_event(viewer, &toggle), 1);
 	ASSERT_EQ(nt_application_step(app, 0), 0);
 	EXPECT_EQ(std::string(nt_text_view_text(document)).find("```c"), std::string::npos);
 	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
+	ASSERT_EQ(cli_file_browser_focus(component), 0);
+	ASSERT_EQ(nt_window_focused_view(nt_application_window(app)), document);
+	const char find[] = "\006";
+	ASSERT_EQ(write(master, find, sizeof(find) - 1), sizeof(find) - 1);
+	for (int i = 0; i < 5; i++)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	ASSERT_NE(retained_normalized(frame.c_str()).find("Find:"), std::string::npos)
+		<< retained_normalized(frame.c_str());
+	ASSERT_EQ(write(master, "document", 8), 8);
+	for (int i = 0; i < 5; i++)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	EXPECT_NE(retained_normalized(frame.c_str()).find("Find: document"), std::string::npos)
+		<< retained_normalized(frame.c_str());
 }
 
 TEST_F(CliRetainedWidgetsTest, FileSidebarCodePreservesWhitespaceSelectionAndNoColor)
 {
 	kind = Files;
 	Present();
-	struct cli_file_preview *preview = static_cast<cli_file_preview *>(calloc(1, sizeof(*preview)));
-	ASSERT_NE(preview, nullptr);
-	preview->path = strdup("/workspace/main.c");
 	const char *source = "\n\n/* 中文 */\n\tint value = 42;\n\n";
-	ASSERT_TRUE(nb_buf_append_cstr(&preview->content, source));
-	ASSERT_EQ(morph_md_highlight_ansi("c", source, strlen(source),
-		&preview->highlighted, nullptr), 0);
-	ASSERT_EQ(cli_file_browser_preview_take(component, &preview, 0), 0);
-	ASSERT_EQ(nt_application_step(app, 0), 0);
-	auto *document = nt_view_child(component, 3);
+	OpenFile("main.c", source);
+	auto *document = FindKind(component, "text_view");
+	ASSERT_NE(document, nullptr);
 	EXPECT_STREQ(nt_text_view_text(document), source);
 	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
 	ASSERT_EQ(nt_text_view_set_cursor(document, 2), 0);

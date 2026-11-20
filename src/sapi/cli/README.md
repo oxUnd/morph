@@ -213,18 +213,30 @@ to the current session. `/files "path:line"` opens a file directly; local links
 in assistant messages also open here. The sidebar does not start another agent.
 `models/files` owns the inventory and URL/location resolution, `services/file_preview`
 reads regular files on a worker, and `components/file_browser` composes the native
-list, text/search and media controls. Workers never access views.
+list, tab bar, buttons and scroll containers. Each `components/file_viewer` retains
+its native text/search and media controls and owns its preview worker. Workers
+never access views and are cancelled when their tab or session closes.
 
-Enter or click opens a listed file. Markdown is rendered by default; `M` switches
-to source, `R` reloads, `Ctrl+F` searches, and `Esc` closes the sidebar after any
-active search is dismissed. `Ctrl+O` switches between the sidebar and chat while
-preserving the draft. Under 100 columns only the focused pane is shown. File loads
-retain their intended destination without taking focus back after navigation.
+The first page lists `- filename (directory/)`, with bright names and muted
+directories. Enter or click opens the viewer page. A single file has no tab bar;
+multiple files use horizontally scrolling tabs, with a purple active tab. Opening
+the same path reuses its tab. Each tab preserves scrolling, source mode and search.
+Both pages have shaded top/bottom toolbars and exactly two horizontal separators.
+Markdown is rendered by default; `M` switches to source, `R` reloads, and `Ctrl+F`
+searches. `Esc` dismisses an active search, returns from the viewer to the list,
+then closes the sidebar. The `Open` button returns to the retained viewer.
+Click a tab to switch files; `Alt+Left` / `Alt+Right` or `Ctrl+PageUp` /
+`Ctrl+PageDown` also switch tabs. Click its close button or use `Ctrl+W` to close
+a tab; closing the last tab returns to the list. `Ctrl+O` switches between the
+sidebar and chat while preserving the draft. Under 100 columns only the focused
+pane is shown. File loads retain their intended tab without taking focus back
+after navigation.
 Text previews are limited to 1 MiB; binary, missing and unsupported files show an
 explicit explanation. Supported images use the existing media controls.
 Supported source files use the Markdown library's standalone syntax highlighter;
 the preview worker caches sanitized ANSI styles for the native text view. Source
-whitespace and line locations are preserved, including in no-color mode.
+whitespace and line locations are preserved, including in no-color mode. Source
+text uses the native unwrapped viewport, with horizontal scrolling for long lines.
 
 `/model` (or `/m`) replaces the editable composer with the inline Normal/Ultra
 selector, using the same composer component as `/permissions`. Escape and
