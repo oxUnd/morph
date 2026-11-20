@@ -122,10 +122,15 @@ static int cli_file_browser_render(struct cli_file_browser *browser, int width)
 				nb_buf_cstr(&preview->content));
 	} else if (browser->rendered_width < 0) {
 		cli_messages_links_cleanup(&browser->links);
-		char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
-			nb_buf_cstr(&preview->content), preview->content.len,
-			MORPH_TERMINAL_TEXT_MULTILINE, NULL);
-		rc = safe ? nt_text_view_set_text(browser->document, safe) : NB_ERR_NOMEM;
+		if (preview->highlighted) {
+			rc = cli_messages_set_source_view(browser->document,
+				preview->highlighted, browser->styled);
+		} else {
+			char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+				nb_buf_cstr(&preview->content), preview->content.len,
+				MORPH_TERMINAL_TEXT_MULTILINE, NULL);
+			rc = safe ? nt_text_view_set_text(browser->document, safe) : NB_ERR_NOMEM;
+		}
 	}
 
 	if (!rc)

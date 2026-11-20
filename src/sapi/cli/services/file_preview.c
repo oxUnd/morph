@@ -1,6 +1,8 @@
 #include "sapi/cli/services/file_preview.h"
 
 #include "sapi/cli/adapters/media/image_probe.h"
+#include "terminal/text.h"
+#include <morph_markdown_highlight.h>
 #include <nb/cancel.h>
 #include <nb/cleanup.h>
 #include <nb/err.h>
@@ -31,6 +33,7 @@ void cli_file_preview_free(struct cli_file_preview *preview)
 		return;
 
 	free(preview->path);
+	free(preview->highlighted);
 	nb_buf_cleanup(&preview->content);
 	free(preview);
 }
@@ -133,10 +136,37 @@ static int cli_file_preview_read(struct cli_file_preview_job *job)
 	return NB_OK;
 }
 
+static int cli_file_preview_highlight(struct cli_file_preview_job *job)
+{
+	struct cli_file_preview *preview = job->preview;
+	if (preview->image || preview->markdown)
+		return NB_OK;
+
+	const char *language = morph_md_highlight_language(preview->path,
+		nb_buf_cstr(&preview->content), preview->content.len);
+	if (!language)
+		return NB_OK;
+
+	if (nb_cancel_requested(&job->cancel))
+		return NB_ERR_CANCELLED;
+
+	size_t length = 0;
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		nb_buf_cstr(&preview->content), preview->content.len,
+		MORPH_TERMINAL_TEXT_MULTILINE, &length);
+	if (!safe)
+		return NB_ERR_NOMEM;
+
+	int rc = morph_md_highlight_ansi(language, safe, length, &preview->highlighted, NULL);
+	return rc ? nb_status_from_errno(-rc, NULL) : NB_OK;
+}
+
 static void *cli_file_preview_worker(void *data)
 {
 	struct cli_file_preview_job *job = data;
 	job->preview->status = cli_file_preview_read(job);
+	if (!job->preview->status)
+		job->preview->status = cli_file_preview_highlight(job);
 	nb_atomic_int_store(&job->done, 1);
 	return NULL;
 }

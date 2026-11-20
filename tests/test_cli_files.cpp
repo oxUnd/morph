@@ -5,6 +5,7 @@ extern "C" {
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/services/file_preview.h"
 #include "sapi/cli/presentation/messages.h"
+#include "sapi/cli/presentation/terminal_text.h"
 #include <nb/err.h>
 }
 
@@ -12,8 +13,10 @@ extern "C" {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -163,6 +166,74 @@ TEST_F(CliFilesTest, PreviewJobOwnersArePreservedAndCancellationReapsWorkers)
 	EXPECT_EQ(job, original);
 	cli_file_preview_stop(&job);
 	EXPECT_EQ(job, nullptr);
+}
+
+TEST_F(CliFilesTest, SourcePreviewsCacheSanitizedHighlightingWithoutChangingContent)
+{
+	const std::string file = std::string(directory) + "/main.c";
+	const std::string source = "\n\n/* 中文 comment\n * continued */\n"
+		"\tint answer = 42;\n\n";
+	const std::string untrusted = "\033[2J\033]8;;https://example.com\033\\" + source;
+	std::ofstream(file) << untrusted;
+	std::unique_ptr<cli_file_preview, decltype(&cli_file_preview_free)>
+		preview(Read(file), cli_file_preview_free);
+	ASSERT_NE(preview, nullptr);
+	ASSERT_EQ(preview->status, 0);
+	EXPECT_FALSE(preview->markdown);
+	EXPECT_STREQ(nb_buf_cstr(&preview->content), untrusted.c_str());
+	ASSERT_NE(preview->highlighted, nullptr);
+	const std::string highlighted = preview->highlighted;
+	EXPECT_NE(highlighted.find("\033[36mint"), std::string::npos);
+	EXPECT_NE(highlighted.find("\n\033[2;36m * continued"), std::string::npos);
+	EXPECT_EQ(highlighted.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(highlighted.find("\033]8;"), std::string::npos);
+	char *plain = cli_terminal_text_strip_ansi_dup(highlighted.data(),
+		highlighted.size(), nullptr);
+	ASSERT_NE(plain, nullptr);
+	EXPECT_STREQ(plain, source.c_str());
+	free(plain);
+}
+
+TEST_F(CliFilesTest, MarkdownAndUnknownFilesKeepTheirExistingPreviewPaths)
+{
+	const std::string source = "#!/usr/bin/env python3\n\n# Heading\n\n"
+		"**bold** [link](main.c:3)\n\n```c\nint value = 42;\n```\n";
+	for (const char *name : {"notes.md", "notes.MD", "notes.markdown", "notes.MARKDOWN"}) {
+		const std::string file = std::string(directory) + "/" + name;
+		std::ofstream(file) << source;
+		std::unique_ptr<cli_file_preview, decltype(&cli_file_preview_free)>
+			preview(Read(file), cli_file_preview_free);
+		ASSERT_NE(preview, nullptr);
+		ASSERT_EQ(preview->status, 0);
+		EXPECT_TRUE(preview->markdown) << name;
+		EXPECT_EQ(preview->highlighted, nullptr) << name;
+		EXPECT_STREQ(nb_buf_cstr(&preview->content), source.c_str());
+	}
+
+	const std::string file = std::string(directory) + "/notes.txt";
+	std::ofstream(file) << "\nplain notes\n\n";
+	std::unique_ptr<cli_file_preview, decltype(&cli_file_preview_free)>
+		preview(Read(file), cli_file_preview_free);
+	ASSERT_NE(preview, nullptr);
+	EXPECT_EQ(preview->status, 0);
+	EXPECT_EQ(preview->highlighted, nullptr);
+	EXPECT_STREQ(nb_buf_cstr(&preview->content), "\nplain notes\n\n");
+}
+
+TEST_F(CliFilesTest, ExtensionlessScriptsAndMakefilesAreHighlighted)
+{
+	for (const auto &entry : {
+		std::pair{"script", "#!/usr/bin/env -S python3 -u\ndef answer(): return 42\n"},
+		std::pair{"Makefile", "ifdef DEBUG\nCC = clang\nendif\n"}}) {
+		const std::string file = std::string(directory) + "/" + entry.first;
+		std::ofstream(file) << entry.second;
+		std::unique_ptr<cli_file_preview, decltype(&cli_file_preview_free)>
+			preview(Read(file), cli_file_preview_free);
+		ASSERT_NE(preview, nullptr);
+		ASSERT_EQ(preview->status, 0);
+		ASSERT_NE(preview->highlighted, nullptr);
+		EXPECT_NE(std::string(preview->highlighted).find("\033[1;33m"), std::string::npos);
+	}
 }
 
 TEST_F(CliFilesTest, MarkdownHitRangesFollowWrappedDestinationsAndDistinctOccurrences)

@@ -613,13 +613,8 @@ void cli_messages_links_cleanup(nb_vec *links)
 	nb_vec_cleanup(links);
 }
 
-int cli_messages_set_rendered_view(struct nt_view *view, const char *text, int styled)
-{
-	return cli_messages_set_rendered_links(view, text, styled, NULL);
-}
-
-int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int styled,
-	nb_vec *links)
+static int cli_messages_set_styled_view(struct nt_view *view, const char *text, int styled,
+	nb_vec *links, int trim)
 {
 	if (!view || !text)
 		return NB_ERR_INVAL;
@@ -717,7 +712,7 @@ int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int 
 
 	/* Component/Stack geometry owns external separation. Preserve interior
 	 * blank lines while removing legacy formatter boundary newlines. */
-	for (size_t i = 0; i < spans.len; i++) {
+	for (size_t i = 0; trim && i < spans.len; i++) {
 		struct nt_text_span *slot = nb_vec_at(&spans, i);
 		while (*slot->text == '\n' || *slot->text == '\r')
 			slot->text++;
@@ -726,7 +721,7 @@ int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int 
 			break;
 	}
 
-	for (size_t i = spans.len; i > 0; i--) {
+	for (size_t i = spans.len; trim && i > 0; i--) {
 		struct nt_text_span *slot = nb_vec_at(&spans, i - 1);
 		char *end = (char *)slot->text + strlen(slot->text);
 		while (end > slot->text && (end[-1] == '\n' || end[-1] == '\r'))
@@ -766,4 +761,20 @@ int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int 
 	}
 
 	return rc;
+}
+
+int cli_messages_set_rendered_view(struct nt_view *view, const char *text, int styled)
+{
+	return cli_messages_set_rendered_links(view, text, styled, NULL);
+}
+
+int cli_messages_set_source_view(struct nt_view *view, const char *text, int styled)
+{
+	return cli_messages_set_styled_view(view, text, styled, NULL, 0);
+}
+
+int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int styled,
+	nb_vec *links)
+{
+	return cli_messages_set_styled_view(view, text, styled, links, 1);
 }

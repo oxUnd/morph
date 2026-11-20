@@ -222,6 +222,9 @@ preserving the draft. Under 100 columns only the focused pane is shown. File loa
 retain their intended destination without taking focus back after navigation.
 Text previews are limited to 1 MiB; binary, missing and unsupported files show an
 explicit explanation. Supported images use the existing media controls.
+Supported source files use the Markdown library's standalone syntax highlighter;
+the preview worker caches sanitized ANSI styles for the native text view. Source
+whitespace and line locations are preserved, including in no-color mode.
 
 `/model` (or `/m`) replaces the editable composer with the inline Normal/Ultra
 selector, using the same composer component as `/permissions`. Escape and

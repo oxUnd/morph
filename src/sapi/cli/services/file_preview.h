@@ -6,6 +6,7 @@
 struct cli_file_preview {
 	char *path;
 	nb_buf content;
+	char *highlighted;
 	int status, image, markdown, truncated;
 };
 

@@ -169,6 +169,7 @@ target_link_libraries(morph-cli PUBLIC
 	morph-credits
 	morph-render
 	MorphMarkdown::Kitty
+	morph-markdown-render
 	morph-markdown-html
 	morph-skill
 	morph-tools

@@ -48,8 +48,12 @@ def main():
                          '[Nested source](src/demo.c:80)\n', encoding='utf-8')
         (directory / 'src').mkdir()
         (directory / 'src/demo.c').write_text('\n'.join(
-            'SOURCE_PREVIEW_MARKER' if line == 80 else f'source row {line}'
-            for line in range(1, 121)) + '\n')
+            '' if line <= 2 else
+            '/* 中文 comment' if line == 3 else
+            ' * continued */' if line == 4 else
+            'return 80; /* SOURCE_PREVIEW_MARKER */' if line == 80 else
+            f'const int source_row_{line} = {line};'
+            for line in range(1, 121)) + '\n', encoding='utf-8')
         (directory / 'unrelated.txt').write_text('not part of this conversation')
         (directory / 'missing.txt').write_text('removed after the answer')
         (directory / 'extra.txt').write_text('extra content')
@@ -89,6 +93,13 @@ def main():
                 frame = wait_for(terminal, lambda text: 'SOURCE_PREVIEW_MARKER' in text,
                                  f'preview at {columns} columns')
                 assert 'Files (3)' in frame, frame
+                row = next(i for i, text in enumerate(terminal.screen.display)
+                           if 'return 80;' in text)
+                column = terminal.screen.display[row].index('return 80;')
+                keyword = terminal.screen.buffer[row][column]
+                number = terminal.screen.buffer[row][column + len('return ')]
+                assert keyword.bold and keyword.fg != 'default', frame
+                assert number.fg != keyword.fg, frame
                 if columns >= 100:
                     assert 'Inspect Notes' in frame, frame
                 terminal.send('\x1b')
@@ -122,7 +133,8 @@ def main():
             terminal.send('/files\r')
             wait_for(terminal, lambda text: 'Files (4)' in text, 'restored inventory')
             assert terminal.child.isalive(), terminal.raw[-4000:]
-            print('PASS: sidebar file links, Markdown/source, search, responsive layout, '
+            print('PASS: sidebar file links, Markdown/source, syntax colors and source locations, '
+                  'search, responsive layout, '
                   'active-turn updates, drafts and session restore')
         finally:
             if release:

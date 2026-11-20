@@ -8,6 +8,7 @@ extern "C" {
 #include "sapi/cli/models/files.h"
 #include "sapi/cli/services/file_preview.h"
 #include "sapi/cli/presentation/messages.h"
+#include <morph_markdown_highlight.h>
 #include "sapi/cli/components/plan.h"
 #include "sapi/cli/components/notice.h"
 #include "sapi/cli/models/transcript.h"
@@ -918,17 +919,66 @@ TEST_F(CliRetainedWidgetsTest, FileSidebarRendersMarkdownAndSourceAcrossWidths)
 	preview->path = strdup("/workspace/docs/readme.md");
 	preview->markdown = 1;
 	ASSERT_TRUE(nb_buf_append_cstr(&preview->content,
-		"# Preview heading\n\nSome **document content** and [source](../main.c:2).\n"));
+		"# Preview heading\n\nSome **document content** and [source](../main.c:2).\n\n"
+		"```c\nint value = 42;\n```\n"));
 	ASSERT_EQ(cli_file_browser_preview_take(component, &preview, 0), 0);
 	EXPECT_EQ(preview, nullptr);
 	ASSERT_EQ(nt_application_step(app, 0), 0);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("Preview heading"), std::string::npos);
 	EXPECT_NE(retained_normalized(frame.c_str()).find("docs/readme.md"), std::string::npos);
+	auto *document = nt_view_child(component, 3);
+	EXPECT_EQ(std::string(nt_text_view_text(document)).find("```c"), std::string::npos);
+	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
 	for (int columns : {80, 60, 120}) {
 		Resize(columns);
 		EXPECT_NE(retained_normalized(frame.c_str()).find("document content"),
 			std::string::npos);
 	}
+
+	struct nt_event toggle{};
+	toggle.type = NT_EVENT_KEY;
+	toggle.key = 'm';
+	ASSERT_EQ(nt_view_class_methods(component)->handle_event(component, &toggle), 1);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(std::string(nt_text_view_text(document)).find("# Preview heading"),
+		std::string::npos);
+	EXPECT_NE(std::string(nt_text_view_text(document)).find("```c"), std::string::npos);
+	ASSERT_EQ(nt_view_class_methods(component)->handle_event(component, &toggle), 1);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_EQ(std::string(nt_text_view_text(document)).find("```c"), std::string::npos);
+	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, FileSidebarCodePreservesWhitespaceSelectionAndNoColor)
+{
+	kind = Files;
+	Present();
+	struct cli_file_preview *preview = static_cast<cli_file_preview *>(calloc(1, sizeof(*preview)));
+	ASSERT_NE(preview, nullptr);
+	preview->path = strdup("/workspace/main.c");
+	const char *source = "\n\n/* 中文 */\n\tint value = 42;\n\n";
+	ASSERT_TRUE(nb_buf_append_cstr(&preview->content, source));
+	ASSERT_EQ(morph_md_highlight_ansi("c", source, strlen(source),
+		&preview->highlighted, nullptr), 0);
+	ASSERT_EQ(cli_file_browser_preview_take(component, &preview, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	auto *document = nt_view_child(component, 3);
+	EXPECT_STREQ(nt_text_view_text(document), source);
+	EXPECT_NE(frame.find("\033[38;5;6m"), std::string::npos);
+	ASSERT_EQ(nt_text_view_set_cursor(document, 2), 0);
+	for (int columns : {80, 60, 120}) {
+		Resize(columns);
+		EXPECT_STREQ(nt_text_view_text(document), source);
+		EXPECT_EQ(nt_text_view_cursor(document), 2u);
+	}
+
+	char *highlighted = nullptr;
+	ASSERT_EQ(morph_md_highlight_ansi("c", source, strlen(source), &highlighted, nullptr), 0);
+	ASSERT_EQ(cli_messages_set_source_view(document, highlighted, 0), 0);
+	free(highlighted);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_STREQ(nt_text_view_text(document), source);
+	EXPECT_EQ(frame.find("\033[38;5;6m"), std::string::npos);
 }
 
 TEST_F(CliRetainedWidgetsTest, RichDocumentLinksUseTrimmedDisplayOffsets)
