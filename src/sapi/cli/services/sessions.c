@@ -10,6 +10,7 @@
 #include "sapi/cli/pages/question.h"
 #include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/presentation/messages.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/session_restore.h"
@@ -1249,6 +1250,17 @@ int cli_sessions_submit(struct cli_application *ctx, const char *input,
 	if (sessions->stopping)
 		return NB_ERR_CLOSED;
 
+	/* Publish input before first-session setup or request dispatch can block. */
+	if (cli_chat_active(ctx) && !cli_sessions_active(ctx)) {
+		int rc = cli_chat_message(ctx, CLI_MESSAGE_USER,
+			stored_input ? stored_input : input);
+		if (!rc)
+			rc = cli_application_flush_output(ctx);
+
+		if (rc)
+			return rc;
+	}
+
 	if (sessions->selected <= 0) {
 		char name[96];
 		snprintf(name, sizeof(name), "new_%lld_%llu", (long long)time(NULL),
@@ -1331,9 +1343,6 @@ int cli_sessions_submit(struct cli_application *ctx, const char *input,
 		state->result = 0;
 		nb_mutex_unlock(sessions->completion_lock);
 		ctx->session_auto_named = 1;
-		if (cli_chat_active(ctx))
-			cli_presentation_user_input(ctx, stored_input ? stored_input : input);
-
 		if (state->finish_owned)
 			cli_turn_begin(ctx);
 	}

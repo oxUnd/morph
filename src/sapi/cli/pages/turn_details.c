@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/turn_details.h"
 
+#include "sapi/cli/components/shortcut_hint.h"
+
 #include "sapi/cli/application.h"
 #include "sapi/cli/components/report.h"
 #include "sapi/cli/components/page_layout.h"
@@ -130,7 +132,7 @@ static void cli_turn_details_build(struct nt_view_controller *controller,
 			       cli_output_color_enabled(ctx), cli_turn_details_document_format);
 
 	const struct nt_view_options footer = cli_panel_hint(NT_AUTO);
-	struct nt_view *shortcuts = nt_label_add(builder, page->layout.footer, "", &footer);
+	struct nt_view *shortcuts = cli_shortcut_hint_add(builder, page->layout.footer, "", &footer);
 	if (shortcuts)
 		nt_builder_fail(builder, nt_view_bind_compute(shortcuts, NT_PROP_TEXT,
 			cli_turn_details_shortcuts, page->raw));

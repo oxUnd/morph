@@ -1,5 +1,7 @@
 #include "sapi/cli/components/file_browser.h"
 
+#include "sapi/cli/components/shortcut_hint.h"
+
 #include "sapi/cli/components/file_viewer.h"
 #include "sapi/cli/models/files.h"
 #include "sapi/cli/presentation/style.h"
@@ -476,7 +478,7 @@ struct nt_view *cli_file_browser_add(struct nt_builder *builder, struct nt_view 
 	struct nt_view_options footer = toolbar;
 	footer.height = NT_AUTO;
 	footer.padding.left = footer.padding.right = 1;
-	browser->footer = nt_label_add(builder, root,
+	browser->footer = cli_shortcut_hint_add(builder, root,
 		"Up/Down select · Enter open\nCtrl+O chat · Esc close", &footer);
 	if (!nt_builder_error(builder)) {
 		nt_builder_fail(builder, nt_label_set_wrap_mode(browser->heading, NT_TEXT_WRAP_NONE));
@@ -551,7 +553,7 @@ int cli_file_browser_sync(struct nt_view *view)
 	}
 
 	if (!rc)
-		rc = nt_label_set_text(browser->footer, browser->viewing && current
+		rc = cli_shortcut_hint_set_text(browser->footer, browser->viewing && current
 			? cli_file_viewer_hint(current)
 			: "Up/Down select · Enter open\nCtrl+O chat · Esc close");
 

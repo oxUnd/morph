@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/rewind.h"
+
+#include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/services/checkpoints.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
@@ -187,7 +189,7 @@ static int cli_rewind_layout(struct cli_rewind_picker *page)
 			page->stage ? "Up/Down Select · Enter Restore · Esc Back"
 				    : "Up/Down Select · Enter Preview · Esc Cancel";
 		cli_rewind_clip(text, sizeof(text), hint, w);
-		rc = nt_label_set_text(page->footer, text);
+		rc = cli_shortcut_hint_set_text(page->footer, text);
 	}
 
 	return rc;
@@ -269,7 +271,7 @@ static void cli_rewind_build(struct nt_view_controller *controller, struct nt_bu
 
 	page->list = nt_list_view_add(builder, root, NULL, 0, 0, NULL);
 	page->files = nt_text_view_add(builder, root, "", NULL);
-	page->footer = nt_label_add(builder, page->layout.footer, "", &hint);
+	page->footer = cli_shortcut_hint_add(builder, page->layout.footer, "", &hint);
 	if (nt_builder_error(builder))
 		return;
 

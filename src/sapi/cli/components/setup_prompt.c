@@ -1,5 +1,7 @@
 #include "sapi/cli/components/setup_prompt.h"
 
+#include "sapi/cli/components/shortcut_hint.h"
+
 #include "sapi/cli/services/configuration/role.h"
 #include "sapi/cli/services/configuration/mcp.h"
 #include <nb/cleanup.h>
@@ -150,7 +152,8 @@ static void cli_setup_prompt_build(struct nt_view_controller *controller,
 		}
 	}
 
-	p->hint = cli_setup_prompt_label(builder, root, "", dim);
+	p->hint = cli_shortcut_hint_add(builder, root, "",
+		&(struct nt_view_options){.height = 1});
 }
 
 static void cli_setup_prompt_deinit(struct nt_view_controller *controller)
@@ -320,7 +323,7 @@ static int cli_setup_prompt_choices(struct cli_setup_prompt *p, int width, int r
 			   : width < 56 ? "↑↓ Move  Enter OK  Esc Back"
 					: "↑↓ Choose · Enter Select · Esc Back · Ctrl+C Exit";
 	if (!rc)
-		rc = nt_label_set_text(p->hint, hint);
+		rc = cli_shortcut_hint_set_text(p->hint, hint);
 
 	if (!rc)
 		rc = nt_view_set_hidden(p->hint, rows < 4);
@@ -363,10 +366,10 @@ int cli_setup_prompt_present(struct cli_setup_prompt *p, struct nt_inline_region
 			rc = nt_label_set_text(p->input, nb_buf_cstr(&input));
 
 		if (!rc)
-			rc = nt_label_set_text(
+			rc = cli_shortcut_hint_set_text(
 				p->hint,
 				columns < 60
-					? "Enter OK  Esc Back  ^U Clear"
+					? "Enter OK  Esc Back  Ctrl+U Clear"
 					: "Enter Continue · Esc Back · Ctrl+U Clear · Ctrl+C Exit");
 
 		x = (int)caret + 2;

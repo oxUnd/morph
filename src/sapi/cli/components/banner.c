@@ -1,6 +1,7 @@
 #include "sapi/cli/components/banner.h"
 #include "sapi/cli/adapters/media/asset.h"
 #include "sapi/cli/components/report.h"
+#include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/banner.h"
 #include "sapi/cli/presentation/output.h"
@@ -17,7 +18,7 @@ static int cli_banner_format_report(struct cli_report *report, nb_buf *rendered,
 {
 	struct cli_banner *banner = (struct cli_banner *)report;
 	struct cli_application *ctx = cli_application_from_view(&report->base);
-	return cli_banner_render(ctx, rendered, width, banner->logo != NULL);
+	return cli_banner_render_metadata(ctx, rendered, width, banner->logo != NULL);
 }
 
 static int cli_banner_layout(struct nt_view *view)
@@ -82,5 +83,14 @@ struct nt_view *cli_banner_add(struct nt_builder *builder, struct nt_view *paren
 		.padding = {.left = CLI_BANNER_PADDING, .right = CLI_BANNER_PADDING}};
 	nt_builder_fail(builder, nt_view_set_options(banner->report.text, &gutters));
 	banner->logo = cli_banner_logo_add_borrow(builder, &banner->report.base, ctx);
+	banner->report.footer = cli_shortcut_hint_add(builder, &banner->report.base,
+		"Enter Send   Ctrl+J New line   Esc Cancel   Ctrl+Cmd+V Paste image",
+		&(struct nt_view_options){.width = NT_FILL, .max_width = 80,
+			.margin = {.top = 1, .bottom = 1},
+			.padding = {.left = CLI_BANNER_PADDING, .right = CLI_BANNER_PADDING}});
+	if (banner->report.footer)
+		nt_builder_fail(builder, cli_shortcut_hint_set_wrap_mode(
+			banner->report.footer, NT_TEXT_WRAP_WORD));
+
 	return &banner->report.base;
 }

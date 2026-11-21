@@ -1,5 +1,7 @@
 #include "sapi/cli/components/agents_browser.h"
 
+#include "sapi/cli/components/shortcut_hint.h"
+
 #include "sapi/cli/presentation/agents.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/buf.h>
@@ -609,13 +611,13 @@ struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_vie
 	b->detail_scroll = nt_scroll_view_add(builder, v, NULL);
 	b->detail_text = nt_text_view_add(builder, b->detail_scroll, "", NULL);
 	b->external_footer = footer != NULL;
-	b->footer = nt_label_add(builder, footer ? footer : v, "",
+	b->footer = cli_shortcut_hint_add(builder, footer ? footer : v, "",
 				 &(struct nt_view_options){.height = 1});
 	nt_builder_fail(builder, nt_view_bind_compute(b->heading, NT_PROP_TEXT,
 						      cli_agents_browser_heading, b->agent_count));
 	nt_builder_fail(builder, nt_view_bind_compute(b->footer, NT_PROP_TEXT,
 						      cli_agents_browser_footer, b->hint));
-	struct nt_view *labels[] = {b->heading, b->rule, b->columns, b->detail_heading, b->footer};
+	struct nt_view *labels[] = {b->heading, b->rule, b->columns, b->detail_heading};
 	for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++)
 		nt_builder_fail(builder, nt_label_set_wrap_mode(labels[i], NT_TEXT_WRAP_NONE));
 

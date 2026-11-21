@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/resume.h"
+
+#include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include <nb/err.h>
@@ -588,7 +590,7 @@ static void cli_resume_build(struct nt_view_controller *controller, struct nt_bu
 	cli_page_layout_build(builder, &page->layout, "resume", &nt_view_base_class, NULL, NULL);
 	struct nt_view *root = page->layout.body;
 	const struct nt_view_options hint = cli_panel_hint(1);
-	nt_label_add(builder, page->layout.footer,
+	cli_shortcut_hint_add(builder, page->layout.footer,
 		     "Up/Down Select · Enter Resume · Left/Right Page · Esc Back", &hint);
 	for (int i = 0; i < CLI_RESUME_LABEL_COUNT; i++) {
 		struct nt_view_options options = cli_panel_hint(NT_AUTO);

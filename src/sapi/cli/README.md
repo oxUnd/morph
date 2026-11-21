@@ -29,6 +29,7 @@ cli/
   components/                  NT views for the composer, messages, reports, lists and panels
     command                    submitted slash commands, result spacing and outer margins
     status_bar, mcp_status     native footer controls and aligned connection state rows
+    shortcut_hint             native TextView spans for accent and bold shortcut keys
     page_layout                full-screen breadcrumb navigation, content and shortcut footer
   commands/                    options, slash actions, registry and management entry points
   services/
@@ -86,6 +87,12 @@ feed. Click the footer's MCP summary to inspect live connection progress and
 failure details in a right-side floating card. The draft and caret remain active
 while the card is open. Its rows use native Labels with an inherited background,
 server names on the left and connection states on the right.
+
+Application shortcut hints share the TUI accent role and bold key names through
+`components/shortcut_hint`; descriptions use the muted role. Startup help,
+panels, sidebars, setup and live activity use native text spans. Page code supplies
+plain hint text and never assembles ANSI shortcut colors.
+
 Explicit `/mcp connect` and `/mcp disconnect` commands always print their own
 result or error receipt, independently of the background lifecycle events.
 

@@ -1,4 +1,6 @@
 #include "sapi/cli/components/selector.h"
+
+#include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/presentation/panel.h"
 
 #include "sapi/cli/application.h"
@@ -177,12 +179,12 @@ static struct nt_view *cli_selector_build(struct nt_builder *builder, struct nt_
 	layout->list = nt_list_view_add(builder, root, NULL, 0, 0, NULL);
 	layout->description = nt_label_add(builder, root, "", &dim);
 	layout->hint =
-		nt_label_add(builder, root, "  Up/Down Select  Enter Apply  Esc Cancel", &dim);
+		cli_shortcut_hint_add(builder, root, "  Up/Down Select  Enter Apply  Esc Cancel", &dim);
 	if (nt_builder_error(builder))
 		return NULL;
 
 	struct nt_view *labels[] = {layout->heading, layout->subtitle_view, layout->detail_view,
-				    layout->description, layout->hint};
+				    layout->description};
 	for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++)
 		nt_builder_fail(builder, nt_label_set_opaque(labels[i], 1));
 

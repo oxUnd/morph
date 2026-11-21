@@ -68,7 +68,7 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 	int summary = agent_summary && *agent_summary;
 	if (!rc)
 		rc = (nb_buf_append_cstr(&text,
-					 summary && columns < 76 ? " · esc" : " · esc to interrupt")
+					 summary && columns < 76 ? " · Esc" : " · Esc to interrupt")
 			      ? 0
 			      : NB_ERR_NOMEM);
 
@@ -89,10 +89,7 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 					  styled);
 
 	if (!rc && hint_width)
-		rc = (nb_buf_printf(out, "%s%s%s", styled ? CLI_COMMAND_COLOR : "", hint,
-				    styled ? ANSI_RESET : "")
-			      ? 0
-			      : NB_ERR_NOMEM);
+		rc = nb_buf_append_cstr(out, hint) ? 0 : NB_ERR_NOMEM;
 
 	return rc;
 }

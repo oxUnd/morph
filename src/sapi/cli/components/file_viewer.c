@@ -99,8 +99,9 @@ static int cli_file_viewer_render(struct cli_file_viewer *viewer, int width)
 			viewer->styled ? ANSI_RESET : "", message))
 			return nb_buf_status(&text);
 
-		rc = cli_messages_set_rendered_links(viewer->document, nb_buf_cstr(&text),
-			viewer->styled, &viewer->links);
+		cli_messages_links_cleanup(&viewer->links);
+		rc = cli_messages_set_rendered_shortcuts_view(viewer->document, nb_buf_cstr(&text),
+			viewer->styled);
 	} else if (preview->markdown && !viewer->source) {
 		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 		rc = cli_markdown_render_document(&rendered,

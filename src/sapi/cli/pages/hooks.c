@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/hooks.h"
+
+#include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include <nothing/tui/component_state.h>
@@ -873,7 +875,7 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 		rc = cli_hooks_label(s->heading, heading, w, HOOK_DIM);
 
 	if (!rc)
-		rc = cli_hooks_label(s->range, range, w, HOOK_DIM);
+		rc = cli_shortcut_hint_set_text(s->range, range);
 
 	if (!rc)
 		rc = cli_page_layout_set_subpage(&s->layout,
@@ -882,7 +884,7 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 			: nav->event_filter ? "handlers" : "");
 
 	if (!rc)
-		rc = cli_hooks_label(s->help, hint, w, HOOK_DIM);
+		rc = cli_shortcut_hint_set_text(s->help, hint);
 
 	if (!rc && batch)
 		rc = cli_hooks_label(
@@ -892,7 +894,7 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 	if (*s->message)
 		snprintf(status, sizeof(status), "%s", s->message);
 	else if (review && s->document_lines > s->document_height)
-		snprintf(status, sizeof(status), "Lines %d–%d / %d · PgUp/PgDn to read more",
+		snprintf(status, sizeof(status), "Lines %d–%d / %d",
 			 offset + 1, offset + s->document_height, s->document_lines);
 
 	if (!rc)
@@ -1240,7 +1242,7 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 	s->rule = nt_label_add(builder, s->root, "", &dim);
 	s->heading = nt_label_add(builder, s->root, "", NULL);
 	s->list = nt_list_view_add(builder, s->root, NULL, 0, 0, NULL);
-	s->range = nt_label_add(builder, s->root, "", NULL);
+	s->range = cli_shortcut_hint_add(builder, s->root, "", NULL);
 	s->divider = nt_label_add(builder, s->root, "", &dim);
 	s->viewport = nt_scroll_view_add(builder, s->root, NULL);
 	s->document = nt_text_view_add(builder, s->viewport, "",
@@ -1250,13 +1252,13 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 			     &(struct nt_view_options){.style = cli_hooks_style(HOOK_BOLD)});
 	s->choices = nt_list_view_add(builder, s->root, NULL, 0, 0, NULL);
 	s->message_view = nt_label_add(builder, s->root, "", NULL);
-	s->help = nt_label_add(builder, s->layout.footer, "", &dim);
+	s->help = cli_shortcut_hint_add(builder, s->layout.footer, "", &dim);
 	if (nt_builder_error(builder))
 		return;
 
 	struct nt_view *labels[] = {s->title,	     s->subtitle,
-				    s->scope,	     s->heading,      s->range,
-				    s->choice_title, s->message_view, s->help};
+				    s->scope,	     s->heading,
+				    s->choice_title, s->message_view};
 	for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++)
 		nt_builder_fail(builder, nt_label_set_opaque(labels[i], 1));
 

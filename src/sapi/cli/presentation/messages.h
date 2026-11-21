@@ -30,6 +30,8 @@ int cli_messages_append_rendered(nb_buf *out, const char *bytes, size_t length, 
 				 int styled);
 /* Bridges trusted Markdown renderer SGR into copied structured text spans. */
 int cli_messages_set_rendered_view(struct nt_view *, const char *text, int styled);
+int cli_messages_set_rendered_shortcuts_view(struct nt_view *, const char *text, int styled);
+int cli_messages_set_rendered_shortcut_header(struct nt_view *, const char *text, int styled);
 /* Trusted syntax-highlighter SGR; preserve all source whitespace and line offsets. */
 int cli_messages_set_source_view(struct nt_view *, const char *text, int styled);
 struct cli_messages_link {

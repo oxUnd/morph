@@ -37,6 +37,7 @@ add_library(morph-cli STATIC
 	components/selector.c
 	components/composer.c
 	components/status_bar.c
+	components/shortcut_hint.c
 	components/command.c
 	components/message.c
 	components/mcp_tree.c
@@ -121,6 +122,7 @@ add_library(morph-cli STATIC
 	presentation/feed.c
 	presentation/list.c
 	presentation/notice.c
+	presentation/shortcuts.c
 	presentation/panel.c
 	presentation/plan.c
 	presentation/shell_style.c

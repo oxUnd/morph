@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/memory.h"
+
+#include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/components/list.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
@@ -253,8 +255,12 @@ static int cli_memory_description(void *data, struct nt_value *value)
 
 static int cli_memory_help(void *data, struct nt_value *value)
 {
+	struct cli_memory_page *page = data;
+	if (nt_component_state_get_bool(page->searching))
+		return nt_value_set_string(value, "Enter Search · Esc Cancel");
+
 	return nt_value_set_string(
-		value, nt_component_state_get_bool(data)
+		value, nt_component_state_get_bool(page->detail)
 			       ? "Up/Down/PgUp/PgDn scroll · / search · r refresh · Esc back"
 			       : "Up/Down · Enter open · / search · r refresh · Esc back");
 }
@@ -264,7 +270,7 @@ static int cli_memory_status(void *data, struct nt_value *value)
 	struct cli_memory_page *page = data;
 	const char *query = nt_component_state_get_string(page->query);
 	return nt_value_set_string(value, nt_component_state_get_bool(page->searching)
-						  ? "Search: enter terms, then Enter; Esc cancels"
+						  ? "Search: enter terms"
 					  : *query ? query
 						   : "All project memories");
 }
@@ -352,7 +358,7 @@ static void cli_memory_build(struct nt_view_controller *controller, struct nt_bu
 	struct nt_view *status = nt_label_add(builder, root, "", NULL);
 	page->search = nt_text_field_add(builder, root,
 					 &(struct nt_text_field_options){.limit = 2049}, NULL);
-	struct nt_view *help = nt_label_add(builder, page->layout.footer, "", &hint);
+	struct nt_view *help = cli_shortcut_hint_add(builder, page->layout.footer, "", &hint);
 	if (!nt_builder_error(builder)) {
 		nt_builder_fail(builder, nt_label_set_wrap_mode(description, NT_TEXT_WRAP_CHAR));
 		nt_builder_fail(builder,
@@ -367,7 +373,7 @@ static void cli_memory_build(struct nt_view_controller *controller, struct nt_bu
 		nt_builder_fail(builder, nt_view_bind_compute(description, NT_PROP_TEXT,
 							      cli_memory_description, page->list));
 		nt_builder_fail(builder, nt_view_bind_compute(help, NT_PROP_TEXT, cli_memory_help,
-							      page->detail));
+							      page));
 		nt_builder_fail(builder, nt_view_bind_compute(status, NT_PROP_TEXT,
 							      cli_memory_status, page));
 		nt_builder_fail(builder,

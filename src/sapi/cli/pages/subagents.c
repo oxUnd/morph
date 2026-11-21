@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/subagents.h"
 
+#include "sapi/cli/components/shortcut_hint.h"
+
 #include "config/config.h"
 #include "event/event.h"
 #include "runtime/runtime.h"
@@ -842,7 +844,7 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 	nt_label_add(builder, view->edit_row, "  Follow up › ", &row);
 	view->editor = nt_text_field_add(builder, view->edit_row,
 					 &(struct nt_text_field_options){.limit = 65533}, &fill);
-	view->help = nt_label_add(builder, page->layout.footer, "", &dim);
+	view->help = cli_shortcut_hint_add(builder, page->layout.footer, "", &dim);
 	if (nt_builder_error(builder))
 		return;
 
@@ -1032,15 +1034,14 @@ static struct nt_view *cli_subagents_picker_build(struct nt_builder *builder,
 	struct nt_view *heading = nt_label_add(builder, root, "  Subagents", &title);
 	page->picker->list = nt_list_view_add(builder, root, NULL, 0, 0, NULL);
 	struct nt_view *help =
-		nt_label_add(builder, root, "  ↑/↓ select · Enter view · Esc cancel", &hint);
+		cli_shortcut_hint_add(builder, root, "  ↑/↓ select · Enter view · Esc cancel", &hint);
 	nt_builder_fail(builder, nt_view_use_state_int(root, 0, &page->picker->height));
 	if (nt_builder_error(builder))
 		return NULL;
 
 	nt_builder_fail(builder, nt_label_set_wrap_mode(heading, NT_TEXT_WRAP_NONE));
-	nt_builder_fail(builder, nt_label_set_wrap_mode(help, NT_TEXT_WRAP_NONE));
+	nt_builder_fail(builder, cli_shortcut_hint_set_wrap_mode(help, NT_TEXT_WRAP_NONE));
 	nt_builder_fail(builder, nt_label_set_opaque(heading, 1));
-	nt_builder_fail(builder, nt_label_set_opaque(help, 1));
 	nt_builder_fail(builder, nt_view_bind_compute(heading, NT_PROP_HIDDEN,
 						      cli_subagents_picker_title_hidden,
 						      page->picker->height));

@@ -86,6 +86,14 @@
   and relevant presentation/PTY regressions after changing status presentation.
 
 ## CLI Slash Command Presentation
+- Every application shortcut hint uses the TUI theme's accent color plus bold
+  for key names; descriptions use the muted theme role. Apply this consistently
+  to startup help, chat activity, panels, popovers, sidebars, setup and help.
+  Use standard TUI controls and native text spans through the shared
+  `components/shortcut_hint` component and `presentation/shortcuts` policy.
+  Never concatenate ANSI escapes or hardcode colors to highlight shortcuts in
+  page, component or formatter code. Preserve plain/JSON and no-color output;
+  do not restyle user/model text or tool payloads as application shortcut hints.
 - Shortcut labels use title-case modifiers (`Ctrl`, `Shift`, `Alt`, `Cmd`,
   `Meta`), `+` separators, and uppercase letter keys: `Ctrl+J`,
   `Ctrl+Cmd+V`, `Shift+Tab`. Named keys keep their normal display form,

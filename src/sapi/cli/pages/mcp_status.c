@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/mcp_status.h"
 
+#include "sapi/cli/components/shortcut_hint.h"
+
 #include "sapi/cli/application.h"
 #include "sapi/cli/components/mcp_status.h"
 #include "sapi/cli/pages/chat.h"
@@ -160,7 +162,7 @@ static struct nt_view *cli_mcp_status_page_build(struct nt_builder *builder,
 	page->statuses = cli_mcp_status_add(builder, page->scroll,
 		cli_output_color_enabled(ctx));
 	page->empty = nt_label_add(builder, body, "No MCP servers configured.", NULL);
-	nt_label_add(builder, body, "Esc close · click outside", &hint);
+	cli_shortcut_hint_add(builder, body, "Esc close · click outside", &hint);
 	if (nt_builder_error(builder))
 		return NULL;
 

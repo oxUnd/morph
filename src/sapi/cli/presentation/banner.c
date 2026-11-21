@@ -215,7 +215,7 @@ static void cli_banner_hints(struct cli_application *ctx, const struct cli_banne
 }
 
 static int cli_banner_format(struct cli_application *ctx, const char *model, const char *directory,
-			     size_t width, size_t padding, int retained_logo)
+			     size_t width, size_t padding, int retained_logo, int shortcuts)
 {
 	static const struct cli_banner_hint commands[] = {
 		{"/help", "Commands"},
@@ -274,10 +274,12 @@ static int cli_banner_format(struct cli_application *ctx, const char *model, con
 				 padding, CLI_COMMAND_COLOR);
 	}
 
-	cli_output_putchar(ctx, '\n');
-	cli_banner_hints(ctx, keys, sizeof(keys) / sizeof(keys[0]), width, padding,
-			 CLI_BANNER_MUTED);
-	cli_output_putchar(ctx, '\n');
+	if (shortcuts) {
+		cli_output_putchar(ctx, '\n');
+		cli_banner_hints(ctx, keys, sizeof(keys) / sizeof(keys[0]), width, padding, "");
+		cli_output_putchar(ctx, '\n');
+	}
+
 	return 0;
 }
 
@@ -286,10 +288,11 @@ void cli_banner_print(struct cli_application *ctx, const char *model, const char
 	int columns = cli_list_columns();
 	size_t padding = columns > (int)(2u * CLI_BANNER_PADDING) ? CLI_BANNER_PADDING : 0;
 	size_t width = columns > 0 ? (size_t)columns - 2u * padding : 1;
-	(void)cli_banner_format(ctx, model, directory, width, padding, 0);
+	(void)cli_banner_format(ctx, model, directory, width, padding, 0, 1);
 }
 
-int cli_banner_render(struct cli_application *ctx, nb_buf *rendered, int width, int has_logo)
+static int cli_banner_render_content(struct cli_application *ctx, nb_buf *rendered, int width,
+	int has_logo, int shortcuts)
 {
 	nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *workdir = runtime_workdir_borrow(ctx->runtime);
@@ -319,7 +322,17 @@ int cli_banner_render(struct cli_application *ctx, nb_buf *rendered, int width, 
 	width = width > gutters ? width - gutters : 1;
 	int logo = has_logo && width >= 30;
 	rc = cli_banner_format(ctx, runtime_config_borrow(ctx->runtime)->models.text.model,
-			       nb_buf_cstr(&directory), (size_t)width, 0, logo);
+			       nb_buf_cstr(&directory), (size_t)width, 0, logo, shortcuts);
 	cli_output_capture_end(ctx);
 	return rc ? rc : nb_buf_status(rendered);
+}
+
+int cli_banner_render(struct cli_application *ctx, nb_buf *rendered, int width, int has_logo)
+{
+	return cli_banner_render_content(ctx, rendered, width, has_logo, 1);
+}
+
+int cli_banner_render_metadata(struct cli_application *ctx, nb_buf *rendered, int width, int has_logo)
+{
+	return cli_banner_render_content(ctx, rendered, width, has_logo, 0);
 }

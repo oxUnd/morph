@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/chat.h"
 
+#include "sapi/cli/components/shortcut_hint.h"
+
 #include "config/config.h"
 #include "credits.h"
 #include "runtime/runtime.h"
@@ -875,9 +877,11 @@ int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
 	struct nt_view *view = cli_message_add_borrow(
 		page->builder, page->feed, (enum cli_message_kind)kind,
 			       text ? text : "", cli_output_color_enabled(ctx));
-	if (view && kind == CLI_MESSAGE_USER)
+	if (view && kind == CLI_MESSAGE_USER) {
 		nt_builder_fail(page->builder,
 			cli_message_set_ultra(view, ctx->composer.ultra));
+		nt_builder_fail(page->builder, nt_scroll_view_follow(page->scroll, 1));
+	}
 
 	return cli_chat_page_error(page);
 }
@@ -1037,7 +1041,7 @@ void cli_chat_activity(struct cli_application *ctx, const char *text)
 			return;
 		}
 
-		int rc = cli_messages_set_rendered_view(page->status, text ? text : "",
+		int rc = cli_messages_set_rendered_shortcuts_view(page->status, text ? text : "",
 							cli_output_color_enabled(ctx));
 		if (rc) {
 			free(copy);
@@ -1738,7 +1742,7 @@ static int cli_chat_update_jobs(struct cli_application *ctx, int columns, int st
 
 	int rc = 0;
 	if (rows.len || *nt_text_view_text(page->jobs))
-		rc = cli_messages_set_rendered_view(page->jobs, nb_buf_cstr(&rows), styled);
+		rc = cli_messages_set_rendered_shortcut_header(page->jobs, nb_buf_cstr(&rows), styled);
 
 	if (rc)
 		return rc;
@@ -1797,7 +1801,7 @@ static int cli_chat_update_status(struct cli_application *ctx, int columns, int 
 	}
 
 	if (!rc)
-		rc = cli_messages_set_rendered_view(page->status, nb_buf_cstr(&text), styled);
+		rc = cli_messages_set_rendered_shortcuts_view(page->status, nb_buf_cstr(&text), styled);
 
 	if (!rc)
 		page->next_status_update = next;
@@ -2143,12 +2147,12 @@ static void cli_chat_build_bottom_button(struct cli_chat_page *page, struct nt_b
 	if (styled)
 		options.style = cli_chat_bottom_style(0);
 
-	struct nt_view *caption = nt_label_add(builder, page->bottom_button,
+	struct nt_view *caption = cli_shortcut_hint_add(builder, page->bottom_button,
 					       " " CLI_CHAT_BOTTOM_LABEL " ", &options);
 	if (nt_builder_error(builder))
 		return;
 
-	nt_builder_fail(builder, nt_label_set_wrap_mode(caption, NT_TEXT_WRAP_NONE));
+	nt_builder_fail(builder, cli_shortcut_hint_set_wrap_mode(caption, NT_TEXT_WRAP_NONE));
 	nt_builder_fail(builder, nt_view_set_selectable(caption, 0));
 	if (styled && (!nt_view_on(caption, NT_VIEW_EVENT_MOUSE_ENTER, cli_chat_bottom_hover, NULL) ||
 		       !nt_view_on(caption, NT_VIEW_EVENT_MOUSE_LEAVE, cli_chat_bottom_hover, NULL)))
@@ -2215,7 +2219,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 
 	page->agents = cli_report_text_add(builder, root, &jobs);
 
-	struct nt_view *queue_title = nt_label_add(
+	struct nt_view *queue_title = cli_shortcut_hint_add(
 		builder, root, CLI_FEED_PENDING " Messages queued · Esc to apply now", NULL);
 	const struct nt_view_options queue = {.max_height = 4};
 	page->queue = cli_list_add(builder, root, &queue);

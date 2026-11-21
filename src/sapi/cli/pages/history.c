@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/history.h"
+
+#include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include <nb/cleanup.h>
@@ -380,7 +382,7 @@ static int cli_history_summary(struct cli_history_page *page)
 		rc = nb_buf_status(&names);
 
 	if (!rc)
-		rc = nt_label_set_text(page->filters, nb_buf_cstr(&names));
+		rc = cli_shortcut_hint_set_text(page->filters, nb_buf_cstr(&names));
 
 	if (columns < 76)
 		snprintf(text, sizeof(text), "  Next (est): %lld items · %lld tok",
@@ -626,14 +628,14 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	nt_builder_fail(builder, nt_view_set_focusable(root, 1));
 	const struct nt_view_options fill = {.grow = 1};
 	const struct nt_view_options dim = cli_panel_hint(1);
-	struct nt_view *narrow = nt_label_add(builder, root, "Widen terminal · Esc back", &dim);
+	struct nt_view *narrow = cli_shortcut_hint_add(builder, root, "Widen terminal · Esc back", &dim);
 	struct nt_view *overview = nt_column_add(builder, root, 0, &fill);
 	struct nt_view *reader = nt_column_add(builder, root, 0, &fill);
 	page->count = nt_label_add(builder, overview, "", &dim);
 	nt_label_add(builder, overview, "", &dim);
 	page->budget = nt_label_add(builder, overview, "", &dim);
 	page->scope = nt_label_add(builder, overview, "", &dim);
-	page->filters = nt_label_add(builder, overview, "", &dim);
+	page->filters = cli_shortcut_hint_add(builder, overview, "", &dim);
 	nt_label_add(builder, overview, "", &dim);
 	page->heading = nt_label_add(builder, overview, "", &dim);
 	page->list = nt_list_view_add(builder, overview, NULL, 0, 0, &fill);
@@ -643,13 +645,13 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	page->query = nt_text_field_add(
 		builder, overview, &(struct nt_text_field_options){.limit = CLI_HISTORY_QUERY_MAX},
 		&dim);
-	struct nt_view *help = nt_label_add(builder, page->layout.footer, "", &dim);
+	struct nt_view *help = cli_shortcut_hint_add(builder, page->layout.footer, "", &dim);
 	page->document_view = nt_document_view_add(
 		builder, reader, "", NULL,
 		&(struct nt_view_options){.grow = 1, .padding = {.left = 2, .right = 2}});
 	nt_label_add(builder, reader, "", &dim);
 	page->range = nt_label_add(builder, reader, "", &dim);
-	struct nt_view *detail_help = nt_label_add(builder, page->layout.footer, "", &dim);
+	struct nt_view *detail_help = cli_shortcut_hint_add(builder, page->layout.footer, "", &dim);
 	if (nt_builder_error(builder))
 		return;
 

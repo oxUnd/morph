@@ -1,4 +1,6 @@
 #include "sapi/cli/pages/jobs.h"
+
+#include "sapi/cli/components/shortcut_hint.h"
 #include "errors.h"
 #include "sapi/cli/components/list.h"
 #include "sapi/cli/components/page_layout.h"
@@ -182,7 +184,7 @@ static void cli_jobs_controller_build(struct nt_view_controller *controller,
 	page->list = cli_list_add(builder, root, &fill);
 	page->document = nt_text_view_add(builder, root, "", &fill);
 	page->message = nt_label_add(builder, root, "", NULL);
-	nt_label_add(builder, page->layout.footer,
+	cli_shortcut_hint_add(builder, page->layout.footer,
 		     "Up/Down · Enter output · k stop · r refresh · Esc back", &hint);
 	if (!nt_builder_error(builder)) {
 		nt_builder_fail(builder,

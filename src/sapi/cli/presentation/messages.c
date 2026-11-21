@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/messages.h"
+#include "sapi/cli/presentation/shortcuts.h"
 #include <nb/err.h>
 
 #include "sapi/cli/presentation/markdown.h"
@@ -614,7 +615,7 @@ void cli_messages_links_cleanup(nb_vec *links)
 }
 
 static int cli_messages_set_styled_view(struct nt_view *view, const char *text, int styled,
-	nb_vec *links, int trim)
+	nb_vec *links, int trim, int shortcuts)
 {
 	if (!view || !text)
 		return NB_ERR_INVAL;
@@ -753,7 +754,11 @@ static int cli_messages_set_styled_view(struct nt_view *view, const char *text, 
 		position += bytes_count;
 	}
 
-	rc = nt_text_view_set_spans(view, ((void *)spans.data), spans.len);
+	rc = shortcuts == 2 ? cli_shortcuts_set_header_spans(view,
+		(const struct nt_text_span *)spans.data, spans.len, styled)
+		: shortcuts ? cli_shortcuts_set_spans(view,
+		(const struct nt_text_span *)spans.data, spans.len, styled)
+		: nt_text_view_set_spans(view, ((void *)spans.data), spans.len);
 	if (!rc && links) {
 		cli_messages_links_cleanup(links);
 		*links = pending;
@@ -768,13 +773,23 @@ int cli_messages_set_rendered_view(struct nt_view *view, const char *text, int s
 	return cli_messages_set_rendered_links(view, text, styled, NULL);
 }
 
+int cli_messages_set_rendered_shortcuts_view(struct nt_view *view, const char *text, int styled)
+{
+	return cli_messages_set_styled_view(view, text, styled, NULL, 1, 1);
+}
+
+int cli_messages_set_rendered_shortcut_header(struct nt_view *view, const char *text, int styled)
+{
+	return cli_messages_set_styled_view(view, text, styled, NULL, 1, 2);
+}
+
 int cli_messages_set_source_view(struct nt_view *view, const char *text, int styled)
 {
-	return cli_messages_set_styled_view(view, text, styled, NULL, 0);
+	return cli_messages_set_styled_view(view, text, styled, NULL, 0, 0);
 }
 
 int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int styled,
 	nb_vec *links)
 {
-	return cli_messages_set_styled_view(view, text, styled, links, 1);
+	return cli_messages_set_styled_view(view, text, styled, links, 1, 0);
 }
