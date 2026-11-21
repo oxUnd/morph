@@ -236,6 +236,11 @@ def main():
         if relative != 'application.c' and re.search(
                 r'\bnt_application_(?:init(?:_with_class)?|run|deinit)\s*\(', code):
             errors.append(f'{source}: Application host lifecycle belongs in application.c')
+    for relative in ('pages/setup/controls.c', 'components/setup_form.c'):
+        code = code_only((CLI / relative).read_text())
+        if re.search(r'\bnt_(?:screen_|inline_region_|surface_|canvas_|draw_)\w*\s*\(', code):
+            errors.append(f'{relative}: setup must use native views and window dispatch; '
+                          'terminal drawing and polling belong to the framework')
     # Application status shapes have one shared owner. Content bullets and
     # framework radio controls are deliberately outside this application audit.
     status_glyphs = set('●◉◯○•◦⊗⦻ⓧ✖✘✗✓✔❌❓⨂⍰⯑⚠◇')

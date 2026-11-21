@@ -13,27 +13,30 @@ supervisor process.
 
 ## Form
 
-Setup is a single editable form built from the standard TUI card, form, label,
-text field, drop-down, radio button, check box and button controls. All model
-sections are on the same page; enabling an optional model reveals its fields,
-and the body scrolls while the status line and action buttons stay visible.
+Setup is a native TUI page built from card, form, label, text field, drop-down,
+tab, check box and button controls. Text, Vision, Images and Video have separate
+tabs. The current model scrolls independently while the role, account status
+and save actions remain visible.
 
 The **Role** drop-down selects the primary preset. It fills defaults for newly
 required models without discarding existing choices. Required models are always
 enabled; vision, image and video can be enabled or disabled with their standard
 check boxes.
 
-Every model section exposes its provider, model name, account source and API
-base. Text and vision also expose the context window, max output and the
-DeepSeek thinking option. **Account** is a standard radio group: use an
-environment variable, save a key in the config, or set up later. Only the
-selected source is written. Provider, model, account and URL remain independently
-editable.
+Each tab shows its provider, model name and account source. **Advanced settings**
+reveals the API base and, for text and vision, the context window, max output and
+DeepSeek thinking option. Choosing a custom provider opens advanced settings
+automatically. **Account** is a drop-down: use an environment variable, save a
+masked key in the private config, or set up later. Only the selected source is
+written.
+The text model's advanced section also summarizes the role's integrations and
+permission defaults.
 
 The **Instructions** drop-down keeps existing or built-in instructions, or
 selects the role prompt. Changes stay in memory until **Save and exit** or
 **Save for later**. Esc closes a drop-down; Esc from the form and Ctrl+C cancel
-without writing. Invalid URLs and token ranges stay on the field with an inline
+without writing. **Save for later** also defers an unfilled direct API key.
+Invalid URLs and token ranges stay on the field with an inline
 form error. A missing key is a warning, not a blocked save: setup saves the draft
 and prints the required export command.
 
@@ -47,11 +50,13 @@ Instructions drop-down can explicitly select a new role prompt. Selecting a role
 fills newly required defaults without discarding existing model choices. Only
 the final save writes files.
 
-The form uses Up/Down to move between rows, Tab/Shift+Tab to move focus, Enter
-to edit or open a drop-down, Left/Right to change the account source, Space to
-toggle an optional model, and Esc to close a drop-down or cancel. The layout is
-tested at 120, 80, 60 and 40 columns; narrow terminals stack labels above their
-controls.
+Click fields to edit, click menus and tabs to change settings, and click buttons
+to save or cancel. The wheel and native scrollbars scroll the current model.
+Tab/Shift+Tab move focus; Enter moves to the next text field or opens a menu.
+F10 or Ctrl+Enter saves. Arrow keys navigate an open menu or the model tabs, Space
+toggles a check box, and Esc closes a menu before cancelling the page. Drafts
+and cursor positions survive resizing. The layout supports 120, 80, 60 and 40
+columns; narrow terminals stack model labels above their controls.
 
 The line-oriented fallback keeps its role then overview/save flow. Its explicit
 Customize action opens the full model walkthrough for scripted advanced editing.
@@ -181,7 +186,8 @@ may leave an unused snapshot; there is no multi-file atomic transaction. Existin
 snapshots and backups are retained for recovery. Cancellation before confirmation
 creates no setup output files.
 
-The terminal wizard stays inline and restores terminal mode after completion,
-cancellation and signals. PTY coverage includes 120, 80 and 60-column video
-setup, review-time role changes, explicit reconfiguration, concurrent edits,
-and production setup exiting even when credentials are already available.
+The native Application owns input decoding, mouse capture, focus, popups and
+rendering. It restores the previous terminal screen and modes after completion,
+cancellation and signals. PTY coverage includes mouse and keyboard editing,
+menus, model tabs, scrolling, draft preservation during resize, password masking,
+explicit reconfiguration, concurrent edits and production setup.

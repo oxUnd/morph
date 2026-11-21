@@ -123,6 +123,7 @@ add_library(morph-cli STATIC
 	presentation/list.c
 	presentation/notice.c
 	presentation/shortcuts.c
+	presentation/setup.c
 	presentation/panel.c
 	presentation/plan.c
 	presentation/shell_style.c

@@ -4,6 +4,7 @@
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/pages/setup/controls.h"
+#include "sapi/cli/presentation/setup.h"
 #include "sapi/cli/services/configuration/config.h"
 #include "sapi/cli/services/configuration/mcp.h"
 #include "sapi/cli/services/management.h"

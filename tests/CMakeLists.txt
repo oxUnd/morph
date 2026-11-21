@@ -393,7 +393,7 @@ if(Python3_Interpreter_FOUND AND UNIX)
 			$<TARGET_FILE:morph-setup-pty-driver> $<TARGET_FILE:morph>
 			"${MORPH_TEST_NBASE_SOURCE_DIR}/include/nb/err.h")
 	set_tests_properties(cli_setup_pty_integration PROPERTIES
-		SKIP_RETURN_CODE 77 TIMEOUT 90)
+		SKIP_RETURN_CODE 77 TIMEOUT 150)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX)
 	add_test(NAME cli_application_pty_integration

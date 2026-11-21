@@ -25,11 +25,12 @@ cli/
     mcp_status                 live connection snapshots in a right-side floating card
     turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages
-    setup/                     wizard and its terminal controls
+    setup/                     startup setup page and scripted fallback
   components/                  NT views for the composer, messages, reports, lists and panels
     command                    submitted slash commands, result spacing and outer margins
     status_bar, mcp_status     native footer controls and aligned connection state rows
     shortcut_hint             native TextView spans for accent and bold shortcut keys
+    setup_form                native setup tabs, editable fields and validation
     page_layout                full-screen breadcrumb navigation, content and shortcut footer
   commands/                    options, slash actions, registry and management entry points
   services/
@@ -55,6 +56,13 @@ Names in the tree represent sibling `.c/.h` module pairs unless marked otherwise
 Each header owns its module's declarations; commands include their own handler
 factory headers rather than declaring everything in the registry. Models do not
 import application state. Configuration services do not import wizard pages.
+
+Startup setup runs through `cli_application_run_page` on the same embedded NT
+Application, before the runtime opens. `pages/setup/controls` owns the controller;
+`components/setup_form` composes native tabs, menus, fields, cards and scrolling.
+Native window dispatch owns mouse hit testing, popup capture and focus. Setup
+has no private input loop, surface renderer or terminal-frame assembly. Text
+receipts after the page closes belong to `presentation/setup`.
 
 Interactive chat is a retained ViewController in alternate screen. Its page layout
 contains a scrolling feed, activity/jobs/queue controls and a multiline TextField

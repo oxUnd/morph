@@ -96,6 +96,8 @@ struct cli_application *cli_application_from_view(const struct nt_view *);
 void cli_application_controller_cleanup(struct nt_view_controller **);
 /* Present a cli_application_panel_class instance. NT clears the owner on acceptance. */
 int cli_application_show_page(struct cli_application *, struct nt_view_controller **, int tick_ms);
+int cli_application_run_page(struct cli_application *, struct nt_view_controller **,
+			     FILE *input, FILE *output);
 int cli_application_prompt_deferred(const struct cli_application *);
 extern const struct nt_view_controller_class cli_application_panel_class;
 void cli_application_panel_finished(struct cli_application *, int result);

@@ -11,8 +11,6 @@ extern "C" {
 #endif
 
 int cli_setup_controls_available(FILE *input, FILE *output);
-/* Terminal receipts share the wizard margin; plain output keeps its format. */
-int cli_setup_print(FILE *output, const char *format, ...);
 int cli_setup_controls_collect(struct cli_application *ctx, const char *path, FILE *input,
 			       FILE *output, struct cli_setup_state *state);
 

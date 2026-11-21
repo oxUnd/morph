@@ -11,6 +11,7 @@ import time
 try:
     import pexpect
     import pyte
+    from test_cli_transcript_pty import AlternateScreen
 except ImportError:
     print('Setup PTY tests require pexpect and pyte')
     sys.exit(77)
@@ -23,6 +24,10 @@ CTRL_C = '\x03'
 CTRL_U = '\x15'
 RIGHT = '\x1b[C'
 DOWN = '\x1b[B'
+
+
+class SetupScreen(AlternateScreen, pyte.HistoryScreen):
+    pass
 
 
 class Terminal:
@@ -40,11 +45,11 @@ class Terminal:
         arguments = (["setup", "-c", str(path)] if production else [str(path)])
         self.child = pexpect.spawn(str(binary), arguments + list(flags), env=env,
                                    encoding='utf-8', dimensions=size, timeout=10)
-        self.screen = pyte.HistoryScreen(size[1], size[0], history=4000)
+        self.screen = SetupScreen(size[1], size[0], history=4000)
         self.stream = pyte.Stream(self.screen)
         self.transcript = ''
         self.pump(0.8)
-        self.wait('Setup')
+        self.wait('Set up morph')
 
     def pump(self, seconds=0.3):
         end = time.monotonic() + seconds
@@ -81,14 +86,50 @@ class Terminal:
                  for row in self.screen.history.top]
         return '\n'.join(lines + self.screen.display)
 
-    def assert_inline(self):
-        for sequence in ('\x1b[?1049', '\x1b[?1047', '\x1b[2J', '\x1b[3J',
-                         '\x1b[H'):
-            assert sequence not in self.transcript
+    def assert_native(self):
+        assert '\x1b[?1049h' in self.transcript, self.transcript
+        assert '\x1b[?1000h' in self.transcript, self.transcript
+        assert self.display().count('Set up morph') <= 1, self.display()
         if not self.production:
-            history = self.history_text()
             for i in range(32):
-                assert f'SHELL_HISTORY_{i:02d}' in history, history
+                assert f'SHELL_HISTORY_{i:02d}' in self.transcript
+
+    def click(self, text, occurrence=0):
+        matches = [(row, line.index(text)) for row, line in enumerate(self.screen.display)
+                   if text in line]
+        assert len(matches) > occurrence, f'Missing click target {text!r}\n' + self.display()
+        row, column = matches[occurrence]
+        self.send(f'\x1b[<0;{column + 2};{row + 1}M'
+                  f'\x1b[<0;{column + 2};{row + 1}m')
+
+    def field(self, label):
+        pattern = re.compile(r'^[ │]*' + re.escape(label) + r'(?:\s|$)')
+        matches = [(row, line.index(label)) for row, line in enumerate(self.screen.display)
+                   if pattern.search(line)]
+        assert matches, f'Missing field {label!r}\n' + self.display()
+        row, column = matches[0]
+        if min(self.screen.columns, 104) - 4 >= 64:
+            column += 16
+        else:
+            row += 1
+            column += 1
+        self.send(f'\x1b[<0;{column + 1};{row + 1}M'
+                  f'\x1b[<0;{column + 1};{row + 1}m')
+
+    def edit(self, label, value):
+        self.field(label)
+        self.send('\x1b[F' + CTRL_U + value)
+
+    def wheel(self, down=True, steps=3):
+        row = next(i for i, line in enumerate(self.screen.display)
+                   if 'Images' in line and 'Video' in line) + 3
+        self.send(f'\x1b[<{65 if down else 64};8;{row + 1}M' * steps)
+
+    def resize(self, rows, columns):
+        self.child.setwinsize(rows, columns)
+        self.screen.resize(rows, columns)
+        self.pump(.4)
+        self.assert_native()
 
     def finish(self, result=None, production_exit=0):
         deadline = time.monotonic() + 8
@@ -107,18 +148,22 @@ class Terminal:
         except Exception:
             pass
 
-        self.assert_inline()
+        self.assert_native()
         expected = production_exit if self.production else 0
         assert self.child.exitstatus == expected, self.transcript
         assert '\x1b[?2004l' in self.transcript and '\x1b[?25h' in self.transcript
+        assert '\x1b[?1000l' in self.transcript and '\x1b[?1049l' in self.transcript
         if self.production:
             if production_exit == 0:
                 assert 'Setup complete.' in self.transcript, self.transcript
         else:
             assert f'SETUP_RESULT={result} RAW_RESTORED=1' in self.transcript, self.transcript
+            history = self.history_text()
+            for i in range(32):
+                assert f'SHELL_HISTORY_{i:02d}' in history, history
 
-    def save(self, tabs=12, result=0, production_exit=0):
-        self.child.send(TAB * tabs + ENTER)
+    def save(self, result=0, production_exit=0):
+        self.child.send('\x1b[13;5u')
         self.finish(result, production_exit)
         return self.path.read_text()
 
@@ -143,75 +188,172 @@ def tests(driver, directory, production, cancelled_status):
         return term
 
     try:
-        # The form is a single page at every supported terminal size.
         for height, width in ((40, 120), (24, 80), (24, 60), (14, 40)):
             t = start(f'layout-{height}x{width}', ready=True, size=(height, width))
             screen = t.display()
             assert 'Role' in screen and 'Text model' in screen, screen
             assert 'Save' in screen and 'Cancel' in screen, screen
-            if height >= 14 and width >= 46:
-                assert 'morph setup' in screen, screen
-            t.assert_inline()
-            t.close()
+            assert 'API base' not in screen, screen
+            row = next(i for i, line in enumerate(t.screen.display) if 'F10 Save' in line)
+            column = t.screen.display[row].index('F10')
+            assert t.screen.buffer[row][column].bold, screen
+            t.assert_native()
+            t.click('Cancel')
+            t.finish(cancelled_status)
+            assert not t.path.exists()
 
-        # Ready credentials: one form, then save.
-        t = start('defaults', ready=True)
-        config = t.save()
-        assert 'role = "general"' in config
-        assert 'model = "gpt-4o"' in config
+        t = start('save-legacy-f10', ready=True)
+        t.child.send('\x1b[21~')
+        t.finish(0)
+        assert t.path.exists()
 
-        # Role is a standard drop-down in the form.
-        t = start('role-change', ready=True, size=(40, 120))
-        t.send(ENTER)
-        t.send(DOWN + ENTER, 'Software developer')
-        config = t.save()
-        assert 'role = "developer"' in config
+        t = start('defaults-mouse', ready=True)
+        t.click('Save and exit')
+        t.finish(0)
+        config = t.path.read_text()
+        assert 'role = "general"' in config and 'model = "gpt-4o"' in config
 
-        # A missing key is a warning, not a blocked save.
+        t = start('role-mouse', ready=True, size=(32, 120))
+        t.click('General assistant')
+        t.wait('Choose one')
+        assert t.screen.cursor.hidden, t.display()
+        t.click('Software developer')
+        t.wait('Build, debug, test and review software.')
+        t.click('Software developer')
+        t.send('\x1b[27u')
+        assert 'Choose one' not in t.display(), t.display()
+        assert 'Build, debug, test and review software.' in t.display()
+        t.click('Software developer')
+        t.click('Set up morph')
+        assert 'Choose one' not in t.display(), t.display()
+        assert 'role = "developer"' in t.save()
+
+        for name, enter, down in (('legacy', ENTER, DOWN),
+                                  ('kitty', '\x1b[13u', '\x1b[57353u\x1b[57353;1:3u')):
+            t = start('role-' + name, ready=True)
+            t.send(enter)
+            t.send(down + enter, 'Software developer')
+            assert 'role = "developer"' in t.save()
+
         t = start('later', ready=False)
-        assert 'needs a key' in t.display()
+        assert 'needs a key' in t.display(), t.display()
         config = t.save(result=1)
         assert 'api_key_env = "OPENAI_API_KEY"' in config
         assert ('export OPENAI_API_KEY' in t.transcript or
                 'Set the text model key' in t.transcript)
 
-        # Optional models are standard check boxes.
-        t = start('vision', ready=True)
-        t.send(TAB * 8 + ' ', '[x] Vision model')
-        t.send(TAB * 11 + ENTER)
-        t.finish(0)
-        assert 'model = "gpt-4o"' in model_section(t.path.read_text(), 'vision')
+        t = start('vision-mouse', ready=True, size=(32, 80))
+        t.click('Vision')
+        t.wait('Vision model')
+        assert 'Optional.' in t.display(), t.display()
+        t.click('Enable this model')
+        t.wait('[x] Enable this model')
+        t.edit('Model', 'vision-fixture')
+        t.send(ENTER)
+        assert not t.path.exists(), 'Enter in a field must not submit the page'
+        t.click('Text')
+        t.wait('Text model')
+        t.click('Vision')
+        t.wait('vision-fixture')
+        config = t.save()
+        assert 'model = "vision-fixture"' in model_section(config, 'vision')
+        assert 'model = "gpt-4o"' in model_section(config, 'text')
 
-        # Direct keys use the standard password field.
         secret = 'fixture-session-secret-123'
-        t = start('secret', ready=False, size=(40, 120))
-        t.send(TAB * 3)
-        t.send(RIGHT, 'Save key to config')
-        t.send(TAB)
-        t.send(secret + ENTER)
-        t.send(TAB * 7 + ENTER)
-        t.finish(0)
-        config = t.path.read_text()
-        assert secret in config
+        t = start('secret-mouse', ready=False, size=(32, 120))
+        t.click('Use environment variable')
+        t.click('Save key to config')
+        t.edit('API key', secret)
+        t.send(ENTER)
+        assert not t.path.exists()
+        config = t.save()
+        assert secret in model_section(config, 'text')
         assert secret not in t.transcript
         assert 'api_key_env' not in model_section(config, 'text')
         assert t.path.stat().st_mode & 0o777 == 0o600
 
-        # Invalid URLs stay on the field and show the form error.
-        t = start('invalid-url', ready=True)
-        t.send(TAB * 7)
-        t.send(CTRL_U + 'ftp://example')
-        t.send(TAB, 'Use an http:// or https:// URL.')
-        t.child.send(CTRL_C)
+        t = start('empty-key-later', ready=False)
+        t.click('Use environment variable')
+        t.click('Save key to config')
+        t.click('Save for later')
+        t.finish(1)
+        assert 'api_key =' not in model_section(t.path.read_text(), 'text')
+
+        t = start('provider-mouse', ready=True, size=(40, 80))
+        t.edit('Model', '')
+        t.click('OpenAI')
+        t.click('DeepSeek')
+        t.wait('deepseek-flash')
+        assert 'Enter a model name.' not in t.display(), t.display()
+        t.click('Advanced settings')
+        t.wait('1048576')
+        t.wait('Role defaults')
+        assert 'Integrations:' in t.display(), t.display()
+        config = t.save()
+        assert 'provider = "deepseek"' in config and 'context_limit = 1048576' in config
+
+        t = start('invalid-url', ready=True, size=(40, 80))
+        t.click('Advanced settings')
+        t.edit('API base', 'ftp://example')
+        t.click('Save and exit')
+        t.wait('Use an http:// or https:// URL.')
+        assert 'ftp://example' in t.display(), t.display()
+        assert not t.path.exists()
+        t.edit('API base', 'http://localhost:1234/v1')
+        assert 'api_base = "http://localhost:1234/v1"' in t.save()
+
+        t = start('wheel', ready=True)
+        t.click('Advanced settings')
+        thumb = [(row, line.index('█')) for row, line in enumerate(t.screen.display)
+                 if '█' in line]
+        assert thumb, t.display()
+        row, column = thumb[len(thumb) // 2]
+        bottom = next(i for i, line in enumerate(t.screen.display)
+                      if 'Ready to save' in line) - 1
+        t.send(f'\x1b[<0;{column + 1};{row + 1}M'
+               f'\x1b[<32;{column + 1};{bottom + 1}M'
+               f'\x1b[<0;{column + 1};{bottom + 1}m')
+        t.wait('Max output')
+        t.wheel(down=False, steps=20)
+        t.wait('Text model')
+        t.wheel(steps=8)
+        t.wait('Max output')
+        assert 'Text model' not in t.display(), t.display()
+        before = t.display()
+        t.pump(.2)
+        assert t.display() == before, 'scroll must remain independent of focus'
+        t.wheel(down=False, steps=20)
+        t.wait('Text model')
+        t.click('Cancel')
+        t.finish(cancelled_status)
+
+        t = start('resize-draft', ready=True, size=(32, 80))
+        t.edit('Model', '中文-draft')
+        for rows, columns in ((24, 60), (14, 40), (24, 80), (40, 120)):
+            t.resize(rows, columns)
+            t.wait('中文-draft')
+        t.send('尾')
+        t.wait('中文-draft尾')
+        assert 'model = "中文-draft尾"' in t.save()
+        assert '\ufffd' not in t.transcript
+
+        t = start('invalid-draft-resize', ready=True, size=(40, 80))
+        t.click('Advanced settings')
+        t.edit('API base', 'ftp://keep-draft')
+        t.click('Save and exit')
+        t.wait('Use an http:// or https:// URL.')
+        for rows, columns in ((40, 60), (40, 80)):
+            t.resize(rows, columns)
+            t.wait('ftp://keep-draft')
+        t.click('Cancel')
         t.finish(cancelled_status)
         assert not t.path.exists()
 
-        # No-color output remains a form and never emits SGR.
         t = start('no-color', ready=True, flags=('--no-color',))
         t.save()
-        assert not re.search(r'\x1b\[[0-9;]*m', t.transcript)
+        assert not re.search(r'\x1b\[[0-9;]*(?:38;|48;|3[0-7](?:;|m)|4[0-7](?:;|m))',
+                             t.transcript)
 
-        # Explicit setup saves before the runtime starts.
         t = Terminal(production, directory / 'production.toml',
                      production=True, ready=True)
         terminals.append(t)
@@ -219,7 +361,6 @@ def tests(driver, directory, production, cancelled_status):
         assert t.path.exists()
         assert not (t.path.parent / '.morph/data.db').exists()
 
-        # Reconfiguration preserves prompt settings and backs up the old file.
         path = directory / 'reconfigure.toml'
         path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
                         "api_base='https://api.openai.com/v1'\n"
@@ -234,7 +375,6 @@ def tests(driver, directory, production, cancelled_status):
         assert any(p.read_text() == original
                    for p in directory.glob(path.name + '.backup-*'))
 
-        # A concurrent external edit is not overwritten.
         path = directory / 'concurrent.toml'
         path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
                         "api_base='https://api.openai.com/v1'\n"
@@ -243,13 +383,23 @@ def tests(driver, directory, production, cancelled_status):
         terminals.append(t)
         changed = path.read_text() + '\n# external edit\n'
         path.write_text(changed)
-        t.child.send(TAB * 12 + ENTER)
-        t.finish(production_exit=1)
+        t.save(production_exit=1)
         assert path.read_text() == changed
 
-        # Signals cancel without writing.
-        t = start('signal', ready=True)
-        os.kill(t.child.pid, signal.SIGTERM)
+        for name, cancel in (('signal', None), ('cancel-draft', CTRL_C), ('cancel-esc', ESC)):
+            t = start(name, ready=True)
+            t.edit('Model', 'unsaved-draft')
+            if cancel is None:
+                os.kill(t.child.pid, signal.SIGTERM)
+            else:
+                t.child.send(cancel)
+            t.finish(cancelled_status)
+            assert not t.path.exists()
+
+        t = start('cancel-popup', ready=True)
+        t.click('General assistant')
+        t.wait('Choose one')
+        t.child.send(CTRL_C)
         t.finish(cancelled_status)
         assert not t.path.exists()
 

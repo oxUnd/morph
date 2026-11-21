@@ -102,6 +102,41 @@ int cli_application_show_page(struct cli_application *ctx, struct nt_view_contro
 	return rc;
 }
 
+int cli_application_run_page(struct cli_application *ctx, struct nt_view_controller **owner,
+			     FILE *input, FILE *output)
+{
+	if (!ctx || !owner || !*owner || !input || !output)
+		return NB_ERR_INVAL;
+
+	if (cli_application_tui_borrow(ctx))
+		return NB_ERR_BUSY;
+
+	const struct nt_application_options options = {
+		.input = input,
+		.output = output,
+		.terminal_flags = NT_TERMINAL_MOUSE | NT_TERMINAL_PASTE | NT_TERMINAL_FOCUS,
+		.synchronized_output = 1,
+		.repaint_rows = 1};
+	int rc = nt_application_init(&ctx->base, &options);
+	if (rc)
+		return rc;
+
+	rc = nt_application_set_color_profile(&ctx->base, cli_output_color_enabled(ctx)
+								  ? NT_COLOR_PROFILE_TRUECOLOR
+								  : NT_COLOR_PROFILE_NONE);
+	if (!rc) {
+		rc = nt_application_present_view_controller(&ctx->base, owner);
+		if (!rc)
+			ctx->modal_count++;
+	}
+
+	if (!rc)
+		rc = nt_application_run(&ctx->base);
+
+	nt_application_deinit(&ctx->base);
+	return rc;
+}
+
 int cli_application_prompt_deferred(const struct cli_application *ctx)
 {
 	return cli_chat_active(ctx) &&
