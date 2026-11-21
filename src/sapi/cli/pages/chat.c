@@ -61,6 +61,7 @@
 #include <nb/cleanup.h>
 #include <nb/err.h>
 #include <nb/map.h>
+#include <nb/str.h>
 #include <nb/time.h>
 #include <nothing/tui/animation.h>
 #include <nothing/tui/choice_prompt.h>
@@ -377,8 +378,8 @@ static int cli_chat_activity_hidden(void *data, struct nt_value *value)
 {
 	struct nt_view *row = data;
 	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(row);
-	return nt_value_set_bool(value, nt_component_state_get_bool(page->modal) ||
-		(row != page->status && !*nt_text_view_text(row)));
+	int empty = nb_str_is_empty(nb_str_trim(nb_str_from_cstr(nt_text_view_text(row))));
+	return nt_value_set_bool(value, nt_component_state_get_bool(page->modal) || empty);
 }
 
 static int cli_chat_queue_hidden(void *data, struct nt_value *value)

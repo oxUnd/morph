@@ -58,8 +58,9 @@ import application state. Configuration services do not import wizard pages.
 
 Interactive chat is a retained ViewController in alternate screen. Its page layout
 contains a scrolling feed, activity/jobs/queue controls and a multiline TextField
-composer. The activity row, composer and status bar stay anchored at the bottom;
-the conversation scrolls independently above them. The status bar uses native
+composer. Visible activity, the composer and status bar stay anchored at the bottom;
+empty activity rows collapse together with their margins.
+The conversation scrolls independently above them. The status bar uses native
 Labels and a distinct MCP Button, which opens a right-side floating card without
 changing the conversation or composer geometry.
 `components/message` composes Label and content-sized TextView controls;
