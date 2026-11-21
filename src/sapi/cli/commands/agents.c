@@ -9,6 +9,8 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/agents.h"
 #include "sapi/cli/presentation/list.h"
+#include "sapi/cli/services/agents.h"
+#include "sapi/cli/services/sessions.h"
 #include <nb/cleanup.h>
 #include <string.h>
 
@@ -19,7 +21,7 @@ struct cli_agents_snapshot {
 
 static void cli_agents_snapshot_cleanup(struct cli_agents_snapshot *snapshot)
 {
-	runtime_agent_list_free(snapshot->items, snapshot->count);
+	cli_agents_list_free(snapshot->items, snapshot->count);
 }
 
 static int cli_agents_print_detail(struct cli_application *ctx, const char *label,
@@ -56,7 +58,10 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 	struct cli_agents_snapshot snapshot NB_CLEANUP(cli_agents_snapshot_cleanup) = {0};
 	int64_t session = 0;
 	(void)runtime_session_current_id(ctx->runtime, &session);
-	int rc = runtime_agent_list(ctx->runtime, session, &snapshot.items, &snapshot.count);
+	if (ctx->sessions)
+		session = cli_sessions_current_id(ctx);
+
+	int rc = cli_agents_list(ctx, session, &snapshot.items, &snapshot.count);
 	if (rc == NB_ERR_NOT_FOUND) {
 		CMD_HEADER(ctx, "Agents");
 		cli_output_printf(ctx, "  Multi-agent collaboration is unavailable.\n");
@@ -72,7 +77,7 @@ static int cli_agents_command_agents(struct cli_application *ctx, int argc, char
 	const char *id = cli_cmd_arg_borrow(argc, argv, 1);
 	CMD_HEADER(ctx, "Agents (%d)", snapshot.count);
 	struct agent_budget budget = {0};
-	if (runtime_agent_budget(ctx->runtime, &budget) == 0 && budget.limit > 0)
+	if (cli_agents_budget(ctx, &budget) == 0 && budget.limit > 0)
 		cli_output_printf(ctx, "  Shared session budget: %lld / %lld weighted units%s\n", (long long)budget.used,
 		       (long long)budget.limit, budget.exhausted ? " (exhausted)" : "");
 

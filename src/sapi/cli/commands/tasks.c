@@ -387,7 +387,7 @@ static int cli_tasks_command_tasks_run(struct cli_application *ctx, int argc, ch
 	if (argc > 2)
 		limit = atoi(argv[2]);
 
-	rc = runtime_tasks_run_due_for_runtime(ctx->runtime, limit, cli_scheduler_run_task, ctx,
+	rc = runtime_tasks_run_due_for_runtime(ctx->runtime, limit, NULL, NULL,
 					       NULL, NULL);
 	if (rc >= 0) {
 		ran = rc;

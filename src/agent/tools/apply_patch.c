@@ -76,6 +76,14 @@ static int authorize_patch_path(const char *path, int deletion, void *opaque)
 		}
 		return rc;
 	}
+
+	if (application->runtime && application->runtime->mutation_begin) {
+		rc = application->runtime->mutation_begin(
+			application->runtime->mutation_user_data, "apply_patch");
+		if (rc != 0)
+			return rc;
+	}
+
 	if (!application->tracking)
 		return rc;
 	rc = application->checkpoint->capture(application->checkpoint->user_data,

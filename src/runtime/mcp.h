@@ -32,5 +32,9 @@ int runtime_mcp_init_from_config(struct nb_log *logger, struct mcp_registry *reg
 				 const struct config_mcp *config, struct tool_registry *tools,
 				 int connect_configured, morph_event_cb event_cb,
 				 void *event_user_data);
+int runtime_mcp_init_from_config_controlled(struct nb_log *logger,
+	struct mcp_registry *registry, const struct config_mcp *config,
+	struct tool_registry *tools, int connect_configured, morph_event_cb event_cb,
+	void *event_user_data, int (*interrupt_check)(void *), void *interrupt_user_data);
 
 #endif

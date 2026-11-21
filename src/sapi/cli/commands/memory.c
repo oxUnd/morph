@@ -8,6 +8,16 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/pages/memory.h"
+#include "sapi/cli/services/memory.h"
+
+static char *cli_memory_preferences_copy(struct cli_application *ctx, int history)
+{
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	if (!params || !cJSON_AddBoolToObject(params, "history", history))
+		return NULL;
+
+	return cli_memory_text_copy(ctx, "preference.read", params);
+}
 
 static const char *cli_memory_scope_display(enum memory_clear_scope scope)
 {
@@ -70,7 +80,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 	}
 
 	if (sub && !strcmp(sub, "retry")) {
-		int rc = runtime_memory_retry_current(ctx->runtime);
+		cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+		int rc = cli_memory_request(ctx, "memory.retry", NULL, &result);
 
 		if (rc != 0)
 			CMD_ERROR(ctx, "Failed to retry memory updates: %s",
@@ -82,7 +93,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 	}
 
 	if (sub && !strcmp(sub, "jobs")) {
-		char *jobs = runtime_memory_background_render_copy(ctx->runtime);
+		char *jobs = cli_memory_text_copy(ctx, "memory.jobs", NULL);
 
 		if (!jobs)
 			return MORPH_ERR_DB;
@@ -106,7 +117,16 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			return NB_ERR_INVAL;
 		}
 
-		rc = runtime_preference_set(ctx->runtime, scope ? scope : "personal", key, value);
+		cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+		if (!params ||
+		    !cJSON_AddStringToObject(params, "scope", scope ? scope : "personal") ||
+		    !cJSON_AddStringToObject(params, "key", key) ||
+		    (value ? !cJSON_AddStringToObject(params, "value", value)
+			   : !cJSON_AddNullToObject(params, "value")))
+			return NB_ERR_NOMEM;
+
+		rc = cli_memory_request(ctx, "preference.update", params, &result);
 		if (rc != 0) {
 			CMD_ERROR(ctx, "Failed to update preference: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
@@ -123,7 +143,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			       scope ? scope : "personal");
 
 		{
-			char *effective = runtime_preferences_render_copy(ctx->runtime, 0);
+			char *effective = cli_memory_preferences_copy(ctx, 0);
 
 			(void)cli_output_print_untrusted(ctx, effective ? effective : "",
 							 MORPH_TERMINAL_TEXT_MULTILINE);
@@ -133,8 +153,8 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 	}
 
 	if (sub && (!strcmp(sub, "history") || !strcmp(sub, "explain"))) {
-		char *history = runtime_preferences_render_copy(ctx->runtime, 1);
-		char *effective = runtime_preferences_render_copy(ctx->runtime, 0);
+		char *history = cli_memory_preferences_copy(ctx, 1);
+		char *effective = cli_memory_preferences_copy(ctx, 0);
 
 		if (!history || !effective) {
 			free(history);
@@ -160,7 +180,7 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 		 * gives the user the full picture; max_past_tasks is only
 		 * a hint for the React-loop context window.
 		 */
-		char *rendered = runtime_memory_render_current_copy(ctx->runtime, 0);
+		char *rendered = cli_memory_text_copy(ctx, "memory.read", NULL);
 		CMD_HEADER(ctx, "memory (%s)", runtime_session_current_name_borrow(ctx->runtime));
 		(void)cli_output_print_untrusted(
 			ctx, rendered ? rendered : "No long-term memory stored for this session.",
@@ -178,7 +198,12 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 			return NB_ERR_INVAL;
 		}
 
-		if (runtime_memory_clear_current(ctx->runtime, scope) != 0) {
+		cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+		if (!params || !cJSON_AddNumberToObject(params, "scope", scope))
+			return NB_ERR_NOMEM;
+
+		if (cli_memory_request(ctx, "memory.clear", params, &result) != 0) {
 			CMD_ERROR(ctx, "failed to clear memory");
 			return NB_ERR_IO;
 		}

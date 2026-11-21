@@ -120,7 +120,7 @@ def check_resumed_history(terminal, name, markers, before):
     added = compact[len(previous):]
     assert added.count('resumedsession:' + name) == 1, history
     for marker in markers:
-        assert added.count(marker) == 1, (marker, history)
+        assert compact.count(marker) == 1, (marker, history)
     return history
 
 
@@ -131,7 +131,8 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         for columns in (120, 80, 60):
-            with tempfile.TemporaryDirectory(prefix='morph-resume-history-') as temp:
+            with tempfile.TemporaryDirectory(prefix='morph-resume-history-') as temp, \
+                    tempfile.TemporaryDirectory(prefix='resume-other-', dir='/tmp') as other:
                 directory = Path(temp)
                 terminal = start(binary, directory, server.server_port, columns, 'resume')
                 try:
@@ -147,11 +148,12 @@ def main():
                     with sqlite3.connect(database) as db:
                         assert db.execute('SELECT count(*) FROM sessions').fetchone()[0] == 0
                     native, legacy = seed(database)
+                    other_project = Path(other)
                     with sqlite3.connect(database) as db:
                         db.execute('UPDATE sessions SET workdir=? WHERE id=?',
                                    (str(directory.resolve()), native))
                         db.execute('UPDATE sessions SET workdir=?,updated_at=300 WHERE id=?',
-                                   ('/tmp/resume-other-project', legacy))
+                                   (str(other_project.resolve()), legacy))
                     terminal = start(binary, directory, server.server_port, columns, 'resume')
                     terminal.pump(1)
                     screen = terminal.snapshot(f'{columns}: startup resume list')
@@ -159,7 +161,7 @@ def main():
                     assert screen.index(str(directory.resolve())[:20]) < \
                         screen.index('HistoryNative'), screen
                     assert screen.index('HistoryNative') < \
-                        screen.index('/tmp/resume-other-project') < \
+                        screen.index(other_project.name) < \
                         screen.index('HistoryLegacy'), screen
                     assert 'Ctrl+T transcript' not in terminal.raw, terminal.raw
                     terminal.send('\r')
@@ -178,25 +180,27 @@ def main():
                         row = db.execute("SELECT session_id FROM messages WHERE role='user' "
                                          "AND content='CONTINUE_RESUMED_SESSION'").fetchone()
                         assert row == (native,), row
+                    native_retained = retained_history_snapshot(terminal,
+                                                               'RESUMED_CONTINUATION_OK')
                     terminal.send('/resume 8765fedc\r')
                     screen = terminal.snapshot(f'{columns}: slash resume restores legacy messages')
                     assert 'LEGACY_ANSWER' in screen and 'LEGACY_QUESTION' in screen, screen
                     assert '› /resume' not in screen, screen
-                    retained = retained_history_snapshot(terminal, 'LEGACY_ANSWER')
+                    legacy_retained = retained_history_snapshot(terminal, 'LEGACY_ANSWER')
                     terminal.send('/resume\r')
                     terminal.send('\r')
                     screen = terminal.snapshot(f'{columns}: slash picker Enter restores history')
                     assert 'RESUMED_CONTINUATION_OK' in screen, screen
-                    retained = check_resumed_history(terminal, 'HistoryNative', (
+                    check_resumed_history(terminal, 'HistoryNative', (
                         'HISTORY_FIRST_QUESTION', 'HISTORY_CHECKING', 'HISTORY_TOOL_OUTPUT',
                         'HISTORY_FIRST_ANSWER', 'HISTORY_LAST_QUESTION', 'HISTORY_LAST_ANSWER',
-                        'CONTINUE_RESUMED_SESSION', 'RESUMED_CONTINUATION_OK'), retained)
+                        'CONTINUE_RESUMED_SESSION', 'RESUMED_CONTINUATION_OK'), native_retained)
                     terminal.send('/resume\r')
                     terminal.send('\x1b[B\r')
                     screen = terminal.snapshot(f'{columns}: grouped navigation resumes exact item')
                     assert 'LEGACY_ANSWER' in screen, screen
                     check_resumed_history(terminal, 'HistoryLegacy',
-                                          ('LEGACY_QUESTION', 'LEGACY_ANSWER'), retained)
+                                          ('LEGACY_QUESTION', 'LEGACY_ANSWER'), legacy_retained)
                     terminal.send('CONTINUE_PICKED_LEGACY\r')
                     body, release = terminal.request()
                     assert 'LEGACY_ANSWER' in json.dumps(body), body

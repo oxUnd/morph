@@ -30,6 +30,20 @@ void cli_files_cleanup(struct cli_files_model *model)
 	nb_vec_cleanup(&model->entries);
 }
 
+void cli_files_move(struct cli_files_model *destination, struct cli_files_model *source)
+{
+	if (destination == source)
+		return;
+
+	cli_files_cleanup(destination);
+	cli_files_init(destination);
+	nb_vec_move(&destination->entries, &source->entries);
+	destination->revision = source->revision;
+	destination->truncated = source->truncated;
+	source->revision = 0;
+	source->truncated = 0;
+}
+
 static int cli_files_line(const char *text)
 {
 	if (!text || !isdigit((unsigned char)*text))

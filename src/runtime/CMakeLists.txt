@@ -19,6 +19,8 @@ target_link_libraries(morph-runtime PUBLIC
 	morph-credits
 	morph-event
 	morph-mcp
+	morph-db
+	morph-persistence
 	morph-session
 	morph-skill
 	morph-sync

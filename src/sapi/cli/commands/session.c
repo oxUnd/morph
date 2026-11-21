@@ -15,7 +15,15 @@
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/pages/history.h"
 #include "sapi/cli/pages/resume.h"
+#include "sapi/cli/pages/chat.h"
 #include "sapi/cli/services/session_restore.h"
+#include "sapi/cli/services/sessions.h"
+
+static int cli_session_number(const cJSON *object, const char *key)
+{
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
+	return cJSON_IsNumber(value) ? value->valueint : 0;
+}
 
 static int cli_session_command_new(struct cli_application *ctx, int argc, char **argv)
 {
@@ -29,7 +37,9 @@ static int cli_session_command_new(struct cli_application *ctx, int argc, char *
 	}
 
 	struct session s;
-	int rc = runtime_session_create_and_select(ctx->runtime, name, &s);
+	int rc = ctx->sessions
+		? cli_sessions_create(ctx, name, auto_named, &s)
+		: runtime_session_create_and_select(ctx->runtime, name, &s);
 	if (rc == 0) {
 		ctx->session_auto_named = !auto_named;
 		CMD_OK(ctx, "created and switched to session: %s [%s]", name, s.display_id);
@@ -37,6 +47,42 @@ static int cli_session_command_new(struct cli_application *ctx, int argc, char *
 		CMD_ERROR(ctx, "failed to create session: %s", name);
 	}
 
+	return rc;
+}
+
+static int cli_session_command_sessions(struct cli_application *ctx, int argc, char **argv)
+{
+	(void)argc;
+	(void)argv;
+	struct session *list = NULL;
+	int count = 0;
+	int rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
+	if (rc)
+		return rc;
+
+	int64_t current = 0;
+	(void)runtime_session_current_id(ctx->runtime, &current);
+	for (int i = 0; i < count && !rc; i++) {
+		char description[256];
+		int waiting = cli_sessions_needs_input(ctx, list[i].id);
+		int running = cli_sessions_is_running(ctx, list[i].id);
+		snprintf(description, sizeof(description), "%s%s · %s",
+			list[i].id == current ? "Current · " : "",
+			waiting ? "Waiting for input" : running ? "Running" : "Idle",
+			list[i].display_id);
+		const struct cli_output_status_row row = {
+			.status = waiting ? CLI_OUTPUT_STATUS_QUESTION
+				: running ? CLI_OUTPUT_STATUS_RUNNING : CLI_OUTPUT_STATUS_PENDING,
+			.place = CLI_OUTPUT_ROW_GROUP,
+			.group_is_last = 1,
+			.is_last = i == count - 1,
+			.name = list[i].name,
+			.description = description,
+		};
+		rc = cli_command_output_status_rows(ctx, &row, 1);
+	}
+
+	runtime_session_list_free(list);
 	return rc;
 }
 
@@ -93,12 +139,14 @@ static int cli_session_command_switch(struct cli_application *ctx, int argc, cha
 	}
 
 	if (rc == 0) {
-		rc = runtime_session_select_existing(ctx->runtime, s.id, &s);
+		int client_navigation = ctx->sessions != NULL;
+		rc = client_navigation ? cli_sessions_select(ctx, s.id)
+			: runtime_session_select_existing(ctx->runtime, s.id, &s);
 		if (rc != 0)
 			return rc;
 
 		ctx->session_auto_named = 1;
-		rc = cli_session_history_restore(ctx);
+		rc = client_navigation ? 0 : cli_session_history_restore(ctx);
 		if (rc)
 			CMD_ERROR(ctx, "failed to restore session history: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
@@ -129,7 +177,15 @@ static int cli_session_command_rename(struct cli_application *ctx, int argc, cha
 
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
-	int rc = runtime_session_rename_and_update(ctx->runtime, current_id, new_name);
+	int rc;
+	if (ctx->sessions) {
+		cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		if (!params || !cJSON_AddStringToObject(params, "name", new_name))
+			return NB_ERR_NOMEM;
+
+		rc = cli_sessions_request_current(ctx, "session.update", params, NULL);
+	} else
+		rc = runtime_session_rename_and_update(ctx->runtime, current_id, new_name);
 	if (rc == 0) {
 		CMD_OK(ctx, "session renamed to: %s", new_name);
 	} else {
@@ -171,7 +227,8 @@ static int cli_session_command_delete(struct cli_application *ctx, int argc, cha
 		return NB_ERR_INVAL;
 	}
 
-	int rc = runtime_session_delete_and_update(ctx->runtime, id);
+	int rc = ctx->sessions ? cli_sessions_delete(ctx, id)
+		: runtime_session_delete_and_update(ctx->runtime, id);
 	if (rc == 0) {
 		CMD_OK(ctx, "deleted session: %s", name);
 	} else {
@@ -307,7 +364,31 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 	if (diagnose || repair) {
 		struct agent_history_diagnostic report = {0};
 		int changed = 0;
-		int rc = repair ? runtime_session_history_repair(ctx->runtime, &report, &changed)
+		int rc;
+		if (ctx->sessions) {
+			cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+			rc = cli_sessions_request_current(ctx, repair ? "history.repair" :
+				"history.diagnose", NULL, &result);
+			const cJSON *values = cJSON_GetObjectItemCaseSensitive(result, "report");
+			if (!rc && !cJSON_IsObject(values))
+				rc = NB_ERR_PROTOCOL;
+
+			if (!rc) {
+				report.active_items = cli_session_number(values, "active_items");
+				report.dangling_calls = cli_session_number(values,
+					"dangling_calls");
+				report.orphan_results = cli_session_number(values,
+					"orphan_results");
+				report.invalid_payloads = cli_session_number(values,
+					"invalid_payloads");
+				report.token_mismatches = cli_session_number(values,
+					"token_mismatches");
+				changed = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(
+					result, "changed"));
+			}
+		} else
+			rc = repair ? runtime_session_history_repair(ctx->runtime,
+				&report, &changed)
 				: runtime_session_history_diagnose(ctx->runtime, &report);
 
 		if (rc != 0) {
@@ -473,6 +554,8 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 }
 
 static const struct cli_command cli_session_entries[] = {
+	{"/sessions", cli_session_command_sessions, "List sessions and execution status",
+	 "/sessions"},
 	{"/new", cli_session_command_new, "Create a new session", "/new [name]"},
 	{"/n", cli_session_command_new, "Alias for /new", "/n [name]"},
 	{"/resume", cli_session_command_resume, "Choose a session to resume", "/resume [name|id]"},

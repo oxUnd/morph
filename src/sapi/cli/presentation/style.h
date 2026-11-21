@@ -49,6 +49,8 @@ static inline int cli_style_running_interval_ms(int64_t now_ms)
 #define CLI_INPUT_ULTRA_INDEX 141u
 #define CLI_COMMAND_INDEX 141u
 #define CLI_FILE_SELECTION_BACKGROUND_INDEX 60u
+#define CLI_FLOAT_BACKGROUND_INDEX 236u
+#define CLI_STATUS_LINK_INDEX 6u
 #define CLI_COMMAND_COLOR "\033[38;5;141m"
 #define CLI_RECAP_COLOR "\033[38;5;245m"
 #define CLI_INPUT_BACKGROUND "\033[48;5;237m"

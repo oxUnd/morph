@@ -16,6 +16,20 @@
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/pages/model.h"
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/services/sessions.h"
+#include "sapi/cli/services/event_queue.h"
+
+static int cli_runtime_number(const cJSON *object, const char *key)
+{
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
+	return cJSON_IsNumber(value) ? value->valueint : 0;
+}
+
+static const char *cli_runtime_string(const cJSON *object, const char *key)
+{
+	const char *value = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(object, key));
+	return value ? value : "";
+}
 
 static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
 {
@@ -126,7 +140,23 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 	if (name && (!strcmp(name, "normal") || !strcmp(name, "ultra"))) {
 		return cli_model_set_mode(ctx, !strcmp(name, "ultra"));
 	} else if (name && strcmp(name, "status")) {
-		int rc = runtime_session_set_model(ctx->runtime, name);
+		int rc;
+		if (ctx->sessions) {
+			cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+			if (!params || !cJSON_AddStringToObject(params, "model", name))
+				return NB_ERR_NOMEM;
+
+			if (cli_sessions_current_id(ctx) > 0)
+				rc = cli_sessions_request_current(ctx, "session.update",
+					params, NULL);
+			else {
+				if (!cJSON_AddStringToObject(params, "scope", "defaults"))
+					return NB_ERR_NOMEM;
+
+				rc = cli_sessions_request(ctx, "model.update", params, NULL);
+			}
+		} else
+			rc = runtime_session_set_model(ctx->runtime, name);
 		if (rc != 0) {
 			CMD_ERROR(ctx, "model change failed: %s",
 				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
@@ -138,7 +168,7 @@ static int cli_runtime_command_model(struct cli_application *ctx, int argc, char
 		struct session current = {0};
 		int ultra = 0;
 		(void)runtime_session_current(ctx->runtime, &current);
-		int rc = runtime_model_get_ultra(ctx->runtime, &ultra);
+		int rc = cli_model_get_mode(ctx, &ultra);
 		if (rc != 0)
 			return rc;
 
@@ -356,6 +386,36 @@ static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char
 		return 0;
 	}
 
+	if (ctx->sessions && cli_sessions_current_id(ctx) > 0) {
+		cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+		int rc = cli_sessions_request_current(ctx, "turn.inspect", NULL, &snapshot);
+		if (rc)
+			return rc;
+
+		const cJSON *values = cJSON_GetObjectItemCaseSensitive(snapshot, "steps");
+		if (!cJSON_GetArraySize(values)) {
+			(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
+				"no ReAct trace for current turn");
+			return 0;
+		}
+
+		char *json NB_CLEANUP(nb_charp_cleanup) = cJSON_PrintUnformatted(values);
+		if (!json)
+			return NB_ERR_NOMEM;
+
+		int count = 0;
+		struct react_step *steps NB_CLEANUP(react_steps_clear) =
+			cli_runtime_json_to_react_steps(json, &count);
+		struct session current = {0};
+		(void)runtime_session_current(ctx->runtime, &current);
+		CMD_HEADER(ctx, "ReAct trace (%s)", current.name);
+		const char *state = cli_runtime_string(snapshot, "state");
+		cli_runtime_print_trace_steps(ctx, steps, count,
+			!strcmp(state, "done") ? "DONE" :
+			!strcmp(state, "abort") ? "ABORT" : state);
+		return 0;
+	}
+
 	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {0};
 	struct session current;
 	if (runtime_turn_status_copy(ctx->runtime, &status) != 0 || status.step_count == 0) {
@@ -438,10 +498,68 @@ static int cli_runtime_command_credits(struct cli_application *ctx, int argc, ch
 	return 0;
 }
 
+static int cli_runtime_context_snapshot(struct cli_application *ctx)
+{
+	cJSON *snapshot NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	int rc = cli_sessions_request_current(ctx, "context.get", NULL, &snapshot);
+	if (rc)
+		return rc;
+
+	int total_tokens = cli_runtime_number(snapshot, "total_tokens");
+	int limit = cli_runtime_number(snapshot, "limit");
+	double ratio = limit > 0 ? (double)total_tokens / limit : 0;
+	char tokens[96];
+	char detail[192];
+	snprintf(tokens, sizeof(tokens), "%d / %d tokens (%.1f%%)", total_tokens, limit,
+		ratio * 100);
+	snprintf(detail, sizeof(detail),
+		" | model items: %d | transcript: %d | tool results: %d tokens | compactions: %d",
+		cli_runtime_number(snapshot, "active_items"),
+		cli_runtime_number(snapshot, "transcript_count"),
+		cli_runtime_number(snapshot, "tool_tokens"),
+		cli_runtime_number(snapshot, "compactions"));
+	struct cli_output_segment segments[] = {
+		{.style = CLI_OUTPUT_STYLE_PLAIN, .text = "context: "},
+		{.style = cli_command_output_ratio_style(ratio, 0.8), .text = tokens},
+		{.style = CLI_OUTPUT_STYLE_PLAIN, .text = detail},
+	};
+	(void)cli_command_output_segments(ctx, segments, sizeof(segments) / sizeof(segments[0]),
+		0, 1);
+	nb_buf kinds NB_CLEANUP(nb_buf_cleanup) = {0};
+	if (!nb_buf_append_cstr(&kinds, "context by kind:"))
+		return nb_buf_status(&kinds);
+
+	const cJSON *item;
+	cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(snapshot, "kinds")) {
+		if (cli_runtime_number(item, "count") <= 0)
+			continue;
+
+		if (!nb_buf_printf(&kinds, " %s=%d/%dt", cli_runtime_string(item, "kind"),
+		    cli_runtime_number(item, "count"), cli_runtime_number(item, "tokens")))
+			return nb_buf_status(&kinds);
+	}
+
+	(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0, "%s", nb_buf_cstr(&kinds));
+	const cJSON *last = cJSON_GetObjectItemCaseSensitive(snapshot, "last_compaction");
+	if (cJSON_IsObject(last))
+		(void)cli_command_output_linef(ctx, CLI_OUTPUT_STYLE_PLAIN, 0,
+			"last compaction: %s/%s %d -> %d tokens%s",
+			cli_runtime_string(last, "trigger_kind"),
+			cli_runtime_string(last, "status"),
+			cli_runtime_number(last, "input_tokens"),
+			cli_runtime_number(last, "output_tokens"),
+			cli_runtime_number(last, "error_code") < 0 ? " (failed)" : "");
+
+	return 0;
+}
+
 static int cli_runtime_command_context(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
+	if (ctx->sessions && cli_sessions_current_id(ctx) > 0)
+		return cli_runtime_context_snapshot(ctx);
+
 	int active_items = 0;
 	int transcript_count = 0;
 	int total_tokens = 0;
@@ -522,6 +640,27 @@ static int cli_runtime_command_context(struct cli_application *ctx, int argc, ch
 	return 0;
 }
 
+struct cli_runtime_compression {
+	int removed;
+	int kept;
+	int result;
+};
+
+static int cli_runtime_compression_present(struct cli_application *ctx, void *opaque)
+{
+	const struct cli_runtime_compression *compression = opaque;
+	if (compression->result < 0) {
+		CMD_ERROR(ctx, "compression failed: %s",
+			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
+				compression->result));
+		return compression->result;
+	}
+
+	CMD_OK(ctx, "model history compacted atomically: removed %d active items, kept %d",
+		compression->removed, compression->kept);
+	return 0;
+}
+
 static int cli_runtime_command_compress(struct cli_application *ctx, int argc, char **argv)
 {
 	int window_removed = 0;
@@ -530,16 +669,23 @@ static int cli_runtime_command_compress(struct cli_application *ctx, int argc, c
 
 	(void)argc;
 	(void)argv;
-	rc = runtime_session_compress(ctx->runtime, NULL, &window_removed, &kept);
-	if (rc < 0) {
-		CMD_ERROR(ctx, "compression failed: %s",
-			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
-		return rc;
-	}
+	if (ctx->sessions) {
+		cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+		rc = cli_sessions_request_current(ctx, "history.compress", NULL, &result);
+		if (!rc) {
+			window_removed = cli_runtime_number(result, "window_removed");
+			kept = cli_runtime_number(result, "kept");
+		}
+	} else
+		rc = runtime_session_compress(ctx->runtime, NULL, &window_removed, &kept);
+	struct cli_runtime_compression compression = {
+		.removed = window_removed, .kept = kept, .result = rc,
+	};
+	if (ctx->sessions && !cli_event_queue_is_owner(ctx))
+		return cli_event_queue_call_owner(ctx, cli_runtime_compression_present,
+			&compression);
 
-	CMD_OK(ctx, "model history compacted atomically: removed %d active items, kept %d",
-	       window_removed, kept);
-	return 0;
+	return cli_runtime_compression_present(ctx, &compression);
 }
 
 static int cli_runtime_command_save(struct cli_application *ctx, int argc, char **argv)

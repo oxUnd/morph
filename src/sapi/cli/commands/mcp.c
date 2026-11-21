@@ -20,11 +20,6 @@ static void cli_mcp_descriptors_cleanup(struct cli_mcp_descriptors *descriptors)
 	runtime_mcp_list_free(descriptors->items);
 }
 
-static int cli_mcp_event_tree_visible(const struct cli_application *ctx)
-{
-	return ctx && ctx->presentation_ready && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
-}
-
 static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
@@ -137,10 +132,8 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 
 		int rc = runtime_mcp_connect(ctx->runtime, name);
 		if (rc < 0) {
-			if (!cli_mcp_event_tree_visible(ctx))
-				CMD_ERROR(ctx, "failed to connect to '%s': %s", name,
-					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
-						     rc));
+			CMD_ERROR(ctx, "failed to connect to '%s': %s", name,
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 
 			return rc;
 		}
@@ -150,16 +143,13 @@ static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **arg
 		int prompts;
 		rc = runtime_mcp_discover(ctx->runtime, name, &tools, &resources, &prompts);
 		if (rc < 0) {
-			if (!cli_mcp_event_tree_visible(ctx))
-				CMD_ERROR(ctx, "failed to discover '%s': %s", name,
-					  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
-						     rc));
+			CMD_ERROR(ctx, "failed to discover '%s': %s", name,
+				  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 
 			return rc;
 		}
 
-		if (!cli_mcp_event_tree_visible(ctx))
-			CMD_OK(ctx, "MCP server '%s' connected", name);
+		CMD_OK(ctx, "MCP server '%s' connected", name);
 
 		return 0;
 	}

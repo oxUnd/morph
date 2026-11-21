@@ -29,6 +29,7 @@ struct cli_turn_details;
 struct cli_jobs;
 struct cli_chat_page;
 struct cli_subagents_session;
+struct cli_sessions;
 
 struct cli_application {
 	struct nt_application base;
@@ -46,6 +47,7 @@ struct cli_application {
 
 	struct cli_recap_state recap;
 	struct runtime *runtime;
+	struct cli_sessions *sessions;
 	int (*input_execute)(struct cli_application *, const char *input);
 	struct config_file_error startup_error;
 	struct cli_event_queue *events;
@@ -55,6 +57,7 @@ struct cli_application {
 	struct cli_command_job *input_job;
 	struct cli_transcript_model *transcript;
 	struct cli_agents_model agents;
+	int agents_refreshing;
 	struct cli_turn_details *details;
 	struct cli_jobs *jobs;
 	struct cli_subagents_session *subagents;

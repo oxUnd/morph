@@ -10,6 +10,10 @@ extern "C" {
 /* Bind once: an established session cannot move to another owner or project. */
 int preference_bind(struct db *db, int64_t session_id,
 		    const char *owner, const char *project);
+/* Explicit host session management only. Preserves the owner and rejects a
+ * concurrent project change. An unbound session needs no row migration. */
+int preference_rebind_project(struct db *db, int64_t session_id,
+	const char *expected_project, const char *project);
 const char *preference_key_borrow(const char *key);
 int preference_set(struct db *db, int64_t session_id, const char *scope,
 		   const char *key, const char *value, const char *source,

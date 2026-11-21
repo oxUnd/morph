@@ -267,6 +267,11 @@ MCP lifecycle events carry the server name, transport and auto-connect setting.
 Discovery results add available tool, resource and prompt counts. Failures can
 carry the error status and diagnostic. [MCP emitter](../src/runtime/mcp.c)
 
+The CLI keeps connection lifecycle events out of conversation history. Its MCP
+footer summary opens a right-side floating card on click; progress and failure
+details stay in that card while the composer remains editable. Explicit MCP
+commands print their own result or error receipts independently of these events.
+
 The core `artifact.ready` data includes `kind`, `path` and an optional `source`.
 FastCGI registers the file for its web client and supplies the web-facing
 artifact reference. [FastCGI adapter](../src/sapi/fastcgi/adapters/turn_events.c)

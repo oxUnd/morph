@@ -111,6 +111,9 @@ void agent_control_set_proactive(struct agent_control *control, int proactive);
 void agent_control_join(struct agent_control *control);
 int agent_control_set_parent_session(struct agent_control *control, int64_t session_id);
 int agent_control_set_event_callback(struct agent_control *control, morph_event_cb cb, void *user);
+/* Multiplexed hosts route scoped events at the client boundary. Legacy hosts
+ * retain the selected-thread filter unless they explicitly enable this mode. */
+void agent_control_set_all_events(struct agent_control *control, int enabled);
 int agent_control_select(struct agent_control *control, const char *id);
 int agent_control_list_copy(struct agent_control *control, int64_t session_id,
 			    struct agent_info **out, int *count);

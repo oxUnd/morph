@@ -7,6 +7,7 @@
 #include <nb/utf8.h>
 #include "terminal/text.h"
 #include "sapi/cli/presentation/terminal_text.h"
+#include "sapi/cli/services/permissions.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +34,7 @@ static int cli_composer_footer_field(struct cli_application *ctx, nb_buf *text, 
 static int cli_composer_footer_permissions(struct cli_application *ctx, nb_buf *usage, int columns)
 {
 	struct permission_policy policy;
-	if (!runtime_permission_get_policy(ctx->runtime, &policy)) {
+	if (!cli_permissions_policy_get(ctx, &policy)) {
 		ctx->input_status.permissions = policy;
 		ctx->input_status.permissions_ready = 1;
 	}
@@ -134,9 +135,9 @@ static int cli_composer_footer_identity(struct cli_application *ctx, size_t rema
 	if (!rc)
 		rc = (nb_buf_append_cstr(text, " · ") ? 0 : NB_ERR_NOMEM);
 
-	const char *workdir = runtime_workdir_borrow(ctx->runtime);
+	const char *workdir = session.workdir[0] ? session.workdir : ctx->workdir;
 	if (!workdir || !workdir[0])
-		workdir = ctx->workdir;
+		workdir = runtime_workdir_borrow(ctx->runtime);
 
 	const char *home = getenv("HOME");
 	if (home && home[0] && !strncmp(workdir, home, strlen(home)) &&

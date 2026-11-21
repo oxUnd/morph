@@ -48,6 +48,10 @@ struct tool_checkpoint_context {
 };
 
 struct tool_runtime_context {
+	/* Runtime workspace coordination, independent of permission authorization.
+	 * Successful acquisition remains owned by the turn through worker drain. */
+	int (*mutation_begin)(void *user_data, const char *tool);
+	void *mutation_user_data;
 	struct agent_control *agents;
 	struct tool_context *permission_context;
 	int permission_require_user;

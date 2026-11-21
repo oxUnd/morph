@@ -604,6 +604,13 @@ static int exec_run(const char *args_json, struct tool_result *result,
 
 		return rc;
 	}
+
+	if (!readonly && result->runtime && result->runtime->mutation_begin) {
+		rc = result->runtime->mutation_begin(result->runtime->mutation_user_data, "exec");
+		if (rc != 0)
+			return rc;
+	}
+
 	memset(&options, 0, sizeof(options));
 	options.command = command;
 	options.workdir = workdir;

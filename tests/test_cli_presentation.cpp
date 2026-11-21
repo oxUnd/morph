@@ -1696,7 +1696,7 @@ TEST_F(CliPresentationTest, SessionTitleEventsOnlyUpdateFooterAndPreserveActivit
 	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
 }
 
-TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
+TEST_F(CliPresentationTest, McpFailureDoesNotCommitConnectionLogsToChat)
 {
 	cJSON *connecting = cJSON_CreateObject();
 	cJSON *failed = cJSON_CreateObject();
@@ -1714,21 +1714,16 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", connecting);
 	Emit(MORPH_EVENT_MCP, "mcp.failed", "failed", failed);
 	std::string output = testing::internal::GetCapturedStdout();
-	size_t root = output.find("MCP meego");
-
-	ASSERT_NE(root, std::string::npos);
-	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
-	EXPECT_NE(output.find("├ ◉ Connecting"), std::string::npos);
-	EXPECT_NE(output.find("└ ✖ Failed · Missing MCP token: environment variable "
-			      "'MEEGO_TOKEN' is not set"),
-		  std::string::npos);
-	EXPECT_EQ(ctx.presenter->mcp_tree_active, 0);
+	EXPECT_EQ(output.find("MCP meego"), std::string::npos);
+	EXPECT_EQ(output.find("Connecting"), std::string::npos);
+	EXPECT_EQ(output.find("Discovering capabilities"), std::string::npos);
+	EXPECT_EQ(output.find("Ready"), std::string::npos);
 
 	cJSON_Delete(connecting);
 	cJSON_Delete(failed);
 }
 
-TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
+TEST_F(CliPresentationTest, McpConnectionEventsDoNotCommitChatHistoryOrClearActivity)
 {
 	cJSON *connecting = cJSON_CreateObject();
 	cJSON *connected = cJSON_CreateObject();
@@ -1751,21 +1746,33 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	Emit(MORPH_EVENT_MCP, "mcp.discovering", "begin", discovering);
 	Emit(MORPH_EVENT_MCP, "mcp.ready", "ready", ready);
 	std::string output = testing::internal::GetCapturedStdout();
-	size_t root = output.find("MCP meego");
-
-	ASSERT_NE(root, std::string::npos);
-	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
-	EXPECT_NE(output.find("├ ◉ Connecting"), std::string::npos);
-	EXPECT_NE(output.find("├ ● Connected"), std::string::npos);
-	EXPECT_NE(output.find("├ ◉ Discovering capabilities"), std::string::npos);
-	EXPECT_NE(output.find("└ ● Ready · 12 tools, 3 resources, 2 prompts"), std::string::npos);
-	EXPECT_EQ(ctx.presenter->mcp_tree_active, 0);
+	EXPECT_EQ(output.find("MCP meego"), std::string::npos);
+	EXPECT_EQ(output.find("Connecting"), std::string::npos);
+	EXPECT_EQ(output.find("Discovering capabilities"), std::string::npos);
+	EXPECT_EQ(output.find("Ready"), std::string::npos);
 	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
 
 	cJSON_Delete(connecting);
 	cJSON_Delete(connected);
 	cJSON_Delete(discovering);
 	cJSON_Delete(ready);
+}
+
+TEST_F(CliPresentationTest, McpLifecycleRemainsAvailableInJsonEventStream)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	ASSERT_NE(data, nullptr);
+	cJSON_AddStringToObject(data, "server", "fixture");
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", data);
+	std::string output = testing::internal::GetCapturedStdout();
+	cJSON *event NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(output.c_str());
+	ASSERT_NE(event, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(event, "name")), "mcp.connecting");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(event, "data"), "server")), "fixture");
 }
 
 TEST_F(CliPresentationTest, InteractiveExpandsCompleteToolTranscript)

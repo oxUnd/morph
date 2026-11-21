@@ -10,6 +10,8 @@
 #include <nothing/tui/terminal.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/session_restore.h"
+#include "sapi/cli/services/sessions.h"
+#include "sapi/cli/pages/chat.h"
 #include <nothing/tui/models/list_navigation.h>
 #include <nothing/tui/controls/list_view.h>
 #include <nothing/tui/views/label.h>
@@ -650,7 +652,11 @@ static int cli_resume_event(struct nt_view_controller *controller, const struct 
 static int cli_resume_select(struct cli_application *ctx, int64_t id)
 {
 	struct session selected;
-	int rc = runtime_session_select_existing(ctx->runtime, id, &selected);
+	int client_navigation = ctx->sessions != NULL;
+	int rc = client_navigation ? cli_sessions_select(ctx, id)
+		: runtime_session_select_existing(ctx->runtime, id, &selected);
+	if (!rc && client_navigation)
+		rc = runtime_session_current(ctx->runtime, &selected);
 
 	if (rc) {
 		CMD_ERROR(ctx, "failed to resume session: %s",
@@ -659,7 +665,7 @@ static int cli_resume_select(struct cli_application *ctx, int64_t id)
 	}
 
 	ctx->session_auto_named = 1;
-	rc = cli_session_history_restore(ctx);
+	rc = client_navigation ? 0 : cli_session_history_restore(ctx);
 	if (rc)
 		CMD_ERROR(ctx, "failed to restore session history: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));

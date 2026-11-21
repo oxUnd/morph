@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "sapi/cli/models/jobs.h"
+#include "sapi/cli/services/processes.h"
 #include <nothing/tui/controls/list_view.h>
 #include <nothing/tui/views/text_view.h>
 #include <nothing/tui/view_controller.h>
@@ -29,10 +30,10 @@ struct cli_jobs_page {
 	char row[BUFSIZ];
 };
 
-static int cli_jobs_refresh(struct cli_jobs_page *page, struct runtime *runtime, bool detail)
+static int cli_jobs_refresh(struct cli_jobs_page *page, struct cli_application *ctx, bool detail)
 {
 	cJSON *jobs = NULL;
-	int rc = runtime_process_list(runtime, &jobs);
+	int rc = cli_process_list(ctx, &jobs);
 	if (rc)
 		return rc;
 
@@ -57,7 +58,7 @@ static int cli_jobs_refresh(struct cli_jobs_page *page, struct runtime *runtime,
 	if (detail) {
 		cJSON *job = cJSON_GetArrayItem(jobs, (int)page->selected);
 		cJSON *details = NULL;
-		if (job && !runtime_process_read(runtime, cli_jobs_job_string(job, "session_id"),
+		if (job && !cli_process_read(ctx, cli_jobs_job_string(job, "session_id"),
 						 &details)) {
 			cJSON_Delete(page->details);
 			page->details = details;
@@ -146,7 +147,7 @@ static int cli_jobs_controller_action(void *data, const struct nt_view_event *ac
 		return 0;
 
 	int rc =
-		cli_jobs_refresh(page, cli_application_from_controller(&page->base)->runtime, true);
+		cli_jobs_refresh(page, cli_application_from_controller(&page->base), true);
 	if (!rc)
 		rc = nt_component_state_set_bool(page->detail, true);
 
@@ -206,7 +207,7 @@ static int cli_jobs_controller_event(struct nt_view_controller *controller,
 				     const struct nt_event *event)
 {
 	struct cli_jobs_page *page = (struct cli_jobs_page *)controller;
-	struct runtime *runtime = cli_application_from_controller(controller)->runtime;
+	struct cli_application *ctx = cli_application_from_controller(controller);
 	bool detail = nt_component_state_get_bool(page->detail);
 
 	if (event->type == NT_EVENT_TICK) {
@@ -229,8 +230,8 @@ static int cli_jobs_controller_event(struct nt_view_controller *controller,
 			cJSON *job = cJSON_GetArrayItem(page->jobs, (int)page->selected);
 
 			if (job) {
-				int rc = runtime_process_stop(
-					runtime, cli_jobs_job_string(job, "session_id"));
+				int rc = cli_process_stop(ctx,
+					cli_jobs_job_string(job, "session_id"));
 
 				page->status = rc ? nb_err_str(morph_error_descriptions(),
 							       MORPH_ERROR_COUNT, rc)
@@ -241,7 +242,7 @@ static int cli_jobs_controller_event(struct nt_view_controller *controller,
 	} else
 		return 0;
 
-	int rc = cli_jobs_refresh(page, runtime, detail);
+	int rc = cli_jobs_refresh(page, ctx, detail);
 	if (!rc)
 		rc = cli_jobs_show_snapshot(page);
 
@@ -269,10 +270,10 @@ int cli_jobs_view(struct cli_application *ctx, const char *id)
 		return rc;
 
 	struct cli_jobs_page *page = (struct cli_jobs_page *)owner;
-	rc = cli_jobs_refresh(page, ctx->runtime, false);
+	rc = cli_jobs_refresh(page, ctx, false);
 	if (!rc && id) {
 		cJSON *details = NULL;
-		rc = runtime_process_read(ctx->runtime, id, &details);
+		rc = cli_process_read(ctx, id, &details);
 		if (!rc) {
 			cJSON *job;
 			size_t index = 0;

@@ -5,7 +5,7 @@
 
 #include "sapi/cli/application.h"
 
-#include "runtime/services.h"
+#include "sapi/cli/services/memory.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include "errors.h"
@@ -288,8 +288,13 @@ static int cli_memory_show_document(struct cli_memory_page *page)
 static int cli_memory_refresh(struct cli_memory_page *page)
 {
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
-	int rc = runtime_memory_report_copy(cli_application_from_controller(&page->base)->runtime,
-					    nt_component_state_get_string(page->query), &report);
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	if (!params || !cJSON_AddStringToObject(params, "query",
+		nt_component_state_get_string(page->query)))
+		return NB_ERR_NOMEM;
+
+	int rc = cli_memory_request(cli_application_from_controller(&page->base),
+		"memory.report", params, &report);
 
 	if (rc != 0)
 		return rc;

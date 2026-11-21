@@ -3,6 +3,7 @@
 
 #include "agent/tools/scheduled_tasks.h"
 #include "runtime/task_worker.h"
+#include "runtime/task_runner.h"
 #include <nb/cleanup.h>
 
 #include <errno.h>
@@ -43,6 +44,12 @@ int runtime_task_scheduler_start(
 {
 	if (!runtime)
 		return NB_ERR_INVAL;
+
+	if (!runner) {
+		runner = runtime_task_run_agent;
+		runner_user_data = runtime;
+	}
+
 	return runtime_task_worker_start(&runtime->task_worker,
 		&runtime->context.database, runner, runner_user_data,
 		notification_cb, notification_user_data, limit);
@@ -66,6 +73,12 @@ int runtime_tasks_run_due_for_runtime(
 {
 	if (!runtime)
 		return NB_ERR_INVAL;
+
+	if (!runner) {
+		runner = runtime_task_run_agent;
+		runner_user_data = runtime;
+	}
+
 	return runtime_task_run_due_collect(&runtime->context.database, limit,
 		runner, runner_user_data, notification_cb, notification_user_data);
 }

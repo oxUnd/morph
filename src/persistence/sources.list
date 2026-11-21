@@ -9,3 +9,4 @@ history_store.c
 memory_job_store.c
 checkpoint_store.c
 memory_summary_store.c
+runtime_store.c

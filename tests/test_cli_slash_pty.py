@@ -54,11 +54,16 @@ def result_gap(terminal, result, draft=''):
                       if row.startswith('/'))
         assert output_row == heading + 2, '\n'.join(rows)
         assert not rows[heading + 1].strip(), '\n'.join(rows)
-    assert prompt_row - output_row == 3, '\n'.join(rows)
+    assert prompt_row == terminal.screen.lines - 3, '\n'.join(rows)
+    assert prompt_row - output_row >= 3, '\n'.join(rows)
     gap = output_row + 1
     assert not rows[gap].strip(), '\n'.join(rows)
     assert all(terminal.screen.buffer[gap][column].bg != '3a3a3a'
                for column in range(terminal.screen.columns)), '\n'.join(rows)
+    assert all(not rows[y].strip() and
+               all(terminal.screen.buffer[y][x].bg == 'default'
+                   for x in range(terminal.screen.columns))
+               for y in range(gap, prompt_row - 1)), '\n'.join(rows)
 
 
 def command_heading(terminal, command):
@@ -126,8 +131,10 @@ def main():
             rows = terminal.screen.display
             heading = command_heading(terminal, '/s ^1')
             previous = max(i for i, row in enumerate(rows)
-                           if 'created and switched to session: gap-probe' in row)
+                           if row.rstrip() == '/new gap-probe')
             assert heading == previous + 2, '\n'.join(rows)
+            assert not any('created and switched to session: gap-probe' in row
+                           for row in rows), '\n'.join(rows)
             for columns in (120, 80, 60):
                 terminal.child.setwinsize(32, columns)
                 terminal.screen.resize(lines=32, columns=columns)

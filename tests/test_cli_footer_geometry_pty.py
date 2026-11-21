@@ -39,6 +39,9 @@ def check(terminal, height, tasks, draft, label):
     assert len(hints) == 0, diagnostic
     assert len(footers) == int(last_row + 2 < height), diagnostic
     assert len(task_rows) == int(tasks and last_row + 3 < height), diagnostic
+    if footers:
+        last_footer = task_rows[-1] if task_rows else footers[-1]
+        assert last_footer - len(terminal.screen.history.top) == height - 1, diagnostic
     print(f'checked: {label}', flush=True)
 
 
@@ -115,7 +118,7 @@ retry_count = 0
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    for height in (3, 4, 6):
+    for height in (3, 4, 6, 24):
         for tasks in (False, True):
             exercise(driver, height, tasks)
 

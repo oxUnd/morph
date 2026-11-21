@@ -2,6 +2,7 @@
 #define MORPH_CLI_PRESENTATION_NOTICE_H
 
 #include <nb/buf.h>
+#include <nothing/tui/canvas.h>
 
 enum cli_notice_status {
 	CLI_NOTICE_PENDING,
@@ -25,6 +26,7 @@ struct cli_notice {
 
 const char *cli_notice_marker(enum cli_notice_status status);
 const char *cli_notice_color(enum cli_notice_status status);
+struct nt_text_style cli_notice_native_style(enum cli_notice_status status, int styled);
 int cli_notice_append(nb_buf *out, const struct cli_notice *notice, int columns, int styled);
 
 #endif

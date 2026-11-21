@@ -9,6 +9,7 @@
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/services/session_restore.h"
+#include "sapi/cli/services/checkpoints.h"
 #include "sapi/cli/presentation/list.h"
 #include "runtime/checkpoint.h"
 #include <nb/cleanup.h>
@@ -32,7 +33,7 @@ static int cli_rewind_restore(struct cli_application *ctx, int64_t id,
 			      enum runtime_rewind_mode mode)
 {
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
-	int rc = runtime_checkpoint_restore(ctx->runtime, id, mode, &report);
+	int rc = cli_checkpoints_restore(ctx, id, mode, &report);
 	int conversation_restored =
 		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(report, "conversation_restored"));
 	int display_rc = 0;
@@ -105,7 +106,7 @@ static int cli_rewind_id(const char *text, int64_t *id)
 static int cli_rewind_list(struct cli_application *ctx, int interactive)
 {
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
-	int rc = runtime_checkpoint_list_copy(ctx->runtime, &report);
+	int rc = cli_checkpoints_list(ctx, &report);
 	if (rc)
 		return rc;
 
@@ -171,7 +172,7 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 
 		if (!strcmp(argv[1], "preview")) {
 			cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = NULL;
-			rc = runtime_checkpoint_preview_copy(ctx->runtime, id, &report);
+			rc = cli_checkpoints_preview(ctx, id, &report);
 			if (report) {
 				char prompt[BUFSIZ];
 				cli_list_compact_text(prompt, sizeof(prompt),

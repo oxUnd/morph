@@ -7,6 +7,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/pages/jobs.h"
+#include "sapi/cli/services/processes.h"
 
 static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **argv)
 {
@@ -18,7 +19,7 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 			return NB_ERR_INVAL;
 		}
 
-		int rc = runtime_process_stop(ctx->runtime, id);
+		int rc = cli_process_stop(ctx, id);
 		if (!rc)
 			CMD_OK(ctx, "stop requested: %s", id);
 		else
@@ -38,8 +39,7 @@ static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **a
 	}
 
 	cJSON *data = NULL;
-	int rc = id ? runtime_process_read(ctx->runtime, id, &data)
-		    : runtime_process_list(ctx->runtime, &data);
+	int rc = id ? cli_process_read(ctx, id, &data) : cli_process_list(ctx, &data);
 	if (!rc) {
 		char *json = cJSON_Print(data);
 		if (!json)

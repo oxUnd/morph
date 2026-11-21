@@ -1,9 +1,16 @@
 # Runtime architecture
 
-`morph-runtime` is the process-level owner of the agent system. Frontends own
-only an opaque `struct runtime *`; they never own the database, models, ReAct
-context, tool registry, MCP registry, memory workers, credits, or session
-state.
+`morph-runtime` is the process-level owner of the agent system. CLI enters
+through opaque runtime clients, submitting requests and receiving owned
+responses, events and interaction requests. GUI and embedded hosts can use the
+same interface; the existing FastCGI adapter retains its synchronous
+compatibility facade. Runtime owns execution, models, tools, persistence,
+permissions and worker teardown.
+
+The [request/response protocol](runtime-request-response.md) defines the public
+client contract. A client can address several sessions, and several clients can
+observe one session. Every operation carries its target identity. Selected
+tabs, windows, drafts, scrolling and presentation belong to the frontend.
 
 Native tool extensions enter through the runtime-owned extension adapter.
 `ext_run_v2` borrows an `ext_context` with a configuration snapshot, per-call
@@ -14,23 +21,22 @@ permission context. The private runtime/database owner never crosses this ABI.
 Legacy native and executable extension entrypoints retain their contracts.
 
 ```text
- CLI / FastCGI / mobile hosts
-          |
-          | runtime_options + runtime_request
-          v
- +-------------------- public runtime facade --------------------+
- | lifecycle | sessions | turns | tasks | sync | MCP | snapshots |
- +-----------------------------+---------------------------------+
-                               |
-                    one private runtime_context
-                               |
-       +-----------+-----------+-----------+-----------+
-       |           |           |           |           |
-    config/db   models      tools/MCP   sessions    workers
-       |           |           |           |           |
-       +-----------+-----------+-----------+-----------+
-                               |
-                    runtime_close(), reverse order
+ CLI / GUI / FastCGI / mobile hosts
+                 |
+       runtime_client request / response
+          events / interaction replies
+                 |
+ +--------------- public runtime service ----------------+
+ | clients | sessions | turns | tasks | sync | snapshots |
+ +--------------------------+----------------------------+
+                            |
+              runtime-owned session manager
+                 /          |          \
+       session actor A  session actor B  shared services
+       engine + tools   engine + tools   storage/config
+       models + history models + history scheduler/MCP
+                 \          |          /
+              runtime_close(), joined teardown
 ```
 
 ## Ownership rules
@@ -39,14 +45,34 @@ Legacy native and executable extension entrypoints retain their contracts.
    error after cleaning the partial graph.
 2. `runtime_close()` stops workers, drains memory work, disconnects MCP, and
    destroys tools, models, database state, and locks in reverse order.
-3. A frontend may keep copied DTOs and snapshots. Immutable config and string
-   views may be borrowed for immediate inspection; mutable runtime-owned
-   objects are not exposed through the public facade.
-4. Every turn enters through `runtime_execute_turn()`. The runtime binds the
-   requested session, memory, plan, dynamic-tool, usage, credit, and event
-   context before execution and restores transient bindings afterward.
-5. Session switching, scheduled execution, cancellation, and shutdown use the
-   same runtime lock and lifecycle regardless of frontend.
+3. A frontend owns its client handle and received message owners. It may keep
+   copied DTOs and snapshots. Client protocol headers expose no mutable ReAct,
+   model, database, tool-registry or frontend objects.
+4. `turn.start` admits a named session turn and returns its initial identity.
+   Runtime-owned session workers enter the existing execution engine. Each
+   session has independent mutable bindings and one active primary turn;
+   different sessions execute concurrently within runtime resource limits.
+5. Steering, cancellation and interaction replies name their execution target.
+   Runtime control remains available while workers wait for models or tools.
+   Changing a frontend's selected session is a frontend navigation operation.
+6. Client disconnect and unsubscribe do not cancel accepted turns. Runtime
+   shutdown stops admissions, resolves waits and joins all session workers
+   before releasing their dependencies.
+
+The manager constructs session actors using the existing runtime dependency
+graph with process-replica initialization. Actors capture their session's work
+directory and settings and own their model clients, tool bindings, ReAct,
+history and worker resources. The parent runtime owns all actors. Frontends
+never open private runtime replicas or implement their lifecycle.
+Turn execution uses a bounded runtime worker pool. Idle session actors can be
+evicted from the resident cache and reconstructed from persisted state.
+
+The legacy synchronous facade retains a current-session projection for older
+queries and callers. It is a compatibility execution owner, not the selected
+conversation of the asynchronous protocol. Its execution lock serializes that
+owner's turns; it does not serialize all actors in the parent manager. The
+engine-level descriptions below apply to a session actor or that compatibility
+owner.
 
 The private turn scope owns temporary callback, usage, tool-runtime, and hook
 bindings together. Its finish operation restores completed bindings even when
@@ -64,6 +90,11 @@ and remains available through the compatible `session.h` interface. Memory
 ingestion and presentation consume snapshots and repository operations instead
 of embedding their SQL in the rendering path.
 
+`persistence/runtime_store` owns typed turn records, instance ownership rows and
+session-setting overrides. Runtime decides process liveness and recovery policy,
+validates domain settings and serializes protocol DTOs. History requests use
+bounded newest-first pages with stable sequence cursors.
+
 ReAct keeps its decision loop explicit. Worker ownership, request preparation,
 history replay, content normalization, compaction, and inspection are private
 modules with separate responsibilities. Hooks similarly separate configuration,
@@ -72,18 +103,34 @@ runtime, service locator, or generic task framework.
 
 ## Request and result
 
-`runtime_request` is the per-turn request context: session identity, model and
-stored input, rendering/event callbacks, approval callbacks, memory policy, and
-turn flags. `runtime_result` is the immediate execution result. Durable or
-diagnostic state is read through copied runtime snapshots such as
-`runtime_turn_status`, never through the internal ReAct object.
+`runtime_command` is the asynchronous client request envelope: request ID,
+method and owned-at-submission domain parameters. `runtime_message` returns a
+response, scoped event or interaction request. A successful operation response
+does not mean that its turn has finished; `turn.completed` and `turn.get`
+provide execution completion and copied results. Subscription snapshots carry
+an event cursor and runtime epoch so clients can recover delivery gaps.
+
+`runtime_request` remains the lower-level per-turn engine context for compatible
+callers: session identity, model/stored input, callbacks, memory policy and turn
+flags. `runtime_result` is its immediate execution result. Asynchronous workers
+copy that result before publishing it. Durable and diagnostic state crosses the
+client boundary through message owners and snapshots, never a borrowed ReAct
+pointer.
 
 ## Source layout
 
 ```text
 runtime/
+  client.c          client channels, request admission, domain routing and shutdown
+  client_turn.c     session actors, turn worker pool and event publication
+  client_interaction.c questions, approvals, replies and controller handoff
+  client_workspace.c cross-session workspace mutation coordination
+  client.h          public asynchronous client lifecycle and message transport
+  protocol.h        request, response and event envelopes
+  protocol_dispatch.c domain operation validation and result mapping
+  protocol_inspect.c copied model, context, memory and configuration inspection
   lifecycle.c       construction, shutdown, and turn entry point
-  execute.c         serialized request execution
+  execute.c         per-engine serialized execution and compatibility entry
   engine.c          turn orchestration and per-turn state
   turn_scope.c      per-request binding and restoration
   context.c         private runtime context definition
@@ -102,6 +149,7 @@ runtime/
   approval.c independent automatic reviewer and human/event adapters
   task_service.c    scheduled-task and notification facade
   task_controller.c scheduled-task execution and worker control
+  task_runner.c     built-in headless task execution through the client protocol
   task_worker.c     background scheduled execution lifecycle
   scheduler.c       due-task scanning and claim loop
   tasks.h           public scheduled-task DTO/callback facade
@@ -120,6 +168,10 @@ runtime/
 CLI and Android may render results differently and provide platform callbacks,
 but neither frontend reimplements core initialization, execution, persistence,
 credits, memory, tool registration, or shutdown.
+
+Passing a null scheduled-task runner selects the runtime's built-in client
+runner. Scheduled agent work therefore uses the same session, execution and
+result protocol without requiring a CLI application or a frontend worker.
 
 `morph-runtime` links `morph-agent`, `morph-config`, `morph-credits`,
 `morph-event`, `morph-mcp`, `morph-session`, `morph-skill`, `morph-sync`, and

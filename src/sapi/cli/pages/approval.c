@@ -67,6 +67,7 @@ static int cli_approval_select_choice(struct cli_application *ctx, int scoped, i
 	const struct nt_choice_prompt_options options = {
 		.items = items,
 		.interrupted = &ctx->interrupted,
+		.cancel_token = ctx->input->input_cancel_token,
 		.color = cli_output_color_enabled(ctx),
 	};
 	int rc = nt_selection_model_init(&model, count, 0, 1, 1);

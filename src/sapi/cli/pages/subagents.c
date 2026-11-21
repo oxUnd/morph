@@ -18,6 +18,7 @@
 #include "sapi/cli/presentation/transcript.h"
 #include "sapi/cli/services/agents.h"
 #include "sapi/cli/services/event_queue.h"
+#include "sapi/cli/services/sessions.h"
 
 #include <nb/cleanup.h>
 #include <nb/err.h>
@@ -215,7 +216,10 @@ static int cli_subagents_refresh(struct cli_application *ctx, struct cli_subagen
 	struct agent_info *items = NULL;
 	int count = 0;
 	int64_t session = 0;
-	(void)runtime_session_current_id(ctx->runtime, &session);
+	if (ctx->sessions)
+		session = cli_sessions_current_id(ctx);
+	else
+		(void)runtime_session_current_id(ctx->runtime, &session);
 	int rc = page->fullscreen && !page->viewing
 			 ? cli_agents_list(ctx, session, &items, &count)
 			 : cli_agents_activity(ctx, session, &items, &count);
@@ -730,7 +734,7 @@ static int cli_subagents_submit(void *data, const struct nt_view_event *event)
 	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	struct cli_subagents_feed *feed = page->feed;
 	(void)event;
-	int rc = runtime_agent_followup(ctx->runtime, feed->thread->id,
+	int rc = cli_agents_followup(ctx, feed->thread->id,
 					nt_text_field_text(page->ui.editor));
 	nb_buf_clear(&feed->message);
 	if (!nb_buf_append_cstr(&feed->message,

@@ -3,6 +3,7 @@
 
 struct cli_application;
 int cli_model_set_mode(struct cli_application *application, int ultra);
+int cli_model_get_mode(struct cli_application *application, int *ultra);
 int cli_model_show(struct cli_application *application);
 
 #endif

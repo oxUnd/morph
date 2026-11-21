@@ -11,6 +11,7 @@
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/pages/resume.h"
 #include "sapi/cli/services/session_restore.h"
+#include "sapi/cli/services/sessions.h"
 #include "sapi/cli/adapters/runtime/observer.h"
 #include <stdio.h>
 #include "sapi/cli/services/command_job.h"
@@ -149,6 +150,7 @@ static void cli_application_prepare_termination(struct nt_application *base, int
 
 	(void)cli_chat_panel_close(ctx, NB_ERR_CANCELLED);
 	(void)cli_event_queue_stop_owner_calls(ctx);
+	cli_sessions_stop(ctx);
 	if (ctx->input_job && ctx->input_job->active) {
 		runtime_cancel_turn(ctx->runtime);
 		int job_result = cli_command_job_finish(ctx->input_job);
@@ -349,6 +351,12 @@ static int cli_application_initialize(struct cli_application *ctx, const char *c
 
 		if (resolved_workdir && resolved_workdir[0])
 			strncpy(ctx->workdir, resolved_workdir, sizeof(ctx->workdir) - 1);
+	}
+
+	rc = cli_sessions_init(ctx);
+	if (rc) {
+		cli_application_shutdown(ctx);
+		return rc;
 	}
 	rc = runtime_sync_start_instance(ctx->runtime, NULL, NULL);
 	if (rc != 0)
@@ -699,6 +707,18 @@ void cli_application_run(struct cli_application *ctx)
 
 static void cli_application_emit_trace_json(struct cli_application *ctx, double elapsed)
 {
+	if (ctx->sessions) {
+		cJSON *trace NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+		if (!cli_sessions_request_current(ctx, "turn.inspect", NULL, &trace)) {
+			cJSON_AddNumberToObject(trace, "elapsed_seconds", elapsed);
+			char *text NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(trace);
+			if (text)
+				cli_output_printf(ctx, "%s\n", text);
+
+			return;
+		}
+	}
+
 	struct runtime_turn_status status NB_CLEANUP(runtime_turn_status_cleanup) = {0};
 	cJSON *root;
 	cJSON *steps;
@@ -842,11 +862,14 @@ void cli_application_shutdown(struct cli_application *ctx)
 
 	nb_signal_listener_stop(&ctx->signals, NULL);
 	cli_callbacks_cleanup(ctx);
+	cli_sessions_stop(ctx);
+	cli_sessions_cleanup(ctx);
 	runtime_close(ctx->runtime);
 	ctx->runtime = NULL;
 	(void)cli_event_queue_drain(ctx);
 	cli_subagents_cleanup(ctx);
 	cli_presentation_cleanup(ctx);
+	cli_composer_model_cleanup(&ctx->composer);
 	cli_jobs_model_cleanup(ctx->jobs);
 	ctx->jobs = NULL;
 	cli_event_queue_cleanup(ctx);

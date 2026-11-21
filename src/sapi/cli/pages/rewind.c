@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/rewind.h"
+#include "sapi/cli/services/checkpoints.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
 #include "sapi/cli/application.h"
@@ -225,7 +226,7 @@ static int cli_rewind_activate(void *data, const struct nt_view_event *event)
 	page->id = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "id"));
 	cJSON_DeleteOwner(&page->preview);
 	struct cli_application *ctx = cli_application_from_controller(&page->base);
-	int rc = runtime_checkpoint_preview_copy(ctx->runtime, page->id, &page->preview);
+	int rc = cli_checkpoints_preview(ctx, page->id, &page->preview);
 	if (rc) {
 		snprintf(page->error, sizeof(page->error), "Preview failed: %s",
 			 nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));

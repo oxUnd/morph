@@ -82,6 +82,10 @@ int history_store_visit_traces(struct db *db, int64_t session_id, history_trace_
 			       void *data);
 int history_store_visit_answers(struct db *db, int64_t session_id, history_item_visitor visitor,
 				void *data);
+/* Newest first. A zero cursor begins at the latest item. Includes legacy
+ * messages when a session has no model history. Reads at most limit records. */
+int history_store_visit_page(struct db *db, int64_t session_id, int64_t before_sequence,
+	int limit, history_item_visitor visitor, void *data);
 int history_store_visit_turn(struct db *db, int64_t session_id, const char *turn_id,
 			     int64_t before_sequence, history_item_visitor visitor, void *data);
 int history_store_previous_question_copy(struct db *db, int64_t session_id, int64_t before_sequence,

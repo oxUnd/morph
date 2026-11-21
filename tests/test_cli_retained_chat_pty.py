@@ -56,11 +56,11 @@ def assert_composer_box(terminal, row, color, lines=1):
     assert not screen.display[row + lines].strip(), display
 
 
-def assert_original_startup(terminal, width, color):
-    """Rows and styles captured from the pre-migration c27cac4 CLI in a PTY."""
+def assert_startup(terminal, width, color):
+    """Keep banner styles while anchoring the editable controls at the bottom."""
     screen = terminal.screen
     display = '\n'.join(screen.display)
-    input_row = 13 if width == 60 else 10
+    input_row = screen.lines - 3
     assert not screen.display[0].strip(), display
     assert screen.display[1].startswith('  morph'), display
     assert 'v0.' in screen.display[1], display
@@ -77,7 +77,8 @@ def assert_original_startup(terminal, width, color):
     assert screen.display[input_row + 2].startswith('  morph · '), display
     assert ('context 0 / 128k  ·  0 credits' if width >= 100
             else 'ctx 0 / 128k · 0 cr') in screen.display[input_row + 2], display
-    assert all(not row.strip() for row in screen.display[input_row + 3:]), display
+    hint_row = next(i for i, row in enumerate(screen.display) if 'Paste image' in row)
+    assert all(not row.strip() for row in screen.display[hint_row + 1:input_row - 1]), display
     if color:
         assert screen.buffer[1][2].bold, display
         assert screen.buffer[1][2].fg == 'af87ff', display
@@ -134,7 +135,7 @@ def run_case(binary, server, width, color, production=False):
             terminal.wait_for_composer()
             wait_visible(terminal, 'perm: ask')
             assert '\x1b[?1049h' in terminal.raw
-            assert_original_startup(terminal, width, color)
+            assert_startup(terminal, width, color)
             if width == 120:
                 terminal.pump(1.2)
                 idle_bytes = len(terminal.raw)

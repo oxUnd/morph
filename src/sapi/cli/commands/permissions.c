@@ -13,6 +13,7 @@
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "sapi/cli/presentation/list.h"
 #include "sapi/cli/pages/permissions.h"
+#include "sapi/cli/services/permissions.h"
 #include "sapi/cli/application.h"
 
 #include <stdint.h>
@@ -80,7 +81,7 @@ static int cli_permissions_print_permissions(struct cli_application *ctx)
 	int group_count = 0;
 	int rc;
 
-	rc = runtime_permission_list(ctx->runtime, &grants, &count);
+	rc = cli_permissions_grants_list(ctx, &grants, &count);
 	if (rc != 0)
 		return rc;
 
@@ -175,7 +176,7 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 	int rc;
 
 	*deleted = 0;
-	rc = runtime_permission_list(ctx->runtime, &grants, &count);
+	rc = cli_permissions_grants_list(ctx, &grants, &count);
 	if (rc != 0)
 		return rc;
 
@@ -224,7 +225,7 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 		     _i_++) {
 			int subject_deleted = 0;
 
-			rc = runtime_permission_revoke_subject(ctx->runtime, *subject,
+			rc = cli_permissions_grants_revoke(ctx, 0, *subject,
 							       &subject_deleted);
 			if (rc != 0)
 				return rc;
@@ -250,7 +251,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		    cli_application_tui_borrow(ctx))
 			return cli_permissions_show(ctx);
 
-		rc = runtime_permission_get_policy(ctx->runtime, &policy);
+		rc = cli_permissions_policy_get(ctx, &policy);
 		if (rc != 0)
 			return rc;
 
@@ -272,7 +273,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 			rc = NB_ERR_INVAL;
 
 		if (rc == 0)
-			rc = runtime_permission_set_policy(ctx->runtime, &policy);
+			rc = cli_permissions_policy_update(ctx, &policy);
 
 		if (rc == 0)
 			CMD_OK(ctx, "permissions: %s", runtime_permission_preset_name(&policy));
@@ -296,7 +297,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 		errno = 0;
 		id = strtoll(target, &end, 10);
 		if (errno == 0 && *end == '\0' && id > 0)
-			rc = runtime_permission_revoke_id(ctx->runtime, (int64_t)id, &deleted);
+			rc = cli_permissions_grants_revoke(ctx, (int64_t)id, NULL, &deleted);
 		else
 			rc = cli_permissions_revoke_subject_matches(ctx, target, &deleted);
 
@@ -335,7 +336,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 			return 0;
 		}
 
-		rc = runtime_permission_clear(ctx->runtime, all_projects, &deleted);
+		rc = cli_permissions_grants_clear(ctx, all_projects, &deleted);
 		if (rc != 0)
 			return rc;
 

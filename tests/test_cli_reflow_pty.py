@@ -214,16 +214,25 @@ def collect_native_history(terminal, screen, label, draft=None):
                     if ('DRAFT_NATIVE' in row if draft is not None
                         else row.strip() in ('>', '›')))
     cursor = (screen.cursor.x, screen.cursor.y)
-    history = screen.display[:composer - 2]
+
+    def conversation():
+        rows = screen.display[:composer - 2]
+        # Fixed bottom controls reserve blank activity/separator rows outside
+        # the scrolling feed. They cannot participate in a history overlap.
+        while rows and not rows[-1].strip():
+            rows.pop()
+        return rows
+
+    history = conversation()
     previous = history
 
     def viewport(stage):
-        terminal.snapshot(label + ': ' + stage)
+        wait_until(terminal, lambda: 2026 << 5 not in screen.mode)
         screen.capture(label + ': ' + stage)
         assert (screen.cursor.x, screen.cursor.y) == cursor, screen.display
         assert (('DRAFT_NATIVE' in screen.display[composer]) if draft is not None
                 else screen.display[composer].strip() in ('>', '›')), screen.display
-        return screen.display[:composer - 2]
+        return conversation()
 
     def prepend(page):
         nonlocal history
@@ -233,8 +242,10 @@ def collect_native_history(terminal, screen, label, draft=None):
         history = page[:-overlap] + history
 
     for pages in range(20):
-        terminal.send('\x1b[5~\x1b[<65;1;1M')
-        page = viewport('page up with an overlapping row')
+        # Keep a substantial text overlap even when the wrapped draft and
+        # fixed activity area reduce the conversation height.
+        terminal.send('\x1b[5~' + '\x1b[<65;1;1M' * 3)
+        page = viewport('page up with overlapping text')
         if page == previous:
             break
         prepend(page)

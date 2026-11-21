@@ -21,6 +21,7 @@ struct cli_files_model {
 
 void cli_files_init(struct cli_files_model *);
 void cli_files_cleanup(struct cli_files_model *);
+void cli_files_move(struct cli_files_model *destination, struct cli_files_model *source);
 /* Resolves a local link lexically, without reading the filesystem.
  * Web URLs and anchors return NB_ERR_UNSUPPORTED. Output must be empty. */
 int cli_files_resolve(const char *directory, const char *url, nb_buf *path, int *line);

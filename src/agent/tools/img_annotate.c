@@ -1,8 +1,10 @@
+#include "img_annotate.h"
+
 #include <nb/process.h>
+#include <nb/cancel.h>
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include "agent/tool_runtime.h"
-#include "img_annotate.h"
 #include "agent/tool_context.h"
 #include <nb/log.h>
 #include <nb/file.h>
@@ -22,6 +24,7 @@
 #define MAX_IMAGES 32
 
 struct img_annotate_context {
+	img_annotate_acquire_fn acquire_fn;
 	img_annotate_pause_fn pause_fn;
 	img_annotate_resume_fn resume_fn;
 	void *cb_user_data;
@@ -31,6 +34,15 @@ struct img_annotate_context {
 static void img_annotate_context_destroy(void *user_data)
 {
 	free(user_data);
+}
+
+static int img_annotate_cancelled(void *data)
+{
+	const struct tool_runtime_context *runtime = data;
+
+	return runtime && ((runtime->http.cancel_flag &&
+		nb_atomic_int_load(runtime->http.cancel_flag)) ||
+		nb_cancel_requested(runtime->http.cancel_token));
 }
 
 /*
@@ -220,8 +232,20 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	for (i = 0; i < npaths; i++)
 		argv[2 + i] = paths[i];
 	argv[2 + npaths] = NULL;
-	if (ctx && ctx->pause_fn)
+	if (ctx && ctx->acquire_fn) {
+		rc = ctx->acquire_fn(ctx->cb_user_data);
+		if (rc != 0) {
+			free(editor_path);
+			for (i = 0; i < npaths; i++)
+				free(paths[i]);
+
+			(void)tool_result_error_copy(result, "terminal_unavailable",
+				"The client did not grant terminal ownership for the editor.");
+			return rc;
+		}
+	} else if (ctx && ctx->pause_fn)
 		ctx->pause_fn(ctx->cb_user_data);
+
 	fflush(stdout);
 	fflush(stderr);
 	nb_process_options options = {
@@ -230,13 +254,19 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		.close_fds = true,
 		.stdin_mode = NB_PROCESS_NULL,
 		.stderr_mode = NB_PROCESS_PIPE,
+		.new_group = true,
 	};
 	nb_process *child NB_CLEANUP(nb_process_cleanup) = NULL;
 	rc = nb_process_spawn(&options, &child, NULL);
 	{
 		nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 		nb_buf errors NB_CLEANUP(nb_buf_cleanup) = {0};
-		nb_process_exchange_options exchange = {.timeout_ms = -1, .max_output = SIZE_MAX};
+		nb_process_exchange_options exchange = {
+			.timeout_ms = -1,
+			.max_output = SIZE_MAX,
+			.cancelled = img_annotate_cancelled,
+			.cancel_ctx = (void *)result->runtime,
+		};
 		if (rc == NB_OK)
 			rc = nb_process_exchange(child, "", 0, &exchange, &buf, &errors, &status,
 						 NULL);
@@ -523,8 +553,9 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	return rc;
 }
 
-int img_annotate_init(struct tool_registry *reg,
+static int img_annotate_register(struct tool_registry *reg,
 		      img_annotate_pause_fn pause_fn,
+		      img_annotate_acquire_fn acquire_fn,
 		      img_annotate_resume_fn resume_fn,
 		      void *user_data,
 		      struct tool_context *tctx)
@@ -536,6 +567,7 @@ int img_annotate_init(struct tool_registry *reg,
 	if (!ctx)
 		return NB_ERR_NOMEM;
 	ctx->pause_fn = pause_fn;
+	ctx->acquire_fn = acquire_fn;
 	ctx->resume_fn = resume_fn;
 	ctx->cb_user_data = user_data;
 	ctx->tctx = tctx;
@@ -599,4 +631,21 @@ int img_annotate_init(struct tool_registry *reg,
 		.user_data_destroy = img_annotate_context_destroy};
 	int rc = tool_register_take(reg, &spec);
 	return rc;
+}
+
+int img_annotate_init(struct tool_registry *reg,
+	img_annotate_pause_fn pause_fn, img_annotate_resume_fn resume_fn,
+	void *user_data, struct tool_context *tctx)
+{
+	return img_annotate_register(reg, pause_fn, NULL, resume_fn, user_data, tctx);
+}
+
+int img_annotate_init_host(struct tool_registry *reg,
+	img_annotate_acquire_fn acquire_fn, img_annotate_resume_fn release_fn,
+	void *user_data, struct tool_context *tctx)
+{
+	if (!acquire_fn || !release_fn)
+		return NB_ERR_INVAL;
+
+	return img_annotate_register(reg, NULL, acquire_fn, release_fn, user_data, tctx);
 }

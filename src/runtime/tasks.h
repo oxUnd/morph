@@ -17,6 +17,7 @@ char *runtime_scheduled_task_display_prompt_copy(const struct scheduled_task *ta
 
 int runtime_tasks_execute(struct runtime *runtime, const char *args_json,
 			  int64_t now, char **out_json);
+/* A NULL runner uses the runtime-owned asynchronous agent client. */
 int runtime_task_scheduler_start(
 	struct runtime *runtime,
 	scheduled_task_runner_fn runner, void *runner_user_data,

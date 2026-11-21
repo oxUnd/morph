@@ -22,6 +22,8 @@ struct nt_view *cli_command_add(struct nt_builder *builder, struct nt_view *pare
 				const char *text, int styled)
 {
 	const struct nt_view_options options = {
+		.width = NT_FILL,
+		.max_width = NT_PERCENT(100),
 		.margin = {.top = cli_command_top_margin(parent), .bottom = 1}};
 	struct nt_view *group = nt_column_add(builder, parent, 1, &options);
 	if (!group)

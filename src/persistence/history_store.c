@@ -411,6 +411,56 @@ int history_store_visit_answers(struct db *db, int64_t session_id, history_item_
 		NULL, 0, visitor, data);
 }
 
+int history_store_visit_page(struct db *db, int64_t session_id, int64_t before_sequence,
+	int limit, history_item_visitor visitor, void *data)
+{
+	sqlite3_stmt *stmt = NULL;
+	int step;
+	int rc;
+	const char *sql =
+		"SELECT sequence_no,turn_id,kind,role,content,payload_json,tool_name,"
+		"tool_call_id,active,truncated,created_at FROM model_history_items "
+		"WHERE session_id=?1 AND (?2=0 OR sequence_no<?2) UNION ALL "
+		"SELECT id,turn_id,'legacy_message',role,content,NULL,'',NULL,1,0,created_at "
+		"FROM messages WHERE session_id=?1 AND (?2=0 OR id<?2) "
+		"AND NOT EXISTS(SELECT 1 FROM model_history_items WHERE session_id=?1) "
+		"ORDER BY 1 DESC LIMIT ?3";
+
+	if (!visitor || before_sequence < 0 || limit < 1 || limit > 1001)
+		return NB_ERR_INVAL;
+
+	rc = prepare_session_query(db, sql, session_id, &stmt);
+	if (rc != 0)
+		return rc;
+
+	sqlite3_bind_int64(stmt, 2, before_sequence);
+	sqlite3_bind_int(stmt, 3, limit);
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		struct model_history_item item = {0};
+		const char *kind = column_text(stmt, 2);
+		const char *role = column_text(stmt, 3);
+		const char *tool = column_text(stmt, 6);
+
+		item.session_id = session_id;
+		item.sequence_no = sqlite3_column_int64(stmt, 0);
+		item.turn_id = (char *)column_text(stmt, 1);
+		snprintf(item.kind, sizeof(item.kind), "%s", kind ? kind : "");
+		snprintf(item.role, sizeof(item.role), "%s", role ? role : "");
+		item.content = (char *)column_text(stmt, 4);
+		item.payload_json = (char *)column_text(stmt, 5);
+		snprintf(item.tool_name, sizeof(item.tool_name), "%s", tool ? tool : "");
+		item.tool_call_id = (char *)column_text(stmt, 7);
+		item.active = sqlite3_column_int(stmt, 8);
+		item.truncated = sqlite3_column_int(stmt, 9);
+		item.created_at = sqlite3_column_int64(stmt, 10);
+		rc = visitor(&item, data);
+		if (rc != 0)
+			break;
+	}
+
+	return finish_query(stmt, step, rc);
+}
+
 int history_store_visit_turn(struct db *db, int64_t session_id, const char *turn_id,
 			     int64_t before_sequence, history_item_visitor visitor, void *data)
 {

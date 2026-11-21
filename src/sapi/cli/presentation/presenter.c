@@ -1444,69 +1444,6 @@ static void cli_presenter_artifact(struct cli_application *ctx, const struct mor
 	cli_presenter_resume_status(ctx, status_paused);
 }
 
-static void cli_presenter_mcp(struct cli_application *ctx, const struct morph_event *ev)
-{
-	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
-		return;
-
-	const char *server = cli_presenter_event_string(ev, "server");
-	const char *error = cli_presenter_event_string(ev, "error");
-	if (!server || !*server)
-		server = "server";
-
-	int paused = cli_presenter_pause_status(ctx);
-	if (!ctx->presenter->mcp_tree_active || strcmp(ctx->presenter->mcp_tree_server, server)) {
-		nb_buf root NB_CLEANUP(nb_buf_cleanup) = {0};
-		(void)nb_buf_printf(&root, "MCP %s", server);
-		(void)cli_feed_notice_write(ctx, CLI_NOTICE_SYSTEM, nb_buf_cstr(&root), NULL, NULL);
-		strncpy(ctx->presenter->mcp_tree_server, server,
-			sizeof(ctx->presenter->mcp_tree_server) - 1);
-		ctx->presenter->mcp_tree_server[sizeof(ctx->presenter->mcp_tree_server) - 1] = '\0';
-		ctx->presenter->mcp_tree_active = 1;
-	}
-
-	int failed = ev->name && !strcmp(ev->name, "mcp.failed");
-	int ready = ev->name && !strcmp(ev->name, "mcp.ready");
-	int disconnected = ev->name && !strcmp(ev->name, "mcp.disconnected");
-	int connected = ev->name && !strcmp(ev->name, "mcp.connected");
-	int last = failed || ready || disconnected;
-	const char *label = failed ? "Failed" : ready ? "Ready" : disconnected ? "Disconnected"
-		: connected ? "Connected" : ev->name && !strcmp(ev->name, "mcp.connecting")
-		? "Connecting" : ev->name && !strcmp(ev->name, "mcp.discovering")
-		? "Discovering capabilities" : ev->message ? ev->message : "Updated";
-	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
-	(void)nb_buf_append_cstr(&title, label);
-	if (failed && error && *error)
-		(void)nb_buf_printf(&title, " · %s", error);
-
-	if (ready && cJSON_IsNumber(cli_presenter_event_item(ev, "tools")) &&
-	    cJSON_IsNumber(cli_presenter_event_item(ev, "resources")) &&
-	    cJSON_IsNumber(cli_presenter_event_item(ev, "prompts")))
-		(void)nb_buf_printf(&title, " · %d tools, %d resources, %d prompts",
-				    cli_presenter_event_int(ev, "tools"),
-				    cli_presenter_event_int(ev, "resources"),
-				    cli_presenter_event_int(ev, "prompts"));
-
-	struct cli_notice notice = {
-		.status = failed	       ? CLI_NOTICE_FAILED
-			  : disconnected       ? CLI_NOTICE_CANCELLED
-			  : ready || connected ? CLI_NOTICE_DONE
-					       : CLI_NOTICE_RUNNING,
-		.title = nb_buf_cstr(&title),
-		.tree_branch = last ? 2 : 1,
-	};
-	struct cli_feed_block block = {
-		.kind = CLI_FEED_BLOCK_NOTICE, .join_previous = 1, .content.notice = &notice,
-	};
-	(void)cli_feed_block_write(ctx, &block);
-	if (last) {
-		ctx->presenter->mcp_tree_active = 0;
-		ctx->presenter->mcp_tree_server[0] = '\0';
-	}
-
-	cli_presenter_resume_status(ctx, paused);
-}
-
 static void cli_presenter_auxiliary(struct cli_application *ctx, const struct morph_event *ev)
 {
 	const char *prefix;
@@ -1549,25 +1486,6 @@ static void cli_presenter_auxiliary(struct cli_application *ctx, const struct mo
 				cli_presenter_status(ctx, ev->message ? ev->message : "Working…");
 		} else if (!ctx->turn_active) {
 			cli_presenter_clear_status(ctx);
-		}
-
-		return;
-	}
-
-	if (ev->type == MORPH_EVENT_MCP) {
-		if (!cJSON_IsTrue(cli_presenter_event_item(ev, "background")) ||
-		    !ctx->input_status.enabled) {
-			cli_presenter_mcp(ctx, ev);
-		} else if (ev->name && strcmp(ev->name, "mcp.failed") == 0) {
-			const char *server = cli_presenter_event_string(ev, "server");
-			const char *error = cli_presenter_event_string(ev, "error");
-
-			status_paused = cli_presenter_pause_status(ctx);
-			nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
-			(void)nb_buf_printf(&title, "MCP %s · failed", server ? server : "server");
-			(void)cli_feed_notice_write(ctx, CLI_NOTICE_FAILED, nb_buf_cstr(&title),
-						    error, NULL);
-			cli_presenter_resume_status(ctx, status_paused);
 		}
 
 		return;
@@ -1669,8 +1587,6 @@ void cli_presentation_reset(struct cli_application *ctx)
 	ctx->presenter->reasoning_stream_offset = 0;
 	ctx->presenter->final_rendered = 0;
 	cli_feed_live_clear(ctx);
-	ctx->presenter->mcp_tree_active = 0;
-	ctx->presenter->mcp_tree_server[0] = '\0';
 }
 
 void cli_presentation_finish(struct cli_application *ctx)
@@ -1733,6 +1649,10 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 		free(json);
 		return rc;
 	}
+
+	/* Connection lifecycle belongs to the footer and its status panel. */
+	if (ev->type == MORPH_EVENT_MCP)
+		return 0;
 
 	if (!ctx->presentation_ready)
 		return 0;

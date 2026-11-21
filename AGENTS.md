@@ -8,7 +8,7 @@
 ## Architecture
 - **ReAct** `src/agent/react.c`: Thought → Action → Observation → Guardrail → Final, via OpenAI Function Calling (not text parsing).
 - **Models**: configure text chat, vision understanding, image generation and video generation independently under `[model.text]`, `[model.vision]`, `[model.image]` and `[model.video]`.
-- **Runtime facade** `src/runtime/`: process-level owner. Frontends hold an opaque `struct runtime *` and enter through `runtime_execute_turn()`; they never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md`.
+- **Runtime service** `src/runtime/`: process-level owner. Frontends use opaque runtime/client handles and submit explicit session requests through `runtime_client_request_copy()`. Responses, events and interaction requests arrive on the client channel; each frontend owns navigation and presentation. `runtime_execute_turn()` remains the synchronous compatibility engine. Frontends never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md` and `docs/runtime-request-response.md`.
 - **TUI**: The CLI uses the companion `nothing-tui` framework through its public
   `<nothing/tui/...>` headers. The application in `src/sapi/cli/` embeds
   `struct nt_application` and owns execution modes and lifecycle. Keep native

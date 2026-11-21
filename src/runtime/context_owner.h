@@ -33,6 +33,8 @@ enum runtime_agent_phase {
 };
 
 struct runtime_context {
+	int (*mutation_begin)(void *user_data, const char *tool);
+	void *mutation_user_data;
 	char *approval_objective;
 	nb_mutex *approval_objective_lock;
 	struct nb_log *logger;

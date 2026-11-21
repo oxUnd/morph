@@ -137,6 +137,11 @@ int tool_exec(struct tool_registry *reg, const char *name, const char *args_json
 	} else {
 		rc = 0;
 	}
+	if (rc == 0 && result->runtime && result->runtime->mutation_begin &&
+	    !(handle.flags & TOOL_FLAG_READONLY) && strcmp(name, "apply_patch") &&
+	    strcmp(name, "exec"))
+		rc = result->runtime->mutation_begin(result->runtime->mutation_user_data, name);
+
 	if (rc == 0) {
 		const struct tool_runtime_context *saved_runtime = result->runtime;
 		struct tool_runtime_context execution = {0};

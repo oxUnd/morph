@@ -10,6 +10,7 @@ import time
 
 from test_cli_pty import Model, Terminal, pexpect
 from test_cli_retained_chat_pty import wait_visible
+from test_cli_mcp_pty import assert_quiet, assert_status, click_mcp, wait_for, POPUP_TITLE
 
 
 SERVER = '''import json
@@ -42,14 +43,16 @@ def wait_file(terminal, path):
 
 
 def wait_failure(terminal, server_name):
-    deadline = time.monotonic() + 8
-    while True:
-        display = '\n'.join(terminal.screen.display)
-        if (server_name in display and 'failed' in display.lower()
-                and 2026 << 5 not in terminal.screen.mode):
-            return display
-        assert time.monotonic() < deadline, terminal.raw[-5000:]
-        terminal.pump(.05)
+    if POPUP_TITLE not in '\n'.join(terminal.screen.display):
+        quiet = wait_for(terminal, lambda text: 'MCP 0/1 !' in text)
+        assert_quiet(quiet, (server_name,))
+        click_mcp(terminal)
+    display = wait_for(terminal, lambda text: server_name in text and 'Failed' in text)
+    assert_status(display, server_name, 'Failed')
+    assert 'Connecting' not in display, display
+    assert any(row.lstrip(' │').startswith(('└ ', '├ '))
+               for row in display.splitlines()), display
+    return display
 
 
 def assert_screen_boundary(raw, server_name):
@@ -88,18 +91,30 @@ def run_case(binary, model, mode, production=False):
             wait_visible(terminal, 'perm: ask')
             wait_file(terminal, started)
             terminal.send('protected MCP draft')
-            wait_visible(terminal, 'protected MCP draft')
+            quiet = wait_visible(terminal, 'protected MCP draft')
+            assert_quiet(quiet, (name,))
+            cursor = (terminal.screen.cursor.y, terminal.screen.cursor.x)
             if mode == 'immediate':
                 screen = wait_failure(terminal, name)
                 assert 'protected MCP draft' in screen, screen
             elif mode == 'live':
                 assert 'FIXTURE_MCP_FAILURE' not in terminal.raw
+                pending = click_mcp(terminal)
+                assert_status(pending, name, 'Connecting')
                 release.write_text('fail initialization now')
                 screen = wait_failure(terminal, name)
                 assert 'protected MCP draft' in screen, screen
             else:
                 assert not release.exists()
                 assert 'FIXTURE_MCP_FAILURE' not in terminal.raw
+                pending = click_mcp(terminal)
+                assert_status(pending, name, 'Connecting')
+            terminal.send('\x1b')
+            returned = wait_for(terminal, lambda text: 'protected MCP draft' in text and
+                                POPUP_TITLE not in text)
+            assert_quiet(returned, (name,))
+            assert (terminal.screen.cursor.y, terminal.screen.cursor.x) == cursor, returned
+            assert 'closed' not in returned.lower(), returned
             terminal.send('\x15/quit\r')
             terminal.child.expect(pexpect.EOF, timeout=8)
             terminal.raw += terminal.child.before

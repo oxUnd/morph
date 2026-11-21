@@ -13,6 +13,7 @@
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/services/event_queue.h"
+#include "sapi/cli/services/sessions.h"
 #include "runtime/runtime.h"
 #include <stdarg.h>
 #include "credits.h"
@@ -115,7 +116,8 @@ int cli_turn_execute_prompt(struct cli_application *ctx, const char *input)
 			      AGENT_TURN_SAVE_EMPTY_ASSISTANT,
 	};
 	struct runtime_result runtime_result;
-	int react_rc = runtime_execute_turn(ctx->runtime, &request, &runtime_result);
+	int react_rc = ctx->sessions ? cli_sessions_execute(ctx, effective_input, input)
+		: runtime_execute_turn(ctx->runtime, &request, &runtime_result);
 	if (react_rc != NB_ERR_BUSY)
 		ctx->session_auto_named = 1;
 
@@ -140,7 +142,8 @@ void cli_turn_begin(struct cli_application *ctx)
 	if (!ctx)
 		return;
 
-	(void)cli_agents_refresh(ctx);
+	if (!ctx->sessions)
+		(void)cli_agents_refresh(ctx);
 	cli_cancel_state_reset(ctx);
 	cli_presentation_reset(ctx);
 	ctx->turn_active = 1;

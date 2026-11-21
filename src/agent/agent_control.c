@@ -99,6 +99,7 @@ struct agent_control {
 	struct model_usage_sink *checker_budget_previous;
 	struct model_usage_sink *checker_usage_previous;
 	char selected[AGENT_PATH_MAX];
+	int forward_all_events;
 	morph_event_cb event_cb;
 	void *event_user;
 };
@@ -991,6 +992,16 @@ int agent_control_set_event_callback(struct agent_control *control, morph_event_
 	return 0;
 }
 
+void agent_control_set_all_events(struct agent_control *control, int enabled)
+{
+	if (!control)
+		return;
+
+	nb_mutex_lock(control->mutex);
+	control->forward_all_events = !!enabled;
+	nb_mutex_unlock(control->mutex);
+}
+
 /* SQL text is internal; all external values use bound parameters. */
 static int fork_history(struct agent_control *control, int64_t source, int64_t destination)
 {
@@ -1277,7 +1288,7 @@ static int child_event(const struct morph_event *event, void *opaque)
 			changed = 0;
 		}
 	}
-	int selected = !strcmp(control->selected, agent->info.id);
+	int selected = control->forward_all_events || !strcmp(control->selected, agent->info.id);
 	nb_mutex_unlock(control->mutex);
 	if (changed)
 		emit_activity(agent, 2);
@@ -3261,7 +3272,7 @@ int agent_control_select(struct agent_control *control, const char *id)
 		return NB_ERR_INVAL;
 	nb_mutex_lock(control->mutex);
 	int found = !id || !*id || find_agent(control, control->session_id, id, "/root") != NULL;
-	if (found)
+	if (found && !control->forward_all_events)
 		snprintf(control->selected, sizeof(control->selected), "%s", id ? id : "");
 	nb_mutex_unlock(control->mutex);
 	return found ? 0 : NB_ERR_NOT_FOUND;
@@ -3345,7 +3356,10 @@ int agent_control_subscribe(struct agent_control *control, const char *id, char 
 		rc = agent_control_events_copy(control, id, events, count);
 	if (rc == 0) {
 		nb_mutex_lock(control->mutex);
-		snprintf(control->selected, sizeof(control->selected), "%s", agent->info.id);
+		if (!control->forward_all_events)
+			snprintf(control->selected, sizeof(control->selected), "%s",
+				agent->info.id);
+
 		nb_mutex_unlock(control->mutex);
 		*sequence = agent->event_sequence;
 	}

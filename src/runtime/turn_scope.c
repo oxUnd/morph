@@ -91,6 +91,8 @@ static void runtime_turn_scope_bind_tool_context(struct runtime_turn_scope_conte
 	if (request->user_id && request->user_id[0])
 		rt.user_id = request->user_id;
 	rt.restrict_memory_to_user = request->restrict_memory_to_user;
+	rt.mutation_begin = request->mutation_begin;
+	rt.mutation_user_data = request->mutation_user_data;
 	rt.memory_visible_fn = request->memory_visible_fn;
 	rt.memory_visible_user_data = request->memory_visible_user_data;
 	if (ctx->checkpoint)

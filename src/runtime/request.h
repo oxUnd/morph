@@ -10,6 +10,9 @@
 #include <stdint.h>
 
 struct runtime_request {
+	/* Internal execution adapter; never serialized by the client protocol. */
+	int (*mutation_begin)(void *user_data, const char *tool);
+	void *mutation_user_data;
 	int64_t session_id;
 	const char *turn_id;
 	const char *model_input;

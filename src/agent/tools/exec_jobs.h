@@ -2,6 +2,7 @@
 #define MORPH_EXEC_JOBS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +27,8 @@ int exec_jobs_read_retained(struct exec_jobs *jobs, int64_t owner, const char *i
 int exec_jobs_read(struct exec_jobs *jobs, int64_t owner, const char *id, cJSON **out);
 
 int exec_jobs_stop(struct exec_jobs *jobs, int64_t owner, const char *id);
+int exec_jobs_write(struct exec_jobs *jobs, int64_t owner, const char *id,
+	const char *text, size_t length);
 void exec_jobs_cancel_turn(struct exec_jobs *jobs, int64_t owner, const char *turn_id);
 int exec_jobs_authority(struct exec_jobs *jobs, const char *id, int *host, int *network);
 int exec_jobs_authorize(struct exec_jobs *jobs, const char *id, int64_t owner);

@@ -47,6 +47,40 @@ const char *cli_notice_color(enum cli_notice_status status)
 	}
 }
 
+struct nt_text_style cli_notice_native_style(enum cli_notice_status status, int styled)
+{
+	struct nt_text_style style = {0};
+	if (!styled)
+		return style;
+
+	unsigned int color = 0;
+	switch (status) {
+	case CLI_NOTICE_RUNNING:
+		color = 6;
+		break;
+	case CLI_NOTICE_DONE:
+		color = 2;
+		break;
+	case CLI_NOTICE_FAILED:
+		color = 1;
+		style.attributes = NT_STYLE_BOLD;
+		break;
+	case CLI_NOTICE_QUESTION:
+		color = 3;
+		style.attributes = NT_STYLE_BOLD;
+		break;
+	case CLI_NOTICE_WARNING:
+		color = 3;
+		break;
+	default:
+		style.attributes = NT_STYLE_DIM;
+		return style;
+	}
+
+	style.foreground = (struct nt_color){NT_COLOR_INDEXED, color};
+	return style;
+}
+
 static int cli_notice_text(nb_buf *out, const char *text, int columns, const char *continuation)
 {
 	char *safe NB_CLEANUP(nb_charp_cleanup) =

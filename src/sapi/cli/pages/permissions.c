@@ -5,6 +5,7 @@
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/components/selector.h"
+#include "sapi/cli/services/permissions.h"
 
 static const char *const cli_permissions_presets[] = {"ask", "auto", "full", "read_only"};
 
@@ -13,7 +14,7 @@ static void cli_permissions_apply(struct cli_application *ctx, size_t index)
 	struct permission_policy policy;
 	int rc = runtime_permission_preset(cli_permissions_presets[index], &policy);
 	if (!rc)
-		rc = runtime_permission_set_policy(ctx->runtime, &policy);
+		rc = cli_permissions_policy_update(ctx, &policy);
 
 	if (!rc)
 		CMD_OK(ctx, "permissions: %s", runtime_permission_preset_name(&policy));
@@ -31,7 +32,7 @@ int cli_permissions_show(struct cli_application *ctx)
 		{"Read Only", "Read files; ask before edits or network."},
 	};
 	struct permission_policy policy;
-	int rc = runtime_permission_get_policy(ctx->runtime, &policy);
+	int rc = cli_permissions_policy_get(ctx, &policy);
 	if (rc)
 		return rc;
 

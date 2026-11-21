@@ -4,6 +4,7 @@
 #include "config/config.h"
 #include "cJSON.h"
 #include "sapi/cli/services/event_queue.h"
+#include "sapi/cli/services/sessions.h"
 #include "errors.h"
 #include <nb/time.h>
 
@@ -12,6 +13,58 @@
 #include <math.h>
 #include <poll.h>
 #include <time.h>
+
+static int cli_recap_progress_request(struct cli_application *ctx, const char *method,
+	int automatic, struct runtime_recap_progress *out)
+{
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+
+	if (!params || !cJSON_AddBoolToObject(params, "automatic", automatic))
+		return NB_ERR_NOMEM;
+
+	int rc = cli_sessions_request_current(ctx, method, params, &result);
+
+	if (rc != 0)
+		return rc;
+
+	out->session_id = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(result, "session_id"));
+	out->history_id = (int64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(result, "history_id"));
+	out->revision = (uint64_t)cJSON_GetNumberValue(cJSON_GetObjectItem(result, "revision"));
+	out->completed_turns = (int)cJSON_GetNumberValue(
+		cJSON_GetObjectItem(result, "completed_turns"));
+	return 0;
+}
+
+static void cli_recap_runtime_cancel(struct cli_application *ctx)
+{
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+
+	if (ctx->sessions && cli_sessions_current_id(ctx) > 0)
+		(void)cli_sessions_request_current(ctx, "recap.cancel", NULL, &result);
+	else
+		runtime_recap_cancel(ctx->runtime);
+}
+
+static int cli_recap_runtime_current(struct cli_application *ctx,
+	const struct runtime_recap_progress *progress)
+{
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+
+	if (!ctx->sessions)
+		return runtime_recap_is_current(ctx->runtime, progress);
+
+	if (!params ||
+	    !cJSON_AddNumberToObject(params, "history_id", (double)progress->history_id) ||
+	    !cJSON_AddNumberToObject(params, "revision", (double)progress->revision) ||
+	    !cJSON_AddNumberToObject(params, "completed_turns", progress->completed_turns))
+		return 0;
+
+	int rc = cli_sessions_request_current(ctx, "recap.is_current", params, &result);
+
+	return rc == 0 && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result, "current"));
+}
 
 int64_t cli_recap_now(void)
 {
@@ -53,7 +106,7 @@ void cli_recap_focus(struct cli_application *ctx, int focused, int64_t now)
 		ctx->recap.retry_at = 0;
 		ctx->recap.retried = 0;
 		if (ctx->recap.pending && ctx->recap.automatic)
-			runtime_recap_cancel(ctx->runtime);
+			cli_recap_runtime_cancel(ctx);
 	} else if (!ctx->recap.unfocused_since) {
 		ctx->recap.unfocused_since = now;
 	}
@@ -116,12 +169,22 @@ static void cli_recap_failure(struct cli_application *ctx, int rc, int automatic
 		ctx->recap.renderer->failed(ctx, rc);
 }
 
+static int cli_recap_start_on_owner(struct cli_application *ctx, void *data)
+{
+	return cli_recap_start(ctx, *(const int *)data);
+}
+
 int cli_recap_start(struct cli_application *ctx, int automatic)
 {
 	int rc;
+	if (ctx->sessions && !cli_event_queue_is_owner(ctx))
+		return cli_event_queue_call_owner(ctx, cli_recap_start_on_owner, &automatic);
 
 	if (ctx->turn_active)
 		rc = NB_ERR_BUSY;
+	else if (ctx->sessions && cli_sessions_current_id(ctx) > 0)
+		rc = cli_recap_progress_request(ctx, "recap.request", automatic,
+			&ctx->recap.request);
 	else
 		rc = runtime_recap_request(ctx->runtime, automatic, &ctx->recap.request);
 
@@ -149,6 +212,7 @@ int cli_recap_start(struct cli_application *ctx, int automatic)
 
 		(void)poll(&wake, 1, 100);
 		(void)cli_event_queue_drain(ctx);
+		(void)cli_sessions_drain(ctx);
 	}
 
 	return ctx->recap.pending ? 0 : ctx->recap.result_code;
@@ -179,7 +243,10 @@ void cli_recap_tick(struct cli_application *ctx, int64_t now)
 		return;
 	}
 
-	if (runtime_recap_progress(ctx->runtime, &progress) != 0)
+	int rc = ctx->sessions ? cli_recap_progress_request(ctx, "recap.progress", 0, &progress) :
+		runtime_recap_progress(ctx->runtime, &progress);
+
+	if (rc != 0)
 		return;
 
 	if (progress.session_id != state->progress.session_id) {
@@ -245,7 +312,7 @@ void cli_recap_event(struct cli_application *ctx, const struct morph_event *even
 
 	ctx->recap.pending = 0;
 	ctx->recap.result_code = rc;
-	if (ctx->turn_active || !runtime_recap_is_current(ctx->runtime, &progress))
+	if (ctx->turn_active || !cli_recap_runtime_current(ctx, &progress))
 		return;
 
 	if (automatic && !runtime_config_borrow(ctx->runtime)->general.auto_recap)

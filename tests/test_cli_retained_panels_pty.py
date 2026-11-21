@@ -25,7 +25,9 @@ def wait_panel(terminal, command, title):
     diagnostic = '\n'.join(rows)
     heading = next(index for index, row in enumerate(rows) if title in row)
     submitted = max(index for index, row in enumerate(rows) if row.rstrip() == command)
-    assert heading == submitted + 2, diagnostic
+    assert heading >= submitted + 2, diagnostic
+    assert all(not row.strip() for row in rows[submitted + 1:heading]), diagnostic
+    assert 'esc cancel' in rows[-1].lower(), diagnostic
     assert terminal.screen.buffer[submitted][0].fg == 'af87ff', diagnostic
     assert terminal.screen.cursor.y == heading and terminal.screen.cursor.x == 0, diagnostic
     assert not any(row.startswith(('› ', '» ')) for row in rows), diagnostic
@@ -78,7 +80,10 @@ def check_common_lifecycle(binary):
                            if row.startswith(('› ', '» '))]
                 assert len(editors) == 1, '\n'.join(rows)
                 result = max(index for index, row in enumerate(rows) if receipt in row)
-                assert editors[0] == result + 3, '\n'.join(rows)
+                assert editors[0] == terminal.screen.lines - 3, '\n'.join(rows)
+                assert editors[0] >= result + 3, '\n'.join(rows)
+                assert all(not row.strip() for row in rows[result + 1:editors[0] - 1]), \
+                    '\n'.join(rows)
             terminal.send('/quit\r')
             terminal.child.expect(pexpect.EOF, timeout=8)
             terminal.child.close()

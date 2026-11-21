@@ -2,6 +2,7 @@
 
 #include <nb/cleanup.h>
 #include "runtime/approval.h"
+#include "runtime/client_internal.h"
 #include "runtime/bootstrap.h"
 #include "runtime/mcp.h"
 #include "runtime/session.h"
@@ -527,10 +528,11 @@ static int runtime_start_components(struct runtime *runtime)
 
 	runtime_emit_startup(runtime, "startup.mcp", "begin",
 			     "Connecting services...");
-	(void)runtime_mcp_init_from_config(
+	(void)runtime_mcp_init_from_config_controlled(
 		runtime ? runtime->options.logger : NULL, &ctx->mcp, &ctx->config.mcp, &ctx->tools,
 		runtime->options.auto_connect_mcp && !runtime->options.background_connect_mcp,
-		runtime->options.event_cb, runtime->options.event_user_data);
+		runtime->options.event_cb, runtime->options.event_user_data,
+		runtime->startup_interrupt_check, runtime->startup_interrupt_user_data);
 	runtime_bootstrap_tool_flags(&ctx->tools, &ctx->config);
 	runtime_emit_startup(runtime, "startup.mcp", "end",
 			     "Services configured");
@@ -610,6 +612,12 @@ static int runtime_start_components(struct runtime *runtime)
 
 int runtime_open(const struct runtime_options *options, struct runtime **out)
 {
+	return runtime_open_controlled(options, NULL, NULL, out);
+}
+
+int runtime_open_controlled(const struct runtime_options *options,
+	int (*interrupt_check)(void *), void *interrupt_user_data, struct runtime **out)
+{
 	struct runtime *runtime;
 	int rc;
 	struct config_file_error error = {0};
@@ -624,6 +632,8 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	if (!runtime)
 		return NB_ERR_NOMEM;
 	runtime->options = *options;
+	runtime->startup_interrupt_check = interrupt_check;
+	runtime->startup_interrupt_user_data = interrupt_user_data;
 	if (options->task_events) {
 		runtime->task_events = *options->task_events;
 		runtime->options.task_events = &runtime->task_events;
@@ -639,6 +649,8 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 			     "Reading configuration...");
 	rc = runtime_context_init_lock(&runtime->context);
 	if (rc == 0)
+		rc = runtime_clients_init(runtime);
+	if (rc == 0)
 		rc = runtime_checkpoints_init(runtime);
 	if (rc == 0)
 		rc = runtime_load_config(runtime, &error);
@@ -653,7 +665,10 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 		rc = runtime_set_workdir(runtime);
 	if (rc == 0)
 		rc = runtime_start_components(runtime);
-	if (rc == 0 && runtime->options.workdir && runtime->options.workdir[0] &&
+	if (rc == 0 && interrupt_check && interrupt_check(interrupt_user_data))
+		rc = NB_ERR_INTERRUPTED;
+	if (rc == 0 && !runtime->options.process_replica && runtime->options.workdir &&
+	    runtime->options.workdir[0] &&
 	    runtime->context.current_session.id > 0 &&
 	    strcmp(runtime->context.current_session.workdir, runtime->context.workdir) != 0) {
 		(void)session_update_workdir(&runtime->context.database,
@@ -748,6 +763,8 @@ void runtime_close(struct runtime *runtime)
 
 	if (!runtime)
 		return;
+	runtime_clients_shutdown(runtime);
+
 	if (runtime->context.execution_lock_ready) {
 		nb_mutex_lock(runtime->context.agent_interaction_lock);
 		runtime->context.agent_phase = RUNTIME_AGENTS_CLOSING;
@@ -967,6 +984,8 @@ int runtime_agent_actor_begin(struct runtime *runtime, struct runtime_agent_acto
 			credit, nb_utf8_clamp_bytes(credit, sizeof(actor->credit_session_id) - 1)),
 		actor->credit_session_id, sizeof(actor->credit_session_id));
 	actor->context = (struct tool_runtime_context){
+		.mutation_begin = context->mutation_begin,
+		.mutation_user_data = context->mutation_user_data,
 		.agents = context->agents,
 		.permission_context = context->tctx,
 		.agent_id = "/root",

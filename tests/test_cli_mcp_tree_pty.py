@@ -22,11 +22,17 @@ SERVER = ('SERVER_NAME = ' + repr(SERVER_NAME) + '\n'
           'FIRST_URI = ' + repr(FIRST_URI) + '\n') + '''import json
 import sys
 
+mode = sys.argv[1] if len(sys.argv) > 1 else "ready"
 for line in sys.stdin:
     request = json.loads(line)
     if "id" not in request:
         continue
     method = request["method"]
+    if ((mode == "initialize-failure" and method == "initialize") or
+            (mode == "discovery-failure" and method == "tools/list")):
+        print(json.dumps({"jsonrpc": "2.0", "id": request["id"],
+                          "error": {"code": -32603, "message": "fixture failed"}}), flush=True)
+        continue
     if method == "initialize":
         result = {"protocolVersion": "2025-06-18",
                   "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
@@ -90,6 +96,13 @@ def run_case(binary, model, width, color, production):
                   '\n[[mcp.servers]]\n'
                   'name = "manual_peer"\ntransport = "stdio"\n'
                   'command = "not-started-by-this-test"\nauto_connect = false\n')
+        for name, mode in (('init_failure', 'initialize-failure'),
+                           ('discovery_failure', 'discovery-failure')):
+            config += ('\n[[mcp.servers]]\n'
+                       f'name = "{name}"\ntransport = "stdio"\n'
+                       f'command = {json.dumps(sys.executable)}\n'
+                       f'args = {json.dumps([str(script), mode])}\n'
+                       'auto_connect = false\nprotocol_version = "2025-06-18"\n')
         terminal = Terminal(binary, directory, model.server_port, hooks_enabled=False,
                             production=production, extra_config=config,
                             extra_env={'NO_COLOR': '' if color else '1'})
@@ -98,10 +111,10 @@ def run_case(binary, model, width, color, production):
             terminal.screen = pyte.Screen(width, 40)
             terminal.stream = pyte.Stream(terminal.screen)
             terminal.wait_for_composer()
-            wait_visible(terminal, 'MCP 1/2')
+            wait_visible(terminal, 'MCP 1/4')
             terminal.send('/clear\r/mcp\r')
             screen = wait_visible(terminal, 'Capabilities')
-            assert 'MCP servers (2)' in screen, screen
+            assert 'MCP servers (4)' in screen, screen
             ready = next(row for row in screen.splitlines() if 'fixture_tree [stdio]' in row)
             manual = next(row for row in screen.splitlines() if 'manual_peer [stdio]' in row)
             assert ready.startswith('● fixture_tree [stdio]'), ready
@@ -136,6 +149,28 @@ def run_case(binary, model, width, color, production):
                     assert compact_tree(FIRST_DESCRIPTION) in compact_tree(resized), resized
                     assert 'fixture://documents/second' in resized, resized
                     resize(terminal, width, 'Fixture image')
+            for command, result, marker in (
+                    ('connect fixture_tree', "MCP server 'fixture_tree' already connected", '●'),
+                    ('disconnect fixture_tree', "MCP server 'fixture_tree' disconnected", '●'),
+                    ('connect fixture_tree', "MCP server 'fixture_tree' connected", '●'),
+                    ('connect fixture_tree', "MCP server 'fixture_tree' already connected", '●'),
+                    ('connect manual_peer', "failed to connect to 'manual_peer':", '✖'),
+                    ('connect init_failure', "failed to connect to 'init_failure':", '✖'),
+                    ('connect discovery_failure', "failed to discover 'discovery_failure':", '✖'),
+                    ('disconnect discovery_failure',
+                     "MCP server 'discovery_failure' disconnected", '●'),
+                    ('connect missing', 'MCP server not found: missing', '✖')):
+                terminal.send('/clear\r/mcp ' + command + '\r')
+                screen = wait_visible(terminal, result)
+                receipt = next(row for row in screen.splitlines() if result in row)
+                assert receipt.startswith(marker), screen
+                assert screen.count(result) == 1, screen
+                assert 'Connecting' not in screen and 'Discovering capabilities' not in screen
+                assert any(row.rstrip() == '/mcp ' + command
+                           for row in screen.splitlines()), screen
+                assert '› /mcp' not in screen and '> /mcp' not in screen, screen
+                assert sum(row.startswith(('› ', '> '))
+                           for row in screen.splitlines()) == 1, screen
             terminal.send('/quit\r')
             terminal.child.expect(pexpect.EOF, timeout=8)
             terminal.raw += terminal.child.before

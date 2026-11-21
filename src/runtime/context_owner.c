@@ -152,6 +152,8 @@ int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int
 		ctx->active_skill_session_id = session_id;
 	}
 	rt.checkpoint = ctx->checkpoint;
+	rt.mutation_begin = ctx->mutation_begin;
+	rt.mutation_user_data = ctx->mutation_user_data;
 	react_set_tool_runtime_context(ctx->react, &rt);
 	return 0;
 }

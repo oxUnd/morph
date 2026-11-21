@@ -59,6 +59,63 @@ int preference_bind(struct db *db, int64_t session_id,
 	return 0;
 }
 
+static void preference_statement_cleanup(sqlite3_stmt **statement)
+{
+	sqlite3_finalize(*statement);
+	*statement = NULL;
+}
+
+int preference_rebind_project(struct db *db, int64_t session_id,
+	const char *expected_project, const char *project)
+{
+	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
+	sqlite3_stmt *statement NB_CLEANUP(preference_statement_cleanup) = NULL;
+
+	if (!db || !db->handle || session_id <= 0 || !expected_project || !project || !project[0])
+		return NB_ERR_INVAL;
+
+	int rc = db_lock_acquire(db, &lock);
+
+	if (rc != 0)
+		return rc;
+
+	rc = sqlite3_prepare_v2(db->handle,
+		"SELECT project FROM memory_scopes WHERE session_id=?", -1, &statement, NULL);
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+
+	sqlite3_bind_int64(statement, 1, session_id);
+	rc = sqlite3_step(statement);
+	if (rc == SQLITE_DONE)
+		return 0;
+
+	if (rc != SQLITE_ROW)
+		return MORPH_ERR_DB;
+
+	const char *current = (const char *)sqlite3_column_text(statement, 0);
+
+	if (current && !strcmp(current, project))
+		return 0;
+
+	if (current && current[0] && strcmp(current, expected_project))
+		return NB_ERR_STALE;
+
+	preference_statement_cleanup(&statement);
+	rc = sqlite3_prepare_v2(db->handle,
+		"UPDATE memory_scopes SET project=? WHERE session_id=? "
+		"AND (project=? OR project='')", -1, &statement, NULL);
+	if (rc != SQLITE_OK)
+		return MORPH_ERR_DB;
+
+	sqlite3_bind_text(statement, 1, project, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(statement, 2, session_id);
+	sqlite3_bind_text(statement, 3, expected_project, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(statement) != SQLITE_DONE)
+		return MORPH_ERR_DB;
+
+	return sqlite3_changes(db->handle) > 0 ? 0 : NB_ERR_STALE;
+}
+
 static int preference_valid_key(const char *key)
 {
 	return key && strlen(key) <= 128 && nb_str_is_alnum(nb_str_from_cstr(key), "._-");
@@ -194,13 +251,6 @@ static const char *preference_query_borrow(int history)
 		"AS rank FROM versions WHERE v=1 AND value IS NOT NULL) "
 		"SELECT key,value,scope,id,source FROM resolved WHERE rank=1 ORDER BY CASE key "
 		"WHEN 'response.language' THEN 0 WHEN 'response.detail' THEN 1 ELSE 2 END,key";
-}
-
-static void preference_statement_cleanup(sqlite3_stmt **owner)
-{
-	if (*owner)
-		sqlite3_finalize(*owner);
-	*owner = NULL;
 }
 
 int preference_visit_effective(struct db *db, int64_t session_id,

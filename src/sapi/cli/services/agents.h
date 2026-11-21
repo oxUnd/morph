@@ -15,10 +15,12 @@ int cli_agents_list(struct cli_application *ctx, int64_t session, struct agent_i
 int cli_agents_activity(struct cli_application *ctx, int64_t session, struct agent_info **items,
 			int *count);
 int cli_agents_read(struct cli_application *ctx, const char *id, struct agent_info **out);
+int cli_agents_budget(struct cli_application *ctx, struct agent_budget *out);
 int cli_agents_subscribe(struct cli_application *ctx, const char *id, char ***events,
 			 int *count, int64_t *sequence);
 int cli_agents_select(struct cli_application *ctx, const char *id);
 int cli_agents_interrupt(struct cli_application *ctx, const char *id);
+int cli_agents_followup(struct cli_application *ctx, const char *id, const char *message);
 void cli_agents_list_free(struct agent_info *items, int count);
 void cli_agents_events_free(char **items, int count);
 

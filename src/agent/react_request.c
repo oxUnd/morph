@@ -931,8 +931,12 @@ int react_checkpoint_create(const char *text, void *user_data, char **out)
 		     "max_tokens=%d input_bytes=%zu",
 		     (long long)ctx->history_session_id, ctx->turn_id, llm->provider, llm->model_id,
 		     options.max_tokens, strlen(text));
+	struct http_control previous_http = llm->http;
+	llm->http.cancel_token = &ctx->cancel_token;
+	llm->http.cancel_flag = &ctx->cancelled;
 	rc = llm->chat(llm, nb_buf_cstr(&instructions), msgs, 1, &options, request_collect_token,
 		       &b);
+	llm->http = previous_http;
 	nb_buf_cleanup(&instructions);
 	nb_log_write(ctx->logger, NB_LOG_INFO,
 		     "compaction model output: session=%lld turn=%s finish=%s output_tokens=%lld "

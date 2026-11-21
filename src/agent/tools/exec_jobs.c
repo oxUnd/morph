@@ -461,6 +461,26 @@ int exec_jobs_stop(struct exec_jobs *jobs, int64_t owner, const char *id)
 	return process_session_kill(jobs->manager, id);
 }
 
+int exec_jobs_write(struct exec_jobs *jobs, int64_t owner, const char *id,
+	const char *text, size_t length)
+{
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+
+	if (!jobs || !id || (!text && length > 0))
+		return NB_ERR_INVAL;
+
+	int rc = exec_jobs_read(jobs, owner, id, &data);
+
+	if (rc != 0)
+		return rc;
+
+	if (strcmp(job_string(data, "status"), "running") &&
+	    strcmp(job_string(data, "status"), "starting"))
+		return NB_ERR_STATE;
+
+	return process_session_write(jobs->manager, id, text, length);
+}
+
 int exec_jobs_active(struct exec_jobs *jobs)
 {
 	struct exec_job *job;

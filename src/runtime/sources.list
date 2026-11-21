@@ -1,4 +1,10 @@
 bootstrap.c
+client.c
+client_turn.c
+client_interaction.c
+client_workspace.c
+protocol_dispatch.c
+protocol_inspect.c
 cancel.c
 context.c
 context_owner.c
@@ -24,6 +30,7 @@ recap.c
 session_import.c
 task_service.c
 task_controller.c
+task_runner.c
 session.c
 sync.c
 task_worker.c

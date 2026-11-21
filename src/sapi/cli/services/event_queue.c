@@ -1,6 +1,7 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/event_queue_item.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/services/sessions.h"
 #include "cJSON.h"
 #include "errors.h"
 #include <nb/cleanup.h>
@@ -585,7 +586,8 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 		cli_event_queue_item_free(item);
 	}
 
-	return first_error;
+	int sessions_rc = cli_sessions_drain(ctx);
+	return first_error ? first_error : sessions_rc;
 }
 
 int cli_event_queue_drain(struct cli_application *ctx)

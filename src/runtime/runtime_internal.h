@@ -25,6 +25,7 @@ struct runtime_mcp_job {
 
 struct runtime_title_job;
 struct runtime_recap_job;
+struct runtime_client_service;
 
 struct runtime_agent_actor {
 	struct tool_runtime_context context;
@@ -37,6 +38,10 @@ void runtime_agent_actor_end(struct runtime *runtime);
 int runtime_agent_session_begin(struct runtime *runtime);
 
 struct runtime {
+	struct runtime_client_service *clients;
+	struct runtime *client_parent;
+	int (*startup_interrupt_check)(void *);
+	void *startup_interrupt_user_data;
 	struct runtime_context context;
 	struct runtime_options options;
 	char startup_workdir[PATH_MAX];
@@ -59,6 +64,9 @@ struct runtime {
 	int checkpoint_lock_ready;
 	int checkpoint_failed;
 };
+
+int runtime_open_controlled(const struct runtime_options *options,
+	int (*interrupt_check)(void *), void *interrupt_user_data, struct runtime **out);
 
 int runtime_jobs_init(struct runtime *runtime);
 void runtime_jobs_cleanup(struct runtime *runtime);

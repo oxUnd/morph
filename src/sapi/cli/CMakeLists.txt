@@ -17,6 +17,7 @@ add_library(morph-cli STATIC
 	pages/hooks.c
 	pages/jobs.c
 	pages/memory.c
+	pages/mcp_status.c
 	pages/subagents.c
 	pages/model.c
 	pages/permissions.c
@@ -35,9 +36,11 @@ add_library(morph-cli STATIC
 	components/skill_tree.c
 	components/selector.c
 	components/composer.c
+	components/status_bar.c
 	components/command.c
 	components/message.c
 	components/mcp_tree.c
+	components/mcp_status.c
 	components/media.c
 	components/rich_document.c
 	components/tool_call.c
@@ -74,6 +77,7 @@ add_library(morph-cli STATIC
 
 	# Application services
 	services/agents.c
+	services/checkpoints.c
 	services/composer.c
 	services/command_job.c
 	services/configuration/config.c
@@ -83,9 +87,13 @@ add_library(morph-cli STATIC
 	services/event_queue.c
 	services/file_preview.c
 	services/management.c
+	services/memory.c
+	services/processes.c
+	services/permissions.c
 	services/recap.c
 	services/scheduler.c
 	services/session_restore.c
+	services/sessions.c
 	services/share_store.c
 	services/skill_store.c
 	services/transcript.c

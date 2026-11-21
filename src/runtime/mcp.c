@@ -285,6 +285,15 @@ int runtime_mcp_init_from_config(struct nb_log *logger, struct mcp_registry *reg
 				 int connect_configured, morph_event_cb event_cb,
 				 void *event_user_data)
 {
+	return runtime_mcp_init_from_config_controlled(logger, registry, config, tools,
+		connect_configured, event_cb, event_user_data, NULL, NULL);
+}
+
+int runtime_mcp_init_from_config_controlled(struct nb_log *logger,
+	struct mcp_registry *registry, const struct config_mcp *config,
+	struct tool_registry *tools, int connect_configured, morph_event_cb event_cb,
+	void *event_user_data, int (*interrupt_check)(void *), void *interrupt_user_data)
+{
 	int rc;
 
 	if (!registry || !config)
@@ -293,6 +302,9 @@ int runtime_mcp_init_from_config(struct nb_log *logger, struct mcp_registry *reg
 	for (int i = 0; i < config->server_count; i++) {
 		struct mcp_server_config server;
 		struct mcp_client *client;
+
+		if (interrupt_check && interrupt_check(interrupt_user_data))
+			return NB_ERR_INTERRUPTED;
 
 		rc = runtime_mcp_server_config_from_config(&config->servers[i],
 							   &server);
@@ -309,11 +321,15 @@ int runtime_mcp_init_from_config(struct nb_log *logger, struct mcp_registry *reg
 				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 			continue;
 		}
-		if (!connect_configured || !server.auto_connect)
-			continue;
 		client = mcp_registry_borrow(registry, server.name);
 		if (!client)
 			continue;
+
+		client->interrupt_check = interrupt_check;
+		client->interrupt_user_data = interrupt_user_data;
+		if (!connect_configured || !server.auto_connect)
+			continue;
+
 		rc = runtime_mcp_client_connect(client, event_cb,
 						event_user_data);
 		if (rc != 0) {

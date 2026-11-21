@@ -28,6 +28,7 @@ set(TEST_SOURCES
 	test_runtime_query.cpp
 	test_runtime_mcp.cpp
 	test_runtime.cpp
+	test_runtime_client.cpp
 	test_runtime_services.cpp
 	test_runtime_agents.cpp
 	test_runtime_skill_checkpoint.cpp
@@ -267,6 +268,18 @@ if(Python3_Interpreter_FOUND)
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_layout.py
 			"${nothing_tui_SOURCE_DIR}")
 	if(UNIX)
+		add_test(NAME cli_sessions_pty_integration
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_cli_sessions_pty.py
+				$<TARGET_FILE:morph>)
+		set_tests_properties(cli_sessions_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 150)
+		add_test(NAME cli_resync_pty_integration
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_cli_resync_pty.py
+				$<TARGET_FILE:morph>)
+		set_tests_properties(cli_resync_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
 		add_test(NAME cli_page_layout_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_page_layout_pty.py
 				$<TARGET_FILE:morph>)
@@ -401,9 +414,9 @@ if(Python3_Interpreter_FOUND AND UNIX)
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	add_test(NAME cli_mcp_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_pty.py
-			$<TARGET_FILE:morph-cli-pty-driver>)
+			$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
 	set_tests_properties(cli_mcp_pty_integration PROPERTIES
-		SKIP_RETURN_CODE 77 TIMEOUT 30)
+		SKIP_RETURN_CODE 77 TIMEOUT 60)
 	add_test(NAME cli_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

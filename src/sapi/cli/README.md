@@ -22,16 +22,19 @@ cli/
     chat.c, .h                 chat controller and page-local editing state
     history, hooks, jobs, memory, resume
     model, permissions         inline mode/policy selectors in the input area
+    mcp_status                 live connection snapshots in a right-side floating card
     turn_details               modal transcript viewport on the same Application
     approval, question         modal interaction pages
     setup/                     wizard and its terminal controls
   components/                  NT views for the composer, messages, reports, lists and panels
     command                    submitted slash commands, result spacing and outer margins
+    status_bar, mcp_status     native footer controls and aligned connection state rows
     page_layout                full-screen breadcrumb navigation, content and shortcut footer
   commands/                    options, slash actions, registry and management entry points
   services/
     command_job, event_queue   workers, owner calls and wakeup bridge
     turn, scheduler, recap     runtime use cases and state coordination
+    sessions                   runtime client, independent session projections and navigation
     transcript                 model updates and UI presentation coordination
     session_history            restore persisted conversation to terminal history
     management, skill_store, share_store
@@ -54,7 +57,11 @@ import application state. Configuration services do not import wizard pages.
 
 Interactive chat is a retained ViewController in alternate screen. Its page layout
 contains a scrolling feed, activity/jobs/queue controls and a multiline TextField
-composer. `components/message` composes Label and content-sized TextView controls;
+composer. The activity row, composer and status bar stay anchored at the bottom;
+the conversation scrolls independently above them. The status bar uses native
+Labels and a distinct MCP Button, which opens a right-side floating card without
+changing the conversation or composer geometry.
+`components/message` composes Label and content-sized TextView controls;
 `components/tool_call`, plan and notice bind domain state to rich text through
 `components/report`. View margin/padding determine
 spacing; pages and event handlers do not count terminal rows or move the cursor.
@@ -73,6 +80,14 @@ scroll within the feed; reaching the bottom resumes following.
 Typing, pasting or editing from another chat control returns focus to the composer
 at its saved caret and applies the first input. Shortcuts and modal or inline
 panel input retain their own routing.
+
+MCP connections run in the background without writing lifecycle messages to the
+feed. Click the footer's MCP summary to inspect live connection progress and
+failure details in a right-side floating card. The draft and caret remain active
+while the card is open. Its rows use native Labels with an inherited background,
+server names on the left and connection states on the right.
+Explicit `/mcp connect` and `/mcp disconnect` commands always print their own
+result or error receipt, independently of the background lifecycle events.
 
 Session navigation restores the complete display history without loading or
 repairing the model replay window; that work belongs to the next turn. Rich
@@ -114,6 +129,34 @@ page refreshes snapshots, preserves the selected agent by ID and opens its
 conversation.
 
 ## Execution and teardown
+
+The CLI uses one asynchronous runtime client. Requests explicitly identify their
+session and turn; responses acknowledge operations, while runtime events carry
+streaming output and completion. The owner thread consumes client messages and
+routes them to the selected session's retained feed. Other sessions keep their
+events until selected. Plain, single-turn and JSON modes use the same request
+path, with a command worker waiting while the owner continues consuming events
+and handling interaction requests.
+
+Subscriptions retain per-session sequence cursors. If the runtime reports a full
+event buffer, the client resubscribes, replays unseen events in order, and uses
+the snapshot to recover a live preview or a terminal result while keeping the
+composer draft. Resolved interactions are removed before prompts are shown.
+
+`/new`, `/switch`, and `/resume` remain available while another session is working.
+`/sessions` lists execution and pending-interaction status. `Ctrl+PageUp` and
+`Ctrl+PageDown` switch between opened sessions while retaining each session's
+draft, caret, attachments, transcript, tool expansion, recap and scroll position.
+Runtime execution
+continues independently of the selected view. Escape and Ctrl+C target the
+viewed turn. Pending steering input belongs to its session; Escape expedites
+that session's queued input before applying its ordinary cancellation behavior.
+
+`services/sessions` owns the client, subscriptions and session presentation handles;
+`pages/chat` retains each native feed subtree. The runtime has no terminal,
+window, focus, tab, draft or scrolling state. Closing the application stops
+client-side waiters before command workers are joined, and runtime shutdown
+collects the independent executions before the event queue is released.
 
 `main` initializes `cli_application`, invokes interactive, single-turn or JSON
 execution, then shuts the same application down. `cli_application_tui_borrow` returns

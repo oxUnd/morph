@@ -81,7 +81,7 @@ static void resume_terminal_pick(struct cli_application *context, const char *ke
 			if (length > 0)
 				output.append(buffer, static_cast<size_t>(length));
 
-			if (!sent && output.find("Cancel") != std::string::npos) {
+			if (!sent && output.find("Esc Back") != std::string::npos) {
 				(void)write(master, keys, strlen(keys));
 				sent = true;
 			}
@@ -104,7 +104,12 @@ static void resume_terminal_pick(struct cli_application *context, const char *ke
 
 	EXPECT_TRUE(sent) << output;
 	EXPECT_NE(output.find("\033[?1049h"), std::string::npos);
-	EXPECT_NE(output.find(rows >= 14 ? "Resume a session" : "Sessions"), std::string::npos);
+	if (rows >= 14) {
+		EXPECT_NE(output.find("Resume a session"), std::string::npos);
+		EXPECT_NE(output.find("SESSION"), std::string::npos);
+	}
+
+	EXPECT_NE(output.find("Esc Back"), std::string::npos);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(restored, 0);
 	const tcflag_t flags = ICANON | ECHO | ISIG | IEXTEN;
@@ -113,7 +118,6 @@ static void resume_terminal_pick(struct cli_application *context, const char *ke
 	struct session current{};
 	ASSERT_EQ(runtime_session_current(context->runtime, &current), 0);
 	EXPECT_EQ(current.id, expected);
-	EXPECT_NE(output.find("SESSION"), std::string::npos);
 }
 
 static std::vector<cJSON *> cli_test_parse_ndjson(const std::string &output)
@@ -347,7 +351,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 		nullptr), 0);
 	ASSERT_GT(count, 20);
 	int64_t expected = sessions[20].id;
-	int64_t arrow_selected = sessions[13].id;
+	int64_t arrow_selected = sessions[1].id;
 	int64_t small_selected = sessions[2].id;
 	runtime_session_list_free(sessions);
 
@@ -402,7 +406,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 		EXPECT_EQ(current.id, expected);
 	}
 
-	resume_terminal_pick(&context, "\033[B\033[A\033[C\033[B\r", arrow_selected, 24);
+	resume_terminal_pick(&context, "\033[B\033[A\033[B\r", arrow_selected, 24);
 	resume_terminal_pick(&context, "\033[B\033[B\033[B\033[A\r", small_selected, 6);
 	resume_terminal_pick(&context, "\033", small_selected, 24);
 	resume_terminal_pick(&context, "\003", small_selected, 24);

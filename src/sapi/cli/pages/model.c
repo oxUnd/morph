@@ -6,12 +6,25 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/components/selector.h"
 #include "sapi/cli/models/composer.h"
+#include "sapi/cli/services/sessions.h"
+#include "cJSON.h"
 #include <nb/cleanup.h>
 #include <nothing/tui/terminal/text.h>
 
 int cli_model_set_mode(struct cli_application *ctx, int ultra)
 {
-	int rc = runtime_model_set_ultra(ctx->runtime, ultra);
+	int rc;
+	if (ctx->sessions) {
+		cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		const char *scope = cli_sessions_current_id(ctx) > 0
+			? "session_and_defaults" : "defaults";
+		if (!params || !cJSON_AddBoolToObject(params, "ultra", ultra) ||
+		    !cJSON_AddStringToObject(params, "scope", scope))
+			return NB_ERR_NOMEM;
+
+		rc = cli_sessions_request_current(ctx, "model.update", params, NULL);
+	} else
+		rc = runtime_model_set_ultra(ctx->runtime, ultra);
 	if (!rc) {
 		cli_composer_model_set_ultra(&ctx->composer, ultra, cli_output_color_enabled(ctx));
 		ctx->input_status.updated = 0;
@@ -20,6 +33,31 @@ int cli_model_set_mode(struct cli_application *ctx, int ultra)
 		CMD_ERROR(ctx, "model mode change failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 	}
+
+	return rc;
+}
+
+int cli_model_get_mode(struct cli_application *ctx, int *ultra)
+{
+	if (!ctx || !ultra)
+		return NB_ERR_INVAL;
+
+	if (!ctx->sessions)
+		return runtime_model_get_ultra(ctx->runtime, ultra);
+
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	int rc;
+	if (cli_sessions_current_id(ctx) > 0)
+		rc = cli_sessions_request_current(ctx, "model.get", NULL, &result);
+	else {
+		cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+		if (!params || !cJSON_AddStringToObject(params, "scope", "defaults"))
+			return NB_ERR_NOMEM;
+
+		rc = cli_sessions_request(ctx, "model.get", params, &result);
+	}
+	if (!rc)
+		*ultra = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result, "ultra"));
 
 	return rc;
 }
@@ -36,7 +74,7 @@ int cli_model_show(struct cli_application *ctx)
 		{"Ultra", "Proactively collaborate with parallel agents."},
 	};
 	int current;
-	int rc = runtime_model_get_ultra(ctx->runtime, &current);
+	int rc = cli_model_get_mode(ctx, &current);
 	if (rc)
 		return rc;
 

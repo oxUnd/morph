@@ -2,7 +2,6 @@
 #define MORPH_CLI_PRESENTATION_PRESENTER_STATE_H
 
 #include "sapi/cli/presentation/markdown.h"
-#include "mcp/mcp.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include <nb/vec.h>
@@ -25,8 +24,6 @@ struct cli_presenter_state {
 	int markdown_stream_kind;
 	int markdown_stream_visible;
 	struct cli_markdown_output markdown_output;
-	int mcp_tree_active;
-	char mcp_tree_server[MCP_NAME_MAX];
 	nb_buf event_stream;
 	nb_buf native_content;
 	nb_buf markdown_stream_text;
