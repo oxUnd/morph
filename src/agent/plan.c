@@ -8,7 +8,6 @@
 #include <stdlib.h>
 
 #include <stdio.h>
-#include <stdarg.h>
 #include <string.h>
 
 void plan_registry_init(struct plan_registry *reg)
@@ -66,30 +65,6 @@ static int plan_generate_id(struct plan_registry *reg, char *id, size_t size)
 			return 0;
 	}
 	return NB_ERR_EXISTS;
-}
-
-static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, ...)
-	__attribute__((format(printf, 4, 5)));
-
-static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, ...)
-{
-	if (*pos >= buf_size - 1)
-		return NB_ERR_NO_SPACE;
-
-	va_list args;
-	va_start(args, fmt);
-	int rc = vsnprintf(buf + *pos, buf_size - *pos, fmt, args);
-	va_end(args);
-
-	if (rc < 0)
-		return NB_ERR_INVAL;
-	if ((size_t)rc >= buf_size - *pos) {
-		*pos = buf_size - 1;
-		buf[*pos] = '\0';
-		return NB_ERR_NO_SPACE;
-	}
-	*pos += (size_t)rc;
-	return 0;
 }
 
 struct plan *plan_add_borrow(struct plan_registry *reg, const char *name, const char *goal,
@@ -202,81 +177,6 @@ int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
 	if (!p)
 		return NB_ERR_NOT_FOUND;
 	return plan_update_step_ptr(p, step_id, status);
-}
-
-static const char *status_icon(const char *status)
-{
-	if (!status)
-		return " ";
-	if (strcmp(status, "completed") == 0)
-		return "x";
-	if (strcmp(status, "in_progress") == 0)
-		return ">";
-	if (strcmp(status, "failed") == 0)
-		return "!";
-	if (strcmp(status, "skipped") == 0)
-		return "-";
-	return " ";
-}
-
-int plan_format(struct plan_registry *reg, char *buf, size_t buf_size)
-{
-	if (!reg || !buf || buf_size == 0)
-		return NB_ERR_INVAL;
-	if (reg->count == 0) {
-		snprintf(buf, buf_size,
-			"No plans yet. Use plan create to start one.");
-		return 0;
-	}
-
-	size_t pos = 0;
-	int rc = 0;
-
-	for (int i = 0; i < reg->count; i++) {
-		struct plan *p = &reg->plans[i];
-
-		int all_done = 1;
-		for (int j = 0; j < p->step_count; j++) {
-			if (strcmp(p->steps[j].status, "completed") != 0 &&
-			    strcmp(p->steps[j].status, "failed") != 0 &&
-			    strcmp(p->steps[j].status, "skipped") != 0) {
-				all_done = 0;
-				break;
-			}
-		}
-
-		if ((rc = append_str(buf, buf_size, &pos,
-			"%sPlan \"%s\" [%s]", pos > 0 ? "\n" : "",
-			p->name, p->id)) < 0)
-			return rc;
-		if (p->goal[0]) {
-			if ((rc = append_str(buf, buf_size, &pos,
-				"\n  Goal: %s", p->goal)) < 0)
-				return rc;
-		}
-		if ((rc = append_str(buf, buf_size, &pos,
-			"\n  %d step(s)", p->step_count)) < 0)
-			return rc;
-		if (all_done) {
-			if ((rc = append_str(buf, buf_size, &pos,
-				" [all completed]")) < 0)
-				return rc;
-		}
-
-		for (int j = 0; j < p->step_count; j++) {
-			struct plan_step *s = &p->steps[j];
-			const char *icon = status_icon(s->status);
-			const char *marker = (j == p->active_step && p->active_step >= 0)
-					   ? " <-- active" : "";
-
-			if ((rc = append_str(buf, buf_size, &pos,
-				"\n  [%s] %d. %s%s",
-				icon, s->id, s->description, marker)) < 0)
-				return rc;
-		}
-	}
-
-	return rc;
 }
 
 /* A checkpoint is independent of model history and survives compaction. */

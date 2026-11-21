@@ -13,8 +13,6 @@ void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 
 int runtime_mcp_server_config_from_config(const struct config_mcp_server *config,
 					  struct mcp_server_config *out);
-int runtime_mcp_register_configured(struct mcp_registry *registry,
-				    const struct config_mcp *config);
 int runtime_mcp_client_connect(struct mcp_client *client,
 			       morph_event_cb event_cb,
 			       void *event_user_data);
@@ -28,10 +26,6 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 				int *tools_count,
 				int *resources_count,
 				int *prompts_count);
-int runtime_mcp_init_from_config(struct nb_log *logger, struct mcp_registry *registry,
-				 const struct config_mcp *config, struct tool_registry *tools,
-				 int connect_configured, morph_event_cb event_cb,
-				 void *event_user_data);
 int runtime_mcp_init_from_config_controlled(struct nb_log *logger,
 	struct mcp_registry *registry, const struct config_mcp *config,
 	struct tool_registry *tools, int connect_configured, morph_event_cb event_cb,

@@ -37,7 +37,6 @@ struct runtime_turn_status {
 /* Copy into a zero-initialized empty owner; NB_ERR_EXISTS preserves occupied output. */
 int runtime_turn_status_copy(struct runtime *runtime, struct runtime_turn_status *out);
 void runtime_turn_status_cleanup(struct runtime_turn_status *status);
-char *runtime_turn_notification_body_copy(struct runtime *runtime);
 char *runtime_turn_error_message_copy(struct runtime *runtime, int rc);
 char *runtime_turn_error_json_copy(struct runtime *runtime);
 

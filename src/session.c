@@ -463,21 +463,6 @@ int message_add_with_turn_id(struct db *db, int64_t session_id,
 	return 0;
 }
 
-int message_delete(struct db *db, int64_t message_id)
-{
-	if (!db || !db->handle)
-		return NB_ERR_INVAL;
-	sqlite3_stmt *stmt;
-	const char *sql = "DELETE FROM messages WHERE id=?";
-	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, message_id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return (rc == SQLITE_DONE) ? 0 : MORPH_ERR_DB;
-}
-
 struct message *message_list(struct db *db, int64_t session_id, int *count)
 {
 	if (!db || !db->handle || !count)

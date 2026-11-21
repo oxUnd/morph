@@ -1,4 +1,4 @@
-add_library(morph-media STATIC image.c)
+add_library(morph-media STATIC image.c format.c)
 target_include_directories(morph-media PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 get_filename_component(MORPH_MEDIA_VENDOR
     "${CMAKE_CURRENT_SOURCE_DIR}/../../vendor" ABSOLUTE)

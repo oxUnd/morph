@@ -1165,11 +1165,3 @@ int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id,
 
 	return rc == 0 ? exec_jobs_read(jobs.jobs, owner, id, out) : rc;
 }
-
-int exec_tool_job_stop(struct tool_registry *reg, int64_t owner, const char *id)
-{
-	struct exec_tool_jobs_handle jobs NB_CLEANUP(exec_tool_jobs_release) = {0};
-	int rc = exec_tool_jobs_acquire(reg, &jobs);
-
-	return rc == 0 ? exec_jobs_stop(jobs.jobs, owner, id) : rc;
-}

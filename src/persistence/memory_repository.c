@@ -414,26 +414,6 @@ int memory_store_event_token(struct db *db, int64_t session_id, const char *even
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-int memory_store_save_user_summary(struct db *db, int64_t session_id, const char *text)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(
-		db->handle,
-		"INSERT INTO memory_profiles(session_id,profile_text,updated_at) VALUES(?,?,?) "
-		"ON CONFLICT(session_id) DO UPDATE SET "
-		"profile_text=excluded.profile_text,updated_at=excluded.updated_at",
-		-1, &stmt, NULL);
-
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	sqlite3_bind_text(stmt, 2, text, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
 int memory_store_add_task(struct db *db, int64_t session_id, const struct memory_task_input *input)
 {
 	sqlite3_stmt *stmt = NULL;

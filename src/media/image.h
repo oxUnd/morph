@@ -6,6 +6,21 @@ extern "C" {
 #endif
 
 #include <stddef.h>
+#include <nb/str.h>
+
+enum image_format {
+	MORPH_IMAGE_UNKNOWN,
+	MORPH_IMAGE_PNG,
+	MORPH_IMAGE_JPEG,
+	MORPH_IMAGE_WEBP,
+	MORPH_IMAGE_GIF,
+	MORPH_IMAGE_BMP,
+};
+
+enum image_format image_format_detect(const unsigned char *data, size_t len);
+enum image_format image_format_from_mime(nb_str mime);
+/* Immutable extension without a dot; NULL for unknown formats. */
+const char *image_format_extension(enum image_format format);
 
 #define MORPH_MEDIA_MAX_FILE_BYTES (64U * 1024U * 1024U)
 
@@ -36,7 +51,6 @@ int image_probe_size(const char *path, int *width, int *height);
 int image_resize_file_exact(const char *path, int width, int height);
 int image_gen_normalize_reference_size(int src_w, int src_h,
 				       int *out_w, int *out_h);
-int image_gen_format_size(char *buf, size_t buf_size, int width, int height);
 
 #ifdef __cplusplus
 }

@@ -14,16 +14,6 @@
 #include <nb/cleanup.h>
 #include <string.h>
 
-struct cli_agents_snapshot {
-	struct agent_info *items;
-	int count;
-};
-
-static void cli_agents_snapshot_cleanup(struct cli_agents_snapshot *snapshot)
-{
-	cli_agents_list_free(snapshot->items, snapshot->count);
-}
-
 static int cli_agents_print_detail(struct cli_application *ctx, const char *label,
 				   const char *value)
 {

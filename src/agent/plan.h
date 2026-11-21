@@ -68,7 +68,6 @@ int plan_update_step(struct plan_registry *reg, const char *plan_name,
 int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
 			   int step_id, const char *status);
 
-int plan_format(struct plan_registry *reg, char *buf, size_t buf_size);
 
 #ifdef __cplusplus
 }

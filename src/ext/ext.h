@@ -80,7 +80,6 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json);
 int ext_sandbox_config_prepare(const struct ext *ex,
 			       struct sandbox_config *config);
 void ext_sandbox_config_cleanup(struct sandbox_config *config);
-void ext_user_data_destroy(void *user_data);
 void ext_manifest_cleanup(struct ext_manifest *m);
 int ext_manifest_supports_front(const struct ext_manifest *m,
 				const char *front);

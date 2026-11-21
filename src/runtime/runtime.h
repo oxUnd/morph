@@ -175,7 +175,6 @@ int runtime_add_mcp_server(struct runtime *runtime,
 const struct config *runtime_config_borrow(const struct runtime *runtime);
 const char *runtime_workdir_borrow(const struct runtime *runtime);
 const char *runtime_config_path_borrow(const struct runtime *runtime);
-char *runtime_output_json_copy(struct runtime *runtime, const char *path);
 /* Host management only; never register these operations as model tools.
  * An empty output receives independent JSON owned until cJSON_Delete(). */
 /* Stable review token for the runtime workspace. */

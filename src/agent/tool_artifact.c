@@ -2,6 +2,21 @@
 
 #include <string.h>
 
+enum tool_media_operation tool_media_operation_for_name(const char *name)
+{
+	if (!name)
+		return TOOL_MEDIA_NONE;
+
+	if (!strcmp(name, "img_gen") || !strcmp(name, "img_inpaint") ||
+	    !strcmp(name, "img_compose") || !strcmp(name, "vid_gen"))
+		return TOOL_MEDIA_GENERATION;
+
+	if (!strcmp(name, "img_resize") || !strcmp(name, "img_convert"))
+		return TOOL_MEDIA_TRANSFORM;
+
+	return TOOL_MEDIA_NONE;
+}
+
 const char *tool_artifact_kind_name(enum tool_artifact_kind kind)
 {
 	switch (kind) {

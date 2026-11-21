@@ -201,8 +201,6 @@ struct react_context {
 	struct tool_runtime_models tool_models;
 };
 
-struct session_store;
-
 struct react_context *react_context_create(struct tool_registry *tools,
 					   struct tokenizer *tok,
 					   struct compress_config *cfg,
@@ -210,11 +208,6 @@ struct react_context *react_context_create(struct tool_registry *tools,
 void react_context_destroy(struct react_context *ctx);
 void react_context_clear(struct react_context **ctx);
 void react_reset(struct react_context *ctx);
-
-struct react_context *
-react_context_create_for_session(struct session_store *store,
-				 const char *session_id,
-				 const char *user_id);
 
 /* Owner-thread only. Output/event/question callbacks are closed before return. Other
  * borrowed tool dependencies must remain alive until drain/reset/destroy.

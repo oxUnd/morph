@@ -7,6 +7,13 @@
 struct cli_application;
 struct agent_info;
 
+struct cli_agents_snapshot {
+	struct agent_info *items;
+	int count;
+};
+
+void cli_agents_snapshot_cleanup(struct cli_agents_snapshot *snapshot);
+
 /* Refresh the application's agent display model from the runtime facade. */
 int cli_agents_refresh(struct cli_application *ctx);
 

@@ -158,23 +158,6 @@ int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int
 	return 0;
 }
 
-int runtime_context_tool_credit_session_id(struct runtime_context *ctx, int64_t session_id,
-					   char *buf, size_t buf_size)
-{
-	struct tool_runtime_context rt;
-	int rc;
-
-	if (!ctx || !buf || buf_size == 0)
-		return NB_ERR_INVAL;
-	rc = runtime_tool_context_for_session(&ctx->database, &ctx->config, &ctx->current_session,
-					      session_id, &rt);
-	if (rc != 0)
-		return rc;
-	strncpy(buf, rt.credit_session_id, buf_size - 1);
-	buf[buf_size - 1] = '\0';
-	return 0;
-}
-
 struct memory_options runtime_context_memory_options_borrow(const struct runtime_context *ctx)
 {
 	struct memory_options opts = runtime_memory_options_from_config(ctx ? &ctx->config : NULL);

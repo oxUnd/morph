@@ -65,7 +65,6 @@ int message_add(struct db *db, int64_t session_id, const char *role,
 int message_add_with_turn_id(struct db *db, int64_t session_id,
 			     const char *role, const char *content,
 			     int token_count, const char *turn_id);
-int message_delete(struct db *db, int64_t message_id);
 struct message *message_list(struct db *db, int64_t session_id, int *count);
 void message_free_list(struct message *head);
 int message_count(struct db *db, int64_t session_id);

@@ -177,27 +177,6 @@ int runtime_mcp_server_config_from_config(const struct config_mcp_server *config
 	return 0;
 }
 
-int runtime_mcp_register_configured(struct mcp_registry *registry,
-				    const struct config_mcp *config)
-{
-	int rc;
-
-	if (!registry || !config)
-		return NB_ERR_INVAL;
-	mcp_registry_init(registry ? registry->logger : NULL, registry);
-	for (int i = 0; i < config->server_count; i++) {
-		struct mcp_server_config server;
-		rc = runtime_mcp_server_config_from_config(&config->servers[i],
-							   &server);
-		if (rc != 0)
-			return rc;
-		rc = mcp_registry_add(registry, &server);
-		if (rc != 0)
-			return rc;
-	}
-	return 0;
-}
-
 int runtime_mcp_client_connect(struct mcp_client *client,
 			       morph_event_cb event_cb,
 			       void *event_user_data)
@@ -287,15 +266,6 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 			 "ready", "MCP server ready", &client->config,
 			 t, r, p, 0);
 	return 0;
-}
-
-int runtime_mcp_init_from_config(struct nb_log *logger, struct mcp_registry *registry,
-				 const struct config_mcp *config, struct tool_registry *tools,
-				 int connect_configured, morph_event_cb event_cb,
-				 void *event_user_data)
-{
-	return runtime_mcp_init_from_config_controlled(logger, registry, config, tools,
-		connect_configured, event_cb, event_user_data, NULL, NULL);
 }
 
 int runtime_mcp_init_from_config_controlled(struct nb_log *logger,

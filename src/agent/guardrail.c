@@ -1,5 +1,6 @@
 #include "guardrail.h"
 #include "guardrail_evidence.h"
+#include "agent/tool_artifact.h"
 
 #include <nb/signal.h>
 #include <nb/str.h>
@@ -27,19 +28,6 @@
 #include <dlfcn.h>
 
 /* ── internal helpers ── */
-
-static int is_creative_tool(const char *name)
-{
-	if (!name) return 0;
-	static const char *const creative[] = {
-		"img_gen", "img_inpaint", "img_compose",
-		"img_resize", "img_convert",
-		"vid_gen", NULL
-	};
-	for (const char *const *t = creative; *t; t++)
-		if (strcmp(name, *t) == 0) return 1;
-	return 0;
-}
 
 /* Explicit policy/permission blockers must not trigger forced tool retries. */
 enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step *observation)
@@ -152,7 +140,7 @@ gr_creative_no_media(const struct guardrail_eval_ctx *ctx,
 		if (step->type != REACT_STEP_ACTION || !step->tool_name)
 			continue;
 		const struct react_step *obs = guardrail_observation_borrow(step, &cursor);
-		if (!is_creative_tool(step->tool_name))
+		if (tool_media_operation_for_name(step->tool_name) == TOOL_MEDIA_NONE)
 			continue;
 		called = 1;
 		if (!obs)
@@ -196,7 +184,7 @@ static enum guardrail_verdict
 gr_creative_file_missing(const struct guardrail_eval_ctx *ctx,
 			 char *reason_out, size_t reason_cap)
 {
-	if (!ctx->tool_name || !is_creative_tool(ctx->tool_name))
+	if (!ctx->tool_name || tool_media_operation_for_name(ctx->tool_name) == TOOL_MEDIA_NONE)
 		return GUARDRAIL_PASS;
 	if (ctx->tool_error_code < 0)
 		return GUARDRAIL_PASS;

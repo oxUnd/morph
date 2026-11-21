@@ -673,12 +673,16 @@ TEST(ConfigValidationTest, ValidatesModelExtraBodyJson)
 		"[model.text]\nextra_body_json = '[1, 2]'\n", &error),
 		MORPH_ERR_CONFIG);
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_TYPE);
-	EXPECT_EQ(config_validate_text(
-		"[model.text]\nextra_body_json = '{\"stream\":false}'\n",
-		&error), MORPH_ERR_CONFIG);
-	EXPECT_EQ(error.code, CONFIG_VALIDATION_CONFLICT);
-	EXPECT_NE(std::string(error.message).find("reserved field 'stream'"),
-		  std::string::npos);
+	for (const char *key : {"model", "messages", "tools", "tool_choice", "stream",
+	     "stream_options", "max_tokens", "input", "instructions", "parallel_tool_calls",
+	     "max_output_tokens"}) {
+		std::string source = "[model.text]\nextra_body_json = '{\"" +
+			std::string(key) + "\":false}'\n";
+		EXPECT_EQ(config_validate_text(source.c_str(), &error), MORPH_ERR_CONFIG) << key;
+		EXPECT_EQ(error.code, CONFIG_VALIDATION_CONFLICT) << key;
+		EXPECT_NE(std::string(error.message).find("reserved field '" +
+			std::string(key) + "'"), std::string::npos);
+	}
 }
 
 TEST(ConfigValidationTest, ValidatesRelationsAgainstDefaults)

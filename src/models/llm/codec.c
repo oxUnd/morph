@@ -3,6 +3,7 @@
 #include "responses_codec.h"
 #include <nb/log.h>
 #include "errors.h"
+#include "models/llm/options.h"
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include <errno.h>
@@ -67,27 +68,6 @@ cJSON *llm_codec_schema_copy(const cJSON *params)
 	return owned;
 }
 
-static int extra_body_key_is_reserved(const char *key)
-{
-	static const char *const reserved[] = {"model",
-					       "messages",
-					       "tools",
-					       "tool_choice",
-					       "stream",
-					       "stream_options",
-					       "max_tokens",
-					       "input",
-					       "instructions",
-					       "parallel_tool_calls",
-					       "max_output_tokens"};
-
-	for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
-		if (strcmp(key, reserved[i]) == 0)
-			return 1;
-	}
-	return 0;
-}
-
 int llm_codec_add_options(struct nb_log *logger, cJSON *root, const char *json)
 {
 	cJSON *extra;
@@ -106,7 +86,7 @@ int llm_codec_add_options(struct nb_log *logger, cJSON *root, const char *json)
 	cJSON_ArrayForEach (item, extra) {
 		cJSON *copy;
 
-		if (!item->string || extra_body_key_is_reserved(item->string)) {
+		if (!item->string || llm_option_key_is_reserved(item->string)) {
 			nb_log_write(logger, NB_LOG_ERROR,
 				     "extra_body_json contains reserved or invalid field: %s",
 				     item->string ? item->string : "<unnamed>");

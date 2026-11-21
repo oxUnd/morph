@@ -2,6 +2,7 @@
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include "errors.h"
+#include "models/llm/options.h"
 #include <nb/file.h>
 #include <nb/utf8.h>
 #include <nb/toml.h>
@@ -692,20 +693,6 @@ static int validate_active_permission_directories(const nb_toml_value *root,
 	return 0;
 }
 
-static int extra_body_key_is_reserved(const char *key)
-{
-	static const char *const reserved[] = {
-		"model", "messages", "tools", "tool_choice", "stream",
-		"stream_options", "max_tokens"
-	};
-
-	for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
-		if (strcmp(key, reserved[i]) == 0)
-			return 1;
-	}
-	return 0;
-}
-
 static int validate_model_extra_body(const nb_toml_value *model, const char *name,
 				     struct config_validation_error *error)
 {
@@ -727,7 +714,7 @@ static int validate_model_extra_body(const nb_toml_value *model, const char *nam
 			"%s must contain a JSON object", path);
 	}
 	cJSON_ArrayForEach(item, extra) {
-		if (item->string && extra_body_key_is_reserved(item->string)) {
+		if (item->string && llm_option_key_is_reserved(item->string)) {
 			char key[CONFIG_MAX_KEY_LEN];
 
 			strncpy(key, item->string, sizeof(key) - 1);

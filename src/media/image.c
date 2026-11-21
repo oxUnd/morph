@@ -364,19 +364,6 @@ int image_gen_normalize_reference_size(int src_w, int src_h,
 	return 0;
 }
 
-int image_gen_format_size(char *buf, size_t buf_size, int width, int height)
-{
-	int n;
-
-	if (!buf || buf_size == 0 || width <= 0 || height <= 0)
-		return NB_ERR_INVAL;
-
-	n = snprintf(buf, buf_size, "%dx%d", width, height);
-	if (n < 0 || (size_t)n >= buf_size)
-		return NB_ERR_NAME_TOO_LONG;
-	return 0;
-}
-
 static void image_stbi_cleanup(unsigned char **image)
 {
 	stbi_image_free(*image);

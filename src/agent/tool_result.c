@@ -312,11 +312,6 @@ static int tool_result_field_copy(struct tool_result *result, const char *key, c
 	return tool_result_field_take(result, key, &copy);
 }
 
-int tool_result_set_ui_copy(struct tool_result *result, const cJSON *ui)
-{
-	return tool_result_field_copy(result, "ui", ui);
-}
-
 int tool_result_set_meta_copy(struct tool_result *result, const cJSON *meta)
 {
 	return tool_result_field_copy(result, "meta", meta);

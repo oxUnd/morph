@@ -41,10 +41,8 @@ struct runtime_engine {
 	void *user_data;
 };
 
-void runtime_engine_init(struct runtime_engine *engine);
 void runtime_engine_configure(struct runtime_engine *engine, struct db *db,
 			      struct react_context *react, nb_mutex *execution_lock);
-void runtime_engine_cleanup(struct runtime_engine *engine);
 struct react_context *runtime_engine_active_react_borrow(struct runtime_engine *engine);
 
 #endif

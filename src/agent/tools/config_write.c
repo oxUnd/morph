@@ -611,9 +611,3 @@ int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
 	}
 	return 0;
 }
-
-int config_write_init(struct tool_registry *reg, struct tool_context *tctx,
-		      const char *config_path)
-{
-	return config_edit_init(reg, tctx, config_path);
-}

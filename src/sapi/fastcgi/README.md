@@ -11,6 +11,22 @@ cannot connect to it directly; use nginx/Caddy/Apache in production, or the
 Set `MORPH_FCGI_DB` to the CLI database path to share persisted sessions.
 The service defaults to `/var/lib/morph/morph.db`.
 
+## Build and verification
+
+Install libfcgi, then enable the optional target explicitly:
+
+```sh
+cmake -S . -B build -DBUILD_FASTCGI=ON
+cmake --build build --parallel
+ctest --test-dir build -R '[Ff]ast[Cc][Gg][Ii]' --output-on-failure
+```
+
+An enabled build fails configuration if libfcgi is missing; it never silently
+skips the server. The suite includes authentication, storage and runtime unit
+checks plus protocol-level API routing, queued turns and question/reply
+integration checks against the actual server executable. Optional-build
+validation must use this configuration to cover the frontend.
+
 ---
 
 ## Layout

@@ -1,4 +1,5 @@
 #include "runtime/output.h"
+#include "agent/tool_artifact.h"
 #include <nb/err.h>
 #include "persistence/output_store.h"
 #include <nb/cleanup.h>
@@ -9,14 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static int is_creative_tool(const char *name)
-{
-	return name && (!strcmp(name, "img_gen") ||
-			!strcmp(name, "img_inpaint") ||
-			!strcmp(name, "img_compose") ||
-			!strcmp(name, "vid_gen"));
-}
 
 static const char *json_string(cJSON *object, const char *name)
 {
@@ -209,11 +202,13 @@ int runtime_output_record_event(const struct runtime_output_context *context,
 	char *recipe_json;
 	int rc = 0;
 
+	/* Generation records carry model/provider provenance. Local image
+	 * transformations remain artifacts in the tool result instead. */
 	if (!context || !context->db || !context->db->handle || !event ||
 	    event->type != REACT_STEP_OBSERVATION ||
 	    event->status != REACT_OUTPUT_COMPLETED ||
-	    !is_creative_tool(event->tool_name) || !event->tool_args ||
-	    !event->artifacts)
+	    tool_media_operation_for_name(event->tool_name) != TOOL_MEDIA_GENERATION ||
+	    !event->tool_args || !event->artifacts)
 		return 0;
 	arguments = cJSON_Parse(event->tool_args);
 	if (!arguments)
@@ -283,21 +278,5 @@ char *runtime_output_json_by_path_copy(struct db *db, const char *path)
 	if (ok)
 		json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
-	return json;
-}
-
-char *runtime_output_json_from_database_copy(struct nb_log *logger, const char *database_path,
-					     const char *artifact_path)
-{
-	struct db db;
-	char *json = NULL;
-
-	if (!database_path || !artifact_path)
-		return NULL;
-	if (db_open(logger, &db, database_path) != 0)
-		return NULL;
-	if (db_init_schema(&db) == 0)
-		json = runtime_output_json_by_path_copy(&db, artifact_path);
-	db_close(&db);
 	return json;
 }

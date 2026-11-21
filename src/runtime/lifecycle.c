@@ -1064,8 +1064,3 @@ const char *runtime_config_path_borrow(const struct runtime *runtime)
 {
 	return runtime ? runtime->context.config_path : NULL;
 }
-
-char *runtime_output_json_copy(struct runtime *runtime, const char *path)
-{
-	return runtime ? runtime_output_json_by_path_copy(&runtime->context.database, path) : NULL;
-}

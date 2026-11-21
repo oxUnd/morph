@@ -1491,26 +1491,6 @@ static int tool_context_request_delete_access_locked(struct tool_context *tctx,
 				    resolved_size);
 }
 
-static int tool_context_grant_delete_access_locked(struct tool_context *tctx, const char *principal,
-						   const char *path, char *resolved,
-						   size_t resolved_size)
-{
-	char local[PATH_MAX];
-	int rc;
-
-	if (!tctx || !principal || !*principal || !path || !*path)
-		return NB_ERR_INVAL;
-	if (!resolved || !resolved_size) {
-		resolved = local;
-		resolved_size = sizeof(local);
-	}
-	rc = permission_path_resolve_existing_directory(path, 0, resolved, resolved_size);
-	if (rc != 0)
-		return rc;
-	return store_command_path_grant(tctx, TOOL_PATH_DELETE, principal, resolved,
-					TOOL_OP_SESSION);
-}
-
 static int configured_path_allowed(
 	const char *path,
 	const char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX], int count)
@@ -1925,11 +1905,6 @@ void tool_context_reset_denials(struct tool_context *tctx)
 	nb_mutex_unlock(tctx->authority_lock);
 }
 
-struct permission_context *tool_context_permission_context_borrow(struct tool_context *tctx)
-{
-	return tctx ? &tctx->permissions : NULL;
-}
-
 void tool_context_set_default_timeout(struct tool_context *tctx, int seconds)
 {
 	if (!tctx)
@@ -2103,19 +2078,6 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 	nb_mutex_lock(tctx->authority_lock);
 	int rc = tool_context_request_delete_access_locked(tctx, principal,
 		command, path, resolved, resolved_size);
-	nb_mutex_unlock(tctx->authority_lock);
-	return rc;
-}
-
-int tool_context_grant_delete_access(struct tool_context *tctx,
-				     const char *principal, const char *path,
-				     char *resolved, size_t resolved_size)
-{
-	if (!tctx)
-		return NB_ERR_INVAL;
-	nb_mutex_lock(tctx->authority_lock);
-	int rc = tool_context_grant_delete_access_locked(tctx, principal, path,
-		resolved, resolved_size);
 	nb_mutex_unlock(tctx->authority_lock);
 	return rc;
 }

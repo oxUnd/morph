@@ -4,11 +4,6 @@
 #include <errno.h>
 #include <string.h>
 
-int credit_init_schema(struct db *db)
-{
-	return credit_store_init_schema(db);
-}
-
 static const struct config_credit_price *
 credit_find_price(const struct config_credits *cfg,
 		  const struct credit_event *event)

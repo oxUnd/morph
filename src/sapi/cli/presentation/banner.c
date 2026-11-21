@@ -291,8 +291,8 @@ void cli_banner_print(struct cli_application *ctx, const char *model, const char
 	(void)cli_banner_format(ctx, model, directory, width, padding, 0, 1);
 }
 
-static int cli_banner_render_content(struct cli_application *ctx, nb_buf *rendered, int width,
-	int has_logo, int shortcuts)
+int cli_banner_render_metadata(struct cli_application *ctx, nb_buf *rendered, int width,
+	int has_logo)
 {
 	nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *workdir = runtime_workdir_borrow(ctx->runtime);
@@ -322,17 +322,7 @@ static int cli_banner_render_content(struct cli_application *ctx, nb_buf *render
 	width = width > gutters ? width - gutters : 1;
 	int logo = has_logo && width >= 30;
 	rc = cli_banner_format(ctx, runtime_config_borrow(ctx->runtime)->models.text.model,
-			       nb_buf_cstr(&directory), (size_t)width, 0, logo, shortcuts);
+			       nb_buf_cstr(&directory), (size_t)width, 0, logo, 0);
 	cli_output_capture_end(ctx);
 	return rc ? rc : nb_buf_status(rendered);
-}
-
-int cli_banner_render(struct cli_application *ctx, nb_buf *rendered, int width, int has_logo)
-{
-	return cli_banner_render_content(ctx, rendered, width, has_logo, 1);
-}
-
-int cli_banner_render_metadata(struct cli_application *ctx, nb_buf *rendered, int width, int has_logo)
-{
-	return cli_banner_render_content(ctx, rendered, width, has_logo, 0);
 }

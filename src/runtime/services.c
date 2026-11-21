@@ -119,17 +119,6 @@ int runtime_turn_status_copy(struct runtime *runtime, struct runtime_turn_status
 	return rc;
 }
 
-char *runtime_turn_notification_body_copy(struct runtime *runtime)
-{
-	char *out;
-	if (!runtime)
-		return NULL;
-	nb_mutex_lock(runtime->context.execution_lock);
-	out = runtime_react_notification_body_copy(runtime->context.react);
-	nb_mutex_unlock(runtime->context.execution_lock);
-	return out;
-}
-
 char *runtime_turn_error_message_copy(struct runtime *runtime, int rc)
 {
 	char *out;

@@ -139,7 +139,6 @@ void mcp_registry_cleanup(struct mcp_registry *reg);
 
 /* ----- Lifecycle ----- */
 
-int mcp_connect_stdio(struct mcp_client *client);
 int mcp_connect_http(struct mcp_client *client);
 int mcp_initialize(struct mcp_client *client);
 void mcp_disconnect(struct mcp_client *client);
@@ -193,11 +192,6 @@ int mcp_register_server_resources(struct mcp_client *client,
 				  struct tool_registry *reg);
 int mcp_register_server_prompts(struct mcp_client *client,
 				struct tool_registry *reg);
-
-/* ----- Config helpers ----- */
-
-int mcp_config_to_server_config(const void *config_mcp_server,
-				struct mcp_server_config *out);
 
 #ifdef __cplusplus
 }

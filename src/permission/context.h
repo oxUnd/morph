@@ -57,9 +57,6 @@ void tool_context_set_review_adapters(struct tool_context *tctx, permission_revi
 				      void *user_data, permission_review_fn model_review,
 				      void *model_data);
 void tool_context_reset_denials(struct tool_context *tctx);
-/* Borrowed until context destruction. Configuration is read/updated through the
- * synchronized context operations, rather than by mutating this view. */
-struct permission_context *tool_context_permission_context_borrow(struct tool_context *tctx);
 struct tool_context *tool_context_create(struct nb_log *logger, const char *workdir,
 					 const char *output_dir);
 void tool_context_destroy(struct tool_context *tctx);
@@ -120,9 +117,6 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 				       const char *path,
 				       char *resolved,
 				       size_t resolved_size);
-int tool_context_grant_delete_access(struct tool_context *tctx,
-				     const char *principal, const char *path,
-				     char *resolved, size_t resolved_size);
 /* Directory batches preserve independent read/write/delete grants. */
 const char *tool_path_access_name(unsigned int access);
 int tool_context_resolve_directory_access(const char *path, unsigned int access,

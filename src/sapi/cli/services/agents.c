@@ -15,20 +15,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct cli_agents_snapshot {
-	struct agent_info *items;
-	int count;
-};
-
 struct cli_agents_event_snapshot {
 	char **items;
 	int count;
 };
 
-static void cli_agents_snapshot_cleanup(struct cli_agents_snapshot *snapshot)
+void cli_agents_snapshot_cleanup(struct cli_agents_snapshot *snapshot)
 {
 	if (snapshot->items)
-		runtime_agent_list_free(snapshot->items, snapshot->count);
+		cli_agents_list_free(snapshot->items, snapshot->count);
 
 	snapshot->items = NULL;
 	snapshot->count = 0;

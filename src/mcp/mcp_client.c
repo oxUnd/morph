@@ -110,11 +110,6 @@ void mcp_registry_cleanup(struct mcp_registry *reg)
 
 /* ----- Lifecycle dispatch ----- */
 
-int mcp_connect_stdio(struct mcp_client *client)
-{
-	return mcp_stdio_connect(client);
-}
-
 int mcp_connect_http(struct mcp_client *client)
 {
 	return mcp_http_connect(client);

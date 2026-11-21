@@ -112,85 +112,17 @@ int image_provider_post_json(struct model *model, const char *path, const char *
 
 const char *image_gen_ext_from_headers(nb_http_headers headers)
 {
-	nb_str type;
+	nb_str type = NB_STR_NULL;
 	if (!nb_http_headers_get(headers, NB_STR_LIT("Content-Type"), &type))
 		return NULL;
 
-	size_t separator = nb_str_find_char(type, ';');
-	if (separator != SIZE_MAX)
-		type.len = separator;
-
-	type = nb_str_trim(type);
-	const char *types[] = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"};
-	const char *extensions[] = {"png", "jpg", "webp", "gif", "bmp"};
-	for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
-		if (nb_str_eq_icase(type, nb_str_from_cstr(types[i])))
-			return extensions[i];
-	}
-
-	return NULL;
+	return image_format_extension(image_format_from_mime(type));
 }
 
 const char *image_gen_ext_from_magic(const unsigned char *data, size_t len)
 {
-	if (!data || len < 2)
-		return "png";
-	if (len >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G')
-		return "png";
-	if (data[0] == 0xFF && data[1] == 0xD8)
-		return "jpg";
-	if (len >= 12 && memcmp(data, "RIFF", 4) == 0 && memcmp(data + 8, "WEBP", 4) == 0)
-		return "webp";
-	if (len >= 6 && (memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0))
-		return "gif";
-	if (len >= 2 && data[0] == 'B' && data[1] == 'M')
-		return "bmp";
-	return "png";
-}
-
-static int download_url(const struct http_control *control, const char *url, const char *out_dir,
-			char *out_path, size_t out_cap)
-{
-	nb_buf resp_body NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc;
-	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
-	nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
-	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
-	nb_http_request http_request;
-
-	nb_vec_init(&native_headers, sizeof(nb_http_header));
-	rc = http_headers_parse(&native_headers, NULL, 0);
-	http_request_init(&http_request, "GET", url);
-	http_request.body = NB_STR_NULL;
-	http_request.headers =
-		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
-	if (rc == NB_OK)
-		rc = http_client_open(control, &http_client);
-
-	if (rc == NB_OK)
-		rc = http_request_run(control, http_client, &http_request, NULL, &http_call);
-
-	const nb_http_result *http_result = nb_http_call_result(http_call);
-	const nb_http_response *resp = http_result ? http_result->response : NULL;
-	if (rc == NB_OK)
-		rc = nb_http_call_take_body(http_call, &resp_body, NULL);
-
-	if (rc < 0) {
-		nb_log_write(control ? control->logger : NULL, NB_LOG_ERROR, "download failed: %s",
-			     url);
-		return rc;
-	}
-	if (resp->status_code != 200) {
-		nb_log_write(control ? control->logger : NULL, NB_LOG_ERROR,
-			     "download returned HTTP %d", resp->status_code);
-		return MORPH_ERR_API;
-	}
-	const char *ext = image_gen_ext_from_headers(resp->headers);
-	if (!ext)
-		ext = image_gen_ext_from_magic((const unsigned char *)resp_body.ptr, resp_body.len);
-	rc = media_output_write(out_dir, "img", ext, nb_buf_cstr(&resp_body), resp_body.len,
-				out_path, out_cap);
-	return rc;
+	const char *extension = image_format_extension(image_format_detect(data, len));
+	return extension ? extension : "png";
 }
 
 static const char *style_prefix(const char *style)
@@ -433,7 +365,8 @@ static int image_materialize(const struct http_control *control,
 		return rc;
 	if (payload->kind == IMAGE_PAYLOAD_URL) {
 		snprintf(result->url, sizeof(result->url), "%s", payload->data);
-		rc = download_url(control, payload->data, out_dir, out_path, sizeof(out_path));
+		rc = media_output_download(control, payload->data, out_dir, "img", NULL,
+			out_path, sizeof(out_path));
 		if (rc != 0)
 			return rc;
 	} else {

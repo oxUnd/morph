@@ -1,4 +1,5 @@
 #include "image.h"
+#include "media/image.h"
 #include <nothing/tui/terminal/size.h>
 #include "morph_kitty_protocol.h"
 #include <nb/buf.h>
@@ -44,10 +45,13 @@ static int detect_sixel(void)
 
 int image_detect_fmt(const unsigned char *data, size_t len)
 {
-	if (len >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G')
+	enum image_format format = image_format_detect(data, len);
+	if (format == MORPH_IMAGE_PNG)
 		return 100;
-	if (len >= 2 && data[0] == 0xFF && data[1] == 0xD8)
+
+	if (format == MORPH_IMAGE_JPEG)
 		return 101;
+
 	return 0;
 }
 

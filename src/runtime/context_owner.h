@@ -87,8 +87,6 @@ void runtime_context_update_models(struct runtime_context *ctx,
 void runtime_context_select_plan_session(struct runtime_context *ctx, int64_t session_id);
 void runtime_context_forget_plan_session(struct runtime_context *ctx, int64_t session_id);
 int runtime_context_update_tool_runtime_context(struct runtime_context *ctx, int64_t session_id);
-int runtime_context_tool_credit_session_id(struct runtime_context *ctx, int64_t session_id,
-					   char *buf, size_t buf_size);
 struct memory_options runtime_context_memory_options_borrow(const struct runtime_context *ctx);
 void runtime_context_credit_session_key(struct runtime_context *ctx, char *buf, size_t buf_size);
 int runtime_context_prepare_turn(struct runtime_context *ctx, const struct runtime_request *request,

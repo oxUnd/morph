@@ -9,13 +9,11 @@
 #include <nb/file.h>
 #include <nb/encoding.h>
 #include "media/image.h"
-#include "media/image.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/buf.h>
 #include "errors.h"
 #include "http/request.h"
-#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,48 +139,6 @@ static int volcengine_video_capabilities(const struct model *model, struct video
 		caps->supports_reference_audios = 1;
 	}
 	return 0;
-}
-
-static int download_url(struct model *self, const char *url, const char *output_dir, char *out_path,
-			size_t out_size)
-{
-	nb_buf resp_body NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc;
-	nb_http_client *http_client NB_CLEANUP(http_client_cleanup) = NULL;
-	nb_http_call *http_call NB_CLEANUP(http_call_cleanup) = NULL;
-	nb_vec native_headers NB_CLEANUP(nb_vec_cleanup) = {0};
-	nb_http_request http_request;
-
-	nb_vec_init(&native_headers, sizeof(nb_http_header));
-	rc = http_headers_parse(&native_headers, NULL, 0);
-	http_request_init(&http_request, "GET", url);
-	http_request.body = NB_STR_NULL;
-	http_request.headers =
-		(nb_http_headers){(const nb_http_header *)native_headers.data, native_headers.len};
-	if (rc == NB_OK)
-		rc = http_client_open(&self->http, &http_client);
-
-	if (rc == NB_OK)
-		rc = http_request_run(&self->http, http_client, &http_request, NULL, &http_call);
-
-	const nb_http_result *http_result = nb_http_call_result(http_call);
-	const nb_http_response *resp = http_result ? http_result->response : NULL;
-	if (rc == NB_OK)
-		rc = nb_http_call_take_body(http_call, &resp_body, NULL);
-
-	if (rc < 0) {
-		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-			     "video download failed: %s", url);
-		return rc;
-	}
-	if (resp->status_code != 200) {
-		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-			     "video download returned HTTP %d", resp->status_code);
-		return MORPH_ERR_API;
-	}
-	rc = media_output_write(output_dir, "vid", "mp4", nb_buf_cstr(&resp_body), resp_body.len,
-				out_path, out_size);
-	return rc;
 }
 
 static void video_report_usage(struct model *self, const char *model_id, const char *task_id,
@@ -607,7 +563,8 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 
 	char out_path[PATH_MAX];
 
-	rc = download_url(self, result->url, output_dir, out_path, sizeof(out_path));
+	rc = media_output_download(&self->http, result->url, output_dir, "vid", "mp4",
+		out_path, sizeof(out_path));
 	if (rc < 0)
 		return rc;
 

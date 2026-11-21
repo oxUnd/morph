@@ -122,16 +122,3 @@ int ext_load_exec(struct ext *ex, const char *path)
 		     ex->manifest.name, full_path);
 	return 0;
 }
-
-void ext_unload_so(struct ext *ex)
-{
-	if (!ex || !ex->dl_handle)
-		return;
-
-	nb_log_write(ex ? ex->logger : NULL, NB_LOG_INFO, "ext_unload_so: dlclose %s (handle=%p)",
-		     ex->manifest.name, ex->dl_handle);
-	dlclose(ex->dl_handle);
-	ex->dl_handle = NULL;
-	ex->run = NULL;
-	ex->run_v2 = NULL;
-}

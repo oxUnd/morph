@@ -44,7 +44,6 @@ int memory_store_migrate_preferences(struct db *db, int64_t session_id,
 						   const char *source));
 int memory_store_event_token(struct db *db, int64_t session_id, const char *event_token, char *out,
 			     size_t capacity);
-int memory_store_save_user_summary(struct db *db, int64_t session_id, const char *text);
 int memory_store_add_task(struct db *db, int64_t session_id, const struct memory_task_input *input);
 
 #ifdef __cplusplus

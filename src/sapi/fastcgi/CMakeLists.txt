@@ -5,6 +5,7 @@
 # morph-session, morph-agent, etc).  Optional; gated on BUILD_FASTCGI.
 
 find_package(PkgConfig QUIET)
+find_package(Threads REQUIRED)
 set(_FCGI_FOUND FALSE)
 
 if(PkgConfig_FOUND)
@@ -26,10 +27,9 @@ if(NOT _FCGI_FOUND)
 endif()
 
 if(NOT _FCGI_FOUND)
-    message(WARNING
-        "libfcgi not found — skipping morph-fastcgi.  "
+    message(FATAL_ERROR
+        "BUILD_FASTCGI=ON requires libfcgi. "
         "Install fcgi2 (e.g. apt install libfcgi-dev) and re-configure.")
-    return()
 endif()
 
 set(FCGI_SOURCES
@@ -77,7 +77,7 @@ target_include_directories(morph-fastcgi PRIVATE
 target_link_libraries(morph-fastcgi PRIVATE
     ${FCGI_LIBRARIES}
     morph-runtime
-    pthread)
+    Threads::Threads)
 
 if(FCGI_LIBRARY_DIRS)
     target_link_directories(morph-fastcgi PRIVATE ${FCGI_LIBRARY_DIRS})

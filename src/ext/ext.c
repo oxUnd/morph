@@ -156,15 +156,6 @@ int ext_manifest_supports_front(const struct ext_manifest *m,
 	return 0;
 }
 
-void ext_user_data_destroy(void *user_data)
-{
-	struct ext *ex = (struct ext *)user_data;
-	if (!ex)
-		return;
-	ext_unload(ex);
-	free(ex);
-}
-
 static char *ext_resolve_sandbox_path(const char *path)
 {
 	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};

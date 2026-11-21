@@ -37,7 +37,6 @@ int tool_result_success_json_text_copy(struct tool_result *result, const char *j
 int tool_result_success_json_text_take(struct tool_result *result, char **json);
 int tool_result_error_copy(struct tool_result *result, const char *code, const char *message);
 int tool_result_error_format(struct tool_result *result, const char *code, const char *fmt, ...);
-int tool_result_set_ui_copy(struct tool_result *result, const cJSON *ui);
 int tool_result_set_ui_take(struct tool_result *result, cJSON **ui);
 int tool_result_set_meta_copy(struct tool_result *result, const cJSON *meta);
 int tool_result_set_meta_take(struct tool_result *result, cJSON **meta);

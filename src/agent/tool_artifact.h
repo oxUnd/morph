@@ -13,6 +13,14 @@ extern "C" {
 #define TOOL_ARTIFACT_LABEL_MAX 128
 #define TOOL_ARTIFACT_MIME_MAX 128
 
+enum tool_media_operation {
+	TOOL_MEDIA_NONE,
+	TOOL_MEDIA_GENERATION,
+	TOOL_MEDIA_TRANSFORM,
+};
+
+enum tool_media_operation tool_media_operation_for_name(const char *name);
+
 struct tool_artifact {
 	enum tool_artifact_kind kind;
 	char path[PATH_MAX];

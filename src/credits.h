@@ -35,7 +35,6 @@ struct credit_summary {
 	int event_count;
 };
 
-int credit_init_schema(struct db *db);
 int credit_calculate(const struct config_credits *cfg,
 		     const struct credit_event *event,
 		     struct credit_charge *out);
