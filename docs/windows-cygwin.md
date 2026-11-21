@@ -61,7 +61,8 @@ python3 scripts/package-cygwin.py \
     --sysroot / \
     --objdump /usr/bin/objdump.exe \
     --output out/morph-windows-cygwin \
-    --ca-bundle /etc/pki/tls/certs/ca-bundle.crt
+    --ca-bundle /etc/pki/tls/certs/ca-bundle.crt \
+    --archive
 ```
 
 On Windows, run the generated `morph.cmd` from Windows Terminal or another
@@ -71,6 +72,26 @@ as `/usr/bin`. Model
 credentials are configured separately through `morph.cmd setup`; packaging
 copies only `config.toml.example`, not a user's configuration or credentials.
 Additional developer tools such as Git, Node.js, and Python are separate.
+Use the generated ZIP when transferring the bundle: it preserves the empty
+`tmp` and `home` directories. The `tmp` directory is required during runtime
+initialization even before any shell command is executed. The adjacent
+`.zip.sha256` file records the archive checksum.
+
+The launcher uses the Windows user profile as `HOME` when it is not already
+configured, keeping `.morph` settings outside the program directory. It also
+selects the bundled CA certificates unless a certificate environment override
+is already set. The bundle includes `cygpath` and the terminal capability data
+needed by Readline.
+
+Pass `--icon path/to/morph.ico` when packaging to include a Windows icon. After
+extracting the bundle, create a desktop shortcut from PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-desktop-shortcut.ps1
+```
+
+The installer uses the user's actual desktop folder, including OneDrive
+redirection, and opens Morph in the user's `Work` directory when it exists.
 
 ## Docker and Wine validation
 
