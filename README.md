@@ -34,10 +34,10 @@ FreeType, HarfBuzz, libvips, Cairo and PangoCairo. A fresh checkout also needs
 the MathJax and Markdown source trees at the paths shown below.
 
 CMake fetches a pinned post-v0.1.0 nothing-tui revision, including native
-text selection, draggable split views, resize pointers and view-owned animations,
-for the CLI. Use
+text selection, draggable split views, resize pointers, view-owned animations,
+and grouped, searchable shortcut help with bold key labels for the CLI. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/01e4ed51ee2f578b776c3a008cacce1630ce0221)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/f42c1bdda8335e82565f98b8c3e765e5bea4daca)
 
 Morph and nothing-tui share one `nbase::nbase` target built from a pinned
 post-v0.1.0 nothing revision under the MIT license. Morph uses nbase's HTTP backend

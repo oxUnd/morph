@@ -340,7 +340,7 @@ else()
 	FetchContent_Declare(
 		nothing_tui
 		GIT_REPOSITORY https://codeberg.org/oxund/nothing-tui.git
-		GIT_TAG 01e4ed51ee2f578b776c3a008cacce1630ce0221
+		GIT_TAG f42c1bdda8335e82565f98b8c3e765e5bea4daca
 	)
 	FetchContent_MakeAvailable(nothing_tui)
 endif()

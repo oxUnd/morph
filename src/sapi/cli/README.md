@@ -93,6 +93,11 @@ Application shortcut hints share the TUI accent role and bold key names through
 panels, sidebars, setup and live activity use native text spans. Page code supplies
 plain hint text and never assembles ANSI shortcut colors.
 
+The window's native `Ctrl+K` popup collects shortcut metadata from commands and
+controls. It supports group tabs, search and independent scrolling, and restores
+the previous focus and caret on close. This window shortcut takes precedence over
+the text editor's `Ctrl+K` action to delete through the end of the line.
+
 Explicit `/mcp connect` and `/mcp disconnect` commands always print their own
 result or error receipt, independently of the background lifecycle events.
 
