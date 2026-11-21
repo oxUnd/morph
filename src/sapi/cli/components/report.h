@@ -10,8 +10,13 @@ struct cli_report {
 	struct nt_view *text, *footer;
 	nb_buf document;
 	struct nt_view_size size;
+	/* A negative footer height uses the native footer's measurement. */
+	struct nt_view_size footer_size;
 	int measured_width, published_width, styled;
+	/* Formatting caches text and footer geometry without changing native views.
+	 * Publish applies those values only at the arranged content width. */
 	int (*format)(struct cli_report *, nb_buf *, int width);
+	int (*publish)(struct cli_report *);
 };
 
 extern const struct nt_view_class cli_report_class;

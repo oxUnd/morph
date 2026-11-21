@@ -46,6 +46,7 @@ extern "C" {
 #include <regex>
 #include <nothing/tui/capabilities.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <unistd.h>
 
 /* NT packs a cell's reset, attributes, and colors into one SGR. Compare the
@@ -100,21 +101,26 @@ static std::string retained_normalized(const char *text)
 class CliRetainedWidgetsTest : public ::testing::Test
 {
       protected:
-	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed, Files, RichDocument } kind = Tool;
+	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed, Files, RichDocument,
+		Unstable } kind = Tool;
 	struct cli_files_model files{};
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
+	struct termios original_modes{};
 	struct nt_application *app = nullptr;
 	struct nt_view_controller *controller = nullptr;
 	struct nt_view *component = nullptr;
 	struct nt_view *editor = nullptr;
 	struct cli_application ctx{};
 	int cursor_x = -1, cursor_y = -1, columns_rendered = 0;
+	int rendered_frames = 0;
+	int layout_passes = 0, layout_retries = 0, display_retries = 0;
 	struct cli_transcript_tool tool{};
 	struct cli_notice notice{};
 	std::string recap_summary, recap_next;
 	cJSON *plan = nullptr;
 	bool details = false;
+	bool native_footer = false;
 	std::string frame;
 	std::string file_directory;
 
@@ -157,6 +163,11 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	struct nt_renderer renderer = {
 		+[](struct nt_renderer *backend, struct nt_surface *surface, FILE *) {
 			auto *self = static_cast<CliRetainedWidgetsTest *>(backend->data);
+			self->rendered_frames++;
+			/* Keep the regression finite even without the framework guard. */
+			if (self->kind == Unstable && self->rendered_frames > 128)
+				nt_application_stop(self->app, NB_ERR_CANCELLED);
+
 			struct nt_terminal_capabilities caps{};
 			caps.color_profile = NT_COLOR_PROFILE_256;
 			nt_surface_set_capabilities(surface, &caps);
@@ -174,6 +185,33 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	{
 			auto *self = static_cast<CliRetainedWidgetsTest *>(owner->data);
 			self->controller = owner;
+			if (self->kind == Unstable) {
+				static const nt_view_class type = [] {
+					nt_view_class value{};
+					value.superclass = &nt_view_base_class;
+					value.instance_size = sizeof(struct nt_view);
+					value.layout = +[](struct nt_view *view) {
+						auto *self = static_cast<CliRetainedWidgetsTest *>(
+							nt_view_controller(view)->data);
+						if (self->layout_passes++ < self->layout_retries)
+							nt_view_invalidate(view, 1);
+
+						return 0;
+					};
+					value.draw = +[](struct nt_view *view, struct nt_canvas *) {
+						auto *self = static_cast<CliRetainedWidgetsTest *>(
+							nt_view_controller(view)->data);
+						if (self->rendered_frames < self->display_retries)
+							nt_view_invalidate(view, 0);
+
+						return 0;
+					};
+					return value;
+				}();
+				self->component = nt_view_add(builder, nullptr, &type, nullptr);
+				return;
+			}
+
 			if (self->kind == Feed) {
 				auto *scroll = nt_scroll_view_add(builder, nullptr, nullptr);
 				struct nt_view_options fill{};
@@ -214,6 +252,12 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			}
 			else
 				self->component = cli_plan_add_borrow(builder, root, self->plan, 1);
+
+			if (self->native_footer && self->component) {
+				auto *report = reinterpret_cast<struct cli_report *>(self->component);
+				report->footer = nt_label_add(builder, self->component,
+					"NATIVE_REPORT_FOOTER", nullptr);
+			}
 		}
 
 	void SetUp() override
@@ -225,6 +269,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		ASSERT_EQ(unlockpt(master), 0);
 		ASSERT_NE(input = fopen(ptsname(master), "r+"), nullptr);
 		ASSERT_NE(output = fdopen(dup(fileno(input)), "w"), nullptr);
+		ASSERT_EQ(tcgetattr(fileno(input), &original_modes), 0);
 		struct winsize size{};
 		size.ws_col = 120;
 		size.ws_row = 48;
@@ -271,7 +316,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			close(master);
 	}
 
-	void Present()
+	void Present(int expected = 0)
 	{
 		struct nt_view_controller_class type{};
 		type.superclass = &nt_view_controller_base_class;
@@ -283,7 +328,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		ASSERT_EQ(nt_view_controller_create(&page_class, &page), 0);
 		page->data = this;
 		ASSERT_EQ(nt_application_present_view_controller(app, &page), 0);
-		ASSERT_EQ(nt_application_step(app, 0), 0);
+		ASSERT_EQ(nt_application_step(app, 0), expected);
 		if (editor)
 			ASSERT_EQ(nt_window_focus_view(nt_application_window(app), editor), 0);
 	}
@@ -299,6 +344,24 @@ class CliRetainedWidgetsTest : public ::testing::Test
 			ASSERT_EQ(nt_application_step(app, 1), 0);
 
 		ASSERT_EQ(columns_rendered, columns);
+	}
+
+	void ExpectTerminalRestored()
+	{
+		nt_application_destroy(app);
+		app = nullptr;
+		struct termios modes{};
+		ASSERT_EQ(tcgetattr(fileno(input), &modes), 0);
+		EXPECT_EQ(modes.c_iflag, original_modes.c_iflag);
+		EXPECT_EQ(modes.c_oflag, original_modes.c_oflag);
+		EXPECT_EQ(modes.c_cflag, original_modes.c_cflag);
+		/* BSD may mark queued input for retyping after a mode switch. */
+		tcflag_t local_mask = ~tcflag_t{0};
+#ifdef PENDIN
+		local_mask &= ~static_cast<tcflag_t>(PENDIN);
+#endif
+		EXPECT_EQ(modes.c_lflag & local_mask, original_modes.c_lflag & local_mask);
+		EXPECT_EQ(memcmp(modes.c_cc, original_modes.c_cc, sizeof(modes.c_cc)), 0);
 	}
 
 	void Click(struct nt_view *view)
@@ -350,6 +413,56 @@ class CliRetainedWidgetsTest : public ::testing::Test
 		nb_buf_cleanup(&expected);
 	}
 };
+
+TEST_F(CliRetainedWidgetsTest, NonconvergingLayoutReturnsAnErrorInsteadOfSpinning)
+{
+	kind = Unstable;
+	layout_retries = 256;
+	Present(NB_ERR_STATE);
+	EXPECT_GT(layout_passes, 1);
+	EXPECT_LT(rendered_frames, 128);
+	ExpectTerminalRestored();
+}
+
+TEST_F(CliRetainedWidgetsTest, NonconvergingDisplayReturnsAnErrorInsteadOfSpinning)
+{
+	kind = Unstable;
+	display_retries = 256;
+	Present(NB_ERR_STATE);
+	EXPECT_GT(rendered_frames, 1);
+	EXPECT_LT(rendered_frames, 128);
+	ExpectTerminalRestored();
+}
+
+TEST_F(CliRetainedWidgetsTest, FiniteLayoutUpdatesSettleAndLeaveTheApplicationIdle)
+{
+	kind = Unstable;
+	layout_retries = 3;
+	display_retries = 5;
+	Present();
+	EXPECT_GT(layout_passes, layout_retries);
+	EXPECT_GT(rendered_frames, display_retries);
+	const int published = rendered_frames;
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_EQ(rendered_frames, published);
+}
+
+TEST_F(CliRetainedWidgetsTest, NativeReportFooterKeepsItsOwnMeasurementAcrossWidths)
+{
+	kind = Notice;
+	native_footer = true;
+	notice.title = "Report body";
+	Present();
+	auto *report = reinterpret_cast<struct cli_report *>(component);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		EXPECT_NE(frame.find("NATIVE_REPORT_FOOTER"), std::string::npos);
+		const auto footer = nt_view_frame(report->footer);
+		const auto content = nt_view_content_rect(component);
+		EXPECT_EQ(footer.height, 1);
+		EXPECT_EQ(footer.y, content.y + content.height - 1);
+	}
+}
 
 TEST_F(CliRetainedWidgetsTest, RecapKeepsInlineHeadingHangingIndentAndStylesAcrossResize)
 {
@@ -443,6 +556,40 @@ TEST_F(CliRetainedWidgetsTest, ToolOutputExpandsClippedLinesAndHidesToggleForSho
 	EXPECT_TRUE(nt_view_is_hidden(footer));
 	EXPECT_EQ(frame.find("show more"), std::string::npos);
 	EXPECT_EQ(frame.find("show less"), std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, MeasuringToolAtOtherWidthsPreservesPublishedFooterAndIdleFrame)
+{
+	const std::string result = "{\"stdout\":\"" + std::string(100, 'x') + "\"}";
+	tool.result = const_cast<char *>(result.c_str());
+	Present();
+	auto *footer = nt_view_child(component, 1);
+	ASSERT_NE(footer, nullptr);
+	EXPECT_TRUE(nt_view_is_hidden(footer));
+
+	for (int columns : {120, 80, 60, 120}) {
+		Resize(columns);
+		const bool hidden = nt_view_is_hidden(footer);
+		EXPECT_EQ(hidden, columns >= 106);
+		const int published = rendered_frames;
+		for (int measured_columns : {60, 200, 80, 120}) {
+			struct nt_view_size size{};
+			ASSERT_EQ(nt_view_measure(component, measured_columns, &size), 0);
+			EXPECT_EQ(size.height, measured_columns < 106 ? 4 : 3);
+			EXPECT_EQ(nt_view_is_hidden(footer), hidden);
+			ASSERT_EQ(nt_application_render(app), 0);
+			EXPECT_EQ(rendered_frames, published);
+		}
+
+		/* A fresh layout must restore its own width after speculative measures. */
+		nt_application_invalidate(app, NT_INVALIDATE_LAYOUT);
+		ASSERT_EQ(nt_application_render(app), 0);
+		EXPECT_EQ(nt_view_is_hidden(footer), hidden);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		const int settled = rendered_frames;
+		ASSERT_EQ(nt_application_render(app), 0);
+		EXPECT_EQ(rendered_frames, settled);
+	}
 }
 
 TEST_F(CliRetainedWidgetsTest, LiveToolOutputExpandsItsStreamAndKeepsFollowingUpdates)

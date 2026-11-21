@@ -5,6 +5,25 @@ those again during normal builds. MathJax is an ignored, separate source checkou
 its tracked patch is applied during CMake configure after a forward/reverse check.
 Keep dependency fixes separate from project changes.
 
+## nothing-tui: bounded application updates
+
+- Patch: `nothing-tui-update-convergence.patch`
+- Base: pinned revision `f42c1bdda8335e82565f98b8c3e765e5bea4daca`.
+- Reason: the application's immediate retry loop bounded component updates only.
+  A layout or drawing callback that invalidated its own frame could spin forever,
+  consume one CPU core and starve input, timers and runtime event delivery.
+  Apply the existing 64-pass limit to every immediate update, including layout,
+  display and controller transitions. Return `NB_ERR_STATE` through the normal
+  application shutdown path and record the remaining invalidation flags.
+- Configure hook: `cmake/ApplyNothingTuiPatch.cmake` checks reverse application,
+  then checks and applies the patch to the fetched source. Conflicting source
+  changes fail configuration without replacing files. Explicit local NT source
+  overrides must carry the equivalent guard themselves.
+- Regressions: `CliRetainedWidgetsTest.NonconvergingLayoutReturnsAnErrorInsteadOfSpinning`,
+  `NonconvergingDisplayReturnsAnErrorInsteadOfSpinning` and
+  `FiniteLayoutUpdatesSettleAndLeaveTheApplicationIdle`. The test renderer has
+  an independent cutoff so removing the guard fails the tests without hanging.
+
 ## stb_image_write: unsigned JPEG bit buffer
 
 - Patch: `stb_image_write-unsigned-jpeg-bit-buffer.patch`

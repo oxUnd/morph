@@ -46,6 +46,16 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   key handling and local interaction state belong here; business actions go
   through page bindings or services. Shared margin/padding behavior follows the
   [NT layout guide](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0/docs/guide/layout.md).
+- Measurement and formatting callbacks calculate sizes and cache derived text;
+  they must not set native view text, styles, visibility or component state.
+  Containers may probe several widths before choosing an allocation. Publish
+  derived content only from layout at the arranged content width, and skip
+  publication when that width and the content have not changed. Footer geometry
+  must be measured independently of its currently published visibility. Repeated
+  measurement must leave an idle application's frame unchanged. The pinned NT
+  dependency also bounds synchronous state, transition, layout and display
+  retries; a nonconverging view returns `NB_ERR_STATE` through normal application
+  teardown instead of spinning indefinitely.
 - Models carry app data and operations on that data. They do not depend on the
   Application, pages, widgets or external runtime callbacks. Services apply use
   cases to models and the opaque runtime facade; workers submit owner-thread

@@ -58,6 +58,17 @@ static int cli_report_reflow(struct cli_report *report, int width)
 	return 0;
 }
 
+static int cli_report_measure_footer(struct cli_report *report, int width,
+	struct nt_view_size *size)
+{
+	if (report->footer_size.height >= 0) {
+		*size = report->footer_size;
+		return 0;
+	}
+
+	return nt_view_measure(report->footer, width, size);
+}
+
 static int cli_report_measure(struct nt_view *view, int width, struct nt_view_size *size)
 {
 	struct cli_report *report = (struct cli_report *)view;
@@ -66,7 +77,10 @@ static int cli_report_measure(struct nt_view *view, int width, struct nt_view_si
 		*size = report->size;
 		if (report->footer) {
 			struct nt_view_size footer = {0};
-			rc = nt_view_measure(report->footer, width, &footer);
+			rc = cli_report_measure_footer(report, width, &footer);
+			if (rc)
+				return rc;
+
 			if (footer.height > INT_MAX - size->height)
 				return NB_ERR_RANGE;
 
@@ -83,11 +97,15 @@ static int cli_report_layout(struct nt_view *view)
 {
 	struct cli_report *report = (struct cli_report *)view;
 	struct nt_view_rect rect = nt_view_content_rect(view);
+	int rc = cli_report_reflow(report, rect.width);
+	if (rc)
+		return rc;
+
 	if (rect.width != report->published_width) {
-		int rc = cli_report_reflow(report, rect.width);
-		if (!rc)
-			rc = cli_messages_set_rendered_view(
-				report->text, nb_buf_cstr(&report->document), report->styled);
+		rc = cli_messages_set_rendered_view(
+			report->text, nb_buf_cstr(&report->document), report->styled);
+		if (!rc && report->publish)
+			rc = report->publish(report);
 
 		if (rc)
 			return rc;
@@ -97,7 +115,7 @@ static int cli_report_layout(struct nt_view *view)
 
 	if (report->footer) {
 		struct nt_view_size footer = {0};
-		int rc = nt_view_measure(report->footer, rect.width, &footer);
+		rc = cli_report_measure_footer(report, rect.width, &footer);
 		if (rc)
 			return rc;
 
@@ -150,6 +168,7 @@ struct cli_report *cli_report_add(struct nt_builder *builder, struct nt_view *pa
 
 	report->format = format;
 	report->measured_width = report->published_width = -1;
+	report->footer_size.height = -1;
 	report->styled = styled;
 	report->text = cli_report_text_add(builder, &report->base, NULL);
 	if (!report->text)

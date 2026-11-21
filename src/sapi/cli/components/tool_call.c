@@ -6,6 +6,7 @@
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/transcript.h"
 #include <nb/cleanup.h>
+#include <nb/utf8.h>
 #include <nothing/tui/terminal/text.h>
 #include <nothing/tui/component_state.h>
 #include <nothing/tui/views/label.h>
@@ -19,6 +20,7 @@ struct cli_tool_call {
 	struct cli_report report;
 	struct nt_component_state *state, *expanded;
 	struct nt_view *count, *toggle;
+	char count_text[64];
 };
 
 struct cli_tool_call_snapshot {
@@ -107,12 +109,28 @@ static int cli_tool_call_format(struct cli_report *report, nb_buf *out, int widt
 	while (out->len && out->ptr[out->len - 1] == '\n')
 		out->ptr[--out->len] = '\0';
 
-	char count[64] = "";
+	widget->count_text[0] = '\0';
 	if (!expanded && preview.hidden_lines)
-		snprintf(count, sizeof(count), "+ %zu %s · ", preview.hidden_lines,
+		snprintf(widget->count_text, sizeof(widget->count_text), "+ %zu %s · ",
+			preview.hidden_lines,
 			preview.hidden_lines == 1 ? "line" : "lines");
 
-	rc = nt_label_set_text(widget->count, count);
+	int visible = !state->details && (preview.hidden_lines || preview.clipped);
+	report->footer_size = (struct nt_view_size){0};
+	if (visible) {
+		size_t count_width = nb_utf8_width_cstr(widget->count_text);
+		report->footer_size = (struct nt_view_size){
+			4 + (int)count_width + (int)strlen(expanded ? "show less" : "show more"), 1};
+	}
+
+	return 0;
+}
+
+static int cli_tool_call_publish(struct cli_report *report)
+{
+	struct cli_tool_call *widget = (struct cli_tool_call *)report;
+	const struct cli_tool_call_state *state = nt_component_state_get(widget->state);
+	int rc = nt_label_set_text(widget->count, widget->count_text);
 	const struct nt_text_style link = state->styled
 		? (struct nt_text_style){.attributes = NT_STYLE_UNDERLINE,
 			.foreground = {NT_COLOR_ANSI, 6}} : (struct nt_text_style){0};
@@ -123,8 +141,7 @@ static int cli_tool_call_format(struct cli_report *report, nb_buf *out, int widt
 		rc = nt_view_set_style(widget->count,
 			(struct nt_text_style){.attributes = state->styled ? NT_STYLE_DIM : 0});
 
-	return rc ? rc : nt_view_set_hidden(report->footer,
-		state->details || (!preview.hidden_lines && !preview.clipped));
+	return rc ? rc : nt_view_set_hidden(report->footer, !report->footer_size.height);
 }
 
 static int cli_tool_call_toggle_text(void *data, struct nt_value *result)
@@ -234,6 +251,7 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 		return NULL;
 
 	struct nt_view *view = &widget->report.base;
+	widget->report.publish = cli_tool_call_publish;
 	const struct nt_view_options footer = {.height = 1, .padding = {.left = 4}};
 	widget->report.footer = nt_row_add(builder, view, 0, &footer);
 	widget->count = nt_label_add(builder, widget->report.footer, "", NULL);

@@ -337,12 +337,16 @@ if(MORPH_NOTHING_TUI_SOURCE_DIR AND
 	set(nothing_tui_SOURCE_DIR "${MORPH_NOTHING_TUI_SOURCE_DIR}")
 	add_subdirectory("${nothing_tui_SOURCE_DIR}" nothing-tui EXCLUDE_FROM_ALL)
 else()
+	# Apply pinned framework fixes before configuring its targets.
 	FetchContent_Declare(
 		nothing_tui
 		GIT_REPOSITORY https://codeberg.org/oxund/nothing-tui.git
 		GIT_TAG f42c1bdda8335e82565f98b8c3e765e5bea4daca
+		SOURCE_SUBDIR include
 	)
 	FetchContent_MakeAvailable(nothing_tui)
+	include(cmake/ApplyNothingTuiPatch.cmake)
+	add_subdirectory("${nothing_tui_SOURCE_DIR}" "${nothing_tui_BINARY_DIR}" EXCLUDE_FROM_ALL)
 endif()
 
 add_library(morph-ext-sdk INTERFACE)
