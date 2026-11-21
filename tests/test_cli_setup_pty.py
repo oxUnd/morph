@@ -1,13 +1,12 @@
-"""First-run wizard: real PTY, rendered-screen assertions, isolated credentials."""
+"""First-run setup form: real PTY, standard controls, isolated credentials."""
 from nbase_status import native_status
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import tempfile
 import time
-import json
-import re
 
 try:
     import pexpect
@@ -17,65 +16,65 @@ except ImportError:
     sys.exit(77)
 
 
+TAB = '\t'
+ENTER = '\r'
+ESC = '\x1b'
+CTRL_C = '\x03'
+CTRL_U = '\x15'
+RIGHT = '\x1b[C'
+DOWN = '\x1b[B'
+
+
 class Terminal:
     def __init__(self, binary, path, ready=False, size=(24, 80), flags=(),
-                 production=False, no_color_env=False, role=1, setup_command=False,
-                 accept_role=True):
+                 production=False):
         env = {k: v for k, v in os.environ.items()
                if not k.endswith('API_KEY') and k != 'NO_COLOR'}
-        if no_color_env:
-            env['NO_COLOR'] = '1'
         env.update(TERM='xterm-256color', HOME=str(path.parent))
         if ready:
-            env.update(OPENAI_API_KEY='fixture-openai', DEEPSEEK_API_KEY='fixture-deepseek',
+            env.update(OPENAI_API_KEY='fixture-openai',
+                       DEEPSEEK_API_KEY='fixture-deepseek',
                        VOLCENGINE_API_KEY='fixture-ark')
         self.path = path
-        arguments = (["setup", "-c", str(path)] if setup_command else
-                     ["-c", str(path)] if production else [str(path)])
-        self.child = pexpect.spawn(str(binary),
-                                   arguments + list(flags), env=env,
-                                   encoding='utf-8', dimensions=size, timeout=5)
-        self.screen = pyte.HistoryScreen(size[1], size[0], history=2000)
+        self.production = production
+        arguments = (["setup", "-c", str(path)] if production else [str(path)])
+        self.child = pexpect.spawn(str(binary), arguments + list(flags), env=env,
+                                   encoding='utf-8', dimensions=size, timeout=10)
+        self.screen = pyte.HistoryScreen(size[1], size[0], history=4000)
         self.stream = pyte.Stream(self.screen)
         self.transcript = ''
-        self.production = production
-        self.wait('Choose your role')
-        if accept_role:
-            self.child.send(f'{role}\r')
-            self.wait('Review your setup')
+        self.pump(0.8)
+        self.wait('Setup')
 
-    def wait(self, text, detail=None):
-        # Input and resize must publish a complete new frame before an old
-        # matching menu item or breadcrumb can satisfy the assertion.
-        fresh = not getattr(self, 'needs_redraw', False)
-        previous_frames = self.transcript.count('\x1b[?2026l')
-
-        def matches():
-            display = '\n'.join(self.screen.display)
-            complete = (self.transcript.rfind('\x1b[?2026l') >
-                        self.transcript.rfind('\x1b[?2026h'))
-            return (fresh and complete and text in display and
-                    (detail is None or detail in display))
-
-        deadline = time.monotonic() + 6
-        while time.monotonic() < deadline:
+    def pump(self, seconds=0.3):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
             try:
-                data = self.child.read_nonblocking(65536, timeout=.03)
+                data = self.child.read_nonblocking(65536, timeout=.05)
             except pexpect.TIMEOUT:
-                # Read a complete burst of redraws before inspecting the screen.
-                if matches():
-                    return
                 continue
             except pexpect.EOF:
-                if matches():
-                    return
-                break
-            self.transcript += data
-            self.stream.feed(data)
-            fresh = fresh or self.transcript.count('\x1b[?2026l') > previous_frames
-            if fresh:
-                self.needs_redraw = False
-        raise AssertionError(f'Missing {text!r}\n' + '\n'.join(self.screen.display))
+                return
+            if data:
+                self.transcript += data
+                self.stream.feed(data)
+
+    def display(self):
+        return '\n'.join(self.screen.display)
+
+    def wait(self, text):
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            self.pump(0.2)
+            if text in self.display():
+                return
+        raise AssertionError(f'Missing {text!r}\n' + self.display())
+
+    def send(self, keys, text=None):
+        self.child.send(keys)
+        self.pump(0.4)
+        if text is not None:
+            self.wait(text)
 
     def history_text(self):
         lines = [''.join(cell.data for _, cell in sorted(row.items()))
@@ -83,97 +82,55 @@ class Terminal:
         return '\n'.join(lines + self.screen.display)
 
     def assert_inline(self):
-        assert '\x1b[?1049' not in self.transcript
-        assert '\x1b[?1047' not in self.transcript
-        assert '\x1b[2J' not in self.transcript
-        assert '\x1b[3J' not in self.transcript
-        assert '\x1b[H' not in self.transcript
+        for sequence in ('\x1b[?1049', '\x1b[?1047', '\x1b[2J', '\x1b[3J',
+                         '\x1b[H'):
+            assert sequence not in self.transcript
         if not self.production:
             history = self.history_text()
             for i in range(32):
                 assert f'SHELL_HISTORY_{i:02d}' in history, history
 
-    def resize(self, rows, columns):
-        # pyte clips top rows on resize without moving them into history.
-        # Preserve those rows, as a normal scrollback terminal does.
-        for i in range(max(0, self.screen.lines - rows)):
-            self.screen.history.top.append(self.screen.buffer[i].copy())
-        self.screen.resize(rows, columns)
-        self.child.setwinsize(rows, columns)
-        self.needs_redraw = True
-
-    def send(self, keys, text, detail=None):
-        self.needs_redraw = True
-        self.child.send(keys)
-        self.wait(text, detail)
-
-    def finish(self, result, key_ready=None):
-        deadline = time.monotonic() + 6
+    def finish(self, result=None, production_exit=0):
+        deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             try:
                 data = self.child.read_nonblocking(65536, timeout=.2)
-                self.transcript += data
-                self.stream.feed(data)
             except pexpect.TIMEOUT:
                 continue
             except pexpect.EOF:
                 break
-        self.child.close()
+            self.transcript += data
+            self.stream.feed(data)
+
+        try:
+            self.child.close(force=True)
+        except Exception:
+            pass
+
         self.assert_inline()
-        assert self.child.exitstatus == 0, self.transcript
+        expected = production_exit if self.production else 0
+        assert self.child.exitstatus == expected, self.transcript
+        assert '\x1b[?2004l' in self.transcript and '\x1b[?25h' in self.transcript
         if self.production:
-            assert 'Setup complete.' in self.transcript
+            if production_exit == 0:
+                assert 'Setup complete.' in self.transcript, self.transcript
         else:
             assert f'SETUP_RESULT={result} RAW_RESTORED=1' in self.transcript, self.transcript
-            if key_ready is not None:
-                assert f'SESSION_KEY_READY={key_ready}' in self.transcript
-        assert '\x1b[?2004l' in self.transcript and '\x1b[?25h' in self.transcript
 
-    def save(self, result=0, key_ready=None):
-        self.child.send('8\r' if result == 1 else '\r')
-        self.finish(result, key_ready)
+    def save(self, tabs=12, result=0, production_exit=0):
+        self.child.send(TAB * tabs + ENTER)
+        self.finish(result, production_exit)
         return self.path.read_text()
 
     def close(self):
         if self.child.isalive():
-            self.child.send('\x03')
+            self.child.send(CTRL_C)
+            self.pump(0.3)
             self.child.close(force=True)
 
 
-def thinking_value(config, kind):
-    section = config.split(f'[model.{kind}]')[1].split('\n[')[0]
-    line = next(line for line in section.splitlines() if line.startswith('extra_body_json ='))
-    return json.loads(json.loads(line.split('=', 1)[1].strip()))['thinking']['type']
-
-
-def active_text(t, title):
-    return '\n'.join(t.screen.display).rsplit(title, 1)[1]
-
-
-def assert_cards(t):
-    edges = []
-    for row in t.screen.display:
-        if '┌' in row:
-            assert row.index('┌') == 2, row
-            edges.append(row.index('┐'))
-        if '│' in row:
-            assert row.index('│') == 2, row
-            edges.append(row.rindex('│'))
-        if '└' in row:
-            assert row.index('└') == 2, row
-            edges.append(row.index('┘'))
-    assert edges and len(set(edges)) == 1, '\n'.join(t.screen.display)
-    selected = next(i for i, row in enumerate(t.screen.display) if '│ ›' in row)
-    cell = t.screen.buffer[selected][4]
-    assert cell.fg == 'cyan' and cell.bg != 'default', cell
-
-
-def section(config, kind):
+def model_section(config, kind):
     return config.split(f'[model.{kind}]', 1)[1].split('\n[', 1)[0]
-
-
-def missing(config, kind, key):
-    return not re.search(r'^\s*' + re.escape(key) + r'\s*=', section(config, kind), re.M)
 
 
 def tests(driver, directory, production, cancelled_status):
@@ -185,372 +142,118 @@ def tests(driver, directory, production, cancelled_status):
         terminals.append(term)
         return term
 
-    def context(t, name):
-        assert name + ' model ·' in '\n'.join(t.screen.display)
-
     try:
-        # Role selection fits in a compact list; only the highlighted role has details.
-        labels = ('General assistant', 'Software developer', 'Photographer', 'Photo editor',
-                  'Writer', 'Designer', 'Video creator', 'Researcher')
-        for width, height in ((120, 24), (80, 24), (60, 24), (40, 14)):
-            t = start(f'role-list-{width}', ready=True, size=(height, width), accept_role=False)
-            screen = '\n'.join(t.screen.display)
-            assert not any(border in screen for border in ('┌', '┐', '│', '└', '┘')), screen
-            if height >= 20:
-                assert all(label in screen for label in labels), screen
-                assert screen.count('Models:') == 1, screen
-            assert '› 1  General assistant  (default)' in screen
-            assert not t.path.exists()
-            t.send('\x1b[200~7\n\x1b[201~', 'Choose your role')
-            assert '› 1  General assistant' in '\n'.join(t.screen.display)
-            t.send('7', 'Models: Text + Vision')
-            screen = '\n'.join(t.screen.display)
-            assert 'Models:Text+Vision+Image+Video' in re.sub(r'\s+', '', screen), screen
-            assert '› 7  Video creator' in screen
-            assert 'Everyday questions' not in screen
-            assert not t.path.exists()
-            t.resize(6, 28)
-            t.wait('Models: Text + Vision')
-            assert 'Image + Video' in '\n'.join(t.screen.display)
-            t.resize(height, width)
-            t.wait('Models: Text + Vision')
-            screen = '\n'.join(t.screen.display)
-            assert 'Models:Text+Vision+Image+Video' in re.sub(r'\s+', '', screen), screen
-            t.send('\r', 'Review your setup')
-            config = t.save()
-            assert 'model = ""' not in config
-            assert len(re.findall(r'● Role\s+· Video creator', t.history_text())) == 1
+        # The form is a single page at every supported terminal size.
+        for height, width in ((40, 120), (24, 80), (24, 60), (14, 40)):
+            t = start(f'layout-{height}x{width}', ready=True, size=(height, width))
+            screen = t.display()
+            assert 'Role' in screen and 'Text model' in screen, screen
+            assert 'Save' in screen and 'Cancel' in screen, screen
+            if height >= 14 and width >= 46:
+                assert 'morph setup' in screen, screen
+            t.assert_inline()
+            t.close()
 
-        t = start('role-current', ready=True)
-        t.send('6\r', 'Change your role')
-        assert 'General assistant  (current)' in '\n'.join(t.screen.display)
-        t.send('5', 'Develop ideas, write drafts and revise prose.')
-        assert '› 5  Writer' in '\n'.join(t.screen.display)
-        assert 'General assistant  (current)' in '\n'.join(t.screen.display)
-        t.send('\x1b', 'Review your setup')
-        assert 'Vision model · Off' in '\n'.join(t.screen.display)
-        t.send('6\r', 'Change your role')
-        t.send('\r', 'Review your setup')
+        # Ready credentials: one form, then save.
+        t = start('defaults', ready=True)
         config = t.save()
         assert 'role = "general"' in config
-        assert len(re.findall(r'● Role\s+· General assistant', t.history_text())) == 1
+        assert 'model = "gpt-4o"' in config
 
-        # Available credentials make first-run setup exactly role -> overview -> save.
-        t = start('defaults', ready=True)
-        screen = '\n'.join(t.screen.display)
-        assert '2/2  Review' in screen
-        assert 'Text model · gpt-4o' in screen and 'Vision model · Off' in screen
-        assert 'MCP: Exa' in screen and 'Host exec: on' in screen
-        assert 'Choose your provider' not in t.transcript
-        assert 'How should morph think?' not in t.transcript
-        assert not t.path.exists()
+        # Role is a standard drop-down in the form.
+        t = start('role-change', ready=True, size=(40, 120))
+        t.send(ENTER)
+        t.send(DOWN + ENTER, 'Software developer')
         config = t.save()
-        assert config.count('model = ""') == 3
-        assert len(re.findall(r'● Role\s+· General assistant', t.history_text())) == 1
-        assert '● Vision · Skip' not in t.history_text()
+        assert 'role = "developer"' in config
 
-        # No credentials: saving a draft is one explicit overview action.
-        t = start('later')
-        assert 'Connect accounts and save' in '\n'.join(t.screen.display)
-        config = t.save(1)
-        assert 'export OPENAI_API_KEY=' in t.transcript
-        assert missing(config, 'text', 'api_key')
+        # A missing key is a warning, not a blocked save.
+        t = start('later', ready=False)
+        assert 'needs a key' in t.display()
+        config = t.save(result=1)
+        assert 'api_key_env = "OPENAI_API_KEY"' in config
+        assert ('export OPENAI_API_KEY' in t.transcript or
+                'Set the text model key' in t.transcript)
 
-        # Only the necessary account is requested on Finish; there is no model tour.
+        # Optional models are standard check boxes.
+        t = start('vision', ready=True)
+        t.send(TAB * 8 + ' ', '[x] Vision model')
+        t.send(TAB * 11 + ENTER)
+        t.finish(0)
+        assert 'model = "gpt-4o"' in model_section(t.path.read_text(), 'vision')
+
+        # Direct keys use the standard password field.
         secret = 'fixture-session-secret-123'
-        t = start('secret')
-        t.send('\r', 'Connect your account')
-        context(t, 'Text')
-        assert_cards(t)
-        t.send('\r', 'Paste your API key')
-        context(t, 'Text')
-        t.send('\r', 'Enter a value, or press Esc to go back.')
-        t.send('\x1b[200~' + secret + '\n\x1b[201~', '••••••••')
-        t.child.send('\r')
+        t = start('secret', ready=False, size=(40, 120))
+        t.send(TAB * 3)
+        t.send(RIGHT, 'Save key to config')
+        t.send(TAB)
+        t.send(secret + ENTER)
+        t.send(TAB * 7 + ENTER)
         t.finish(0)
         config = t.path.read_text()
-        assert secret in config and secret not in t.transcript
-        assert missing(config, 'text', 'api_key_env')
+        assert secret in config
+        assert secret not in t.transcript
+        assert 'api_key_env' not in model_section(config, 'text')
         assert t.path.stat().st_mode & 0o777 == 0o600
 
-        t = start('env-key')
-        t.send('\r', 'Connect your account')
-        t.send('2\r', 'API key environment variable')
-        context(t, 'Text')
-        t.send('\x159INVALID\r', 'Start with a letter or underscore')
-        t.child.send('\x15SETUP_MISSING_API_KEY\r')
-        t.finish(1)
-        assert missing(t.path.read_text(), 'text', 'api_key')
+        # Invalid URLs stay on the field and show the form error.
+        t = start('invalid-url', ready=True)
+        t.send(TAB * 7)
+        t.send(CTRL_U + 'ftp://example')
+        t.send(TAB, 'Use an http:// or https:// URL.')
+        t.child.send(CTRL_C)
+        t.finish(cancelled_status)
+        assert not t.path.exists()
 
-        # Four required model defaults are visible, with no four-provider wizard.
-        for width in (120, 80, 60):
-            t = start(f'video-{width}', ready=True, role=7, size=(24, width))
-            screen = '\n'.join(t.screen.display)
-            for kind in ('Text', 'Vision', 'Image', 'Video'):
-                assert f'{kind} model ·' in screen, screen
-            config = t.save()
-            assert 'model = ""' not in config
-            assert 'How should morph think?' not in t.transcript
-
-        # OpenAI text/vision/image use one account; video keeps its own provider.
-        t = start('video-accounts', role=7)
-        t.send('\r', 'Connect your account')
-        context(t, 'Text')
-        t.send('\r', 'Paste your API key')
-        t.send('fixture-openai-shared\r', 'Connect your account')
-        context(t, 'Video')
-        assert 'doubao-seedance' in '\n'.join(t.screen.display)
-        t.send('\r', 'Paste your API key')
-        t.child.send('fixture-video-key\r')
-        t.finish(0)
-        config = t.path.read_text()
-        for kind in ('text', 'vision', 'image'):
-            assert 'fixture-openai-shared' in section(config, kind)
-            assert missing(config, kind, 'api_key_env')
-        assert 'fixture-video-key' in section(config, 'video')
-        assert 'fixture-openai-shared' not in t.transcript
-        assert 'fixture-video-key' not in t.transcript
-
-        # Every edit retains an unambiguous model category and current model.
-        t = start('contexts', ready=True, role=7)
-        for number, kind in ((2, 'Text'), (3, 'Vision'), (4, 'Image'), (5, 'Video')):
-            model_detail = 'Edit only what you need; Done returns to overview.'
-            advanced_detail = 'Defaults work for most people. Edit only what you need.'
-            t.send(f'{number}\r', 'Model settings', model_detail)
-            context(t, kind)
-            t.send('3\r', 'Model name / endpoint ID',
-                   'Use the model name from your provider.')
-            context(t, kind)
-            t.send('\x1b', 'Model settings', model_detail)
-            t.send('5\r', 'Advanced settings', advanced_detail)
-            context(t, kind)
-            t.send('3\r', 'API base URL',
-                   'Use the API base URL, including its version path.')
-            context(t, kind)
-            t.send('\x1b', 'Advanced settings', advanced_detail)
-            t.send('\x1b', 'Model settings', model_detail)
-            t.send('\x1b', 'Review your setup')
+        # No-color output remains a form and never emits SGR.
+        t = start('no-color', ready=True, flags=('--no-color',))
         t.save()
+        assert not re.search(r'\x1b\[[0-9;]*m', t.transcript)
 
-        # Thinking is an optional setting, not a forced confirmation.
-        t = start('thinking', ready=True)
-        t.send('2\r', 'Model settings')
-        t.send('2\r', 'Choose your provider')
-        context(t, 'Text')
-        t.send('2\r', 'Model settings')
-        assert 'Thinking · On' in '\n'.join(t.screen.display)
-        t.send('6\r', 'How should morph think?')
-        t.send('1\r', 'Model settings')
-        assert 'Thinking · Off' in '\n'.join(t.screen.display)
-        t.send('6\r', 'How should morph think?')
-        context(t, 'Text')
-        t.send('2\r', 'Model settings')
-        t.send('\r', 'Review your setup')
-        config = t.save()
-        assert thinking_value(config, 'text') == 'enabled'
-        assert 'model = "deepseek-flash"' in config
-        assert 'max_tokens = 65536' in config and 'context_limit = 1048576' in config
+        # Explicit setup saves before the runtime starts.
+        t = Terminal(production, directory / 'production.toml',
+                     production=True, ready=True)
+        terminals.append(t)
+        t.save()
+        assert t.path.exists()
+        assert not (t.path.parent / '.morph/data.db').exists()
 
-        # Custom endpoints edit only the selected field and validate URLs/limits.
-        t = start('custom', ready=True)
-        t.send('2\r', 'Model settings')
-        t.send('2\r', 'Choose your provider')
-        t.send('4\r', 'Model settings')
-        t.send('3\r', 'Model name / endpoint ID')
-        t.send('模型甲\x7f乙\r', 'Model settings')
-        t.send('5\r', 'Advanced settings')
-        t.send('3\r', 'API base URL')
-        t.send('invalid\r', 'Enter a URL starting')
-        t.send('\x15http://localhost:1234/v1\r', 'Advanced settings')
-        t.send('5\r', 'Context window (tokens)')
-        t.send('\x150\r', 'Invalid token count')
-        t.send('\x1564000\r', 'Advanced settings')
-        t.send('6\r', 'Max output (tokens)')
-        t.send('\x1564000\r', 'Invalid token count')
-        t.send('\x154096\r', 'Advanced settings')
-        t.send('\r', 'Model settings')
-        t.send('\r', 'Review your setup')
-        config = t.save(1)
-        assert 'model = "模型乙"' in config
-        assert 'context_limit = 64000' in config and 'max_tokens = 4096' in config
+        # Reconfiguration preserves prompt settings and backs up the old file.
+        path = directory / 'reconfigure.toml'
+        path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
+                        "api_base='https://api.openai.com/v1'\n"
+                        "api_key='fixture-old-secret'\n"
+                        "[prompt]\nmode='append'\n"
+                        "system_prompt_file='/keep/custom.md'\n")
+        original = path.read_text()
+        t = Terminal(production, path, production=True, size=(40, 120))
+        terminals.append(t)
+        t.wait('Keep existing instructions')
+        t.save()
+        assert any(p.read_text() == original
+                   for p in directory.glob(path.name + '.backup-*'))
 
-        # Saving cannot bypass metadata required by a custom provider.
-        t = start('complete-custom', ready=True)
-        t.send('2\r', 'Model settings')
-        t.send('2\r', 'Choose your provider')
-        t.send('4\r', 'Model settings')
-        t.send('\r', 'Review your setup')
-        t.send('8\r', 'Advanced settings')
-        context(t, 'Text')
-        assert not t.path.exists()
-        t.send('\r', 'Model name / endpoint ID')
-        t.send('custom-deployment\r', 'Advanced settings')
-        t.send('\r', 'API base URL')
-        t.send('http://localhost:1234/v1\r', 'Advanced settings')
-        t.send('\r', 'Review your setup')
-        assert 'custom-deployment' in t.save(1)
+        # A concurrent external edit is not overwritten.
+        path = directory / 'concurrent.toml'
+        path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
+                        "api_base='https://api.openai.com/v1'\n"
+                        "api_key='fixture-key'\n")
+        t = Terminal(production, path, production=True)
+        terminals.append(t)
+        changed = path.read_text() + '\n# external edit\n'
+        path.write_text(changed)
+        t.child.send(TAB * 12 + ENTER)
+        t.finish(production_exit=1)
+        assert path.read_text() == changed
 
-        # Optional capabilities stay off until explicitly enabled and can be removed.
-        t = start('optional', ready=True)
-        t.send('3\r', 'Enable this model?')
-        context(t, 'Vision')
-        t.send('\x1b', 'Review your setup')
-        t.send('3\r', 'Enable this model?')
-        t.send('\r', 'Model settings')
-        t.send('\r', 'Review your setup')
-        assert 'Vision model · gpt-4o' in '\n'.join(t.screen.display)
-        t.send('3\r', 'Model settings')
-        t.send('6\r', 'Review your setup')
-        assert 'Vision model · Off' in '\n'.join(t.screen.display)
-        assert 'model = ""' in section(t.save(), 'vision')
-
-        t = start('vision-isolation', ready=True)
-        t.send('3\r', 'Enable this model?')
-        t.send('\r', 'Model settings')
-        t.send('3\r', 'Model name / endpoint ID')
-        context(t, 'Vision')
-        t.send('\x15vision-fixture\r', 'Model settings')
-        t.send('\r', 'Review your setup')
-        config = t.save()
-        assert 'model = "vision-fixture"' in section(config, 'vision')
-        assert 'model = "gpt-4o"' in section(config, 'text')
-
-        t = start('change-role', ready=True)
-        t.send('6\r', 'Change your role')
-        t.send('7\r', 'Review your setup')
-        for kind in ('Text', 'Vision', 'Image', 'Video'):
-            assert f'{kind} model ·' in '\n'.join(t.screen.display)
-        assert 'model = ""' not in t.save()
-
-        # A small terminal keeps category and draft visible through resizing.
-        t = start('resize', ready=True)
-        t.send('2\r', 'Model settings')
-        t.send('3\r', 'Model name / endpoint ID')
-        t.send('\x15中文-draft', '中文-draft')
-        for rows, columns in ((12, 36), (6, 28), (24, 80)):
-            t.resize(rows, columns)
-            t.wait('中文-draft')
-            context(t, 'Text')
-        t.send('\x1b', 'Model settings')
-        t.send('\x1b', 'Review your setup')
-        assert 'model = "gpt-4o"' in t.save()
-
-        for name, kwargs in (('no-color', {'flags': ('--no-color',)}),
-                             ('no-color-env', {'no_color_env': True})):
-            t = start(name, ready=True, **kwargs)
-            t.save()
-            assert not re.search(r'\x1b\[[0-9;]*m', t.transcript)
-
-        t = start('menu-paste', ready=True)
-        t.send('\x1b[200~1\n\x1b[201~', 'Review your setup')
-        assert not t.path.exists()
-        t.child.send('\x03')
-        t.finish(cancelled_status)
-
-        for name, keys in (('cancel-review', '9\r'), ('cancel-key', '\x03')):
-            t = start(name, ready=True)
-            t.child.send(keys)
-            t.finish(cancelled_status)
-            assert not t.path.exists()
-
-        t = start('cancel-edit', ready=True)
-        t.send('2\r', 'Model settings')
-        t.send('3\r', 'Model name / endpoint ID')
-        t.child.send('\x04')
-        t.finish(cancelled_status)
-        assert not t.path.exists()
-
+        # Signals cancel without writing.
         t = start('signal', ready=True)
         os.kill(t.child.pid, signal.SIGTERM)
         t.finish(cancelled_status)
         assert not t.path.exists()
 
-        # Reconfiguration keeps custom instructions without another prompt dialog.
-        path = directory / 'reconfigure.toml'
-        path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
-                        "api_base='https://api.openai.com/v1'\napi_key='fixture-old-secret'\n"
-                        "[prompt]\nmode='append'\nsystem_prompt_file='/keep/custom.md'\n")
-        original = path.read_text()
-        t = Terminal(production, path, production=True, setup_command=True)
-        terminals.append(t)
-        assert 'Instructions · Keep existing' in '\n'.join(t.screen.display)
-        assert 'Prompt instructions' not in t.transcript
-        t.send('2\r', 'Model settings')
-        t.send('4\r', 'Connect your account')
-        context(t, 'Text')
-        t.send('2\r', 'API key environment variable')
-        t.send('SETUP_MISSING_API_KEY\r', 'Model settings')
-        t.send('\r', 'Review your setup')
-        config = t.save(1)
-        assert missing(config, 'text', 'api_key')
-        assert 'fixture-old-secret' not in t.transcript
-        assert any(p.read_text() == original for p in directory.glob(path.name + '.backup-*'))
-
-        t = Terminal(production, path, production=True, setup_command=True)
-        terminals.append(t)
-        t.send('2\r', 'Model settings')
-        t.send('4\r', 'Connect your account')
-        t.send('1\r', 'Paste your API key')
-        t.send('fixture-new-secret\r', 'Model settings')
-        t.send('\r', 'Review your setup')
-        config = t.save()
-        assert missing(config, 'text', 'api_key_env')
-        assert 'fixture-new-secret' not in t.transcript
-
-        # Prompt replacement is opt-in from the overview, without an extra first-run step.
-        t = Terminal(production, path, production=True, setup_command=True)
-        terminals.append(t)
-        t.send('6\r', 'Change your role')
-        t.send('5\r', 'Review your setup')
-        t.send('7\r', 'Prompt instructions')
-        t.send('2\r', 'Review your setup')
-        config = t.save()
-        assert 'mode="replace"' in config or 'mode = "replace"' in config
-        assert '/keep/custom.md' not in config
-
-        # Saving after a concurrent change reports failure and keeps the external edit.
-        t = Terminal(production, path, production=True, ready=True, setup_command=True)
-        terminals.append(t)
-        changed = path.read_text() + '\n# external edit\n'
-        path.write_text(changed)
-        t.child.send('\r')
-        t.child.expect(pexpect.EOF)
-        t.child.close()
-        assert t.child.exitstatus == 1 and path.read_text() == changed
-
-        # Production first run and explicit setup both save and exit before runtime init.
-        for explicit in (False, True):
-            path = directory / f'production-{explicit}.toml'
-            t = Terminal(production, path, production=True, ready=True, setup_command=explicit)
-            terminals.append(t)
-            t.save()
-            assert not (path.parent / '.morph/data.db').exists()
-        # Receipts, completion notes and wrapped Unicode paths share a stable margin.
-        for width in (120, 80, 60):
-            path = directory / (f'alignment-{width}-配置-' + 'x' * 70 + '.toml')
-            path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
-                            "api_base='https://api.openai.com/v1'\napi_key='fixture-key'\n")
-            t = Terminal(production, path, production=True, setup_command=True, size=(30, width))
-            terminals.append(t)
-            t.send('2\r', 'Model settings')
-            t.send('3\r', 'Model name / endpoint ID')
-            t.send('\x15long-model-' + 'x' * 70 + '-tail\r', 'Model settings')
-            t.send('\r', 'Review your setup')
-            t.save()
-            lines = t.history_text().splitlines()
-            receipts = [line for line in lines if re.search(r'● (Role|Text|Review)\s+·', line)]
-            assert len(receipts) == 3, t.history_text()
-            assert all(line.startswith('● ') for line in receipts), receipts
-            assert {line.index('·') for line in receipts} == {9}, receipts
-            review = next(i for i, line in enumerate(lines) if '● Review' in line)
-            completion = [line for line in lines[review + 1:] if line.strip()]
-            assert completion and all(line.startswith('  ') for line in completion), completion
-            assert any(line.startswith('  Previous configuration') for line in completion)
-            assert any(line.startswith('  Configuration saved') for line in completion)
-            if width < 100:
-                assert any(line.startswith(' ' * 11) and '-tail' in line for line in lines)
-            assert '\ufffd' not in t.transcript
-        print(f'Setup PTY: {len(terminals)} scenarios passed, including production', flush=True)
+        print(f'Setup PTY: {len(terminals)} scenarios passed', flush=True)
     finally:
         for t in terminals:
             t.close()

@@ -1309,7 +1309,6 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 			!strncmp(input, "/resume ", 8) || !strncmp(input, "/r ", 3);
 		if (busy && !navigation && strcmp(input, "/recap") && strcmp(input, "/jobs") &&
 		    strcmp(input, "/side") && strncmp(input, "/side ", 6) &&
-		    strcmp(input, "/sidebar") && strncmp(input, "/sidebar ", 9) &&
 		    strncmp(input, "/jobs ", 6) && strcmp(input, "/agents") &&
 		    strncmp(input, "/agents ", 8) && strcmp(input, "/subagents") &&
 		    strncmp(input, "/subagents ", 11)) {

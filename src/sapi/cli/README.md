@@ -262,7 +262,7 @@ its terminal session and input handoff just like other modal pages.
 The retained feed receives geometry from the framework. Legacy output adapters
 use the shared terminal-size helper, including row fallback.
 
-`/side` (alias `/sidebar`) opens a file sidebar beside the conversation. The
+`/side` opens a file sidebar beside the conversation. The
 inventory comes from local Markdown references, successful patch receipts and
 generated artifacts, and is rebuilt when saved history is restored. It is scoped
 to the current session. `/side "path:line"` opens a file directly; local links
@@ -299,8 +299,9 @@ Text previews are limited to 1 MiB; binary, missing and unsupported files show a
 explicit explanation. Supported images use the existing media controls.
 Supported source files use the Markdown library's standalone syntax highlighter;
 the preview worker caches sanitized ANSI styles for the native text view. Source
-whitespace and line locations are preserved, including in no-color mode. Source
-text uses the native unwrapped viewport, with horizontal scrolling for long lines.
+whitespace and line locations are preserved, including in no-color mode. Tabs
+display at eight-column tab stops while selection/copy retains the original bytes.
+Source text uses the native unwrapped viewport, with horizontal scrolling for long lines.
 
 `/model` (or `/m`) replaces the editable composer with the inline Normal/Ultra
 selector, using the same composer component as `/permissions`. Escape and

@@ -853,6 +853,11 @@ int cli_setup_command(struct cli_application *ctx, int argc, char **argv, const 
 	}
 
 	int rc = cli_setup_reconfigure(ctx, path ? path : "~/.morph/config.toml", stdin, stderr);
+	if (rc == NB_ERR_CANCELLED) {
+		fputs("Setup canceled. No configuration was saved.\n", stderr);
+		return 1;
+	}
+
 	if (rc < 0)
 		fprintf(stderr, "morph: setup failed: %s\n",
 			nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));

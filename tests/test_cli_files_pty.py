@@ -61,7 +61,9 @@ def resize(terminal, columns):
 
 def plain_case(driver, directory, port):
     directory.mkdir()
-    (directory / '文件.txt').write_text('PLAIN_FILE_CONTENT', encoding='utf-8')
+    (directory / '文件.txt').write_text('PLAIN_FILE_CONTENT\n'
+                                      '\tPLAIN_TAB\n\t\tPLAIN_NESTED\n'
+                                      '  \tPLAIN_MIXED\n', encoding='utf-8')
     png(directory / 'preview.png', 8, 8, (60, 90, 120, 255))
     terminal = Terminal(driver, directory, port, hooks_enabled=False, production=True,
                         extra_env={'NO_COLOR': '1'}, extra_arguments=('--no-color',))
@@ -69,6 +71,15 @@ def plain_case(driver, directory, port):
         terminal.wait_for_composer()
         terminal.send('/side 文件.txt\r')
         wait_for(terminal, lambda text: 'PLAIN_FILE_CONTENT' in text, 'plain viewer')
+        for columns in (120, 80, 60):
+            resize(terminal, columns)
+            lines = panel_lines(terminal)
+            origin = next(line.index('PLAIN_FILE_CONTENT') for line in lines
+                          if 'PLAIN_FILE_CONTENT' in line)
+            for text, indent in (('PLAIN_TAB', 8), ('PLAIN_NESTED', 16), ('PLAIN_MIXED', 8)):
+                line = next(line for line in lines if text in line)
+                assert line.index(text) == origin + indent, display(terminal)
+
         check_rules(terminal)
         terminal.send('\x1b')
         listed = wait_for(terminal, lambda text: '- 文件.txt (./)' in text, 'plain Unicode list')
@@ -101,7 +112,10 @@ def main():
             '' if line <= 2 else
             '/* 中文 comment' if line == 3 else
             ' * continued */' if line == 4 else
-            'return 80; /* SOURCE_PREVIEW_MARKER */' if line == 80 else
+            '\treturn 80; /* SOURCE_PREVIEW_MARKER */' if line == 80 else
+            '\t\tint nested = 81;' if line == 81 else
+            '  \tint mixed = 82;' if line == 82 else
+            'int\tfield;' if line == 83 else
             f'const int source_row_{line} = {line};'
             for line in range(1, 121)) + '\n', encoding='utf-8')
         (directory / 'unrelated.txt').write_text('not part of this conversation')
@@ -157,7 +171,7 @@ def main():
 
             for columns in (80, 60, 120):
                 resize(terminal, columns)
-                terminal.send('/sidebar "src/demo.c:80"\r')
+                terminal.send('/side "src/demo.c:80"\r')
                 frame = wait_for(terminal, lambda text: 'return 80;' in text,
                                  f'preview at {columns} columns')
                 assert '2 open' in frame and 'demo.c ×' in frame, frame
@@ -166,10 +180,26 @@ def main():
                 row = next(i for i, text in enumerate(terminal.screen.display)
                            if 'return 80;' in text)
                 column = terminal.screen.display[row].index('return 80;')
+                pane = panel_lines(terminal)
+                origin = next(line.index('const int source_row_') for line in pane
+                              if 'const int source_row_' in line)
+                for text, indent in (('return 80;', 8), ('int nested', 16),
+                                     ('int mixed', 8), ('field;', 8)):
+                    line = next(line for line in pane if text in line)
+                    assert line.index(text) == origin + indent, frame
+
                 keyword = terminal.screen.buffer[row][column]
                 number = terminal.screen.buffer[row][column + len('return ')]
                 assert keyword.bold and keyword.fg != 'default', frame
                 assert number.fg != keyword.fg, frame
+                terminal.send('\x06mixed')
+                searched = wait_for(terminal, lambda text: 'Find: mixed' in text,
+                                    'search after tab indentation')
+                match_row = next(i for i, text in enumerate(terminal.screen.display)
+                                 if 'int mixed = 82;' in text)
+                match_column = terminal.screen.display[match_row].index('mixed')
+                assert terminal.screen.buffer[match_row][match_column].reverse, searched
+                terminal.send('\x1b')
                 if columns >= 100:
                     assert 'Inspect Notes' in frame, frame
                 terminal.send('\x1b')

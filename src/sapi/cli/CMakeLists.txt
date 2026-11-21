@@ -30,7 +30,7 @@ add_library(morph-cli STATIC
 
 	# Application components
 	components/page_layout.c
-	components/setup_prompt.c
+	components/setup_form.c
 	components/agents_browser.c
 	components/banner.c
 	components/skill_tree.c

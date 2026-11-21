@@ -1150,7 +1150,9 @@ TEST_F(CliRetainedWidgetsTest, FileSidebarCodePreservesWhitespaceSelectionAndNoC
 {
 	kind = Files;
 	Present();
-	const char *source = "\n\n/* 中文 */\n\tint value = 42;\n\n";
+	const char *source = "\n\n/* 中文 */\n\tint value = 42;\n"
+		"\t\treturn value;\n  \t/* mixed */\n"
+		"int\tfield;\n/* 中 */\tint aligned;\n    /* spaces */  \n\n";
 	OpenFile("main.c", source);
 	auto *document = FindKind(component, "text_view");
 	ASSERT_NE(document, nullptr);
@@ -1161,6 +1163,12 @@ TEST_F(CliRetainedWidgetsTest, FileSidebarCodePreservesWhitespaceSelectionAndNoC
 		Resize(columns);
 		EXPECT_STREQ(nt_text_view_text(document), source);
 		EXPECT_EQ(nt_text_view_cursor(document), 2u);
+		const std::string visible = retained_normalized(frame.c_str());
+		for (const char *line : {"        int value = 42;",
+			"                return value;", "        /* mixed */",
+			"int     field;", "/* 中 */        int aligned;",
+			"    /* spaces */"})
+			EXPECT_NE(visible.find(line), std::string::npos) << visible;
 	}
 
 	char *highlighted = nullptr;
@@ -1170,6 +1178,89 @@ TEST_F(CliRetainedWidgetsTest, FileSidebarCodePreservesWhitespaceSelectionAndNoC
 	ASSERT_EQ(nt_application_step(app, 0), 0);
 	EXPECT_STREQ(nt_text_view_text(document), source);
 	EXPECT_EQ(frame.find("\033[38;5;6m"), std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("        int value = 42;"),
+		std::string::npos);
+}
+
+TEST_F(CliRetainedWidgetsTest, FileSidebarTabSelectionUsesSourceOffsetsAfterHorizontalScroll)
+{
+	kind = Files;
+	Present();
+	const std::string source = "\tint first;\n\t\tint second;\n\t" +
+		std::string(160, 'x') + "\tEND\n";
+	OpenFile("tabs.c", source.c_str());
+	auto *document = FindKind(component, "text_view");
+	ASSERT_NE(document, nullptr);
+	const auto *methods = nt_view_class_methods(document);
+	struct nt_view_rect content = nt_view_content_rect(document);
+	struct nt_event mouse{};
+	mouse.type = NT_EVENT_MOUSE;
+	mouse.mouse.button = NT_MOUSE_LEFT;
+	mouse.mouse.action = NT_MOUSE_PRESS;
+	mouse.mouse.x = content.x + 4;
+	mouse.mouse.y = content.y;
+	ASSERT_EQ(methods->handle_event(document, &mouse), 1);
+	EXPECT_EQ(nt_text_view_cursor(document), 0u);
+	mouse.mouse.action = NT_MOUSE_MOVE;
+	mouse.mouse.x = content.x + 11;
+	ASSERT_EQ(methods->handle_event(document, &mouse), 1);
+	size_t start = 0, end = 0;
+	ASSERT_EQ(nt_text_view_selection_range(document, &start, &end), 1);
+	EXPECT_EQ(source.substr(start, end - start), "\tint");
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("        int first;"),
+		std::string::npos);
+	mouse.mouse.action = NT_MOUSE_RELEASE;
+	ASSERT_EQ(methods->handle_event(document, &mouse), 1);
+
+	struct nt_event scroll{};
+	scroll.type = NT_EVENT_SCROLL;
+	scroll.mouse.delta_x = 5;
+	ASSERT_EQ(methods->handle_event(document, &scroll), 1);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	const std::string scrolled_line = "\n" + std::string(
+		static_cast<size_t>(content.x + 3), ' ') + "int first;\n";
+	EXPECT_NE(retained_normalized(frame.c_str()).find(scrolled_line),
+		std::string::npos);
+	mouse.mouse.action = NT_MOUSE_PRESS;
+	mouse.mouse.x = content.x + 3;
+	ASSERT_EQ(methods->handle_event(document, &mouse), 1);
+	EXPECT_EQ(nt_text_view_cursor(document), 1u);
+	mouse.mouse.action = NT_MOUSE_MOVE;
+	mouse.mouse.x = content.x + 6;
+	ASSERT_EQ(methods->handle_event(document, &mouse), 1);
+	ASSERT_EQ(nt_text_view_selection_range(document, &start, &end), 1);
+	EXPECT_EQ(source.substr(start, end - start), "int");
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(retained_normalized(frame.c_str()).find(scrolled_line),
+		std::string::npos);
+	EXPECT_STREQ(nt_text_view_text(document), source.c_str());
+}
+
+TEST(CliSourceTextLayoutTest, TabsUseDisplayColumnsAndKeepOriginalLineOffsets)
+{
+	const char *source = "\tA\t中\te\u0301\tZ\n\t\tend\n\n";
+	struct nt_text_layout layout NB_CLEANUP(nt_text_layout_deinit) = {};
+	nt_text_layout_init(&layout);
+	ASSERT_EQ(nt_text_layout_build(&layout, source, 120, NT_TEXT_WRAP_NONE), 0);
+	ASSERT_EQ(layout.lines.len, 4u);
+	auto *first = static_cast<nt_text_line *>(nb_vec_at(&layout.lines, 0));
+	auto *second = static_cast<nt_text_line *>(nb_vec_at(&layout.lines, 1));
+	EXPECT_EQ(first->width, 33);
+	EXPECT_EQ(second->width, 19);
+	EXPECT_EQ(first->length, strlen("\tA\t中\te\u0301\tZ"));
+	EXPECT_EQ(second->offset, first->length + 1);
+	EXPECT_EQ(second->source_line, 2u);
+	EXPECT_STREQ(layout.text, source);
+	ASSERT_EQ(nt_text_layout_build(&layout, source, 16, NT_TEXT_WRAP_CHAR), 0);
+	const int widths[] = {16, 16, 1, 16, 3, 0, 0};
+	ASSERT_EQ(layout.lines.len, sizeof(widths) / sizeof(widths[0]));
+	for (size_t i = 0; i < layout.lines.len; i++) {
+		auto *line = static_cast<nt_text_line *>(nb_vec_at(&layout.lines, i));
+		EXPECT_EQ(line->width, widths[i]);
+	}
+
+	EXPECT_STREQ(layout.text, source);
 }
 
 TEST_F(CliRetainedWidgetsTest, RichDocumentLinksUseTrimmedDisplayOffsets)

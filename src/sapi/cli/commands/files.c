@@ -32,7 +32,6 @@ struct cli_command_group cli_files_commands(void)
 	static const struct cli_command cli_files_entries[] = {
 		{"/side", cli_files_command, "Open conversation files in the sidebar",
 		 "/side [path]"},
-		{"/sidebar", cli_files_command, "Open the file sidebar", "/sidebar [path]"},
 	};
 	return (struct cli_command_group){
 		.entries = cli_files_entries,
