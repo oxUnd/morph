@@ -11,6 +11,67 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct runtime *runtime_mcp_owner(const struct runtime *runtime)
+{
+	while (runtime && runtime->client_parent)
+		runtime = runtime->client_parent;
+
+	return (struct runtime *)runtime;
+}
+
+int runtime_mcp_sync_tools(struct runtime *runtime)
+{
+	if (!runtime->client_parent)
+		return 0;
+
+	struct tool_registry *source = &runtime_mcp_owner(runtime)->context.tools;
+	struct tool_registry *target = &runtime->context.tools;
+	int rc = 0;
+
+	/* Only published descriptors are copied; no transport or discovery waits.
+	 * Retained bindings borrow clients owned by the parent runtime. */
+	tool_registry_lock(source);
+	nb_mutex_lock(target->mutation_mutex);
+	tool_registry_lock(target);
+	for (int i = target->count - 1; i >= 0; i--) {
+		struct tool_entry *entry = &target->entries[i];
+		if (entry->origin != TOOL_ORIGIN_MCP)
+			continue;
+
+		struct tool_entry *published = tool_borrow(source, entry->desc.name);
+		if (!published || published->origin != TOOL_ORIGIN_MCP ||
+		    published->binding != entry->binding)
+			(void)tool_unregister(target, entry->desc.name);
+	}
+
+	for (int i = 0; i < source->count && rc == 0; i++) {
+		const struct tool_entry *entry = &source->entries[i];
+		if (entry->origin != TOOL_ORIGIN_MCP)
+			continue;
+
+		struct tool_entry *existing = tool_borrow(target, entry->desc.name);
+		if (!existing) {
+			rc = tool_register_copy(target, entry);
+		} else if (existing->origin != TOOL_ORIGIN_MCP) {
+			rc = NB_ERR_EXISTS;
+		} else {
+			existing->flags = entry->flags;
+			existing->timeout_seconds = entry->timeout_seconds;
+		}
+
+		if (rc == 0 && tool_is_disabled(source, entry->desc.name))
+			rc = tool_disable(target, entry->desc.name);
+	}
+
+	if (rc == 0)
+		runtime_bootstrap_tool_flags(target, &runtime->context.config);
+
+	tool_registry_unlock(target);
+	nb_mutex_unlock(target->mutation_mutex);
+	tool_registry_unlock(source);
+	return rc;
+}
+
 static struct mcp_client *runtime_mcp_lookup_client(struct runtime *runtime,
 						    const char *name)
 {
@@ -94,12 +155,14 @@ static void runtime_mcp_status_copy(struct runtime *runtime,
 
 int runtime_mcp_count(const struct runtime *runtime)
 {
+	runtime = runtime_mcp_owner(runtime);
 	return runtime ? runtime->context.mcp.count : 0;
 }
 
 int runtime_mcp_info(const struct runtime *runtime, int index,
 		     struct runtime_mcp_status *out)
 {
+	runtime = runtime_mcp_owner(runtime);
 	if (!runtime || !out || index < 0 || index >= runtime->context.mcp.count)
 		return NB_ERR_INVAL;
 	runtime_mcp_status_copy((struct runtime *)runtime,
@@ -111,6 +174,7 @@ int runtime_mcp_find(const struct runtime *runtime, const char *name,
 		     struct runtime_mcp_status *out)
 {
 	struct mcp_client *client;
+	runtime = runtime_mcp_owner(runtime);
 	if (!runtime || !name || !out)
 		return NB_ERR_INVAL;
 	client = mcp_registry_borrow((struct mcp_registry *)&runtime->context.mcp, name);
@@ -122,6 +186,7 @@ int runtime_mcp_find(const struct runtime *runtime, const char *name,
 
 int runtime_mcp_connect(struct runtime *runtime, const char *name)
 {
+	runtime = runtime_mcp_owner(runtime);
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	int rc;
 
@@ -138,6 +203,7 @@ int runtime_mcp_connect(struct runtime *runtime, const char *name)
 
 int runtime_mcp_disconnect(struct runtime *runtime, const char *name)
 {
+	runtime = runtime_mcp_owner(runtime);
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	int rc;
 
@@ -217,6 +283,7 @@ static int runtime_mcp_copy_list(void **out, int count, const void *items,
 int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 			   struct mcp_tool_desc **out, int *count)
 {
+	runtime = runtime_mcp_owner(runtime);
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_tool_desc *items = NULL;
 	void *copied = NULL;
@@ -254,6 +321,7 @@ int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 			       struct mcp_resource_desc **out, int *count)
 {
+	runtime = runtime_mcp_owner(runtime);
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_resource_desc *items = NULL;
 	void *copied = NULL;
@@ -291,6 +359,7 @@ int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 int runtime_mcp_list_prompts(struct runtime *runtime, const char *name,
 			     struct mcp_prompt_desc **out, int *count)
 {
+	runtime = runtime_mcp_owner(runtime);
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_prompt_desc *items = NULL;
 	void *copied = NULL;
@@ -332,6 +401,7 @@ void runtime_mcp_list_free(void *items)
 int runtime_mcp_discover(struct runtime *runtime, const char *name,
 			 int *tools, int *resources, int *prompts)
 {
+	runtime = runtime_mcp_owner(runtime);
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	int t;
 	int r;

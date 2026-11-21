@@ -281,6 +281,12 @@ Zero preserves synchronous startup for existing hosts, including FastCGI and
 mobile integrations. The interactive CLI opts in; one-shot and event-stream
 CLI modes retain synchronous startup so their first request has its MCP tools.
 
+Asynchronous session engines share the parent runtime's MCP connections. They
+copy published tool bindings at construction and between turns, preserving their
+own permissions and context. A cold session does not repeat connection or
+discovery, and MCP management requests address the process service even when
+they include a session ID.
+
 Workers discover tools, resources, and prompts in a private registry. They
 publish capabilities under the runtime execution lock between turns. A turn
 already in progress keeps its existing tool set; newly ready capabilities are

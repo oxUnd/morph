@@ -229,9 +229,18 @@ int runtime_mcp_client_disconnect(struct mcp_client *client,
 {
 	if (!client)
 		return NB_ERR_INVAL;
+
+	/* A shared transport must finish its current RPC before it is released. */
+	nb_mutex_lock(client->lock);
+	if (client->connecting) {
+		nb_mutex_unlock(client->lock);
+		return NB_ERR_AGAIN;
+	}
+
 	mcp_disconnect(client);
 	client->discovery_error = 0;
 	client->capabilities_registered = 0;
+	nb_mutex_unlock(client->lock);
 	runtime_mcp_emit(event_cb, event_user_data, "mcp.disconnected",
 			 "end", "MCP server disconnected", &client->config,
 			 -1, -1, -1, 0);

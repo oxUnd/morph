@@ -65,7 +65,7 @@ struct runtime {
 	int checkpoint_failed;
 };
 
-int runtime_open_controlled(const struct runtime_options *options,
+int runtime_open_controlled(struct runtime *parent, const struct runtime_options *options,
 	int (*interrupt_check)(void *), void *interrupt_user_data, struct runtime **out);
 
 int runtime_jobs_init(struct runtime *runtime);
@@ -89,6 +89,10 @@ void runtime_mcp_background_stop(struct runtime *runtime);
 struct runtime_mcp_job *runtime_mcp_job_find(struct runtime *runtime,
 	struct mcp_client *client);
 int64_t runtime_mcp_now_ms(void);
+/* Parent owns transports until all session actors have shut down. */
+struct runtime *runtime_mcp_owner(const struct runtime *runtime);
+/* Caller excludes execution and registry mutation in the receiving actor. */
+int runtime_mcp_sync_tools(struct runtime *runtime);
 
 int runtime_lock_turn(struct runtime_engine *engine,
 		      const struct runtime_request *request,

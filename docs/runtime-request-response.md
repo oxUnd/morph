@@ -34,6 +34,18 @@ facilities, with process-replica initialization and the session's captured
 working directory. The public parent runtime owns their lifetime. Frontends do
 not construct per-session model, tool, database or worker graphs.
 
+MCP transports and discovery belong to the parent runtime. Session engines
+retain copies of published MCP tool bindings and refresh them between turns;
+creating or reloading a session never reconnects its MCP servers. Connections
+still being discovered stay in the background and become available on a later
+turn. Session permissions remain local to the receiving tool registry. Shutdown
+joins all session work before releasing the shared transports.
+
+Reading `permission.get` or `model.get` for an unloaded session uses its persisted
+overrides and runtime defaults without constructing an execution engine.
+`turn.started` covers engine initialization as well as execution, so clients can
+show activity before cold initialization finishes.
+
 The runtime schedules turns on up to eight workers and domain management on up
 to four workers, with a cache of up to 64 resident session engines. These are current
 implementation bounds. Idle engines can be evicted and reconstructed from

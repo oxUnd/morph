@@ -469,6 +469,43 @@ static int unsubscribe_request(struct runtime_client_request_node *request, int6
 	return 0;
 }
 
+static int lane_settings_read(struct runtime_client_lane *lane,
+	struct runtime_client_request_node *request, cJSON **out)
+{
+	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	int rc = runtime_protocol_dispatch(lane->service->owner, request->method,
+		request->params, &json);
+	if (rc != 0)
+		return rc;
+
+	if (!strcmp(request->method, "permission.get") && lane->has_permission) {
+		const struct permission_policy *policy = &lane->permission;
+		if (!cJSON_SetValuestring(cJSON_GetObjectItemCaseSensitive(json, "access"),
+		    permission_access_name(policy->access)) ||
+		    !cJSON_SetValuestring(cJSON_GetObjectItemCaseSensitive(json, "approval"),
+		    permission_approval_name(policy->approval)) ||
+		    !cJSON_SetValuestring(cJSON_GetObjectItemCaseSensitive(json, "reviewer"),
+		    permission_reviewer_name(policy->reviewer)))
+			return NB_ERR_NOMEM;
+	}
+
+	if (!strcmp(request->method, "model.get")) {
+		if (lane->session.model[0] && !cJSON_SetValuestring(
+		    cJSON_GetObjectItemCaseSensitive(json, "model"), lane->session.model))
+			return NB_ERR_NOMEM;
+
+		if (lane->has_ultra) {
+			cJSON_DeleteItemFromObjectCaseSensitive(json, "ultra");
+			if (!cJSON_AddBoolToObject(json, "ultra", lane->ultra))
+				return NB_ERR_NOMEM;
+		}
+	}
+
+	*out = json;
+	json = NULL;
+	return 0;
+}
+
 static void dispatch_request(struct runtime_client_request_node *request)
 {
 	struct runtime_client_service *service = request->client->service;
@@ -477,6 +514,7 @@ static void dispatch_request(struct runtime_client_request_node *request)
 	int64_t session_id = runtime_client_json_id(request->params, "session_id");
 	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	int rc = 0;
+	int settings_snapshot = 0;
 	struct runtime_client_lane *managed_lane = NULL;
 	unsigned capability = request_capability(request->method);
 
@@ -499,8 +537,7 @@ static void dispatch_request(struct runtime_client_request_node *request)
 		!strcmp(request->method, "session.load") ||
 		!strcmp(request->method, "session.unload") ||
 		request_needs_actor(request->method) ||
-		(session_id > 0 && (!strncmp(request->method, "mcp.", 4) ||
-			!strcmp(request->method, "task.execute")));
+		(session_id > 0 && !strcmp(request->method, "task.execute"));
 	if ((!strcmp(request->method, "permission.update") ||
 	    !strcmp(request->method, "model.update") ||
 	    !strcmp(request->method, "permission.get") ||
@@ -533,6 +570,8 @@ static void dispatch_request(struct runtime_client_request_node *request)
 			(lane_background_work_locked(lane) &&
 			 !request_safe_with_background(request->method));
 		int managing = lane->managing || lane->actor_opening || lane->controls > 0;
+		settings_snapshot = !lane->actor && (!strcmp(request->method, "permission.get") ||
+			!strcmp(request->method, "model.get"));
 		if (!managing && (!active || request_safe_during_turn(request->method))) {
 			lane->managing = 1;
 			managed_lane = lane;
@@ -550,6 +589,8 @@ static void dispatch_request(struct runtime_client_request_node *request)
 			lane->actor = NULL;
 			nb_mutex_unlock(service->lock);
 			runtime_close(actor);
+		} else if (settings_snapshot) {
+			rc = lane_settings_read(lane, request, &result);
 		} else {
 			rc = runtime_client_lane_ensure_actor(lane);
 			target = lane->actor;
@@ -561,7 +602,7 @@ static void dispatch_request(struct runtime_client_request_node *request)
 		result = cJSON_CreateObject();
 	else if (rc == 0 && !strcmp(request->method, "session.unload"))
 		result = cJSON_CreateObject();
-	else if (rc == 0) {
+	else if (rc == 0 && !settings_snapshot) {
 		if ((!strcmp(request->method, "session.delete") ||
 		     !strcmp(request->method, "session.update")) && session_id > 0) {
 			struct runtime_client_lane *existing = NULL;

@@ -528,11 +528,19 @@ static int runtime_start_components(struct runtime *runtime)
 
 	runtime_emit_startup(runtime, "startup.mcp", "begin",
 			     "Connecting services...");
-	(void)runtime_mcp_init_from_config_controlled(
-		runtime ? runtime->options.logger : NULL, &ctx->mcp, &ctx->config.mcp, &ctx->tools,
-		runtime->options.auto_connect_mcp && !runtime->options.background_connect_mcp,
-		runtime->options.event_cb, runtime->options.event_user_data,
-		runtime->startup_interrupt_check, runtime->startup_interrupt_user_data);
+	if (runtime->client_parent) {
+		rc = runtime_mcp_sync_tools(runtime);
+		if (rc != 0)
+			return rc;
+	} else {
+		(void)runtime_mcp_init_from_config_controlled(
+			runtime->options.logger, &ctx->mcp, &ctx->config.mcp, &ctx->tools,
+			runtime->options.auto_connect_mcp &&
+				!runtime->options.background_connect_mcp,
+			runtime->options.event_cb, runtime->options.event_user_data,
+			runtime->startup_interrupt_check, runtime->startup_interrupt_user_data);
+	}
+
 	runtime_bootstrap_tool_flags(&ctx->tools, &ctx->config);
 	runtime_emit_startup(runtime, "startup.mcp", "end",
 			     "Services configured");
@@ -612,10 +620,10 @@ static int runtime_start_components(struct runtime *runtime)
 
 int runtime_open(const struct runtime_options *options, struct runtime **out)
 {
-	return runtime_open_controlled(options, NULL, NULL, out);
+	return runtime_open_controlled(NULL, options, NULL, NULL, out);
 }
 
-int runtime_open_controlled(const struct runtime_options *options,
+int runtime_open_controlled(struct runtime *parent, const struct runtime_options *options,
 	int (*interrupt_check)(void *), void *interrupt_user_data, struct runtime **out)
 {
 	struct runtime *runtime;
@@ -632,6 +640,7 @@ int runtime_open_controlled(const struct runtime_options *options,
 	if (!runtime)
 		return NB_ERR_NOMEM;
 	runtime->options = *options;
+	runtime->client_parent = parent;
 	runtime->startup_interrupt_check = interrupt_check;
 	runtime->startup_interrupt_user_data = interrupt_user_data;
 	if (options->task_events) {
@@ -750,7 +759,7 @@ int runtime_open_controlled(const struct runtime_options *options,
 	}
 	runtime_emit_startup(runtime, "startup.ready", "ready",
 			     "Morph is ready");
-	if (runtime->options.auto_connect_mcp &&
+	if (!runtime->client_parent && runtime->options.auto_connect_mcp &&
 	    runtime->options.background_connect_mcp)
 		(void)runtime_mcp_background_start(runtime);
 	*out = runtime;
@@ -902,7 +911,10 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 	}
 	context->agent_phase = RUNTIME_AGENTS_RUNNING;
 	agent_control_set_interactions_blocked(context->agents, 1);
-	int rc = runtime_context_prepare_turn(context, request, user_data);
+	int rc = runtime_mcp_sync_tools(runtime);
+	if (rc == 0)
+		rc = runtime_context_prepare_turn(context, request, user_data);
+
 	if (rc == 0) {
 		if (request->session_id == context->current_session.id) {
 			context->agent_actor_session_id = request->session_id;

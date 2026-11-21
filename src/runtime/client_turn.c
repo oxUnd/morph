@@ -434,7 +434,6 @@ int runtime_client_lane_ensure_actor(struct runtime_client_lane *lane)
 	options.create_new_session = 0;
 	options.restore_recent_session = 0;
 	options.process_replica = 1;
-	options.background_connect_mcp = 0;
 	options.event_cb = runtime_client_lane_event;
 	options.event_user_data = lane;
 	options.hitl_cb = runtime_client_hitl;
@@ -452,10 +451,8 @@ int runtime_client_lane_ensure_actor(struct runtime_client_lane *lane)
 	options.img_annotate_user_data = NULL;
 	options.enable_img_annotate = 0;
 	struct runtime *actor = NULL;
-	int rc = runtime_open_controlled(&options, runtime_client_service_interrupted,
+	int rc = runtime_open_controlled(owner, &options, runtime_client_service_interrupted,
 		service, &actor);
-	if (rc == 0)
-		actor->client_parent = owner;
 
 	if (rc == 0)
 		agent_control_set_all_events(actor->context.agents, 1);
@@ -574,16 +571,25 @@ static void lane_run_turn(struct runtime_client_lane *lane)
 {
 	struct runtime_client_service *service = lane->service;
 	struct runtime_result result = {0};
-	int rc = runtime_client_lane_ensure_actor(lane);
+
 	nb_mutex_lock(service->lock);
 	struct runtime_client_turn *turn = lane->turn;
-	if (rc == 0 && turn->cancelled)
-		rc = NB_ERR_CANCELLED;
+	int rc = turn->cancelled ? NB_ERR_CANCELLED : 0;
 
 	if (rc == 0) {
 		turn_status_set(turn, "running");
 		(void)runtime_client_turn_store_locked(lane);
 	}
+
+	nb_mutex_unlock(service->lock);
+	if (rc == 0) {
+		(void)runtime_client_lane_emit(lane, "turn.started", "begin", NULL);
+		rc = runtime_client_lane_ensure_actor(lane);
+	}
+
+	nb_mutex_lock(service->lock);
+	if (rc == 0 && turn->cancelled)
+		rc = NB_ERR_CANCELLED;
 
 	nb_mutex_unlock(service->lock);
 	if (rc == 0) {
@@ -598,7 +604,6 @@ static void lane_run_turn(struct runtime_client_lane *lane)
 	}
 
 	if (rc == 0) {
-		(void)runtime_client_lane_emit(lane, "turn.started", "begin", NULL);
 		struct runtime_request request = {
 			.session_id = lane->session.id,
 			.turn_id = turn->id,

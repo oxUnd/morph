@@ -39,5 +39,5 @@ int runtime_add_mcp_server(struct runtime *runtime,
 {
 	if (!runtime || !server)
 		return NB_ERR_INVAL;
-	return mcp_registry_add(&runtime->context.mcp, server);
+	return mcp_registry_add(&runtime_mcp_owner(runtime)->context.mcp, server);
 }
