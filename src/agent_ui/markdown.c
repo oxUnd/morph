@@ -2,9 +2,11 @@
 #include <nb/cleanup.h>
 
 #include <nb/buf.h>
+#include <nb/str.h>
 #include <nb/utf8.h>
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -277,11 +279,17 @@ static int line_is_quote(const char *line, size_t len)
 	return i < len && line[i] == '>';
 }
 
-static int line_is_math_block(const char *line, size_t len)
+static const char *line_math_block_close(const char *line, size_t len)
 {
 	size_t i = skip_indent(line, len);
 
-	return i + 1 < len && line[i] == '$' && line[i + 1] == '$';
+	if (i + 1 < len && line[i] == '$' && line[i + 1] == '$')
+		return "$$";
+
+	if (i + 1 < len && line[i] == '\\' && line[i + 1] == '[')
+		return "\\]";
+
+	return NULL;
 }
 
 static int line_is_horizontal_rule(const char *line, size_t len)
@@ -321,7 +329,7 @@ static enum markdown_line_kind classify_line(const char *line, size_t len,
 		return MD_LINE_LIST;
 	if (line_is_quote(line, len))
 		return MD_LINE_QUOTE;
-	if (line_is_math_block(line, len))
+	if (line_math_block_close(line, len))
 		return MD_LINE_MATH;
 	if (line_has_pipe(line, len))
 		return MD_LINE_TABLE;
@@ -355,7 +363,7 @@ static int append_fence_close(nb_buf *out, char marker, int len)
 
 static int append_normalized_line(nb_buf *out, const char *line, size_t len, int *previous_blank,
 				  enum markdown_line_kind *prev_kind, int *in_fence,
-				  char *fence_marker, int *fence_len)
+				  char *fence_marker, int *fence_len, const char **math_close)
 {
 	nb_buf normalized NB_CLEANUP(nb_buf_cleanup) = {0};
 	enum markdown_line_kind kind;
@@ -366,6 +374,24 @@ static int append_normalized_line(nb_buf *out, const char *line, size_t len, int
 	int table_sep;
 	int normalize_body;
 	int rc = 0;
+
+	const char *close = was_in_fence ? NULL
+		: *math_close ? *math_close : line_math_block_close(line, len);
+	if (close) {
+		/* Math bodies are literal; paragraph/table repairs must not split them. */
+		size_t start = *math_close ? 0 : skip_indent(line, len) + 2;
+		if (!*math_close && out->len && !*previous_blank && !nb_buf_append_char(out, '\n'))
+			return NB_ERR_NOMEM;
+
+		*math_close = nb_str_find(nb_str_from_parts(line + start, len - start),
+			nb_str_from_cstr(close)) == SIZE_MAX ? close : NULL;
+		if (!nb_buf_append(out, line, len) || !nb_buf_append_char(out, '\n'))
+			return NB_ERR_NOMEM;
+
+		*previous_blank = len == 0;
+		*prev_kind = MD_LINE_MATH;
+		return 0;
+	}
 
 	is_fence = line_fence_info(line, len, &line_fence_marker,
 				   &line_fence_len);
@@ -416,12 +442,12 @@ static int append_normalized_line(nb_buf *out, const char *line, size_t len, int
 			if (append_normalized_line(out, line, table_len,
 						   previous_blank, prev_kind,
 						   in_fence, fence_marker,
-						   fence_len) < 0 ||
+						   fence_len, math_close) < 0 ||
 			    append_normalized_line(out, line + text_start,
 						   len - text_start,
 						   previous_blank, prev_kind,
 						   in_fence, fence_marker,
-						   fence_len) < 0) {
+						   fence_len, math_close) < 0) {
 				rc = NB_ERR_NOMEM;
 			}
 			return rc;
@@ -489,6 +515,7 @@ char *agent_ui_normalize_markdown(const char *input)
 	int in_fence = 0;
 	char fence_marker = '`';
 	int fence_len = 3;
+	const char *math_close = NULL;
 	enum markdown_line_kind prev_kind = MD_LINE_BLANK;
 
 	if (!input)
@@ -504,14 +531,14 @@ char *agent_ui_normalize_markdown(const char *input)
 		while (pos < len && s[pos] != '\n' && s[pos] != '\r')
 			pos++;
 		line_len = pos - start;
-		while (!in_fence && line_len > 0 &&
+		while (!in_fence && !math_close && line_len > 0 &&
 		       (s[start + line_len - 1] == ' ' ||
 			s[start + line_len - 1] == '\t'))
 			line_len--;
 		if (append_normalized_line(&out, s + start, line_len,
 					   &previous_blank, &prev_kind,
 					   &in_fence, &fence_marker,
-					   &fence_len) < 0) {
+					   &fence_len, &math_close) < 0) {
 			nb_buf_cleanup(&out);
 			return NULL;
 		}

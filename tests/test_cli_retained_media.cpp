@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/components/rich_document.h"
+#include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/application.h"
 #include "stb_image_write.h"
 #include <nb/cleanup.h>
@@ -18,11 +19,13 @@ extern "C" {
 }
 
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <string>
 #include <optional>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 static int retained_media_placeholder_write(const char *bytes, size_t length, void *data)
@@ -68,7 +71,7 @@ class CliRetainedMediaTest : public ::testing::Test
 		uint64_t key;
 		uintptr_t identity;
 	};
-	std::optional<std::string> original_term;
+	std::vector<std::pair<std::string, std::optional<std::string>>> original_environment;
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
 	struct nt_application *app = nullptr;
@@ -127,8 +130,13 @@ class CliRetainedMediaTest : public ::testing::Test
 
 	void SetUp() override
 	{
-		if (const char *term = getenv("TERM"))
-			original_term = term;
+		for (const char *key : {"TERM", "KITTY_WINDOW_ID", "TERM_PROGRAM", "ITERM_PROFILE",
+			"WT_SESSION"}) {
+			const char *value = getenv(key);
+			original_environment.emplace_back(key, value ? std::make_optional<std::string>(value)
+				: std::nullopt);
+			unsetenv(key);
+		}
 
 		ASSERT_EQ(setenv("TERM", "xterm-kitty", 1), 0);
 		master = posix_openpt(O_RDWR | O_NOCTTY);
@@ -152,10 +160,12 @@ class CliRetainedMediaTest : public ::testing::Test
 	void TearDown() override
 	{
 		nt_application_destroy(app);
-		if (original_term)
-			setenv("TERM", original_term->c_str(), 1);
-		else
-			unsetenv("TERM");
+		for (const auto &entry : original_environment) {
+			if (entry.second)
+				setenv(entry.first.c_str(), entry.second->c_str(), 1);
+			else
+				unsetenv(entry.first.c_str());
+		}
 
 		if (input)
 			fclose(input);
@@ -253,6 +263,58 @@ TEST_F(CliRetainedMediaTest, RgbaMathInTableKeepsCellPositionAndRejectsTruncated
 	EXPECT_LT(cli_rich_document_set_rendered_copy(document, invalid.c_str(), 1), 0);
 	EXPECT_EQ(frame, previous);
 	EXPECT_EQ(placements.size(), 1u);
+}
+
+TEST_F(CliRetainedMediaTest, MarkdownMathUsesNativeImagesAcrossTerminalProtocols)
+{
+	Present();
+	const char *formulas[] = {
+		"before $x^2$ after\n",
+		"before \\(x^2\\) after\n",
+		"$$\\frac{1}{2}$$\n",
+		"$$\n\\int_{0}^{\\infty} e^{-x^2}\\,\\mathrm{d}x = "
+		"\\frac{\\sqrt{\\pi}}{2}\n$$\n",
+		"\\[\n\\begin{aligned}\na&=1\\\\[4pt]\nb&=2\n\\end{aligned}\n\\]\n",
+		"| Formula | Result |\n|---|---|\n| $x^2$ | done |\n"
+	};
+	for (const char *protocol : {"kitty", "iterm", "sixel"}) {
+		SCOPED_TRACE(protocol);
+		setenv("TERM", !strcmp(protocol, "kitty") ? "xterm-kitty" : "xterm-256color", 1);
+		unsetenv("TERM_PROGRAM");
+		unsetenv("WT_SESSION");
+		if (!strcmp(protocol, "iterm"))
+			setenv("TERM_PROGRAM", "iTerm.app", 1);
+		else if (!strcmp(protocol, "sixel"))
+			setenv("WT_SESSION", "math-test", 1);
+
+		for (const char *formula : formulas) {
+			SCOPED_TRACE(formula);
+			nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+			ASSERT_EQ(cli_markdown_render_retained(&rendered, formula, 80, 1), 0);
+			ASSERT_NE(strstr(nb_buf_cstr(&rendered), "\033_Ga=T,f=32,"), nullptr);
+			ASSERT_EQ(cli_rich_document_set_rendered_copy(document,
+				nb_buf_cstr(&rendered), 1), 0);
+			ASSERT_EQ(nt_application_step(app, 0), 0);
+			ASSERT_EQ(placements.size(), 1u);
+			EXPECT_GT(placements[0].source_width, 0);
+			EXPECT_GT(placements[0].source_height, 0);
+			EXPECT_EQ(plain.find("\\frac"), std::string::npos);
+		}
+	}
+}
+
+TEST_F(CliRetainedMediaTest, PlainMathAndLiteralCodeDoNotProduceImages)
+{
+	for (const auto &sample : {
+		std::pair<const char *, int>{"$$\n\\frac{1}{2}\n$$\n", 0},
+		{"`\\(x^2\\)` and `$x^2$`\n", 1},
+		{"```latex\n\\[x^2\\]\n$$x^2$$\n```\n", 1}}) {
+		SCOPED_TRACE(sample.first);
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(cli_markdown_render_retained(&rendered, sample.first, 80, sample.second), 0);
+		EXPECT_EQ(strstr(nb_buf_cstr(&rendered), "\033_G"), nullptr);
+		EXPECT_NE(strstr(nb_buf_cstr(&rendered), sample.second ? "x^2" : "\\frac"), nullptr);
+	}
 }
 
 TEST_F(CliRetainedMediaTest, InvalidPngPreservesTheDisplayedImage)

@@ -128,18 +128,20 @@ def run_case(binary, server, protocol):
             terminal.send('protected native draft')
             start = len(terminal.raw)
             release.delta = {'content': (
-                f'INLINE before ![wide]({first}) after image.\n\n'
+                f'INLINE before $x^2$ ![wide]({first}) after image.\n\n'
                 '| Picture | Description |\n|---|---|\n'
-                f'| ![tall]({second}) | table image |\n\n'
-                '$$x^2 + y^2 = z^2$$\n\n'
+                f'| ![tall]({second}) | table image \\(y^2\\) |\n\n'
+                '$$\n\\int_{0}^{\\infty} e^{-x^2}\\,\\mathrm{d}x = '
+                '\\frac{\\sqrt{\\pi}}{2}\n$$\n\n'
+                '\\[\n\\begin{aligned}a&=1\\\\b&=2\\end{aligned}\n\\]\n\n'
                 f'![clip]({video})\n\n'
                 f'[Open fixture](file://{first})\n\nMEDIA_DONE')}
             release.set()
             completed = wait_visible(terminal, 'MEDIA_DONE')
             assert 'protected native draft' in completed, completed
             assert 'morph-video-' not in completed, completed
-            if protocol == 'kitty':
-                assert 'x^2 + y^2 = z^2' not in completed, completed
+            for literal in ('\\int', '\\frac', '\\begin{aligned}', '$$'):
+                assert literal not in completed, completed
             wait_visible(terminal, 'Worked for')
             wait_visible(terminal, 'Open video')
             cursor = (terminal.screen.cursor.y, terminal.screen.cursor.x)
@@ -147,6 +149,7 @@ def run_case(binary, server, protocol):
             terminal.send('\x1b[5~' * 10)
             scrolled = wait_visible(terminal, 'INLINE before')
             assert 'after image.' in scrolled, scrolled
+            assert '$x^2$' not in scrolled, scrolled
             assert draft_row(terminal, 'protected native draft') == row, scrolled
             terminal.send('\x1b[6~' * 10)
             wait_visible(terminal, 'MEDIA_DONE')

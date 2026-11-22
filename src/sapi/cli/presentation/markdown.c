@@ -175,8 +175,7 @@ static int cli_markdown_retained_document(nb_buf *out, const char *text, int col
 	if (styled && cli_media_native_available()) {
 		options.load_image = cli_image_loader_load;
 		options.release_image = cli_image_loader_release;
-		if (cli_markdown_terminal_supports_kitty() &&
-		    !morph_data_find(font, sizeof(font), "fonts/STIXTwoMath-Regular.ttf")) {
+		if (!morph_data_find(font, sizeof(font), "fonts/STIXTwoMath-Regular.ttf")) {
 			options.font_path = font;
 			options.features |= MORPH_MD_FEATURE_MATH;
 		}
@@ -322,8 +321,9 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 			    ? output->font_path
 			    : NULL;
 	options.font_path = font_path;
-	if (enable_math && cli_output_color_enabled(ctx) &&
-	    cli_markdown_terminal_supports_kitty() && font_path)
+	if (enable_math && cli_output_color_enabled(ctx) && font_path &&
+	    (cli_markdown_terminal_supports_kitty() ||
+	     (cli_chat_active(ctx) && cli_media_native_available())))
 		options.features |= MORPH_MD_FEATURE_MATH;
 
 	options.write = cli_markdown_write;

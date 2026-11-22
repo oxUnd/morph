@@ -21,6 +21,38 @@ TEST(TestAgentUI, NormalizesCommonMarkdownDeviations)
 	EXPECT_NE(normalized.find("\n```\n"), std::string::npos);
 }
 
+TEST(TestAgentUI, PreservesMultilineMathBlocks)
+{
+	const char *blocks[] = {
+		"$$\n\\int_{0}^{\\infty} e^{-x^2}\\,\\mathrm{d}x = "
+		"\\frac{\\sqrt{\\pi}}{2}\n$$\n",
+		"\\[\n\\begin{aligned}\na&=1\\\\[4pt]\nb&=2\n\\end{aligned}\n\\]\n",
+		"$$x =\n\\frac{1}{2}$$\n",
+		"\\[x =\n\\frac{1}{2}\\]\n",
+		"$$\n|x| + |y|\n# literal\n---\n\\text{＃ ＋ ＿}  \n$$\n"
+	};
+	for (const char *block : blocks) {
+		SCOPED_TRACE(block);
+		char *out = agent_ui_normalize_markdown(block);
+		ASSERT_NE(out, nullptr);
+		EXPECT_STREQ(out, block);
+		free(out);
+	}
+}
+
+TEST(TestAgentUI, MathBlocksDoNotLeakIntoFollowingMarkdownOrCode)
+{
+	const char *input = "Intro\n$$x^2$$\n# Heading\n\\[y^2\\]\n# Next\n"
+		"```tex\n$$\n# literal\n```\n# Last";
+	char *out = agent_ui_normalize_markdown(input);
+	ASSERT_NE(out, nullptr);
+	std::string normalized(out);
+	free(out);
+	EXPECT_NE(normalized.find("Intro\n\n$$x^2$$\n\n# Heading"), std::string::npos);
+	EXPECT_NE(normalized.find("\\[y^2\\]\n\n# Next"), std::string::npos);
+	EXPECT_NE(normalized.find("```tex\n$$\n# literal\n```\n\n# Last"), std::string::npos);
+}
+
 TEST(TestAgentUI, RemovesMarkdownHorizontalRules)
 {
 	char *out = agent_ui_normalize_markdown(

@@ -257,6 +257,9 @@ restoration. Keep the slash-command presentation contract in
 
 The application owns the presenter, the input adapter and the runtime lifecycle.
 The presenter manages stream buffers, Markdown rendering and artifact deduplication.
+Retained math uses MathJax-C bitmaps through native Kitty, iTerm2 or Sixel image
+views. Preserve math block contents during Markdown normalization, and let the
+math syntax extension consume backslash delimiters before Markdown escaping.
 The input adapter owns cancellable stream reads and the per-application Readline
 callback used for blocking prompts outside active chat. Chat owns its native TextField, recall
 history, completion actions and adaptive TextView footer. Feed and turn services query final-output visibility
