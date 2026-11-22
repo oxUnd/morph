@@ -416,6 +416,8 @@ static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int 
 		return result;
 	}
 	if (cJSON_IsBool(ok) && cJSON_IsObject(data)) {
+		/* Presentation stays in the live result and original evidence, not replay. */
+		cJSON_DeleteItemFromObjectCaseSensitive(root, "ui");
 		for (child = root->child; child; child = next) {
 			cJSON *original;
 

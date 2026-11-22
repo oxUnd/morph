@@ -1307,6 +1307,56 @@ TEST_F(AgentTurnTest, ToolHistoryKeepsOriginalAndDeduplicatesModelContent)
 	model_history_free_list(items);
 }
 
+TEST_F(AgentTurnTest, PatchPreviewStaysInOriginalEvidenceWithoutExhaustingHistoryBudget)
+{
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->history_tool_result_tokens = 512;
+	std::string diff;
+	for (int i = 0; i < 1200; i++)
+		diff += "+int value_" + std::to_string(i) + " = " + std::to_string(i) + ";\n";
+
+	cJSON *source NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	ASSERT_NE(source, nullptr);
+	cJSON_AddBoolToObject(source, "ok", 1);
+	cJSON *data = cJSON_AddObjectToObject(source, "data");
+	ASSERT_NE(data, nullptr);
+	cJSON_AddBoolToObject(data, "changed", 1);
+	cJSON *checkpoint = cJSON_AddObjectToObject(data, "checkpoint");
+	ASSERT_NE(checkpoint, nullptr);
+	cJSON_AddNumberToObject(checkpoint, "id", 69);
+	cJSON_AddStringToObject(checkpoint, "status", "sealed");
+	cJSON *ui = cJSON_AddObjectToObject(source, "ui");
+	ASSERT_NE(ui, nullptr);
+	cJSON_AddStringToObject(ui, "patch_diff", diff.c_str());
+	char *input NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(source);
+	ASSERT_NE(input, nullptr);
+	ASSERT_GT(tokenizer_count(tok, input), react->history_tool_result_tokens);
+	ASSERT_EQ(agent_history_record_tool_result(react, "patch", "provider-patch", "apply_patch",
+		input, 0), 0);
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_NE(react->history_items, nullptr);
+	const auto *item = react->history_items;
+	EXPECT_LE(item->token_count, react->history_tool_result_tokens);
+	cJSON *model NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(item->content);
+	ASSERT_NE(model, nullptr);
+	EXPECT_EQ(cJSON_GetObjectItemCaseSensitive(model, "ui"), nullptr);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(model, "ok")));
+	cJSON *receipt = cJSON_GetObjectItemCaseSensitive(model, "data");
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(receipt, "changed")));
+	cJSON *saved = cJSON_GetObjectItemCaseSensitive(receipt, "checkpoint");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(saved, "id")), 69);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(saved, "status")),
+		"sealed");
+	cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(item->payload_json);
+	ASSERT_NE(payload, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(payload,
+		"original_content")), input);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(ui, "patch_diff")),
+		diff.c_str());
+}
+
 TEST_F(AgentTurnTest, JsonToolTruncationPreservesExecutionControls)
 {
 	react->history_tool_result_tokens = 100;

@@ -110,6 +110,8 @@ preserving user requests and prior summaries. Call/output pairing is preserved
 even when steering messages intervene. Omitted evidence is explicitly marked
 unavailable and is not recorded as semantically covered by the new summary.
 Formal history changes only after successful summarization and replay validation.
+Tool UI payloads, including patch diffs, stay in live presentation and the stored
+original evidence; model-visible tool receipts exclude them before token budgeting.
 Normal inference can request at most two overflow recoveries per turn, when a
 compaction path and another iteration are available. Otherwise it retains the
 original context-limit error. Three successive compactions reducing context by
