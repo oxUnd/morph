@@ -235,6 +235,10 @@ if(Python3_Interpreter_FOUND)
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_files_split_pty.py
 			$<TARGET_FILE:morph>)
 	set_tests_properties(cli_files_split_pty_integration PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_scroll_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_scroll_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_scroll_pty_integration PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
 	if(UNIX AND Python3_VERSION VERSION_GREATER_EQUAL "3.9")
 		add_test(NAME ext_skill_scaffold
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ext_scaffold.py

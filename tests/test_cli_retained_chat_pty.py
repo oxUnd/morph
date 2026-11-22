@@ -297,9 +297,7 @@ def run_case(binary, server, width, color, production=False):
             terminal.raw += terminal.child.before
             assert '\x1b[?1049l' in terminal.raw
             assert '\x1b[?1003l' in terminal.raw
-            if color:
-                assert '\x1b[48;5;237m' in terminal.raw
-            else:
+            if not color:
                 assert '\x1b[48;' not in terminal.raw
             print(f'PASS retained chat: width={width}, color={color}', flush=True)
         finally:

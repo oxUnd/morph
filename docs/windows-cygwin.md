@@ -81,6 +81,12 @@ The pinned TUI uses environment-based capability detection on native Windows
 console streams. It avoids probe replies appearing in the composer while
 retaining active capability queries on transparent Cygwin PTYs such as mintty.
 
+The file sidebar previews images with colored half-block characters when the
+console has no native graphics protocol. Terminals that support native images
+use that protocol instead; `--no-color` keeps the textual image reference.
+The CLI uses cell differences when repainting, so scrolling does not resend
+unchanged text and backgrounds across whole rows.
+
 The launcher uses the Windows user profile as `HOME` when it is not already
 configured, keeping `.morph` settings outside the program directory. It also
 selects the bundled CA certificates unless a certificate environment override

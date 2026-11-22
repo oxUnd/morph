@@ -97,6 +97,31 @@ def plain_case(driver, directory, port):
         terminal.child.close(force=True)
 
 
+def image_case(binary, directory):
+    directory.mkdir()
+    png(directory / 'preview.png', 64, 32, (200, 70, 40, 255))
+    terminal = Terminal(binary, directory, 1, production=True, hooks_enabled=False,
+                        extra_env={'NO_COLOR': ''})
+    try:
+        terminal.wait_for_composer()
+        terminal.send('/side preview.png\r')
+        wait_for(terminal, lambda text: '· Image' in text, 'fallback image metadata')
+        for columns in (120, 80, 60):
+            resize(terminal, columns)
+            frame = wait_for(terminal, lambda text: '▀' in text,
+                             f'half-block image preview at {columns} columns')
+            pixels = [cell for line in terminal.screen.buffer.values()
+                      for cell in line.values() if cell.data == '▀']
+            assert pixels and all(cell.fg == 'c84628' for cell in pixels), pixels
+            assert '(image:' not in frame, frame
+            assert not any(packet in terminal.raw for packet in
+                           ('\x1b_G', '\x1b]1337;File=', '\x1bPq')), terminal.raw
+            check_rules(terminal)
+        print('PASS: image previews without a native terminal graphics protocol')
+    finally:
+        terminal.child.close(force=True)
+
+
 def main():
     driver = Path(sys.argv[1]).resolve()
     server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
@@ -325,6 +350,7 @@ def main():
             terminal.child.close(force=True)
         binary = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else driver.with_name('morph')
         plain_case(binary, directory / 'plain', server.server_port)
+        image_case(binary, directory / 'images')
         print('PASS: production no-color mode, Unicode filenames and image tabs')
     server.shutdown()
 

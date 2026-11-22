@@ -76,8 +76,7 @@ int cli_application_show_page(struct cli_application *ctx, struct nt_view_contro
 							       .external_signals = 1,
 							       .terminal_flags = NT_TERMINAL_MOUSE |
 										 NT_TERMINAL_PASTE,
-							       .synchronized_output = 1,
-							       .repaint_rows = 1};
+							       .synchronized_output = 1};
 		rc = nt_application_init(&ctx->base, &options);
 		if (rc)
 			return rc;
@@ -115,8 +114,7 @@ int cli_application_run_page(struct cli_application *ctx, struct nt_view_control
 		.input = input,
 		.output = output,
 		.terminal_flags = NT_TERMINAL_MOUSE | NT_TERMINAL_PASTE | NT_TERMINAL_FOCUS,
-		.synchronized_output = 1,
-		.repaint_rows = 1};
+		.synchronized_output = 1};
 	int rc = nt_application_init(&ctx->base, &options);
 	if (rc)
 		return rc;
@@ -214,7 +212,6 @@ static void cli_application_run_session(struct cli_application *ctx)
 {
 	struct nt_application_options options = cli_chat_options();
 	options.synchronized_output = 1;
-	options.repaint_rows = 1;
 	static const struct nt_application_class type = {
 		.superclass = &nt_application_base_class,
 		.instance_size = sizeof(*ctx),

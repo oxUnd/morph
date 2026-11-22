@@ -216,7 +216,9 @@ def collect_native_history(terminal, screen, label, draft=None):
     cursor = (screen.cursor.x, screen.cursor.y)
 
     def conversation():
-        rows = screen.display[:composer - 2]
+        # Native parsers retain different trailing blanks after cell updates
+        # and row clears; compare the visible text when joining viewports.
+        rows = [row.rstrip() for row in screen.display[:composer - 2]]
         # Fixed bottom controls reserve blank activity/separator rows outside
         # the scrolling feed. They cannot participate in a history overlap.
         while rows and not rows[-1].strip():

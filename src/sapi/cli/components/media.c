@@ -96,7 +96,8 @@ struct nt_view *cli_media_add(struct nt_builder *builder, struct nt_view *parent
 
 	int video = !strcmp(type, "video");
 	struct nt_media_asset *asset NB_CLEANUP(cli_media_asset_cleanup) = NULL;
-	if (styled && cli_media_native_available())
+	/* ImageView also renders colored half blocks without a native protocol. */
+	if (styled && (!video || cli_media_native_available()))
 		(void)cli_renderer_media_asset_create_copy(type, path, &asset);
 
 	static const struct nt_view_class ops = {.superclass = &nt_view_base_class,
