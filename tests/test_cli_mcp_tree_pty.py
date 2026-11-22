@@ -72,11 +72,11 @@ def compact_tree(text):
 
 
 def resize(terminal, columns, expected):
-    start = len(terminal.raw)
+    start = len(terminal.published_frames)
     terminal.child.setwinsize(40, columns)
     terminal.screen.resize(40, columns)
     deadline = time.monotonic() + 8
-    while ('\x1b[H\x1b[2J' not in terminal.raw[start:]
+    while (len(terminal.published_frames) == start
            or 2026 << 5 in terminal.screen.mode):
         assert time.monotonic() < deadline, terminal.raw[-4000:]
         terminal.pump(.05)

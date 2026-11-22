@@ -4,7 +4,6 @@ from loopback_http import LoopbackHTTPServer
 import json
 from pathlib import Path
 import queue
-import re
 import subprocess
 import sys
 import tempfile
@@ -28,6 +27,10 @@ def wait_for(terminal, predicate, timeout=8):
 
 def chat_visible(terminal):
     return any(row.lstrip().startswith('morph ·') for row in terminal.screen.display)
+
+
+def was_visible(terminal, text):
+    return any(text in frame for frame, _ in terminal.published_frames)
 
 
 def tool_delta(name, arguments, call_id):
@@ -82,7 +85,7 @@ def run(driver, port, columns):
             assert 'Running…' not in '\n'.join(terminal.screen.display)
             child.delta = tool_delta('exec', {'command': 'sleep 2'}, 'child_inspect')
             child.set()
-            wait_for(terminal, lambda: 'Running exec' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw))
+            wait_for(terminal, lambda: was_visible(terminal, 'Running exec'))
             for _ in range(4):
                 terminal.pump(.3)
                 visible = '\n'.join(stable_rows(terminal))
@@ -174,7 +177,8 @@ def run(driver, port, columns):
                     release.set()
                 except queue.Empty:
                     pass
-                if 'Finished /root/worker' in re.sub(r'\x1b\[[0-9;]*m', '', terminal.raw) and 'ROOT_INTEGRATED_RESULT' in terminal.raw:
+                if (was_visible(terminal, 'Finished /root/worker') and
+                        was_visible(terminal, 'ROOT_INTEGRATED_RESULT')):
                     break
             else:
                 raise AssertionError(terminal.raw[-8000:])

@@ -142,7 +142,7 @@ def main():
                     release.delta = {'content': '\nLIVE_FINAL_ANSWER\n\n```text\nnew code  \n```\n'}
                     release.set()
                     deadline = time.monotonic() + 8
-                    while 'LIVE_FINAL_ANSWER' not in terminal.raw:
+                    while 'LIVE_FINAL_ANSWER' not in '\n'.join(terminal.screen.display):
                         assert time.monotonic() < deadline, terminal.raw[-5000:]
                         terminal.pump(.1)
                     terminal.pump(.6)
