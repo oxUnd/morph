@@ -904,6 +904,16 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 		*r->memory_worker = NULL;
 	}
 
+	if (r->mcp) {
+		for (int i = 0; i < r->mcp->count; i++) {
+			struct mcp_client *client = r->mcp->servers[i];
+			nb_mutex_lock(client->lock);
+			client->catalog_cancelled = NULL;
+			client->refreshing_catalog = 0;
+			nb_mutex_unlock(client->lock);
+		}
+	}
+
 	if (r->react && *r->react) {
 		react_context_destroy(*r->react);
 		*r->react = NULL;
@@ -920,6 +930,10 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 		tool_registry_cleanup(r->tools);
 	/* Join process workers while their callback context and database remain alive. */
 	exec_tool_jobs_release(r->jobs_owner);
+	/* Notification channels borrow the permission context and must stop first. */
+	if (r->mcp)
+		mcp_registry_cleanup(r->mcp);
+
 	if (r->tool_context && *r->tool_context) {
 		tool_context_destroy(*r->tool_context);
 		*r->tool_context = NULL;
@@ -953,8 +967,6 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 			*r->skills = NULL;
 		}
 	}
-	if (r->mcp)
-		mcp_registry_cleanup(r->mcp);
 	if (r->db)
 		db_close(r->db);
 }

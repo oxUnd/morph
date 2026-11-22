@@ -1,4 +1,7 @@
 #include "runtime/mcp.h"
+#include "runtime/mcp_elicitation.h"
+#include "runtime/mcp_sampling.h"
+#include "agent/tool_runtime.h"
 #include <nb/str.h>
 #include <nb/utf8.h>
 #include <nb/cleanup.h>
@@ -11,6 +14,38 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static void runtime_mcp_notification(const char *server, const char *method, const cJSON *params,
+				     const void *opaque, void *user_data)
+{
+	(void)user_data;
+	const struct tool_runtime_context *context = opaque;
+	if (!context || !context->event_cb)
+		return;
+
+	if (!strcmp(method, "notifications/progress")) {
+		const char *token = cJSON_GetStringValue(
+			cJSON_GetObjectItemCaseSensitive(params, "progressToken"));
+		if (!context->tool_call_id || !token || strcmp(token, context->tool_call_id))
+			return;
+	}
+
+	cJSON *data NB_CLEANUP(cJSON_DeleteOwner) = params && cJSON_IsObject(params)
+							    ? cJSON_Duplicate(params, 1)
+							    : cJSON_CreateObject();
+	if (!data || !cJSON_AddStringToObject(data, "server", server) ||
+	    !cJSON_AddStringToObject(data, "method", method))
+		return;
+
+	const char *message =
+		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(params, "message"));
+	if (!message)
+		message = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(params, "data"));
+
+	(void)morph_event_emit_simple(context->event_cb, context->event_user_data, MORPH_EVENT_MCP,
+				      "mcp.notification", "notification",
+				      message ? message : method, data);
+}
 
 static const char *runtime_mcp_transport_name(
 	enum mcp_transport_type transport)
@@ -254,6 +289,9 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 	if (prompts_count)
 		*prompts_count = p;
 	rc = t < 0 ? t : (r < 0 ? r : (p < 0 ? p : 0));
+	if (rc == 0)
+		rc = mcp_listen_catalog_changes(client);
+
 	client->discovery_error = rc;
 	client->capabilities_registered = rc == 0;
 	if (rc < 0) {
@@ -304,6 +342,12 @@ int runtime_mcp_init_from_config_controlled(struct nb_log *logger,
 		if (!client)
 			continue;
 
+		client->handlers.elicitation = runtime_mcp_elicitation;
+		client->handlers.sampling = runtime_mcp_sampling;
+		client->handlers.sampling_tools = 1;
+		client->handlers.roots = runtime_mcp_roots;
+		client->handlers.notification = runtime_mcp_notification;
+		client->handlers.user_data = tools ? tools->permission_context : NULL;
 		client->interrupt_check = interrupt_check;
 		client->interrupt_user_data = interrupt_user_data;
 		if (!connect_configured || !server.auto_connect)

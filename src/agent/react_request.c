@@ -129,6 +129,12 @@ char *react_system_prompt_create(struct react_context *ctx)
 	if (rc != 0)
 		return NULL;
 
+	if (ctx->tool_runtime.append_instructions) {
+		rc = ctx->tool_runtime.append_instructions(&buf, ctx->tools);
+		if (rc != 0)
+			return NULL;
+	}
+
 	if (!ctx->system_prompt_replace || !ctx->system_prompt) {
 		rc = (nb_buf_append_cstr(&buf, MORPH_DEFAULT_BEHAVIOR_PROMPT) ? 0 : NB_ERR_NOMEM);
 		if (rc == 0)

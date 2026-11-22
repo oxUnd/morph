@@ -35,3 +35,6 @@ target_link_libraries(morph-runtime PUBLIC
 	morph-ipc
 	morph-app-data
 )
+if(UNIX)
+	target_link_libraries(morph-runtime PUBLIC m)
+endif()

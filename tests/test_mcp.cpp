@@ -686,6 +686,7 @@ TEST_F(McpHttpAuthUrlTest, MissingTokenEnvFailsWhenPlaceholderIsUsed) {
 
 /* Exercise framing independently of a particular MCP server implementation. */
 #include <thread>
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <unistd.h>
@@ -761,6 +762,220 @@ TEST_F(McpStdioFramingTest, SkipsNotificationsAndPreservesFollowingBufferedRespo
 	free(response);
 }
 
+TEST_F(McpStdioFramingTest, ModernSubscriptionsAcknowledgeAndInterleaveWithOrdinaryRequests)
+{
+	client.connected = 1;
+	client.protocol = mcp_protocol_borrow(MCP_PROTOCOL_VERSION);
+	send("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\","
+	     "\"params\":{\"notifications\":{\"toolsListChanged\":true},"
+	     "\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\","
+	     "\"params\":{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"_meta\":{"
+	     "\"io.modelcontextprotocol/resultType\":\"completed\"}}}\n");
+	cJSON *filters NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"toolsListChanged\":true}");
+	ASSERT_EQ(mcp_listen_notifications(&client, filters), 0);
+	EXPECT_EQ(nb_atomic_int_load(&client.subscription_acknowledged), 1);
+	EXPECT_EQ(mcp_ping(&client), 0);
+	EXPECT_EQ(nb_atomic_int_load(&client.tools_list_changed), 1);
+	mcp_stop_notifications(&client);
+	EXPECT_EQ(client.subscription_id, 0);
+}
+
+TEST_F(McpStdioFramingTest, ModernResourceSubscriptionsSurviveCatalogReconnects)
+{
+	client.connected = 1;
+	client.supports_catalog_notifications = 1;
+	client.protocol = mcp_protocol_borrow(MCP_PROTOCOL_VERSION);
+	for (int id = 1; id <= 4; id++) {
+		std::string resources =
+			id == 2 || id == 3 ? ",\"resourceSubscriptions\":[\"fixture://item\"]" : "";
+		send("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\","
+		     "\"params\":{\"notifications\":{\"toolsListChanged\":true" +
+		     resources +
+		     "},"
+		     "\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":" +
+		     std::to_string(id) + "}}}\n");
+	}
+
+	ASSERT_EQ(mcp_listen_catalog_changes(&client), 0);
+	ASSERT_EQ(mcp_listen_catalog_changes(&client), 0);
+	EXPECT_EQ(client.next_req_id, 2);
+	ASSERT_EQ(mcp_resource_subscribe(&client, "fixture://item"), 0);
+	client.subscription_ended = 1;
+	ASSERT_EQ(mcp_listen_catalog_changes(&client), 0);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(client.subscription_filters,
+							 "resourceSubscriptions")),
+		  1);
+	ASSERT_EQ(mcp_resource_unsubscribe(&client, "fixture://item"), 0);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(client.subscription_filters,
+							 "resourceSubscriptions")),
+		  0);
+	EXPECT_EQ(client.subscription_id, 4);
+}
+
+TEST_F(McpStdioFramingTest, SubscriptionNotificationsMustFollowTheirAcknowledgment)
+{
+	client.connected = 1;
+	client.protocol = mcp_protocol_borrow(MCP_PROTOCOL_VERSION);
+	send("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\","
+	     "\"params\":{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}\n");
+	cJSON *filters NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"toolsListChanged\":true}");
+	EXPECT_EQ(mcp_listen_notifications(&client, filters), NB_ERR_PROTOCOL);
+	EXPECT_EQ(client.subscription_id, 0);
+}
+
+TEST_F(McpStdioFramingTest, ServerCancellationIsCorrelatedWithoutCancellingTheNextCall)
+{
+	send("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\","
+	     "\"params\":{\"requestId\":1}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n");
+	EXPECT_EQ(mcp_ping(&client), NB_ERR_CANCELLED);
+	EXPECT_EQ(mcp_ping(&client), 0);
+}
+
+TEST_F(McpStdioFramingTest, CatalogRefreshPublishesNewDescriptorsAndRetainsExecutions)
+{
+	strcpy(client.config.name, "refresh");
+	client.connected = 1;
+	client.capabilities_registered = 1;
+	client.supports_tools = 1;
+	std::thread server([&] {
+		for (int index = 0; index < 2; index++) {
+			std::string line;
+			char byte;
+			while (read(request_read, &byte, 1) == 1 && byte != '\n')
+				line.push_back(byte);
+
+			cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(line.c_str());
+			if (!request)
+				return;
+
+			int id = cJSON_GetObjectItem(request, "id")->valueint;
+			std::string name = index == 0 ? "old" : "new";
+			std::string description =
+				index == 0 ? "previous description" : "updated description";
+			send("{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+			     ",\"result\":{\"tools\":[{\"name\":\"" + name +
+			     "\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\","
+			     "\"description\":\"" +
+			     description + "\",\"inputSchema\":{\"type\":\"object\"}}]}}\n");
+			if (index == 0)
+				send("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/"
+				     "list_changed\"}\n");
+		}
+	});
+	struct tool_registry tools NB_CLEANUP(tool_registry_cleanup) = {};
+	tool_registry_init(nullptr, &tools);
+	int registered = mcp_register_server_tools(&client, &tools);
+	EXPECT_EQ(registered, 2);
+	struct tool_handle retained NB_CLEANUP(tool_handle_release) = {};
+	EXPECT_EQ(tool_registry_acquire(&tools, "mcp_refresh__old", &retained), 0);
+	EXPECT_EQ(tool_disable(&tools, "mcp_refresh__echo"), 0);
+	struct tool_entry *echo = tool_borrow(&tools, "mcp_refresh__echo");
+	if (echo)
+		echo->timeout_seconds = 17;
+
+	struct mcp_registry registry = {};
+	registry.servers[0] = &client;
+	registry.count = 1;
+	int rc = mcp_refresh_catalog(&registry, &tools);
+	server.join();
+	ASSERT_EQ(rc, 0);
+	EXPECT_EQ(tool_borrow(&tools, "mcp_refresh__old"), nullptr);
+	EXPECT_NE(tool_borrow(&tools, "mcp_refresh__new"), nullptr);
+	ASSERT_NE(retained.user_data, nullptr);
+	ASSERT_NE(retained.exec, nullptr);
+	echo = tool_borrow(&tools, "mcp_refresh__echo");
+	ASSERT_NE(echo, nullptr);
+	EXPECT_STREQ(echo->desc.description, "updated description");
+	EXPECT_EQ(echo->timeout_seconds, 17);
+	EXPECT_TRUE(tool_is_disabled(&tools, "mcp_refresh__echo"));
+}
+
+TEST_F(McpStdioFramingTest, TemplatesCompletionsAndLegacyControlsKeepTheirWireContracts)
+{
+	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resourceTemplates\":[],\"nextCursor\":"
+	     "\"next\"}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+	     "\"uriTemplate\":\"fixture://{name}\",\"name\":\"template\"}]}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"completion\":{"
+	     "\"values\":[\"first\"],\"total\":1,\"hasMore\":false}}}\n");
+	cJSON *templates NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(mcp_list_resource_templates_copy(&client, &templates), 0);
+	ASSERT_EQ(cJSON_GetArraySize(templates), 1);
+	EXPECT_STREQ(cJSON_GetStringValue(
+			     cJSON_GetObjectItem(cJSON_GetArrayItem(templates, 0), "uriTemplate")),
+		     "fixture://{name}");
+	EXPECT_EQ(mcp_resource_subscribe(&client, "fixture://item"), 0);
+	EXPECT_EQ(mcp_resource_unsubscribe(&client, "fixture://item"), 0);
+	EXPECT_EQ(mcp_set_log_level(&client, "warning"), 0);
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(R"({
+		"ref":{"type":"ref/resource","uri":"fixture://{name}"},
+		"argument":{"name":"name","value":"fi"}})");
+	cJSON *completion NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(mcp_complete_copy(&client, params, &completion), 0);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(
+			  cJSON_GetObjectItem(completion, "completion"), "values")),
+		  1);
+	const char *methods[] = {"resources/templates/list", "resources/templates/list",
+				 "resources/subscribe",	     "resources/unsubscribe",
+				 "logging/setLevel",	     "completion/complete"};
+	for (const char *method : methods) {
+		std::string line;
+		char byte;
+		while (read(request_read, &byte, 1) == 1 && byte != '\n')
+			line.push_back(byte);
+
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(line.c_str());
+		ASSERT_NE(request, nullptr);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(request, "method")), method);
+	}
+}
+
+TEST_F(McpStdioFramingTest, ShutdownCancelsARequestWaitingForTheSharedConnection)
+{
+	struct nb_cancel shutdown;
+	nb_cancel_init(&shutdown);
+	client.shutdown_cancel = &shutdown;
+	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n");
+	nb_mutex_lock(client.lock);
+	std::atomic<bool> finished{false};
+	int rc = 0;
+	std::thread caller([&] {
+		rc = mcp_ping(&client);
+		finished = true;
+	});
+	nb_cancel_request(&shutdown);
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+	while (!finished && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+	bool cancelled_while_queued = finished;
+	nb_mutex_unlock(client.lock);
+	caller.join();
+	client.shutdown_cancel = nullptr;
+	EXPECT_TRUE(cancelled_while_queued);
+	EXPECT_EQ(rc, NB_ERR_CANCELLED);
+}
+
+TEST_F(McpStdioFramingTest, CatalogCancellationDoesNotCancelAnIndependentToolContext)
+{
+	nb_atomic_int cancelled = 1;
+	client.catalog_cancelled = &cancelled;
+	client.refreshing_catalog = 1;
+	send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n");
+	char *response NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	int context = 0;
+	EXPECT_EQ(mcp_request_with_context(&client, "ping", nullptr, &context, &response), 0);
+	EXPECT_EQ(mcp_ping(&client), NB_ERR_CANCELLED);
+	client.catalog_cancelled = nullptr;
+	client.refreshing_catalog = 0;
+}
+
 TEST_F(McpStdioFramingTest, NotificationsDoNotResetRequestDeadline)
 {
 	client.config.connect_timeout = 1;
@@ -788,6 +1003,84 @@ TEST_F(McpStdioFramingTest, DeadServerReturnsPipeErrorWithoutSignallingHost)
 	char *response = nullptr;
 	EXPECT_EQ(mcp_request(&client, "initialize", nullptr, &response), NB_ERR_BROKEN_PIPE);
 	EXPECT_EQ(response, nullptr);
+}
+
+static int mcp_fixture_elicit(const char *, const char *, const cJSON *, const void *context,
+			      cJSON **result, void *expected)
+{
+	EXPECT_EQ(context, expected);
+	*result = cJSON_Parse("{\"action\":\"accept\",\"content\":{}}");
+	return *result ? 0 : NB_ERR_NOMEM;
+}
+
+TEST_F(McpStdioFramingTest, PeerRequestIdCannotBeConfusedWithTheToolResponse)
+{
+	struct tool_runtime_context runtime = {};
+	client.handlers.elicitation = mcp_fixture_elicit;
+	client.handlers.user_data = &runtime;
+	cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
+		R"({"jsonrpc":"2.0","id":1,"method":"elicitation/create","params":{
+		"message":"Approve?","requestedSchema":{"type":"object","properties":{}}}})");
+	char *encoded NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(request);
+	ASSERT_NE(encoded, nullptr);
+	send(std::string(encoded) +
+	     "\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n");
+	struct tool_result result;
+	tool_result_init(&result);
+	result.runtime = &runtime;
+	EXPECT_EQ(mcp_call_tool(&client, "js", "{}", &result), 0);
+	tool_result_cleanup(&result);
+	char requests[BUFSIZ];
+	ssize_t count = read(request_read, requests, sizeof(requests));
+	ASSERT_GT(count, 0);
+	std::string wire(requests, static_cast<size_t>(count));
+	EXPECT_NE(wire.find("\"action\":\"accept\""), std::string::npos);
+	EXPECT_EQ(client.request_context, nullptr);
+}
+
+TEST_F(McpStdioFramingTest, StringPeerIdsAndUnknownMethodsReceiveCorrelatedErrors)
+{
+	send("{\"jsonrpc\":\"2.0\",\"id\":\"server-request\",\"method\":\"unknown\"}\n"
+	     "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n");
+	char *result = nullptr;
+	EXPECT_EQ(mcp_request(&client, "ping", nullptr, &result), 0);
+	free(result);
+	char requests[BUFSIZ];
+	ssize_t count = read(request_read, requests, sizeof(requests));
+	ASSERT_GT(count, 0);
+	std::string wire(requests, static_cast<size_t>(count));
+	EXPECT_NE(wire.find("\"id\":\"server-request\""), std::string::npos);
+	EXPECT_NE(wire.find("\"code\":-32601"), std::string::npos);
+}
+
+TEST_F(McpStdioFramingTest, ModernInputRequiredResumesWithResponsesAndOpaqueState)
+{
+	struct tool_runtime_context runtime = {};
+	client.protocol = mcp_protocol_borrow(MCP_PROTOCOL_VERSION);
+	client.handlers.elicitation = mcp_fixture_elicit;
+	client.handlers.user_data = &runtime;
+	cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(
+		R"({"jsonrpc":"2.0","id":1,"result":{"resultType":"input_required",
+		"inputRequests":{"approval":{"method":"elicitation/create","params":{
+		"message":"Approve?","requestedSchema":{"type":"object","properties":{}}}}},
+		"requestState":"opaque-state"}})");
+	char *encoded NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(request);
+	ASSERT_NE(encoded, nullptr);
+	send(std::string(encoded) +
+	     "\n{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}\n");
+	struct tool_result result;
+	tool_result_init(&result);
+	result.runtime = &runtime;
+	EXPECT_EQ(mcp_call_tool(&client, "js", "{\"code\":\"original\"}", &result), 0);
+	tool_result_cleanup(&result);
+	char requests[BUFSIZ];
+	ssize_t count = read(request_read, requests, sizeof(requests));
+	ASSERT_GT(count, 0);
+	std::string wire(requests, static_cast<size_t>(count));
+	EXPECT_NE(wire.find("\"requestState\":\"opaque-state\""), std::string::npos);
+	EXPECT_NE(wire.find("\"inputResponses\":{\"approval\":{\"action\":\"accept\""),
+		  std::string::npos);
+	EXPECT_EQ(client.request_context, nullptr);
 }
 
 TEST_F(McpStdioFramingTest, DiscoveryPreservesLargeSchemasAndDescriptions)

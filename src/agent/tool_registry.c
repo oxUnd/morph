@@ -605,6 +605,63 @@ int tool_registry_copy(struct tool_registry *out, struct tool_registry *source)
 	return rc;
 }
 
+int tool_registry_replace_origin_copy(struct tool_registry *out, struct tool_registry *source,
+				      enum tool_origin origin)
+{
+	if (!out || !source || out == source)
+		return NB_ERR_INVAL;
+
+	struct tool_registry prepared NB_CLEANUP(tool_registry_cleanup) = {0};
+	tool_registry_init(out->logger, &prepared);
+	int rc = prepared.init_error;
+	if (rc != 0)
+		return rc;
+
+	nb_mutex_lock(out->mutation_mutex);
+	tool_registry_lock(out);
+	tool_registry_lock(source);
+	for (int i = 0; i < out->count && rc == 0; i++) {
+		if (out->entries[i].origin != origin)
+			rc = tool_register_copy(&prepared, &out->entries[i]);
+	}
+
+	for (int i = 0; i < source->count && rc == 0; i++) {
+		const struct tool_entry *entry = &source->entries[i];
+		if (entry->origin != origin)
+			continue;
+
+		rc = tool_register_copy(&prepared, entry);
+		if (rc == 0) {
+			struct tool_entry *previous = tool_borrow(out, entry->desc.name);
+			struct tool_entry *copy = tool_borrow(&prepared, entry->desc.name);
+			if (previous && previous->origin == origin) {
+				copy->flags |= previous->flags & ~(unsigned int)TOOL_FLAG_READONLY;
+				if (copy->flags & TOOL_FLAG_READONLY_CONFIGURED)
+					copy->flags |= TOOL_FLAG_READONLY;
+
+				copy->timeout_seconds = previous->timeout_seconds;
+			}
+		}
+	}
+
+	if (rc == 0) {
+		nb_vec_move(&out->storage, &prepared.storage);
+		nb_map *index = out->by_name;
+		out->by_name = prepared.by_name;
+		prepared.by_name = index;
+		int count = out->count;
+		out->count = prepared.count;
+		prepared.count = count;
+		out->entries = (struct tool_entry *)out->storage.data;
+		prepared.entries = (struct tool_entry *)prepared.storage.data;
+	}
+
+	tool_registry_unlock(source);
+	tool_registry_unlock(out);
+	nb_mutex_unlock(out->mutation_mutex);
+	return rc;
+}
+
 struct tool_entry *tool_borrow(struct tool_registry *reg, const char *name)
 {
 	if (!reg || !name)

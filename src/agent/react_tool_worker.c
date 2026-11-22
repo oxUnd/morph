@@ -63,11 +63,22 @@ static int tool_callback_ask(const char *question, const char *const *choices, i
 	*answers = NULL;
 	*answer_count = 0;
 	if (tool_callback_enter(call)) {
+		nb_mutex_lock(call->mutex);
+		if (call->questions_active++ == 0)
+			call->question_started_ms = nb_time_monotonic_ms();
+
+		nb_mutex_unlock(call->mutex);
 		rc = call->runtime.ask_user_fn
 			     ? call->runtime.ask_user_fn(question, choices, count, mode, min, max,
 							 options, answers, answer_count,
 							 call->runtime.ask_user_user_data)
 			     : NB_ERR_UNSUPPORTED;
+		nb_mutex_lock(call->mutex);
+		if (--call->questions_active == 0)
+			call->question_wait_ms +=
+				nb_time_monotonic_ms() - call->question_started_ms;
+
+		nb_mutex_unlock(call->mutex);
 		tool_callback_leave(call);
 	}
 	return rc;
@@ -228,12 +239,15 @@ int react_tool_worker_join(struct react_context *ctx, nb_thread *thread, nb_atom
 			interrupted = 1;
 			break;
 		}
-		if (deadline > 0 && nb_time_monotonic_ms() >= deadline)
+		if (deadline > 0 && call->questions_active == 0 &&
+		    nb_time_monotonic_ms() - call->question_wait_ms >= deadline)
 			break;
+
 		(void)nb_cond_timedwait(call->cond, call->mutex, INT64_C(100000000));
 	}
 	if (call->completed || (!nb_atomic_int_load(cancelled) && !interrupted)) {
-		if (!call->completed && deadline > 0 && nb_time_monotonic_ms() >= deadline) {
+		if (!call->completed && deadline > 0 && call->questions_active == 0 &&
+		    nb_time_monotonic_ms() - call->question_wait_ms >= deadline) {
 			nb_mutex_unlock(call->mutex);
 			react_tool_worker_retire(ctx, call, thread);
 			return NB_ERR_TIMEOUT;
@@ -336,7 +350,17 @@ static void *react_tool_worker_run(void *arg)
 			call->completed = 1;
 			nb_cond_broadcast(call->cond);
 		} else if (rc < 0) {
-			call->result = react_format_tool_error(&res, rc);
+			if (res.data && res.envelope &&
+			    cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(res.envelope, "ok")) &&
+			    tool_result_finalize(&res) == 0) {
+				call->result = strndup(res.text.ptr, res.text.len);
+				call->data = cJSON_Duplicate(res.data, 1);
+				call->ui = res.ui ? cJSON_Duplicate(res.ui, 1) : NULL;
+				call->artifacts = res.artifacts;
+			} else {
+				call->result = react_format_tool_error(&res, rc);
+			}
+
 			call->meta = res.meta ? cJSON_Duplicate(res.meta, 1) : NULL;
 			call->rc = rc;
 			call->completed = 1;

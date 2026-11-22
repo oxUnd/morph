@@ -70,6 +70,7 @@ set(TEST_SOURCES
 	test_render.cpp
 	test_mcp.cpp
 	test_mcp_protocol.cpp
+	test_mcp_interaction.cpp
 	test_ask_user.cpp
 	test_sandbox.cpp
 	test_tool_context.cpp
@@ -308,6 +309,11 @@ if(Python3_Interpreter_FOUND)
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_lifecycle_pty.py
 				$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
 		set_tests_properties(cli_mcp_lifecycle_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 90)
+		add_test(NAME cli_mcp_interaction_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_interaction_pty.py
+				$<TARGET_FILE:morph>)
+		set_tests_properties(cli_mcp_interaction_pty_integration PROPERTIES
 			SKIP_RETURN_CODE 77 TIMEOUT 90)
 		add_test(NAME cli_mcp_tree_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_tree_pty.py

@@ -1,5 +1,8 @@
 add_library(morph-mcp STATIC
 	mcp_protocol.c
+	mcp_dispatch.c
+	mcp_content.c
+	mcp_subscription.c
 	mcp_headers.c
 	mcp_client.c
 	mcp_stdio.c
@@ -11,4 +14,5 @@ target_include_directories(morph-mcp PUBLIC
 	${CMAKE_SOURCE_DIR}/vendor
 )
 target_compile_definitions(morph-mcp PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
-target_link_libraries(morph-mcp PUBLIC morph-ext-sdk nbase::nbase morph-cjson morph-http)
+target_link_libraries(morph-mcp PUBLIC
+	morph-ext-sdk nbase::nbase morph-cjson morph-http morph-permission morph-agent)

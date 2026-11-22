@@ -1,4 +1,5 @@
 #include "responses_codec.h"
+#include "content.h"
 #include <nb/log.h>
 #include "cJSON.h"
 #include "errors.h"
@@ -75,18 +76,35 @@ static enum tool_input_kind responses_call_kind(const struct chat_message *messa
 static cJSON *build_responses_input_cjson(const struct chat_message *messages, int msg_count)
 {
 	cJSON *array = cJSON_CreateArray();
+	cJSON *attachments NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
 
-	if (!array)
+	if (!array || !attachments) {
+		cJSON_Delete(array);
 		return NULL;
+	}
 	for (int i = 0; i < msg_count; i++) {
 		const struct chat_message *message = &messages[i];
 
 		if (message->tool_calls && message->tool_call_count > 0) {
-			if (message->content && message->content[0]) {
+			if ((message->content && message->content[0]) ||
+			    (message->content_parts && message->content_parts->child)) {
 				cJSON *text = cJSON_CreateObject();
 
 				cJSON_AddStringToObject(text, "role", "assistant");
-				cJSON_AddStringToObject(text, "content", message->content);
+				if (message->content_parts && message->content_parts->child) {
+					cJSON *parts = llm_content_create(
+						message->content, message->content_parts, 1);
+					if (!parts ||
+					    !cJSON_AddItemToObject(text, "content", parts)) {
+						cJSON_Delete(parts);
+						cJSON_Delete(text);
+						cJSON_Delete(array);
+						return NULL;
+					}
+				} else {
+					cJSON_AddStringToObject(text, "content", message->content);
+				}
+
 				cJSON_AddItemToArray(array, text);
 			}
 			for (int j = 0; j < message->tool_call_count; j++) {
@@ -119,14 +137,55 @@ static cJSON *build_responses_input_cjson(const struct chat_message *messages, i
 						kind == TOOL_INPUT_TEXT ? "custom_tool_call_output"
 									: "function_call_output");
 			cJSON_AddStringToObject(item, "call_id", message->tool_call_id);
-			cJSON_AddStringToObject(item, "output",
-						message->content ? message->content : "");
+			if (message->content_parts) {
+				cJSON *parts = llm_content_create(message->content,
+								  message->content_parts, 1);
+				if (parts) {
+					if (llm_content_tool_split(parts, attachments, 1) != 0) {
+						cJSON_Delete(parts);
+						parts = NULL;
+					} else if (!parts->child) {
+						cJSON_Delete(parts);
+						parts = cJSON_CreateString("");
+					}
+				}
+
+				if (!parts || !cJSON_AddItemToObject(item, "output", parts)) {
+					cJSON_Delete(parts);
+					cJSON_Delete(item);
+					cJSON_Delete(array);
+					return NULL;
+				}
+			} else {
+				cJSON_AddStringToObject(item, "output",
+							message->content ? message->content : "");
+			}
 			cJSON_AddItemToArray(array, item);
+			if (attachments->child &&
+			    (i + 1 == msg_count || !messages[i + 1].tool_call_id ||
+			     !messages[i + 1].tool_call_id[0]) &&
+			    llm_content_attachments_append(array, attachments) != 0) {
+				cJSON_Delete(array);
+				return NULL;
+			}
+
 			continue;
 		}
 		cJSON *item = cJSON_CreateObject();
 		cJSON_AddStringToObject(item, "role", message->role ? message->role : "user");
-		cJSON_AddStringToObject(item, "content", message->content ? message->content : "");
+		if (message->content_parts) {
+			cJSON *parts =
+				llm_content_create(message->content, message->content_parts, 1);
+			if (!parts || !cJSON_AddItemToObject(item, "content", parts)) {
+				cJSON_Delete(parts);
+				cJSON_Delete(item);
+				cJSON_Delete(array);
+				return NULL;
+			}
+		} else {
+			cJSON_AddStringToObject(item, "content",
+						message->content ? message->content : "");
+		}
 		cJSON_AddItemToArray(array, item);
 	}
 	return array;

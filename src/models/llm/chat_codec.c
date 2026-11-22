@@ -1,4 +1,5 @@
 #include "chat_codec.h"
+#include "content.h"
 #include <nb/log.h>
 #include "cJSON.h"
 #include "errors.h"
@@ -250,6 +251,11 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 					      const struct model *model)
 {
 	cJSON *arr = cJSON_CreateArray();
+	cJSON *attachments NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateArray();
+	if (!arr || !attachments) {
+		cJSON_Delete(arr);
+		return NULL;
+	}
 
 	if (system_prompt && *system_prompt) {
 		cJSON *sys_msg = cJSON_CreateObject();
@@ -263,7 +269,25 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 		cJSON *msg = cJSON_CreateObject();
 		cJSON_AddStringToObject(msg, "role", m->role);
 
-		if (m->content && *m->content)
+		if (m->content_parts && m->content_parts->child) {
+			cJSON *parts = llm_content_create(m->content, m->content_parts, 0);
+			if (parts && !strcmp(m->role, "tool")) {
+				if (llm_content_tool_split(parts, attachments, 0) != 0) {
+					cJSON_Delete(parts);
+					parts = NULL;
+				} else if (!parts->child) {
+					cJSON_Delete(parts);
+					parts = cJSON_CreateString("");
+				}
+			}
+
+			if (!parts || !cJSON_AddItemToObject(msg, "content", parts)) {
+				cJSON_Delete(parts);
+				cJSON_Delete(msg);
+				cJSON_Delete(arr);
+				return NULL;
+			}
+		} else if (m->content && *m->content)
 			cJSON_AddStringToObject(msg, "content", m->content);
 		else if (adapter->assistant_tool_content_nullable &&
 			 strcmp(m->role, "assistant") == 0 && m->tool_calls)
@@ -316,6 +340,13 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 		}
 
 		cJSON_AddItemToArray(arr, msg);
+		if (attachments->child &&
+		    (i + 1 == msg_count || strcmp(messages[i + 1].role, "tool"))) {
+			if (llm_content_attachments_append(arr, attachments) != 0) {
+				cJSON_Delete(arr);
+				return NULL;
+			}
+		}
 	}
 
 	return arr;

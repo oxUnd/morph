@@ -53,6 +53,7 @@ struct runtime {
 	int sync_started;
 	struct runtime_mcp_job mcp_jobs[MCP_MAX_SERVERS];
 	int mcp_job_count;
+	struct nb_cancel mcp_shutdown;
 	struct runtime_title_job *title_jobs[RUNTIME_TITLE_JOB_MAX];
 	struct runtime_recap_job *recap_job;
 	uint64_t recap_revision;

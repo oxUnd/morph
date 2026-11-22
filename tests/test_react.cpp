@@ -3101,6 +3101,45 @@ static void react_test_agent_info_cleanup(struct agent_info **info)
 	*info = nullptr;
 }
 
+TEST_F(MockLlmTest, HumanQuestionsPauseTheGenericToolDeadline)
+{
+	ASSERT_EQ(ask_user_init_deferred(&tools), 0);
+	const char *responses[] = {
+		"Action: ask_user({\"question\":\"Take your time\",\"choices\":[\"Yes\"]})",
+		"Final: human answer collected"};
+	llm = create_multi_mock_llm(responses, 2);
+	ASSERT_NE(llm, nullptr);
+	struct react_context *ctx NB_CLEANUP(react_context_clear) =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->tool_timeout_seconds = 1;
+	ctx->ask_user_fn = [](const char *, const char *const *, int, const char *, int, int,
+			      const struct ask_user_options *options, char ***answers, int *count,
+			      void *) -> int {
+		EXPECT_FALSE(options && options->optional);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1250));
+		*answers = static_cast<char **>(calloc(1, sizeof(**answers)));
+		if (!*answers)
+			return NB_ERR_NOMEM;
+
+		*count = 1;
+		(*answers)[0] = strdup("Yes");
+		return (*answers)[0] ? 0 : NB_ERR_NOMEM;
+	};
+	ASSERT_EQ(react_run(ctx, "ask a required question", nullptr, nullptr), 0);
+	int observations = 0;
+	for (const struct react_step *step = ctx->steps; step; step = step->next) {
+		if (step->type == REACT_STEP_OBSERVATION) {
+			EXPECT_EQ(step->error_code, 0);
+			EXPECT_NE(strstr(step->content, "Yes"), nullptr);
+			observations++;
+		}
+	}
+
+	EXPECT_EQ(observations, 1);
+}
+
 TEST_F(MockLlmTest, AgentWaitDeadlineOutlivesTheGenericToolTimeout)
 {
 	int duration = 1100;

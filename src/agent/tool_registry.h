@@ -174,6 +174,10 @@ int tool_register_copy(struct tool_registry *out, const struct tool_entry *entry
  * empty and exclusively owned during copying. Source is locked internally.
  * Failure rolls back additions and preserves the initialized empty target. */
 int tool_registry_copy(struct tool_registry *out, struct tool_registry *source);
+/* Atomically replace one origin's discovery catalog. Source entries retain
+ * their execution bindings; unaffected origins and disabled settings survive. */
+int tool_registry_replace_origin_copy(struct tool_registry *out, struct tool_registry *source,
+				      enum tool_origin origin);
 void tool_registry_init(struct nb_log *logger, struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);

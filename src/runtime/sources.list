@@ -17,6 +17,8 @@ lifecycle.c
 output.c
 permissions_service.c
 mcp.c
+mcp_elicitation.c
+mcp_sampling.c
 mcp_service.c
 registry_service.c
 scheduler.c

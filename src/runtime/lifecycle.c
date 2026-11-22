@@ -539,6 +539,10 @@ static int runtime_start_components(struct runtime *runtime)
 				!runtime->options.background_connect_mcp,
 			runtime->options.event_cb, runtime->options.event_user_data,
 			runtime->startup_interrupt_check, runtime->startup_interrupt_user_data);
+		for (int i = 0; i < ctx->mcp.count; i++) {
+			ctx->mcp.servers[i]->shutdown_cancel = &runtime->mcp_shutdown;
+			ctx->mcp.servers[i]->catalog_cancelled = &ctx->react->cancelled;
+		}
 	}
 
 	runtime_bootstrap_tool_flags(&ctx->tools, &ctx->config);
@@ -639,6 +643,8 @@ int runtime_open_controlled(struct runtime *parent, const struct runtime_options
 	runtime = calloc(1, sizeof(*runtime));
 	if (!runtime)
 		return NB_ERR_NOMEM;
+
+	nb_cancel_init(&runtime->mcp_shutdown);
 	runtime->options = *options;
 	runtime->client_parent = parent;
 	runtime->startup_interrupt_check = interrupt_check;
@@ -772,6 +778,8 @@ void runtime_close(struct runtime *runtime)
 
 	if (!runtime)
 		return;
+	nb_cancel_request(&runtime->mcp_shutdown);
+
 	runtime_clients_shutdown(runtime);
 
 	if (runtime->context.execution_lock_ready) {
@@ -904,6 +912,25 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 {
 	struct runtime *runtime = user_data;
 	struct runtime_context *context = &runtime->context;
+	/* Keep human interaction routing open while shared MCP calls finish. */
+	if (!runtime->client_parent && !nb_atomic_int_load(&context->react->cancelled)) {
+		for (int i = 0; i < context->mcp.count; i++)
+			context->mcp.servers[i]->refreshing_catalog = 1;
+
+		int refresh = mcp_refresh_catalog(&context->mcp, &context->tools);
+		for (int i = 0; i < context->mcp.count; i++)
+			context->mcp.servers[i]->refreshing_catalog = 0;
+
+		if (refresh == NB_ERR_CANCELLED)
+			return refresh;
+
+		if (refresh == 0)
+			runtime_bootstrap_tool_flags(&context->tools, &context->config);
+		else
+			nb_log_write(runtime->options.logger, NB_LOG_WARN,
+				     "mcp: catalog refresh deferred after error %d", refresh);
+	}
+
 	nb_mutex_lock(context->agent_interaction_lock);
 	if (context->agent_phase == RUNTIME_AGENTS_CLOSING) {
 		nb_mutex_unlock(context->agent_interaction_lock);

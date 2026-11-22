@@ -51,6 +51,13 @@ while IFS= read -r line; do
    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"mock","version":"1"},"capabilities":{"tools":{},"resources":{},"prompts":{}}}}' | sed "s/\"id\":1/\"id\":$id/"
    ;;
  *'"method":"tools/list"'*)
+   if [ "$3" = refresh_hung ]; then
+     if [ -f "$2.first-list" ]; then
+       : > "$2.refresh-list"
+       while :; do sleep 0.02; done
+     fi
+     : > "$2.first-list"
+   fi
    if [ "$3" = large ]; then
      sed "s/\"id\":2/\"id\":$id/" "$(dirname "$1")/large.json"
    elif [ "$3" = invalid ]; then
@@ -263,6 +270,33 @@ TEST_F(RuntimeMcpBackgroundTest, CloseCancelsPendingPublicationWithoutDeadlock)
 	nb_mutex_unlock(instance->context.execution_lock);
 	closing.join();
 	instance = nullptr;
+}
+
+TEST_F(RuntimeMcpBackgroundTest, CloseCancelsCatalogRefreshBeforeTheModelCall)
+{
+	server("catalog", 0, true, "refresh_hung");
+	release("catalog");
+	ASSERT_EQ(open(), 0);
+	ASSERT_TRUE(wait([&] { return state("catalog", RUNTIME_MCP_READY); }));
+	struct mcp_client *client = mcp_registry_borrow(&instance->context.mcp, "catalog");
+	ASSERT_NE(client, nullptr);
+	client->tools_list_changed = 1;
+	struct runtime_request request = {};
+	request.model_input = "Refresh catalog before generation";
+	struct runtime_result result = {};
+	int rc = 0;
+	std::thread caller([&] { rc = runtime_execute_turn(instance, &request, &result); });
+	bool refreshing = wait([&] {
+		return std::filesystem::exists(directory + "/catalog.started.refresh-list");
+	});
+	auto start = McpClock::now();
+	runtime_close(instance);
+	instance = nullptr;
+	caller.join();
+	EXPECT_TRUE(refreshing);
+	EXPECT_LT(McpClock::now() - start, std::chrono::seconds(2));
+	EXPECT_EQ(rc, NB_ERR_CANCELLED);
+	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_CANCELLED);
 }
 
 TEST_F(RuntimeMcpBackgroundTest, DisconnectCancelsInitializationAndCanReconnect)

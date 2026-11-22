@@ -48,6 +48,8 @@ struct tool_checkpoint_context {
 };
 
 struct tool_runtime_context {
+	/* Receives the active registry, including independently filtered children. */
+	int (*append_instructions)(nb_buf *text, void *registry);
 	/* Runtime workspace coordination, independent of permission authorization.
 	 * Successful acquisition remains owned by the turn through worker drain. */
 	int (*mutation_begin)(void *user_data, const char *tool);

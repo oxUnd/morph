@@ -8,6 +8,7 @@ extern "C" {
 #include <limits.h>
 #include <nb/err.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <nb/thread.h>
 #include <sys/types.h>
 
@@ -40,6 +41,8 @@ struct mcp_tool_desc {
 	const char *title;
 	const char *description;
 	const char *input_schema;
+	const char *output_schema;
+	const char *metadata;
 	/* Only an explicit boolean readOnlyHint grants read-only classification. */
 	int read_only;
 };
@@ -82,6 +85,26 @@ struct mcp_server_config {
 };
 
 struct mcp_protocol_adapter;
+struct mcp_client;
+struct mcp_listener;
+
+/* Borrowed host callbacks. Request results start empty and transfer an owned
+ * JSON object on success. Context belongs to the active caller, never a model.
+ * Callbacks must not recursively invoke this client's transport. */
+typedef int (*mcp_client_request_fn)(const char *server, const char *method, const cJSON *params,
+				     const void *context, cJSON **result, void *user_data);
+typedef void (*mcp_client_notification_fn)(const char *server, const char *method,
+					   const cJSON *params, const void *context,
+					   void *user_data);
+
+struct mcp_client_handlers {
+	mcp_client_request_fn elicitation;
+	mcp_client_request_fn sampling;
+	int sampling_tools;
+	mcp_client_request_fn roots;
+	mcp_client_notification_fn notification;
+	void *user_data;
+};
 
 /* MCP client -- manages one server connection */
 struct mcp_client {
@@ -94,16 +117,35 @@ struct mcp_client {
 	/* Optional startup interruption; owned by the connection worker. */
 	int (*interrupt_check)(void *);
 	void *interrupt_user_data;
+	const struct nb_cancel *shutdown_cancel;
+	const nb_atomic_int *catalog_cancelled;
+	nb_atomic_int refreshing_catalog;
 	const struct mcp_protocol_adapter *protocol;
 	nb_map *tool_schemas;
 	char negotiated_version[32];
 	char server_name[MCP_NAME_MAX];
 	char server_version[64];
+	char *instructions;
+	struct mcp_client_handlers handlers;
+	const void *request_context;
+	int64_t interaction_wait_ms;
+	int active_request_id;
+	int peer_cancelled;
 	/* server capabilities */
 	int supports_tools;
 	int supports_resources;
 	int supports_prompts;
-	int tools_list_changed;
+	int supports_catalog_notifications;
+	nb_atomic_int tools_list_changed;
+	nb_atomic_int resources_list_changed;
+	nb_atomic_int prompts_list_changed;
+	int subscription_id;
+	cJSON *subscription_filters;
+	cJSON *subscription_accepted;
+	nb_atomic_int subscription_acknowledged;
+	nb_atomic_int subscription_ended;
+	struct mcp_client *notification_target;
+	struct mcp_listener *listener;
 	/* stdio transport state */
 	struct nb_process *child;
 	pid_t server_pid;
@@ -114,6 +156,7 @@ struct mcp_client {
 	nb_http_client *http_client;
 	int http_status;
 	char *session_id;
+	char log_level[16];
 	/* JSON-RPC id counter */
 	int next_req_id;
 	/* thread safety */
@@ -136,6 +179,8 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 struct mcp_client *mcp_registry_borrow(struct mcp_registry *reg, const char *name);
 int mcp_registry_count(struct mcp_registry *reg);
 void mcp_registry_cleanup(struct mcp_registry *reg);
+int mcp_tool_instructions_append(nb_buf *text, void *registry);
+int mcp_refresh_catalog(struct mcp_registry *registry, struct tool_registry *tools);
 
 /* ----- Lifecycle ----- */
 
@@ -164,6 +209,19 @@ int mcp_call_tool(struct mcp_client *client, const char *name, const char *args_
 int mcp_list_resources_copy(struct mcp_client *client, struct mcp_resource_desc **out_res,
 			    int *out_count);
 int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_result *out_content);
+/* Arrays/objects are independent cJSON owners; outputs must start NULL. */
+int mcp_list_resource_templates_copy(struct mcp_client *client, cJSON **out);
+int mcp_complete_copy(struct mcp_client *client, const cJSON *params, cJSON **out);
+int mcp_resource_subscribe(struct mcp_client *client, const char *uri);
+int mcp_resource_unsubscribe(struct mcp_client *client, const char *uri);
+int mcp_set_log_level(struct mcp_client *client, const char *level);
+/* Modern notification subscriptions use explicit filters. Legacy HTTP opens
+ * its optional GET stream; legacy stdio already carries notifications. */
+int mcp_listen_notifications(struct mcp_client *client, const cJSON *filters);
+int mcp_listen_catalog_changes(struct mcp_client *client);
+void mcp_stop_notifications(struct mcp_client *client);
+/* Drain available stdio notifications at an application boundary. */
+int mcp_poll_notifications(struct mcp_client *client, int timeout_ms);
 
 /* ----- Prompts ----- */
 

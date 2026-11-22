@@ -2,6 +2,7 @@ llm/adapter.c
 llm/stream.c
 llm/codec.c
 llm/chat_codec.c
+llm/content.c
 llm/responses_codec.c
 llm/deepseek.c
 llm/llm.c

@@ -1075,6 +1075,7 @@ void chat_message_cleanup(struct chat_message *msg)
 	free(msg->content);
 	free(msg->tool_call_id);
 	free(msg->reasoning_content);
+	cJSON_Delete(msg->content_parts);
 	for (int i = 0; i < msg->tool_call_count; i++)
 		tool_call_cleanup(&msg->tool_calls[i]);
 	free(msg->tool_calls);
@@ -1124,7 +1125,7 @@ int chat_message_clone(const struct chat_message *source, struct chat_message *o
 	    (source->tool_call_count && !source->tool_calls))
 		return NB_ERR_INVAL;
 	if (out->role || out->content || out->tool_call_id || out->tool_calls ||
-	    out->reasoning_content || out->tool_call_count)
+	    out->reasoning_content || out->tool_call_count || out->content_parts)
 		return NB_ERR_EXISTS;
 	struct chat_message copy NB_CLEANUP(chat_message_cleanup) = {0};
 	const char *values[] = {source->role, source->content, source->tool_call_id,
@@ -1151,6 +1152,12 @@ int chat_message_clone(const struct chat_message *source, struct chat_message *o
 		}
 	}
 	copy.is_context_summary = source->is_context_summary;
+	if (source->content_parts) {
+		copy.content_parts = cJSON_Duplicate(source->content_parts, 1);
+		if (!copy.content_parts)
+			return NB_ERR_NOMEM;
+	}
+
 	*out = copy;
 	memset(&copy, 0, sizeof(copy));
 	return 0;

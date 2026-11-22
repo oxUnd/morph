@@ -46,8 +46,10 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 			return rc;
 	}
 	for (;;) {
-		if (client->interrupt_check &&
-		    client->interrupt_check(client->interrupt_user_data))
+		if (client->peer_cancelled)
+			return NB_ERR_CANCELLED;
+
+		if (mcp_client_interrupted(client))
 			return NB_ERR_CANCELLED;
 		int64_t remaining = deadline - mcp_stdio_now_ms();
 		if (remaining <= 0)
@@ -57,9 +59,71 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 			char *line = strndup(next_line.ptr, next_line.len);
 			if (!line)
 				return NB_ERR_NOMEM;
-			cJSON *object = cJSON_Parse(line);
+			cJSON *object = cJSON_ParseWithOpts(line, NULL, 1);
+			if (!object) {
+				free(line);
+				return NB_ERR_PARSE;
+			}
+
 			cJSON *id = cJSON_GetObjectItemCaseSensitive(object, "id");
-			int matches = cJSON_IsNumber(id) && id->valueint == req_id;
+			cJSON *method = cJSON_GetObjectItemCaseSensitive(object, "method");
+			if (method) {
+				char *reply NB_CLEANUP(nb_charp_cleanup) = NULL;
+				int64_t waited = client->interaction_wait_ms;
+				rc = client->protocol && client->protocol->per_request && id
+					     ? NB_ERR_PROTOCOL
+					     : mcp_dispatch_message(client, object, &reply);
+				deadline += client->interaction_wait_ms - waited;
+				cJSON_Delete(object);
+				free(line);
+				if (rc != 0)
+					return rc;
+
+				if (reply) {
+					rc = nb_fd_write_until(
+						client->stdin_fd, reply, strlen(reply),
+						deadline * INT64_C(1000000), mcp_client_interrupted,
+						client, NULL);
+					if (rc == 0)
+						rc = nb_fd_write_until(client->stdin_fd, "\n", 1,
+								       deadline * INT64_C(1000000),
+								       mcp_client_interrupted,
+								       client, NULL);
+
+					if (rc != 0) {
+						mcp_stdio_disconnect(client);
+						return rc;
+					}
+				}
+
+				if (req_id == -2)
+					return NB_ERR_AGAIN;
+
+				continue;
+			}
+
+			int matches = cJSON_IsNumber(id) && id->valuedouble == req_id;
+			if (cJSON_IsNumber(id) && client->subscription_id > 0 &&
+			    id->valuedouble == client->subscription_id) {
+				client->subscription_ended = 1;
+				cJSON *result = cJSON_GetObjectItemCaseSensitive(object, "result");
+				cJSON *meta = cJSON_GetObjectItemCaseSensitive(result, "_meta");
+				cJSON *subscription = cJSON_GetObjectItemCaseSensitive(
+					meta, "io.modelcontextprotocol/subscriptionId");
+				int valid = cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(
+						    object, "error")) ||
+					    (cJSON_IsNumber(subscription) &&
+					     subscription->valuedouble == client->subscription_id);
+				cJSON_Delete(object);
+				free(line);
+				if (!valid)
+					return NB_ERR_PROTOCOL;
+
+				if (req_id == -2)
+					return NB_ERR_AGAIN;
+
+				continue;
+			}
 
 			cJSON_Delete(object);
 			if (matches) {
@@ -99,6 +163,12 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 	}
 }
 
+int mcp_stdio_poll(struct mcp_client *client, int timeout_ms)
+{
+	char *unused NB_CLEANUP(nb_charp_cleanup) = NULL;
+	return mcp_stdio_recv(client, -2, timeout_ms > 0 ? timeout_ms : 1, &unused);
+}
+
 int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request *request,
 		       int timeout_ms, struct mcp_wire_reply *reply)
 {
@@ -109,11 +179,10 @@ int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request 
 	struct mcp_wire_reply received NB_CLEANUP(mcp_wire_reply_cleanup) = {0};
 	int64_t deadline = mcp_stdio_now_ms() + timeout_ms;
 	int rc = nb_fd_write_until(client->stdin_fd, request->json, strlen(request->json),
-				   deadline * 1000000, client->interrupt_check,
-				   client->interrupt_user_data, NULL);
+				   deadline * 1000000, mcp_client_interrupted, client, NULL);
 	if (rc == 0) {
 		rc = nb_fd_write_until(client->stdin_fd, "\n", 1, deadline * 1000000,
-				       client->interrupt_check, client->interrupt_user_data, NULL);
+				       mcp_client_interrupted, client, NULL);
 	}
 	if (rc != 0) {
 		/* A partial line cannot safely be followed by another request. */
@@ -232,6 +301,7 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 		.search_path = true,
 		.close_fds = true,
 		.new_group = true,
+		.new_session = true,
 		.stderr_mode = NB_PROCESS_NULL,
 	};
 	rc = nb_process_spawn(&options, &client->child, NULL);

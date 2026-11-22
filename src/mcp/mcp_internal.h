@@ -17,6 +17,8 @@ extern "C" {
 struct mcp_wire_request {
 	int id;
 	char *json;
+	const char *http_method;
+	int resume_count;
 	nb_vec headers;
 };
 
@@ -43,7 +45,23 @@ void mcp_protocol_reset(struct mcp_client *client);
  * protocol errors. Transport failure leaves the optional result unchanged. */
 int mcp_request(struct mcp_client *client, const char *method,
 	const char *params, char **result);
+int mcp_request_with_context(struct mcp_client *client, const char *method, const char *params,
+			     const void *context, char **result);
+int mcp_request_controlled(struct mcp_client *client, const char *method, const char *params,
+			   const void *context, const struct http_control *control, char **result);
 int mcp_request_timeout_ms(const struct mcp_client *client);
+int mcp_client_interrupted(void *client);
+
+cJSON *mcp_client_capabilities_create(const struct mcp_client *client,
+				      const struct mcp_protocol_adapter *adapter);
+/* Dispatch an inbound request or notification without confusing peer request
+ * IDs with this client's response IDs. An optional reply is malloc-owned. */
+int mcp_dispatch_message(struct mcp_client *client, const cJSON *message, char **reply);
+int mcp_handle_input_request(struct mcp_client *client, const char *method, const cJSON *params,
+			     cJSON **result);
+/* Convert a wire result to a host result, retaining binary bytes as private
+ * file artifacts instead of duplicating base64 in model context. */
+int mcp_result_content_copy(struct tool_result *out, const cJSON *value);
 
 /* Schema validation/cache and mirrored HTTP headers belong to the codec.
  * Header helpers append independently owned strings to an initialized char*
@@ -60,8 +78,11 @@ void mcp_stdio_disconnect(struct mcp_client *client);
 int mcp_stdio_exchange(struct mcp_client *client,
 	const struct mcp_wire_request *request, int timeout_ms,
 	struct mcp_wire_reply *reply);
+int mcp_stdio_poll(struct mcp_client *client, int timeout_ms);
+int mcp_subscription_resource_set(struct mcp_client *client, const char *uri, int subscribe);
 int mcp_http_connect(struct mcp_client *client);
 void mcp_http_disconnect(struct mcp_client *client);
+int mcp_http_terminate_session(struct mcp_client *client);
 int mcp_http_exchange(struct mcp_client *client,
 	const struct mcp_wire_request *request, int timeout_ms,
 	struct mcp_wire_reply *reply);

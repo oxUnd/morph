@@ -72,6 +72,8 @@ struct chat_message {
 	char *reasoning_content;
 	/* Synthetic context references may need a different wire role per adapter. */
 	int is_context_summary;
+	/* Optional owned multimodal blocks: text, image and audio. */
+	cJSON *content_parts;
 };
 
 struct chat_response {

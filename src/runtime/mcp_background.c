@@ -172,10 +172,15 @@ static void *job_run(void *opaque)
 			p = mcp_register_server_prompts(job->client, &pending);
 		rc = t < 0 ? t : (r < 0 ? r : (p < 0 ? p : 0));
 		if (rc == 0)
+			rc = mcp_listen_catalog_changes(job->client);
+
+		if (rc == 0)
 			rc = job_publish(job, &pending);
 	}
+	nb_mutex_lock(job->client->lock);
 	job->client->interrupt_check = NULL;
 	job->client->interrupt_user_data = NULL;
+	nb_mutex_unlock(job->client->lock);
 	tool_registry_cleanup(&pending);
 	if (rc != 0)
 		mcp_disconnect(job->client);

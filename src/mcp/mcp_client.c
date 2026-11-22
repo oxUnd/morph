@@ -126,10 +126,17 @@ void mcp_disconnect(struct mcp_client *client)
 {
 	if (!client)
 		return;
+	mcp_stop_notifications(client);
+
 	if (client->config.transport == MCP_TRANSPORT_STDIO)
 		mcp_stdio_disconnect(client);
-	else
+	else {
+		if (client->connected)
+			(void)mcp_http_terminate_session(client);
+
 		mcp_http_disconnect(client);
+	}
+
 	mcp_protocol_reset(client);
 }
 
@@ -151,6 +158,9 @@ int mcp_ensure_connected(struct mcp_client *client)
 	nb_mutex_unlock(client->lock);
 
 	int rc;
+	if (client->child || client->http_client)
+		mcp_disconnect(client);
+
 	if (client->config.transport == MCP_TRANSPORT_STDIO)
 		rc = mcp_stdio_connect(client);
 	else
@@ -178,6 +188,101 @@ int mcp_ping(struct mcp_client *client)
 	int rc = mcp_request(client, "ping", NULL, &result);
 	free(result);
 	return rc;
+}
+
+static int mcp_json_request_copy(struct mcp_client *client, const char *method, const cJSON *params,
+				 cJSON **out)
+{
+	if (!client || !out || (params && !cJSON_IsObject(params)))
+		return NB_ERR_INVAL;
+
+	if (*out)
+		return NB_ERR_EXISTS;
+
+	char *encoded NB_CLEANUP(cJSON_FreeTextOwner) =
+		params ? cJSON_PrintUnformatted(params) : NULL;
+	char *text NB_CLEANUP(nb_charp_cleanup) = NULL;
+	if (params && !encoded)
+		return NB_ERR_NOMEM;
+
+	int rc = mcp_request(client, method, encoded, &text);
+	if (rc != 0)
+		return rc;
+
+	cJSON *value NB_CLEANUP(cJSON_DeleteOwner) = text ? cJSON_ParseWithOpts(text, NULL, 1) : NULL;
+	if (!cJSON_IsObject(value))
+		return NB_ERR_PROTOCOL;
+
+	*out = value;
+	value = NULL;
+	return 0;
+}
+
+int mcp_complete_copy(struct mcp_client *client, const cJSON *params, cJSON **out)
+{
+	if (!params)
+		return NB_ERR_INVAL;
+
+	return mcp_json_request_copy(client, "completion/complete", params, out);
+}
+
+static int mcp_resource_subscription(struct mcp_client *client, const char *uri, int subscribe)
+{
+	if (!client || !uri || !uri[0])
+		return NB_ERR_INVAL;
+
+	if (client->protocol && client->protocol->per_request)
+		return mcp_subscription_resource_set(client, uri, subscribe);
+
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	if (!params || !cJSON_AddStringToObject(params, "uri", uri))
+		return NB_ERR_NOMEM;
+
+	return mcp_json_request_copy(client,
+				     subscribe ? "resources/subscribe" : "resources/unsubscribe",
+				     params, &result);
+}
+
+int mcp_resource_subscribe(struct mcp_client *client, const char *uri)
+{
+	return mcp_resource_subscription(client, uri, 1);
+}
+
+int mcp_resource_unsubscribe(struct mcp_client *client, const char *uri)
+{
+	return mcp_resource_subscription(client, uri, 0);
+}
+
+int mcp_set_log_level(struct mcp_client *client, const char *level)
+{
+	if (!client || !level)
+		return NB_ERR_INVAL;
+
+	const char *levels[] = {"debug", "info",     "notice", "warning",
+				"error", "critical", "alert",  "emergency"};
+	int valid = 0;
+	for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+		if (!strcmp(level, levels[i]))
+			valid = 1;
+	}
+
+	if (!valid)
+		return NB_ERR_INVAL;
+
+	if (client->protocol && client->protocol->per_request) {
+		nb_mutex_lock(client->lock);
+		(void)snprintf(client->log_level, sizeof(client->log_level), "%s", level);
+		nb_mutex_unlock(client->lock);
+		return 0;
+	}
+
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	if (!params || !cJSON_AddStringToObject(params, "level", level))
+		return NB_ERR_NOMEM;
+
+	return mcp_json_request_copy(client, "logging/setLevel", params, &result);
 }
 
 static void mcp_test_message(char *message, size_t message_cap,
@@ -341,6 +446,17 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 	return 0;
 }
 
+int mcp_list_resource_templates_copy(struct mcp_client *client, cJSON **out)
+{
+	if (!client || !out)
+		return NB_ERR_INVAL;
+
+	if (*out)
+		return NB_ERR_EXISTS;
+
+	return mcp_list_all(client, "resources/templates/list", "resourceTemplates", out);
+}
+
 static const char *mcp_string(cJSON *item, const char *key)
 {
 	cJSON *value = cJSON_GetObjectItemCaseSensitive(item, key);
@@ -368,6 +484,8 @@ void mcp_tool_descs_free(struct mcp_tool_desc *items, int count)
 		free((void *)items[i].title);
 		free((void *)items[i].description);
 		cJSON_free((void *)items[i].input_schema);
+		cJSON_free((void *)items[i].output_schema);
+		cJSON_free((void *)items[i].metadata);
 	}
 	free(items);
 }
@@ -426,8 +544,8 @@ static void mcp_prompt_batch_cleanup(struct mcp_prompt_batch *batch)
 }
 
 /* Build parameters with JSON escaping and no fixed size ceiling. */
-static int mcp_named_request(struct mcp_client *client, const char *method,
-	const char *key, const char *name, const char *args, char **result)
+static int mcp_named_request(struct mcp_client *client, const char *method, const char *key,
+			     const char *name, const char *args, const void *context, char **result)
 {
 	cJSON *params = cJSON_CreateObject();
 	char *json;
@@ -453,11 +571,22 @@ static int mcp_named_request(struct mcp_client *client, const char *method,
 			return NB_ERR_NOMEM;
 		}
 	}
+	const struct tool_runtime_context *runtime = context;
+	if (runtime && runtime->tool_call_id && runtime->tool_call_id[0]) {
+		cJSON *meta = cJSON_AddObjectToObject(params, "_meta");
+		if (!meta ||
+		    !cJSON_AddStringToObject(meta, "progressToken", runtime->tool_call_id)) {
+			cJSON_Delete(params);
+			return NB_ERR_NOMEM;
+		}
+	}
+
 	json = cJSON_PrintUnformatted(params);
 	cJSON_Delete(params);
 	if (!json)
 		return NB_ERR_NOMEM;
-	rc = mcp_request(client, method, json, result);
+	rc = mcp_request_controlled(client, method, json, context, runtime ? &runtime->http : NULL,
+				    result);
 	cJSON_free(json);
 	return rc;
 }
@@ -513,6 +642,14 @@ int mcp_list_tools_copy(struct mcp_client *client, struct mcp_tool_desc **out_to
 		entries[i].title = mcp_string(item, "title");
 		entries[i].description = mcp_string(item, "description");
 		entries[i].input_schema = mcp_schema(schema);
+		const cJSON *output_schema = cJSON_GetObjectItemCaseSensitive(item, "outputSchema");
+		const cJSON *metadata = cJSON_GetObjectItemCaseSensitive(item, "_meta");
+		entries[i].output_schema =
+			output_schema ? cJSON_PrintUnformatted(output_schema) : NULL;
+		entries[i].metadata = metadata ? cJSON_PrintUnformatted(metadata) : NULL;
+		if ((output_schema && !entries[i].output_schema) ||
+		    (metadata && !entries[i].metadata))
+			return NB_ERR_NOMEM;
 		const cJSON *annotations = cJSON_GetObjectItemCaseSensitive(item, "annotations");
 		entries[i].read_only = cJSON_IsTrue(
 			cJSON_GetObjectItemCaseSensitive(annotations, "readOnlyHint"));
@@ -558,7 +695,8 @@ int mcp_call_tool(struct mcp_client *client, const char *name, const char *args_
 
 	char *result = NULL;
 	int rc = mcp_named_request(client, "tools/call", "name", name,
-		args_json && args_json[0] ? args_json : "{}", &result);
+				   args_json && args_json[0] ? args_json : "{}",
+				   out_result->runtime, &result);
 
 	if (rc < 0 || !result) {
 		if (rc >= 0 && !result) {
@@ -623,9 +761,7 @@ int mcp_call_tool(struct mcp_client *client, const char *name, const char *args_
 	}
 	nb_buf_cleanup(&combined);
 	if (rc == 0) {
-		char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(obj);
-
-		rc = tool_result_success_json_text_copy(out_result, json);
+		rc = mcp_result_content_copy(out_result, obj);
 	}
 	if (rc != 0) {
 		cJSON_Delete(obj);
@@ -697,8 +833,8 @@ int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_re
 		return NB_ERR_INVAL;
 
 	char *result = NULL;
-	int rc = mcp_named_request(client, "resources/read", "uri", uri,
-		NULL, &result);
+	int rc = mcp_named_request(client, "resources/read", "uri", uri, NULL, out_content->runtime,
+				   &result);
 
 	if (rc < 0 || !result) {
 		free(result);
@@ -714,7 +850,7 @@ int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_re
 		return NB_ERR_INVAL;
 	}
 
-	/* Extract text from contents array */
+	/* Retain resource metadata and binary contents alongside readable text. */
 	cJSON *contents = cJSON_GetObjectItem(obj, "contents");
 	if (contents && cJSON_IsArray(contents)) {
 		nb_buf combined NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -722,7 +858,7 @@ int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_re
 		cJSON *item;
 
 		cJSON_ArrayForEach(item, contents) {
-			const char *keys[] = {"text", "blob"};
+			const char *keys[] = {"text"};
 
 			for (size_t i = 0; rc == 0 && i < sizeof(keys) / sizeof(keys[0]); i++) {
 				cJSON *value = cJSON_GetObjectItemCaseSensitive(item, keys[i]);
@@ -748,9 +884,13 @@ int mcp_read_resource(struct mcp_client *client, const char *uri, struct tool_re
 			free(result);
 			return rc != 0 ? rc : NB_ERR_NOMEM;
 		}
-		rc = tool_result_success_json_text_take(out_content, &text);
+		if (!cJSON_AddStringToObject(obj, "text", text))
+			rc = NB_ERR_NOMEM;
+
+		if (rc == 0)
+			rc = mcp_result_content_copy(out_content, obj);
 	} else {
-		rc = mcp_result_json_copy(out_content, result);
+		rc = mcp_result_content_copy(out_content, obj);
 	}
 
 	cJSON_Delete(obj);
@@ -868,15 +1008,96 @@ int mcp_get_prompt(struct mcp_client *client, const char *name, const char *args
 
 	char *result = NULL;
 	int rc = mcp_named_request(client, "prompts/get", "name", name,
-		args_json && args_json[0] ? args_json : "{}", &result);
+				   args_json && args_json[0] ? args_json : "{}",
+				   out_result->runtime, &result);
 
 	if (rc < 0 || !result) {
 		free(result);
 		return rc ? rc : NB_ERR_PROTOCOL;
 	}
 
-	rc = mcp_result_json_copy(out_result, result);
+	cJSON *value NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(result);
+	rc = value ? mcp_result_content_copy(out_result, value) : NB_ERR_PROTOCOL;
 	free(result);
+	return rc;
+}
+
+int mcp_refresh_catalog(struct mcp_registry *registry, struct tool_registry *tools)
+{
+	if (!registry || !tools)
+		return NB_ERR_INVAL;
+
+	int dirty = 0;
+	for (int i = 0; i < registry->count; i++) {
+		struct mcp_client *client = registry->servers[i];
+		if (!client->connected || !client->capabilities_registered)
+			continue;
+
+		int rc = mcp_listen_catalog_changes(client);
+		if (rc != 0)
+			return rc;
+
+		rc = mcp_poll_notifications(client, 0);
+		if (rc != 0)
+			return rc;
+
+		if (nb_atomic_int_load(&client->tools_list_changed) ||
+		    nb_atomic_int_load(&client->resources_list_changed) ||
+		    nb_atomic_int_load(&client->prompts_list_changed))
+			dirty = 1;
+	}
+
+	if (!dirty)
+		return 0;
+
+	struct tool_registry pending NB_CLEANUP(tool_registry_cleanup) = {0};
+	tool_registry_init(registry->logger, &pending);
+	if (pending.init_error)
+		return pending.init_error;
+
+	pending.permission_context = tools->permission_context;
+	int rc = 0;
+	tool_registry_lock(tools);
+	for (int i = 0; i < tools->count && rc == 0; i++) {
+		const struct tool_entry *entry = &tools->entries[i];
+		if (entry->origin != TOOL_ORIGIN_MCP || !entry->user_data)
+			continue;
+
+		/* Every MCP execution binding begins with its borrowed client. */
+		struct mcp_client *client = NULL;
+		memcpy(&client, entry->user_data, sizeof(client));
+		if (!client->connected || !client->capabilities_registered)
+			rc = tool_register_copy(&pending, entry);
+	}
+
+	tool_registry_unlock(tools);
+	for (int i = 0; i < registry->count && rc == 0; i++) {
+		struct mcp_client *client = registry->servers[i];
+		if (!client->connected || !client->capabilities_registered)
+			continue;
+
+		client->tools_list_changed = 0;
+		client->resources_list_changed = 0;
+		client->prompts_list_changed = 0;
+		rc = mcp_register_server_tools(client, &pending);
+		if (rc >= 0)
+			rc = mcp_register_server_resources(client, &pending);
+
+		if (rc >= 0)
+			rc = mcp_register_server_prompts(client, &pending);
+
+		if (rc >= 0)
+			rc = 0;
+	}
+
+	if (rc == 0)
+		rc = tool_registry_replace_origin_copy(tools, &pending, TOOL_ORIGIN_MCP);
+
+	if (rc != 0) {
+		for (int i = 0; i < registry->count; i++)
+			registry->servers[i]->tools_list_changed = 1;
+	}
+
 	return rc;
 }
 
@@ -911,6 +1132,59 @@ static int mcp_tool_exec(const char *args_json, struct tool_result *result, void
 	}
 
 	return mcp_call_tool(binding->client, binding->mcp_tool_name, args_json, result);
+}
+
+int mcp_tool_instructions_append(nb_buf *text, void *opaque)
+{
+	struct tool_registry *registry = opaque;
+	struct mcp_client *client = NULL;
+	nb_vec seen NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_vec_init(&seen, sizeof(client));
+	int rc = 0;
+
+	if (!text || !registry)
+		return NB_ERR_INVAL;
+
+	tool_registry_lock(registry);
+	for (int i = 0; i < registry->count && rc == 0; i++) {
+		struct tool_entry *entry = &registry->entries[i];
+		if (entry->exec != mcp_tool_exec || !entry->user_data ||
+		    tool_is_disabled(registry, entry->desc.name))
+			continue;
+
+		const struct mcp_tool_binding *binding = entry->user_data;
+		client = binding->client;
+		int known = 0;
+		for (size_t j = 0; j < seen.len; j++) {
+			if (*(struct mcp_client **)nb_vec_at(&seen, j) == client)
+				known = 1;
+		}
+
+		if (known)
+			continue;
+
+		if (!nb_vec_push_copy(&seen, &client)) {
+			rc = NB_ERR_NOMEM;
+			break;
+		}
+	}
+
+	tool_registry_unlock(registry);
+	for (size_t i = 0; i < seen.len && rc == 0; i++) {
+		client = *(struct mcp_client **)nb_vec_at(&seen, i);
+
+		nb_mutex_lock(client->lock);
+		if (client->instructions && client->instructions[0]) {
+			rc = nb_buf_printf(text, "\nMCP server %s: guidance for its tools\n%s\n",
+					   client->config.name, client->instructions)
+				     ? 0
+				     : NB_ERR_NOMEM;
+		}
+
+		nb_mutex_unlock(client->lock);
+	}
+
+	return rc;
 }
 
 int mcp_register_server_tools(struct mcp_client *client,
@@ -972,7 +1246,8 @@ int mcp_register_server_tools(struct mcp_client *client,
 			.title = tools[i].title,
 			.description = tools[i].description,
 			.input_schema = schema,
-			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.output_schema = tools[i].output_schema ? tools[i].output_schema
+								: TOOL_OBJECT_OUTPUT_SCHEMA,
 			.exec = mcp_tool_exec,
 			.user_data = binding,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,

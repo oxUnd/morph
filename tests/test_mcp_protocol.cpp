@@ -2,6 +2,8 @@
 #include <gtest/gtest.h>
 #include <nb/err.h>
 #include <nb/str.h>
+#include <nb/file.h>
+#include <nb/time.h>
 
 extern "C" {
 #include "mcp/mcp_internal.h"
@@ -381,6 +383,7 @@ struct McpHttpReply {
 	std::string body;
 	std::string headers;
 	std::string content_type = "application/json";
+	std::function<void(int)> stream;
 };
 
 struct McpHttpRequest {
@@ -413,6 +416,7 @@ class McpProtocolHttpServer {
 	int listener = -1;
 	std::atomic<bool> stopping{false};
 	std::thread worker;
+	std::vector<std::thread> connections;
 	std::mutex lock;
 	std::vector<McpHttpRequest> requests;
 	std::function<McpHttpReply(const McpHttpRequest &)> handler;
@@ -444,7 +448,17 @@ class McpProtocolHttpServer {
 			std::lock_guard<std::mutex> guard(lock);
 			requests.push_back(request);
 		}
-		McpHttpReply reply = handler(request);
+		McpHttpReply reply;
+		if (request.headers.rfind("DELETE ", 0) == 0)
+			reply.status = 405;
+		else
+			reply = handler(request);
+
+		if (reply.stream) {
+			reply.stream(connection);
+			return;
+		}
+
 		std::string response = "HTTP/1.1 " + std::to_string(reply.status) + " Reply\r\n"
 			"Connection: close\r\nContent-Type: " + reply.content_type + "\r\n"
 			"Content-Length: " + std::to_string(reply.body.size()) + "\r\n" +
@@ -485,8 +499,10 @@ public:
 					continue;
 				int connection = accept(listener, nullptr, nullptr);
 				if (connection >= 0) {
-					serve(connection);
-					close(connection);
+					connections.emplace_back([this, connection] {
+						serve(connection);
+						close(connection);
+					});
 				}
 			}
 		});
@@ -497,6 +513,10 @@ public:
 		stopping = true;
 		if (worker.joinable())
 			worker.join();
+
+		for (auto &connection : connections)
+			connection.join();
+
 		if (listener >= 0)
 			close(listener);
 	}
@@ -605,6 +625,192 @@ TEST_F(McpHttpProtocolTest, ModernCallsMirrorSchemaHeadersAndCorrelateSseRespons
 			std::string::npos);
 	}
 	EXPECT_FALSE(nb_map_has_cstr(client.tool_schemas, "bad"));
+}
+
+static int http_elicit_fixture(const char *, const char *, const cJSON *, const void *, cJSON **out,
+			       void *opaque)
+{
+	(*static_cast<int *>(opaque))++;
+	*out = cJSON_Parse(R"({"action":"accept","content":{}})");
+	return *out ? 0 : NB_ERR_NOMEM;
+}
+
+TEST_F(McpHttpProtocolTest, LegacySseFormsPostAReplyBeforeConsumingTheToolResponse)
+{
+	int questions = 0;
+	client.handlers.elicitation = http_elicit_fixture;
+	client.handlers.user_data = &questions;
+	strcpy(client.config.protocol_version, "2025-11-25");
+	McpProtocolHttpServer server([](const McpHttpRequest &wire) {
+		McpHttpReply reply;
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(wire.body.c_str());
+		const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(request, "method"));
+		if (!method) {
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(request, "id")),
+				     "peer-form");
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+					     cJSON_GetObjectItem(request, "result"), "action")),
+				     "accept");
+			EXPECT_EQ(wire.header("Mcp-Session-Id"), "fixture-session");
+			reply.status = 202;
+		} else if (!strcmp(method, "initialize")) {
+			reply.body = rpc_result(request, R"({"protocolVersion":"2025-11-25",
+				"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}})");
+			reply.headers = "Mcp-Session-Id: fixture-session\r\n";
+		} else if (!strcmp(method, "notifications/initialized")) {
+			reply.status = 202;
+		} else {
+			reply.content_type = "Text/Event-Stream";
+			reply.body =
+				"data: {\"jsonrpc\":\"2.0\",\"id\":\"peer-form\","
+				"\"method\":\"elicitation/"
+				"create\",\"params\":{\"message\":\"Approve?\","
+				"\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}\n\n";
+			reply.body +=
+				"data: " +
+				rpc_result(request,
+					   R"({"content":[{"type":"text","text":"approved"}]})") +
+				"\n\n";
+		}
+
+		return reply;
+	});
+	ASSERT_NE(server.port, 0U);
+	ASSERT_EQ(connect(server), 0);
+	struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+	ASSERT_EQ(mcp_call_tool(&client, "fixture", "{}", &result), 0);
+	EXPECT_EQ(questions, 1);
+	EXPECT_EQ(server.captured().size(), 4U);
+}
+
+TEST_F(McpHttpProtocolTest, ModernSubscriptionRunsAlongsideRequestsAndStopsCleanly)
+{
+	McpProtocolHttpServer server([](const McpHttpRequest &wire) {
+		McpHttpReply reply;
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(wire.body.c_str());
+		const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(request, "method"));
+		if (!strcmp(method, "server/discover")) {
+			reply.body = rpc_result(request, R"({"supportedVersions":["2026-07-28"],
+				"capabilities":{"tools":{}}})");
+		} else if (!strcmp(method, "subscriptions/listen")) {
+			int id = cJSON_GetObjectItem(request, "id")->valueint;
+			reply.stream = [id](int connection) {
+				std::string meta =
+					"\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":" +
+					std::to_string(id) + "}";
+				std::string message =
+					"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+					"Connection: close\r\n\r\n"
+					"data: {\"jsonrpc\":\"2.0\",\"method\":"
+					"\"notifications/subscriptions/"
+					"acknowledged\",\"params\":{" +
+					meta +
+					",\"notifications\":{\"toolsListChanged\":true}}}\n\n"
+					"data: {\"jsonrpc\":\"2.0\",\"method\":"
+					"\"notifications/tools/list_changed\",\"params\":{" +
+					meta + "}}\n\n";
+				EXPECT_EQ(nb_fd_write_until(
+						  connection, message.data(), message.size(),
+						  (nb_time_monotonic_ms() + 2000) * 1000000,
+						  nullptr, nullptr, nullptr),
+					  0);
+				char byte;
+				(void)read(connection, &byte, 1);
+			};
+		} else if (!strcmp(method, "notifications/cancelled")) {
+			reply.status = 202;
+		} else {
+			reply.body = rpc_result(request, "{}");
+		}
+
+		return reply;
+	});
+	ASSERT_NE(server.port, 0U);
+	ASSERT_EQ(connect(server), 0);
+	cJSON *filters NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"toolsListChanged\":true}");
+	ASSERT_EQ(mcp_listen_notifications(&client, filters), 0);
+	EXPECT_EQ(mcp_ping(&client), 0);
+	EXPECT_EQ(nb_atomic_int_load(&client.tools_list_changed), 1);
+	auto start = std::chrono::steady_clock::now();
+	mcp_stop_notifications(&client);
+	EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
+	EXPECT_EQ(client.listener, nullptr);
+	EXPECT_EQ(client.subscription_id, 0);
+}
+
+TEST_F(McpHttpProtocolTest, LegacySessionCleanupStillRunsAfterShutdownCancellation)
+{
+	strcpy(client.config.protocol_version, "2025-11-25");
+	McpProtocolHttpServer server([](const McpHttpRequest &wire) {
+		McpHttpReply reply;
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(wire.body.c_str());
+		const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(request, "method"));
+		if (!strcmp(method, "initialize")) {
+			reply.body = rpc_result(request, R"({"protocolVersion":"2025-11-25",
+				"capabilities":{},"serverInfo":{"name":"fixture","version":"1"}})");
+			reply.headers = "Mcp-Session-Id: cleanup-session\r\n";
+		} else {
+			reply.status = 202;
+		}
+
+		return reply;
+	});
+	ASSERT_NE(server.port, 0U);
+	ASSERT_EQ(connect(server), 0);
+	struct nb_cancel shutdown;
+	nb_cancel_init(&shutdown);
+	client.shutdown_cancel = &shutdown;
+	nb_cancel_request(&shutdown);
+	mcp_disconnect(&client);
+	client.shutdown_cancel = nullptr;
+	auto requests = server.captured();
+	ASSERT_EQ(requests.size(), 3U);
+	EXPECT_EQ(requests.back().headers.rfind("DELETE ", 0), 0U);
+	EXPECT_EQ(requests.back().header("Mcp-Session-Id"), "cleanup-session");
+}
+
+TEST_F(McpHttpProtocolTest, LegacyDisconnectedSseResumesWithoutReplayingTheToolCall)
+{
+	strcpy(client.config.protocol_version, "2025-11-25");
+	int tool_calls = 0;
+	int resumes = 0;
+	McpProtocolHttpServer server([&](const McpHttpRequest &wire) {
+		McpHttpReply reply;
+		if (wire.headers.rfind("GET ", 0) == 0) {
+			resumes++;
+			EXPECT_EQ(wire.header("Last-Event-ID"), "fixture-event");
+			reply.content_type = "text/event-stream";
+			reply.body = "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{"
+				     "\"content\":[{\"type\":\"text\",\"text\":\"resumed\"}]}}\n\n";
+			return reply;
+		}
+
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(wire.body.c_str());
+		const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(request, "method"));
+		if (!strcmp(method, "initialize")) {
+			reply.body = rpc_result(request, R"({"protocolVersion":"2025-11-25",
+				"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}})");
+		} else if (!strcmp(method, "tools/call")) {
+			tool_calls++;
+			reply.content_type = "text/event-stream";
+			reply.body = "id: fixture-event\ndata: \n\n";
+		} else {
+			reply.status = 202;
+		}
+
+		return reply;
+	});
+	ASSERT_NE(server.port, 0U);
+	ASSERT_EQ(connect(server), 0);
+	char *result NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	cJSON *schema NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse("{\"type\":\"object\"}");
+	ASSERT_EQ(mcp_protocol_cache_tool_copy(&client, "fixture", schema), 0);
+	ASSERT_EQ(mcp_request(&client, "tools/call", "{\"name\":\"fixture\",\"arguments\":{}}",
+			      &result),
+		  0);
+	EXPECT_NE(strstr(result, "resumed"), nullptr);
+	EXPECT_EQ(tool_calls, 1);
+	EXPECT_EQ(resumes, 1);
 }
 
 TEST_F(McpHttpProtocolTest, LegacyFallbackKeepsSessionAndServerSelectedVersion)

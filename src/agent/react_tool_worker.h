@@ -21,6 +21,9 @@ struct async_tool_call {
 	int64_t started_ms;
 	int callbacks_closed;
 	int callbacks_active;
+	int questions_active;
+	int64_t question_started_ms;
+	int64_t question_wait_ms;
 	char *tool_name;
 	char *tool_args;
 	char *tool_call_id;

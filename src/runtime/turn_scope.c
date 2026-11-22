@@ -1,4 +1,5 @@
 #include "runtime/turn_scope.h"
+#include "mcp/mcp.h"
 
 #include "agent/tools/dynamic_tools.h"
 #include "runtime/usage.h"
@@ -97,6 +98,7 @@ static void runtime_turn_scope_bind_tool_context(struct runtime_turn_scope_conte
 	rt.memory_visible_user_data = request->memory_visible_user_data;
 	if (ctx->checkpoint)
 		rt.checkpoint = *ctx->checkpoint;
+	rt.append_instructions = mcp_tool_instructions_append;
 	react_set_tool_runtime_context(ctx->react, &rt);
 	if (ctx->tools)
 		(void)dynamic_tools_set_session_id(ctx->tools, rt.credit_session_id);

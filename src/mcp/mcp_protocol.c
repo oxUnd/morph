@@ -1,6 +1,7 @@
 #include "mcp_internal.h"
 #include "errors.h"
 #include <nb/log.h>
+#include <nb/time.h>
 
 #include <errno.h>
 #include <stdlib.h>
@@ -31,7 +32,7 @@ const struct mcp_protocol_adapter *mcp_protocol_borrow(const char *version)
 	return NULL;
 }
 
-static int modern_metadata(cJSON *params)
+static int modern_metadata(struct mcp_client *client, cJSON *params)
 {
 	cJSON *meta = cJSON_GetObjectItemCaseSensitive(params, "_meta");
 
@@ -47,13 +48,23 @@ static int modern_metadata(cJSON *params)
 			cJSON_DeleteItemFromObjectCaseSensitive(meta, keys[i]);
 	}
 	cJSON *info = cJSON_AddObjectToObject(meta, MCP_META_PREFIX "clientInfo");
+	cJSON *capabilities NB_CLEANUP(cJSON_DeleteOwner) =
+		mcp_client_capabilities_create(client, mcp_protocol_borrow(MCP_PROTOCOL_VERSION));
 
-	if (!info || !cJSON_AddStringToObject(info, "name", "morph") ||
+	if (!info || !capabilities || !cJSON_AddStringToObject(info, "name", "morph") ||
 	    !cJSON_AddStringToObject(info, "version", MORPH_VERSION) ||
 	    !cJSON_AddStringToObject(meta, MCP_META_PREFIX "protocolVersion",
-		MCP_PROTOCOL_VERSION) ||
-	    !cJSON_AddObjectToObject(meta, MCP_META_PREFIX "clientCapabilities"))
+				     MCP_PROTOCOL_VERSION) ||
+	    !cJSON_AddItemToObject(meta, MCP_META_PREFIX "clientCapabilities", capabilities))
 		return NB_ERR_NOMEM;
+
+	capabilities = NULL;
+	if (client->log_level[0]) {
+		cJSON_DeleteItemFromObjectCaseSensitive(meta, MCP_META_PREFIX "logLevel");
+		if (!cJSON_AddStringToObject(meta, MCP_META_PREFIX "logLevel", client->log_level))
+			return NB_ERR_NOMEM;
+	}
+
 	return 0;
 }
 
@@ -125,7 +136,7 @@ int mcp_protocol_encode(struct mcp_client *client, const struct mcp_protocol_ada
 				    __LINE__);
 	}
 	if (adapter->per_request)
-		rc = modern_metadata(params);
+		rc = modern_metadata(client, params);
 	if (rc == 0 && client->config.transport == MCP_TRANSPORT_STREAMABLE_HTTP)
 		rc = protocol_headers(client, adapter, method, params, &encoded.headers);
 	cJSON *request = cJSON_CreateObject();
@@ -164,7 +175,7 @@ int mcp_protocol_encode(struct mcp_client *client, const struct mcp_protocol_ada
 int mcp_request_timeout_ms(const struct mcp_client *client)
 {
 	if (client->config.connect_timeout > 0 &&
-	    (client->connecting || client->interrupt_check))
+	    (client->connecting || (client->interrupt_check && !client->request_context)))
 		return client->config.connect_timeout > INT_MAX / 1000 ?
 			INT_MAX : client->config.connect_timeout * 1000;
 	return MCP_REQUEST_TIMEOUT_MS;
@@ -203,10 +214,14 @@ static int protocol_exchange(struct mcp_client *client,
 
 	rc = mcp_protocol_encode(client, adapter, id, method, params, &request);
 	if (rc == 0) {
+		const struct mcp_protocol_adapter *previous = client->protocol;
+		client->protocol = adapter;
 		if (client->config.transport == MCP_TRANSPORT_STDIO)
 			rc = mcp_stdio_exchange(client, &request, timeout_ms, reply);
 		else
 			rc = mcp_http_exchange(client, &request, timeout_ms, reply);
+
+		client->protocol = previous;
 	}
 	return rc;
 }
@@ -268,10 +283,7 @@ static int result_type(struct nb_log *logger, const struct mcp_protocol_adapter 
 	if (!type || (cJSON_IsString(type) && strcmp(type->valuestring, "complete") == 0))
 		return 0;
 	if (cJSON_IsString(type) && strcmp(type->valuestring, "input_required") == 0) {
-		nb_log_write(logger, NB_LOG_WARN,
-			     "mcp: server requested input without a supported client capability");
-		return nb_err_trace(logger, NB_ERR_UNSUPPORTED, morph_error_descriptions(),
-				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
+		return NB_ERR_AGAIN;
 	}
 	return nb_err_trace(logger, NB_ERR_PROTOCOL, morph_error_descriptions(), MORPH_ERROR_COUNT,
 			    __FILE__, __LINE__);
@@ -285,8 +297,30 @@ static char *request_result_copy(const cJSON *value)
 	return json ? strdup(json) : NULL;
 }
 
-static int request_locked(struct mcp_client *client, int id, const char *method,
-	const char *params, char **out)
+static void request_cancel_locked(struct mcp_client *client, int id)
+{
+	if (client->config.transport == MCP_TRANSPORT_STDIO && client->stdin_fd < 0)
+		return;
+
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	if (!params || !cJSON_AddNumberToObject(params, "requestId", id) ||
+	    !cJSON_AddStringToObject(params, "reason", "Client stopped waiting for this request"))
+		return;
+
+	char *encoded NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(params);
+	if (!encoded)
+		return;
+
+	struct mcp_wire_reply reply NB_CLEANUP(mcp_wire_reply_cleanup) = {0};
+	int (*interrupt)(void *) = client->interrupt_check;
+	client->interrupt_check = NULL;
+	(void)protocol_exchange(client, client->protocol, -1, "notifications/cancelled", encoded,
+				200, &reply);
+	client->interrupt_check = interrupt;
+}
+
+static int request_once_locked(struct mcp_client *client, int id, const char *method,
+			       const char *params, int timeout, char **out)
 {
 	const struct mcp_protocol_adapter *adapter = client->protocol;
 
@@ -296,8 +330,13 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
 	struct mcp_wire_reply reply = {0};
 	cJSON *object = NULL;
-	int rc = protocol_exchange(client, adapter, id, method, params,
-		mcp_request_timeout_ms(client), &reply);
+	client->active_request_id = id;
+	client->peer_cancelled = 0;
+	int rc = protocol_exchange(client, adapter, id, method, params, timeout, &reply);
+	if ((rc == NB_ERR_CANCELLED || rc == NB_ERR_TIMEOUT) && !client->peer_cancelled)
+		request_cancel_locked(client, id);
+
+	client->active_request_id = 0;
 
 	if (rc == 0)
 		rc = mcp_protocol_decode(client->config.logger, &reply, id, &object);
@@ -305,7 +344,7 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 		cJSON *result = cJSON_GetObjectItemCaseSensitive(object, "result");
 
 		rc = result_type(client ? client->config.logger : NULL, adapter, result);
-		if (rc == 0 && out) {
+		if ((rc == 0 || rc == NB_ERR_AGAIN) && out) {
 			*out = request_result_copy(result);
 			if (!*out)
 				rc = nb_err_trace(client ? client->config.logger : NULL,
@@ -330,7 +369,7 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 		if (out)
 			*out = request_result_copy(object);
 	}
-	if (rc != 0)
+	if (rc != 0 && rc != NB_ERR_AGAIN)
 		nb_log_write(client ? client->config.logger : NULL, NB_LOG_WARN,
 			     "mcp: %s on '%s' failed: %s", method, client->config.name,
 			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
@@ -339,8 +378,135 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 	return rc;
 }
 
-int mcp_request(struct mcp_client *client, const char *method,
-	const char *params, char **result)
+static int resume_params_create(struct mcp_client *client, const char *params, const cJSON *result,
+				char **out)
+{
+	const cJSON *requests = cJSON_GetObjectItemCaseSensitive(result, "inputRequests");
+	const cJSON *state = cJSON_GetObjectItemCaseSensitive(result, "requestState");
+	if ((!requests && !state) || (requests && !cJSON_IsObject(requests)) ||
+	    (state && !cJSON_IsString(state)))
+		return NB_ERR_PROTOCOL;
+
+	cJSON *next NB_CLEANUP(cJSON_DeleteOwner) =
+		params ? cJSON_ParseWithOpts(params, NULL, 1) : cJSON_CreateObject();
+	cJSON *responses NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	if (!next || !responses)
+		return NB_ERR_NOMEM;
+
+	const cJSON *input;
+	cJSON_ArrayForEach (input, requests) {
+		const char *method =
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(input, "method"));
+		const cJSON *arguments = cJSON_GetObjectItemCaseSensitive(input, "params");
+		cJSON *reply NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+		if (!method || !input->string || (arguments && !cJSON_IsObject(arguments)))
+			return NB_ERR_PROTOCOL;
+
+		if (strcmp(method, "elicitation/create") &&
+		    strcmp(method, "sampling/createMessage") && strcmp(method, "roots/list"))
+			return NB_ERR_PROTOCOL;
+
+		int rc = mcp_handle_input_request(client, method, arguments, &reply);
+		if (rc != 0)
+			return rc;
+
+		if (!cJSON_AddItemToObject(responses, input->string, reply))
+			return NB_ERR_NOMEM;
+
+		reply = NULL;
+	}
+
+	cJSON_DeleteItemFromObjectCaseSensitive(next, "inputResponses");
+	cJSON_DeleteItemFromObjectCaseSensitive(next, "requestState");
+	if (requests) {
+		if (!cJSON_AddItemToObject(next, "inputResponses", responses))
+			return NB_ERR_NOMEM;
+
+		responses = NULL;
+	}
+
+	if (state && !cJSON_AddStringToObject(next, "requestState", state->valuestring))
+		return NB_ERR_NOMEM;
+
+	char *encoded NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(next);
+	if (!encoded)
+		return NB_ERR_NOMEM;
+
+	*out = strdup(encoded);
+	return *out ? 0 : NB_ERR_NOMEM;
+}
+
+static int request_locked(struct mcp_client *client, int id, const char *method, const char *params,
+			  char **out)
+{
+	char *resumed NB_CLEANUP(nb_charp_cleanup) = NULL;
+	int64_t started = nb_time_monotonic_ms();
+	int64_t waited = client->interaction_wait_ms;
+	int timeout = mcp_request_timeout_ms(client);
+
+	for (;;) {
+		if (mcp_client_interrupted(client))
+			return NB_ERR_CANCELLED;
+
+		int64_t remaining = timeout - (nb_time_monotonic_ms() - started -
+					       (client->interaction_wait_ms - waited));
+		if (remaining <= 0)
+			return NB_ERR_TIMEOUT;
+
+		char *text NB_CLEANUP(nb_charp_cleanup) = NULL;
+		int rc = request_once_locked(client, id, method, resumed ? resumed : params,
+					     (int)remaining, &text);
+		if (rc != NB_ERR_AGAIN) {
+			if (out)
+				*out = nb_charp_steal(&text);
+
+			return rc;
+		}
+
+		if (strcmp(method, "tools/call") && strcmp(method, "resources/read") &&
+		    strcmp(method, "prompts/get"))
+			return NB_ERR_UNSUPPORTED;
+
+		if (nb_time_monotonic_ms() - started - (client->interaction_wait_ms - waited) >=
+		    timeout)
+			return NB_ERR_TIMEOUT;
+
+		cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(text);
+		const cJSON *pending = cJSON_GetObjectItemCaseSensitive(result, "inputRequests");
+		if (!pending || !pending->child) {
+			struct http_control control = {
+				.interrupt_check = mcp_client_interrupted,
+				.interrupt_user_data = client,
+			};
+			rc = http_wait_cancelable(&control, 25);
+			if (rc != 0)
+				return rc;
+		}
+
+		char *next NB_CLEANUP(nb_charp_cleanup) = NULL;
+		rc = resume_params_create(client, resumed ? resumed : params, result, &next);
+		if (rc != 0)
+			return rc;
+
+		free(resumed);
+		resumed = nb_charp_steal(&next);
+		if (client->next_req_id >= INT_MAX)
+			return NB_ERR_RANGE;
+
+		id = client->next_req_id++;
+	}
+}
+
+static int request_interrupted(void *opaque)
+{
+	const struct http_control *control = opaque;
+	return (control->cancel_flag && nb_atomic_int_load(control->cancel_flag)) ||
+	       nb_cancel_requested(control->cancel_token) ||
+	       (control->interrupt_check && control->interrupt_check(control->interrupt_user_data));
+}
+
+int mcp_request_controlled(struct mcp_client *client, const char *method, const char *params,
+			   const void *context, const struct http_control *control, char **result)
 {
 	if (!client || !method)
 		return nb_err_trace(client ? client->config.logger : NULL, NB_ERR_INVAL,
@@ -348,15 +514,56 @@ int mcp_request(struct mcp_client *client, const char *method,
 				    __LINE__);
 	if (result && *result)
 		return NB_ERR_EXISTS;
-	nb_mutex_lock(client->lock);
+	int lock_status = nb_mutex_trylock(client->lock);
+	while (lock_status == NB_ERR_BUSY) {
+		if (nb_cancel_requested(client->shutdown_cancel) ||
+		    (control && request_interrupted((void *)control)) ||
+		    (!context && nb_atomic_int_load(&client->refreshing_catalog) &&
+		     client->catalog_cancelled && nb_atomic_int_load(client->catalog_cancelled)))
+			return NB_ERR_CANCELLED;
+
+		int wait_status = http_wait_cancelable(control, 10);
+		if (wait_status != 0)
+			return wait_status;
+
+		lock_status = nb_mutex_trylock(client->lock);
+	}
+
+	if (lock_status != 0)
+		return lock_status;
+
 	int rc;
+	const void *previous_context = client->request_context;
+	int (*previous_interrupt)(void *) = client->interrupt_check;
+	void *previous_interrupt_data = client->interrupt_user_data;
+	client->request_context = context;
+	if (control) {
+		client->interrupt_check = request_interrupted;
+		client->interrupt_user_data = (void *)control;
+	}
 
 	if (client->next_req_id >= INT_MAX)
 		rc = NB_ERR_RANGE;
 	else
 		rc = request_locked(client, client->next_req_id++, method, params, result);
+
+	client->request_context = previous_context;
+	client->peer_cancelled = 0;
+	client->interrupt_check = previous_interrupt;
+	client->interrupt_user_data = previous_interrupt_data;
 	nb_mutex_unlock(client->lock);
 	return rc;
+}
+
+int mcp_request_with_context(struct mcp_client *client, const char *method, const char *params,
+			     const void *context, char **result)
+{
+	return mcp_request_controlled(client, method, params, context, NULL, result);
+}
+
+int mcp_request(struct mcp_client *client, const char *method, const char *params, char **result)
+{
+	return mcp_request_with_context(client, method, params, NULL, result);
 }
 
 static int version_list_contains(cJSON *versions, const char *version)
@@ -388,7 +595,7 @@ static const struct mcp_protocol_adapter *discovered_legacy_borrow(
 	return NULL;
 }
 
-static void server_details(struct mcp_client *client, cJSON *result, int modern)
+static int server_details(struct mcp_client *client, cJSON *result, int modern)
 {
 	cJSON *caps = cJSON_GetObjectItemCaseSensitive(result, "capabilities");
 	cJSON *info;
@@ -402,6 +609,15 @@ static void server_details(struct mcp_client *client, cJSON *result, int modern)
 	}
 	cJSON *name = cJSON_GetObjectItemCaseSensitive(info, "name");
 	cJSON *version = cJSON_GetObjectItemCaseSensitive(info, "version");
+	cJSON *instructions = cJSON_GetObjectItemCaseSensitive(result, "instructions");
+	char *copied NB_CLEANUP(nb_charp_cleanup) =
+		cJSON_IsString(instructions) ? strdup(instructions->valuestring) : NULL;
+
+	if (cJSON_IsString(instructions) && !copied)
+		return NB_ERR_NOMEM;
+
+	free(client->instructions);
+	client->instructions = nb_charp_steal(&copied);
 
 	if (cJSON_IsString(name))
 		snprintf(client->server_name, sizeof(client->server_name), "%s", name->valuestring);
@@ -414,6 +630,15 @@ static void server_details(struct mcp_client *client, cJSON *result, int modern)
 		cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(caps, "resources"));
 	client->supports_prompts =
 		cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(caps, "prompts"));
+	const char *catalogs[] = {"tools", "resources", "prompts"};
+	client->supports_catalog_notifications = 0;
+	for (size_t i = 0; i < sizeof(catalogs) / sizeof(catalogs[0]); i++) {
+		const cJSON *catalog = cJSON_GetObjectItemCaseSensitive(caps, catalogs[i]);
+		if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(catalog, "listChanged")))
+			client->supports_catalog_notifications = 1;
+	}
+
+	return 0;
 }
 
 /* Only positive legacy evidence permits downgrade; auth/outages never do. */
@@ -478,7 +703,7 @@ static int modern_probe(struct mcp_client *client,
 
 		if (rc == 0 && !*legacy) {
 			client->protocol = modern;
-			server_details(client, result, 1);
+			rc = server_details(client, result, 1);
 		}
 	} else if ((stdio_transport && (rc == NB_ERR_TIMEOUT || rc == NB_ERR_BROKEN_PIPE ||
 					(rc == NB_ERR_PROTOCOL && error))) ||
@@ -498,28 +723,29 @@ static int modern_probe(struct mcp_client *client,
 static int legacy_initialize(struct mcp_client *client,
 	const struct mcp_protocol_adapter *legacy, int pinned)
 {
-	nb_buf params NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc = (nb_buf_init(&params), nb_buf_reserve(&params, 128) ? 0 : NB_ERR_NOMEM);
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	cJSON *capabilities NB_CLEANUP(cJSON_DeleteOwner) =
+		mcp_client_capabilities_create(client, legacy);
+	if (!params || !capabilities ||
+	    !cJSON_AddStringToObject(params, "protocolVersion", legacy->version) ||
+	    !cJSON_AddItemToObject(params, "capabilities", capabilities))
+		return NB_ERR_NOMEM;
 
-	if (rc != 0)
-		return rc;
-	rc = (nb_buf_printf(&params,
-			    "{\"protocolVersion\":\"%s\","
-			    "\"capabilities\":{},\"clientInfo\":{\"name\":\"morph\","
-			    "\"version\":\"" MORPH_VERSION "\"}}",
-			    legacy->version)
-		      ? 0
-		      : NB_ERR_NOMEM);
-	if (rc != 0) {
-		nb_buf_cleanup(&params);
-		return rc;
-	}
+	capabilities = NULL;
+	cJSON *info = cJSON_AddObjectToObject(params, "clientInfo");
+	if (!info || !cJSON_AddStringToObject(info, "name", "morph") ||
+	    !cJSON_AddStringToObject(info, "version", MORPH_VERSION))
+		return NB_ERR_NOMEM;
+
+	char *encoded NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(params);
+	if (!encoded)
+		return NB_ERR_NOMEM;
+
 	struct mcp_wire_reply reply = {0};
 	cJSON *object = NULL;
 	int id = client->next_req_id++;
-	rc = protocol_exchange(client, legacy, id, "initialize", nb_buf_cstr(&params),
-			       mcp_request_timeout_ms(client), &reply);
-	nb_buf_cleanup(&params);
+	int rc = protocol_exchange(client, legacy, id, "initialize", encoded,
+				   mcp_request_timeout_ms(client), &reply);
 
 	if (rc == 0)
 		rc = mcp_protocol_decode(client->config.logger, &reply, id, &object);
@@ -539,7 +765,7 @@ static int legacy_initialize(struct mcp_client *client,
 					  __LINE__);
 		} else {
 			client->protocol = selected;
-			server_details(client, result, 0);
+			rc = server_details(client, result, 0);
 			client->session_id = reply.session_id;
 			reply.session_id = NULL;
 		}
@@ -579,6 +805,11 @@ int mcp_protocol_initialize(struct mcp_client *client)
 				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
 				    __LINE__);
 	nb_mutex_lock(client->lock);
+	if (client->connected || client->listener || client->subscription_id > 0) {
+		nb_mutex_unlock(client->lock);
+		return NB_ERR_EXISTS;
+	}
+
 	mcp_protocol_reset(client);
 	client->next_req_id = 1;
 	if (pinned && !selected->per_request)
@@ -589,8 +820,7 @@ int mcp_protocol_initialize(struct mcp_client *client)
 		rc = nb_err_trace(client ? client->config.logger : NULL, NB_ERR_UNSUPPORTED,
 				  morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
 				  __LINE__);
-	if (rc == 0 && client->interrupt_check &&
-	    client->interrupt_check(client->interrupt_user_data))
+	if (rc == 0 && mcp_client_interrupted(client))
 		rc = nb_err_trace(client ? client->config.logger : NULL, NB_ERR_CANCELLED,
 				  morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
 				  __LINE__);
@@ -598,8 +828,7 @@ int mcp_protocol_initialize(struct mcp_client *client)
 		if (client->config.transport == MCP_TRANSPORT_STDIO) {
 			/* Legacy servers may exit or retain probe state. Start a clean process. */
 			mcp_stdio_disconnect(client);
-			if (client->interrupt_check &&
-			    client->interrupt_check(client->interrupt_user_data))
+			if (mcp_client_interrupted(client))
 				rc = NB_ERR_CANCELLED;
 			else
 				rc = mcp_stdio_connect(client);
@@ -622,6 +851,8 @@ int mcp_protocol_initialize(struct mcp_client *client)
 
 void mcp_protocol_reset(struct mcp_client *client)
 {
+	free(client->instructions);
+	client->instructions = NULL;
 	if (client->tool_schemas) {
 		nb_map_iter iter;
 		nb_str key;
@@ -638,10 +869,14 @@ void mcp_protocol_reset(struct mcp_client *client)
 	client->protocol = NULL;
 	client->connected = 0;
 	client->tools_list_changed = 0;
+	client->resources_list_changed = 0;
+	client->prompts_list_changed = 0;
+	client->peer_cancelled = 0;
 	client->negotiated_version[0] = '\0';
 	client->server_name[0] = '\0';
 	client->server_version[0] = '\0';
 	client->supports_tools = 0;
 	client->supports_resources = 0;
 	client->supports_prompts = 0;
+	client->supports_catalog_notifications = 0;
 }

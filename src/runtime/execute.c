@@ -152,8 +152,11 @@ int runtime_execute(struct runtime_engine *engine, const struct runtime_request 
 		return rc;
 	react_drain_tools(engine->react);
 	scope = engine->turn_scope ? engine->turn_scope : &local_scope;
-	if (engine->prepare_turn)
+	if (engine->prepare_turn) {
 		rc = engine->prepare_turn(engine->user_data, request);
+		if (rc == NB_ERR_CANCELLED)
+			result->outcome = RUNTIME_OUTCOME_CANCELLED;
+	}
 
 	if (rc == 0)
 		rc = runtime_execute_locked(engine, request, result, scope);
