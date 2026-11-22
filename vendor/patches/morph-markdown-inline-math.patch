@@ -1,0 +1,827 @@
+diff --git a/sdk/kitty/morph-markdown/include/morph_markdown_kitty.h b/sdk/kitty/morph-markdown/include/morph_markdown_kitty.h
+index 34ae42d..0830ce4 100644
+--- a/sdk/kitty/morph-markdown/include/morph_markdown_kitty.h
++++ b/sdk/kitty/morph-markdown/include/morph_markdown_kitty.h
+@@ -12,7 +12,7 @@ extern "C" {
+ 
+ struct morph_md_kitty_options {
+ 	const char *font_path;
+-	/* <= 0 means use current terminal cell height. */
++	/* <= 0 uses 85 percent of the terminal cell height for text-sized math. */
+ 	double font_size;
+ 	/* mathjax-c stores colors as 0xRRGGBBAA. */
+ 	uint32_t fg_color;
+@@ -42,6 +42,9 @@ struct morph_md_kitty_options {
+ 	unsigned int terminal_columns;
+ 	/* Zero queries terminal_fd and falls back to 24 rows. */
+ 	unsigned int terminal_rows;
++	/* Optional protocol cell metrics; zero uses terminal detection. */
++	unsigned int cell_pixel_width;
++	unsigned int cell_pixel_height;
+ 	/* Content padding uses terminal rows and columns, not pixels. */
+ 	unsigned int content_padding_top_rows;
+ 	unsigned int content_padding_right_columns;
+diff --git a/sdk/kitty/morph-markdown/src/morph_markdown_kitty.c b/sdk/kitty/morph-markdown/src/morph_markdown_kitty.c
+index f23a82d..7c9645b 100644
+--- a/sdk/kitty/morph-markdown/src/morph_markdown_kitty.c
++++ b/sdk/kitty/morph-markdown/src/morph_markdown_kitty.c
+@@ -32,8 +32,15 @@ enum table_item_kind {
+ 	TABLE_ITEM_BREAK
+ };
+ 
++enum inline_attribute {
++	INLINE_BOLD = 1u,
++	INLINE_ITALIC = 2u,
++	INLINE_STRIKE = 4u
++};
++
+ struct table_inline_item {
+ 	enum table_item_kind kind;
++	unsigned int attributes;
+ 	char *text;
+ 	unsigned int width;
+ 	unsigned int image_id;
+@@ -43,6 +50,7 @@ struct table_inline_item {
+ 
+ struct table_line_piece {
+ 	enum table_item_kind kind;
++	unsigned int attributes;
+ 	struct md_buf text;
+ 	struct table_inline_item *item;
+ };
+@@ -89,6 +97,7 @@ struct morph_md_kitty {
+ 	struct md_array images;
+ 	struct md_strmap image_paths;
+ 	mjx_ctx *math;
++	const char *inline_prefix;
+ 	unsigned int viewport_columns;
+ 	unsigned int viewport_rows;
+ 	unsigned int content_column;
+@@ -136,6 +145,7 @@ static int renderer_control_printf(struct morph_md_kitty *renderer,
+ 				   const char *format, ...);
+ static unsigned int image_available_columns(
+ 	const struct morph_md_kitty *renderer);
++static int contains_math(cmark_node *node);
+ 
+ static int placeholder_write(const char *bytes, size_t len, void *user_data)
+ {
+@@ -456,18 +466,25 @@ static int renderer_control_printf(struct morph_md_kitty *renderer,
+ 	return rc;
+ }
+ 
+-static struct terminal_cell_size terminal_cell_size(int fd)
++static struct terminal_cell_size terminal_cell_size(const struct morph_md_kitty *renderer)
+ {
+ 	struct winsize ws;
+ 	struct terminal_cell_size size = { 9.0, 18.0 };
+ 
+ 	memset(&ws, 0, sizeof(ws));
+-	if (fd >= 0 && ioctl(fd, TIOCGWINSZ, &ws) == 0) {
++	if (renderer->options.terminal_fd >= 0 &&
++	    ioctl(renderer->options.terminal_fd, TIOCGWINSZ, &ws) == 0) {
+ 		if (ws.ws_col > 0 && ws.ws_xpixel > 0)
+ 			size.width = (double)ws.ws_xpixel / (double)ws.ws_col;
+ 		if (ws.ws_row > 0 && ws.ws_ypixel > 0)
+ 			size.height = (double)ws.ws_ypixel / (double)ws.ws_row;
+ 	}
++	if (renderer->options.cell_pixel_width > 0u)
++		size.width = renderer->options.cell_pixel_width;
++
++	if (renderer->options.cell_pixel_height > 0u)
++		size.height = renderer->options.cell_pixel_height;
++
+ 	return size;
+ }
+ 
+@@ -592,28 +609,43 @@ static size_t base64_encode(const unsigned char *input, size_t input_len,
+ }
+ 
+ static unsigned char *copy_rgba_pixels(const mjx_buf *buffer,
+-					size_t *byte_count)
++				      unsigned int width, unsigned int height,
++				      int align_bottom, size_t *byte_count)
+ {
+ 	const uint32_t *pixels;
+ 	unsigned char *rgba;
+ 	size_t pixel_count;
+-	size_t i;
++	size_t source;
++	size_t target;
++	unsigned int x;
++	unsigned int y;
++	unsigned int left = (width - mjx_buf_width(buffer)) / 2u;
++	unsigned int top = (height - mjx_buf_height(buffer)) / 2u;
+ 	uint32_t pixel;
+ 
+-	pixel_count = (size_t)mjx_buf_width(buffer) * mjx_buf_height(buffer);
+-	if (pixel_count > SIZE_MAX / 4u)
++	pixel_count = (size_t)width * height;
++	if (width < mjx_buf_width(buffer) || height < mjx_buf_height(buffer) ||
++	    pixel_count > SIZE_MAX / 4u || pixel_count > 16777216u)
+ 		return NULL;
++
+ 	*byte_count = pixel_count * 4u;
+-	rgba = malloc(*byte_count ? *byte_count : 1u);
++	if (align_bottom)
++		top = height - mjx_buf_height(buffer);
++
++	rgba = calloc(*byte_count ? *byte_count : 1u, 1u);
+ 	if (!rgba)
+ 		return NULL;
+ 	pixels = mjx_buf_pixels(buffer);
+-	for (i = 0u; i < pixel_count; i++) {
+-		pixel = pixels[i];
+-		rgba[i * 4u] = (unsigned char)(pixel >> 24u);
+-		rgba[i * 4u + 1u] = (unsigned char)(pixel >> 16u);
+-		rgba[i * 4u + 2u] = (unsigned char)(pixel >> 8u);
+-		rgba[i * 4u + 3u] = (unsigned char)pixel;
++	for (y = 0u; y < mjx_buf_height(buffer); y++) {
++		for (x = 0u; x < mjx_buf_width(buffer); x++) {
++			source = (size_t)y * mjx_buf_width(buffer) + x;
++			target = ((size_t)(y + top) * width + x + left) * 4u;
++			pixel = pixels[source];
++			rgba[target] = (unsigned char)(pixel >> 24u);
++			rgba[target + 1u] = (unsigned char)(pixel >> 16u);
++			rgba[target + 2u] = (unsigned char)(pixel >> 8u);
++			rgba[target + 3u] = (unsigned char)pixel;
++		}
+ 	}
+ 	return rgba;
+ }
+@@ -622,6 +654,7 @@ static int send_kitty_rgba(struct morph_md_kitty *renderer,
+ 			   const mjx_buf *buffer,
+ 			   unsigned int columns,
+ 			   unsigned int rows,
++			   int align_text,
+ 			   unsigned int *image_id)
+ {
+ 	const size_t raw_chunk_size = 3072u;
+@@ -633,8 +666,18 @@ static int send_kitty_rgba(struct morph_md_kitty *renderer,
+ 	size_t encoded_len;
+ 	int more;
+ 	int rc;
++	struct terminal_cell_size cell = terminal_cell_size(renderer);
++	unsigned int width = (unsigned int)((double)columns * cell.width + 0.5);
++	unsigned int height = (unsigned int)((double)rows * cell.height + 0.5);
++
++	if (width < mjx_buf_width(buffer))
++		width = mjx_buf_width(buffer);
++
++	if (height < mjx_buf_height(buffer))
++		height = mjx_buf_height(buffer);
+ 
+-	rgba = copy_rgba_pixels(buffer, &byte_count);
++	rgba = copy_rgba_pixels(buffer, width, height,
++				align_text && rows % 2u == 0u, &byte_count);
+ 	if (!rgba)
+ 		return MD_ERR_NOMEM;
+ 	*image_id = morph_kitty_image_id_new();
+@@ -649,7 +692,7 @@ static int send_kitty_rgba(struct morph_md_kitty *renderer,
+ 				renderer,
+ 				"\033_Ga=T,f=32,s=%u,v=%u,i=%u,U=1,"
+ 				"q=2,c=%u,r=%u,m=%d;",
+-				mjx_buf_width(buffer), mjx_buf_height(buffer),
++				width, height,
+ 				*image_id, columns, rows, more);
+ 		} else {
+ 			rc = renderer_control_printf(renderer, "\033_Gm=%d;", more);
+@@ -789,8 +832,7 @@ static void png_cell_dimensions(struct morph_md_kitty *renderer,
+ 				unsigned int *columns,
+ 				unsigned int *rows)
+ {
+-	struct terminal_cell_size cell = terminal_cell_size(
+-		renderer->options.terminal_fd);
++	struct terminal_cell_size cell = terminal_cell_size(renderer);
+ 	double column_count = (double)pixels->width / cell.width;
+ 	double row_count = (double)pixels->height / cell.height;
+ 	unsigned int native_columns = (unsigned int)column_count;
+@@ -896,7 +938,7 @@ static unsigned int formula_columns(struct morph_md_kitty *renderer,
+ 	struct terminal_cell_size cell;
+ 	unsigned int columns;
+ 
+-	cell = terminal_cell_size(renderer->options.terminal_fd);
++	cell = terminal_cell_size(renderer);
+ 	columns = (unsigned int)((double)mjx_buf_width(buffer) / cell.width);
+ 	if ((double)columns * cell.width < (double)mjx_buf_width(buffer))
+ 		columns++;
+@@ -911,7 +953,7 @@ static unsigned int formula_rows(struct morph_md_kitty *renderer,
+ 	struct terminal_cell_size cell;
+ 	unsigned int rows;
+ 
+-	cell = terminal_cell_size(renderer->options.terminal_fd);
++	cell = terminal_cell_size(renderer);
+ 	rows = (unsigned int)((double)mjx_buf_height(buffer) / cell.height);
+ 	if ((double)rows * cell.height < (double)mjx_buf_height(buffer))
+ 		rows++;
+@@ -953,8 +995,7 @@ static int render_formula(struct morph_md_kitty *renderer,
+ 
+ 	columns = formula_columns(renderer, buf);
+ 	rows = formula_rows(renderer, buf);
+-	fit_placeholder_dimensions(
+-		&columns, &rows, image_available_columns(renderer));
++	fit_placeholder_dimensions(&columns, &rows, 0u);
+ 	if (rows > 1u && renderer->line_started &&
+ 	    renderer->content_column >
+ 		    renderer->options.content_padding_left_columns) {
+@@ -966,7 +1007,7 @@ static int render_formula(struct morph_md_kitty *renderer,
+ 		rc = renderer_prepare_width(renderer, columns);
+ 	if (rc == MD_OK)
+ 		rc = send_kitty_rgba(
+-			renderer, buf, columns, rows, &image_id);
++			renderer, buf, columns, rows, style == MJX_STYLE_INLINE, &image_id);
+ 	for (row = 0u; rc == MD_OK && row < rows; row++) {
+ 		rc = renderer_start_content_line(renderer);
+ 		if (rc == MD_OK)
+@@ -975,8 +1016,6 @@ static int render_formula(struct morph_md_kitty *renderer,
+ 		if (rc == MD_OK && row + 1u < rows)
+ 			rc = renderer_newline(renderer);
+ 	}
+-	if (rc == MD_OK && rows > 1u)
+-		rc = renderer_newline(renderer);
+ 	mjx_buf_free(buf);
+ 	return rc;
+ }
+@@ -1240,70 +1279,97 @@ static int render_list(struct morph_md_kitty *renderer, cmark_node *node)
+ 	return renderer->lists.len == 0u ? renderer_putc(renderer, '\n') : MD_OK;
+ }
+ 
+-static int print_list_indent(struct morph_md_kitty *renderer)
++static int append_list_indent(struct morph_md_kitty *renderer, struct md_buf *prefix)
+ {
+ 	size_t i;
+ 	int rc;
+ 
+ 	for (i = 1u; i < renderer->lists.len; i++) {
+-		rc = renderer_puts(renderer, "   ");
++		rc = md_buf_puts(prefix, "   ");
+ 		if (rc != MD_OK)
+ 			return rc;
+ 	}
+ 	return MD_OK;
+ }
+ 
+-static int print_list_prefix(struct morph_md_kitty *renderer)
++static int append_list_prefix(struct morph_md_kitty *renderer, struct md_buf *prefix)
+ {
+ 	static const char *const bullets[] = { "• ", "◦ ", "▪ " };
+ 	struct list_state *state;
+ 	int rc;
+ 
+-	rc = print_list_indent(renderer);
++	rc = append_list_indent(renderer, prefix);
+ 	if (rc != MD_OK)
+ 		return rc;
+ 	state = md_array_get(&renderer->lists, renderer->lists.len - 1u);
+ 	if (state->type == CMARK_ORDERED_LIST)
+-		return renderer_printf(renderer, "%d. ", state->next_number++);
+-	return renderer_puts(renderer,
++		return md_buf_printf(prefix, "%d. ", state->next_number++);
++	return md_buf_puts(prefix,
+ 			     bullets[(renderer->lists.len - 1u) % 3u]);
+ }
+ 
+-static int print_task_prefix(struct morph_md_kitty *renderer, cmark_node *item)
++static int append_task_prefix(struct morph_md_kitty *renderer, cmark_node *item,
++			      struct md_buf *prefix)
+ {
+ 	int rc;
+ 
+-	rc = print_list_indent(renderer);
++	rc = append_list_indent(renderer, prefix);
+ 	if (rc != MD_OK)
+ 		return rc;
+ 	if (cmark_gfm_extensions_get_tasklist_item_checked(item))
+-		return renderer_puts(renderer, "☑ ");
+-	return renderer_puts(renderer, "☐ ");
++		return md_buf_puts(prefix, "☑ ");
++	return md_buf_puts(prefix, "☐ ");
+ }
+ 
+-static int render_item(struct morph_md_kitty *renderer, cmark_node *node)
++static int render_prefixed_item(struct morph_md_kitty *renderer, cmark_node *node,
++				const char *prefix)
+ {
+-	int rc;
++	cmark_node *first = cmark_node_first_child(node);
++	const char *previous = renderer->inline_prefix;
++	int deferred = first && cmark_node_get_type(first) == CMARK_NODE_PARAGRAPH &&
++		contains_math(first);
++	int rc = MD_OK;
++
++	if (deferred)
++		renderer->inline_prefix = prefix;
++	else
++		rc = renderer_puts(renderer, prefix);
+ 
+-	rc = print_list_prefix(renderer);
+ 	if (rc != MD_OK)
+ 		return rc;
++
+ 	renderer->item_depth++;
+ 	rc = render_children(renderer, node);
+ 	renderer->item_depth--;
++	renderer->inline_prefix = previous;
++	return rc;
++}
++
++static int render_item(struct morph_md_kitty *renderer, cmark_node *node)
++{
++	struct md_buf prefix;
++	int rc;
++
++	md_buf_init(&prefix);
++	rc = append_list_prefix(renderer, &prefix);
++	if (rc == MD_OK)
++		rc = render_prefixed_item(renderer, node, prefix.data);
++
++	md_buf_cleanup(&prefix);
+ 	return rc;
+ }
+ 
+ static int render_task_item(struct morph_md_kitty *renderer, cmark_node *node)
+ {
++	struct md_buf prefix;
+ 	int rc;
+ 
+-	rc = print_task_prefix(renderer, node);
+-	if (rc != MD_OK)
+-		return rc;
+-	renderer->item_depth++;
+-	rc = render_children(renderer, node);
+-	renderer->item_depth--;
++	md_buf_init(&prefix);
++	rc = append_task_prefix(renderer, node, &prefix);
++	if (rc == MD_OK)
++		rc = render_prefixed_item(renderer, node, prefix.data);
++
++	md_buf_cleanup(&prefix);
+ 	return rc;
+ }
+ 
+@@ -1631,19 +1697,21 @@ static int collect_table(struct morph_md_kitty *renderer, cmark_node *node,
+ 
+ static int table_line_append_text(struct table_cell_line *line,
+ 				  const char *text, size_t len,
+-				  unsigned int width)
++				  unsigned int width, unsigned int attributes)
+ {
+ 	struct table_line_piece *piece;
+ 	int rc;
+ 
+ 	piece = line->pieces.len ?
+ 		md_array_get(&line->pieces, line->pieces.len - 1u) : NULL;
+-	if (!piece || piece->kind != TABLE_ITEM_TEXT) {
++	if (!piece || piece->kind != TABLE_ITEM_TEXT ||
++	    piece->attributes != attributes) {
+ 		piece = md_array_push(&line->pieces);
+ 		if (!piece)
+ 			return MD_ERR_NOMEM;
+ 		memset(piece, 0, sizeof(*piece));
+ 		piece->kind = TABLE_ITEM_TEXT;
++		piece->attributes = attributes;
+ 		md_buf_init(&piece->text);
+ 	}
+ 	rc = md_buf_append(&piece->text, text, len);
+@@ -1661,6 +1729,7 @@ static int table_line_append_visual(struct table_cell_line *line,
+ 		return MD_ERR_NOMEM;
+ 	memset(piece, 0, sizeof(*piece));
+ 	piece->kind = item->kind;
++	piece->attributes = item->attributes;
+ 	piece->item = item;
+ 	md_buf_init(&piece->text);
+ 	line->width += item->width;
+@@ -1675,6 +1744,7 @@ struct table_wrap_state {
+ 	struct md_buf pending_space;
+ 	unsigned int pending_width;
+ 	unsigned int width;
++	unsigned int attributes;
+ };
+ 
+ static int table_wrap_new_line(struct table_wrap_state *state)
+@@ -1709,7 +1779,8 @@ static int table_wrap_consume_pending(struct table_wrap_state *state)
+ 	if (state->line->width > 0u && state->pending_space.len > 0u) {
+ 		rc = table_line_append_text(
+ 			state->line, state->pending_space.data,
+-			state->pending_space.len, state->pending_width);
++			state->pending_space.len, state->pending_width,
++			state->attributes);
+ 	}
+ 	table_wrap_clear_pending(state);
+ 	return rc;
+@@ -1729,7 +1800,8 @@ static int table_wrap_place_text(struct table_wrap_state *state,
+ 	}
+ 	rc = table_wrap_consume_pending(state);
+ 	return rc == MD_OK ?
+-		table_line_append_text(state->line, text, len, width) : rc;
++		table_line_append_text(state->line, text, len, width,
++				       state->attributes) : rc;
+ }
+ 
+ static int table_wrap_place_emergency(struct table_wrap_state *state,
+@@ -1818,8 +1890,7 @@ static int table_wrap_atomic_item(struct table_wrap_state *state,
+ {
+ 	int rc;
+ 
+-	if (item->kind == TABLE_ITEM_MATH ||
+-	    item->kind == TABLE_ITEM_IMAGE) {
++	if (item->kind == TABLE_ITEM_IMAGE) {
+ 		unsigned int rows = (unsigned int)item->rows;
+ 
+ 		fit_placeholder_dimensions(&item->width, &rows, state->width);
+@@ -1856,6 +1927,7 @@ static int table_cell_wrap(struct table_cell_text *cell, unsigned int width)
+ 	rc = table_wrap_new_line(&state);
+ 	for (i = 0u; rc == MD_OK && i < cell->items.len; i++) {
+ 		item = md_array_get(&cell->items, i);
++		state.attributes = item->attributes;
+ 		if (item->kind == TABLE_ITEM_TEXT)
+ 			rc = table_wrap_text_item(&state, item);
+ 		else if (item->kind == TABLE_ITEM_BREAK)
+@@ -2002,7 +2074,8 @@ static int render_table_visual_row(struct morph_md_kitty *renderer,
+ 				return MD_ERR_PARSE;
+ 			rc = send_kitty_rgba(
+ 				renderer, buffer, item->width,
+-				(unsigned int)item->rows, &item->image_id);
++				(unsigned int)item->rows, item->style == MJX_STYLE_INLINE,
++				&item->image_id);
+ 			mjx_buf_free(buffer);
+ 		} else {
+ 			rc = send_kitty_png_file(
+@@ -2052,6 +2125,23 @@ static int render_table_piece_padding(struct morph_md_kitty *renderer,
+ 	return rc;
+ }
+ 
++static int render_inline_attributes(struct morph_md_kitty *renderer,
++				    unsigned int attributes, int enable)
++{
++	int rc = MD_OK;
++
++	if (attributes & INLINE_BOLD)
++		rc = renderer_control_puts(renderer, enable ? "\033[1m" : "\033[22m");
++
++	if (rc == MD_OK && (attributes & INLINE_ITALIC))
++		rc = renderer_control_puts(renderer, enable ? "\033[3m" : "\033[23m");
++
++	if (rc == MD_OK && (attributes & INLINE_STRIKE))
++		rc = renderer_control_puts(renderer, enable ? "\033[9m" : "\033[29m");
++
++	return rc;
++}
++
+ static int render_table_cell_line(struct morph_md_kitty *renderer,
+ 				  struct table_cell_line *line,
+ 				  unsigned int line_row)
+@@ -2068,10 +2158,13 @@ static int render_table_cell_line(struct morph_md_kitty *renderer,
+ 	content_row = (unsigned int)line->height / 2u;
+ 	for (i = 0u; rc == MD_OK && i < line->pieces.len; i++) {
+ 		piece = md_array_get(&line->pieces, i);
++		rc = render_inline_attributes(renderer, piece->attributes, 1);
++		if (rc != MD_OK)
++			return rc;
++
+ 		if (piece->kind == TABLE_ITEM_MATH ||
+ 		    piece->kind == TABLE_ITEM_IMAGE) {
+-			visual_top = ((unsigned int)line->height -
+-				      (unsigned int)piece->item->rows) / 2u;
++			visual_top = content_row - (unsigned int)piece->item->rows / 2u;
+ 			if (line_row >= visual_top &&
+ 			    line_row < visual_top + (unsigned int)piece->item->rows) {
+ 				visual_row = line_row - visual_top;
+@@ -2090,7 +2183,212 @@ static int render_table_cell_line(struct morph_md_kitty *renderer,
+ 		} else {
+ 			rc = render_table_piece_padding(renderer, piece);
+ 		}
++
++		if (render_inline_attributes(renderer, piece->attributes, 0) != MD_OK &&
++		    rc == MD_OK)
++			rc = -EIO;
++	}
++	return rc;
++}
++
++struct inline_flow {
++	struct morph_md_kitty *renderer;
++	struct table_cell_text run;
++	unsigned int indent;
++	const char *prefix;
++	int emitted;
++	int block_spacing;
++};
++
++static int inline_flow_flush(struct inline_flow *flow)
++{
++	struct morph_md_kitty *renderer = flow->renderer;
++	struct table_cell_line *line;
++	unsigned int left = renderer->options.content_padding_left_columns;
++	unsigned int start = left + flow->indent;
++	unsigned int edge = content_right_edge(renderer);
++	unsigned int row;
++	unsigned int column;
++	size_t i;
++	int rc;
++
++	if (flow->run.items.len == 0u)
++		return MD_OK;
++
++	rc = table_cell_wrap(&flow->run, edge > start ? edge - start : 1u);
++	renderer->wrap_suppression++;
++	for (i = 0u; rc == MD_OK && i < flow->run.lines.len; i++) {
++		line = md_array_get(&flow->run.lines, i);
++		for (row = 0u; rc == MD_OK && row < (unsigned int)line->height; row++) {
++			if (!renderer->line_started) {
++				rc = renderer_start_content_line(renderer);
++				if (flow->prefix && row == (unsigned int)line->height / 2u) {
++					if (rc == MD_OK)
++						rc = renderer_puts(renderer, flow->prefix);
++				} else {
++					for (column = 0u; rc == MD_OK && column < flow->indent; column++)
++						rc = renderer_putc(renderer, ' ');
++				}
++			}
++
++			if (rc == MD_OK)
++				rc = render_table_cell_line(renderer, line, row);
++
++			if (rc == MD_OK)
++				rc = renderer_newline(renderer);
++		}
++
++		flow->prefix = NULL;
++	}
++
++	renderer->wrap_suppression--;
++	table_cell_cleanup(&flow->run);
++	table_cell_init(&flow->run);
++	flow->emitted = 1;
++	flow->block_spacing = 0;
++	return rc;
++}
++
++static int inline_flow_block(struct inline_flow *flow, cmark_node *node)
++{
++	struct morph_md_kitty *renderer = flow->renderer;
++	const char *literal = morph_md_math_literal(node);
++	int rc = inline_flow_flush(flow);
++
++	if (rc == MD_OK && renderer->line_started)
++		rc = renderer_newline(renderer);
++
++	if (rc == MD_OK && flow->emitted && !flow->block_spacing)
++		rc = renderer_newline(renderer);
++
++	if (rc == MD_OK)
++		rc = render_formula(renderer, literal ? literal : "",
++				    literal ? strlen(literal) : 0u, MJX_STYLE_DISPLAY);
++
++	if (rc == MD_OK)
++		rc = renderer_puts(renderer, "\n\n");
++
++	flow->emitted = 1;
++	flow->block_spacing = 1;
++	return rc;
++}
++
++static int inline_flow_collect(struct inline_flow *flow, cmark_node *node,
++			       unsigned int attributes)
++{
++	struct morph_md_kitty *renderer = flow->renderer;
++	cmark_node_type type = cmark_node_get_type(node);
++	const char *kind = cmark_node_get_type_string(node);
++	const char *literal = cmark_node_get_literal(node);
++	struct table_inline_item *item;
++	cmark_node *child;
++	size_t first = flow->run.items.len;
++	size_t i;
++	int rc = MD_OK;
++
++	if (type == MORPH_MD_NODE_MATH_BLOCK)
++		return inline_flow_block(flow, node);
++
++	if (type == CMARK_NODE_IMAGE ||
++	    (type == CMARK_NODE_LINK && !renderer->previewing &&
++	     is_video_path(cmark_node_get_url(node)) && renderer->options.media)) {
++		rc = inline_flow_flush(flow);
++		if (rc == MD_OK)
++			rc = type == CMARK_NODE_IMAGE ? render_image_node(renderer, node) :
++				collect_media(renderer, "video", cmark_node_get_url(node));
++
++		flow->emitted = 1;
++		flow->block_spacing = 0;
++		return rc;
++	}
++
++	if (type == MORPH_MD_NODE_MATH_INLINE && !renderer->previewing) {
++		rc = append_table_math(renderer, &flow->run, node);
++	} else if (type == CMARK_NODE_TEXT || type == MORPH_MD_NODE_MATH_INLINE) {
++		if (type == MORPH_MD_NODE_MATH_INLINE)
++			literal = morph_md_math_literal(node);
++
++		rc = append_table_text(&flow->run, literal ? literal : "");
++	} else if (type == CMARK_NODE_CODE) {
++		rc = append_table_item(&flow->run, TABLE_ITEM_CODE, literal ? literal : "");
++	} else if (type == CMARK_NODE_SOFTBREAK || type == CMARK_NODE_LINEBREAK) {
++		if (flow->run.items.len > 0u &&
++		    (!cmark_node_next(node) ||
++		     cmark_node_get_type(cmark_node_next(node)) != MORPH_MD_NODE_MATH_BLOCK))
++			rc = append_table_item(&flow->run, TABLE_ITEM_BREAK, NULL);
++	} else {
++		if (type == CMARK_NODE_STRONG)
++			attributes |= INLINE_BOLD;
++
++		if (type == CMARK_NODE_EMPH)
++			attributes |= INLINE_ITALIC;
++
++		if (kind && strcmp(kind, "strikethrough") == 0)
++			attributes |= INLINE_STRIKE;
++
++		for (child = cmark_node_first_child(node); rc == MD_OK && child;
++		     child = cmark_node_next(child))
++			rc = inline_flow_collect(flow, child, attributes);
++
++		first = flow->run.items.len;
++		if (rc == MD_OK && type == CMARK_NODE_LINK)
++			rc = append_table_link_destination(&flow->run, cmark_node_get_url(node));
++
++		for (i = first; i < flow->run.items.len; i++) {
++			item = md_array_get(&flow->run.items, i);
++			item->attributes = attributes;
++		}
++
++		return rc;
++	}
++
++	for (i = first; i < flow->run.items.len; i++) {
++		item = md_array_get(&flow->run.items, i);
++		item->attributes = attributes;
++	}
++
++	return rc;
++}
++
++static int contains_math(cmark_node *node)
++{
++	cmark_node *child;
++	cmark_node_type type = cmark_node_get_type(node);
++
++	if (type == MORPH_MD_NODE_MATH_INLINE || type == MORPH_MD_NODE_MATH_BLOCK)
++		return 1;
++
++	for (child = cmark_node_first_child(node); child; child = cmark_node_next(child)) {
++		if (contains_math(child))
++			return 1;
+ 	}
++
++	return 0;
++}
++
++static int render_math_flow(struct morph_md_kitty *renderer, cmark_node *node)
++{
++	struct inline_flow flow = {0};
++	unsigned int left = renderer->options.content_padding_left_columns;
++	int rc;
++
++	flow.renderer = renderer;
++	flow.indent = renderer->line_started && renderer->content_column > left ?
++		renderer->content_column - left : 0u;
++	flow.prefix = renderer->inline_prefix;
++	renderer->inline_prefix = NULL;
++	if (flow.prefix)
++		flow.indent = (unsigned int)md_utf8_display_width(flow.prefix);
++
++	table_cell_init(&flow.run);
++	rc = inline_flow_collect(&flow, node, 0u);
++	if (rc == MD_OK)
++		rc = inline_flow_flush(&flow);
++
++	if (rc == MD_OK && !flow.block_spacing && renderer->item_depth == 0)
++		rc = renderer_newline(renderer);
++
++	table_cell_cleanup(&flow.run);
+ 	return rc;
+ }
+ 
+@@ -2221,9 +2519,10 @@ static int render_heading(struct morph_md_kitty *renderer, cmark_node *node)
+ 	if (rc == MD_OK)
+ 		rc = renderer_puts(renderer, prefixes[level - 1]);
+ 	if (rc == MD_OK)
+-		rc = render_children(renderer, node);
++		rc = contains_math(node) ? render_math_flow(renderer, node) :
++			render_children(renderer, node);
+ 	reset_rc = renderer_control_puts(renderer, "\033[0m");
+-	if (reset_rc == MD_OK)
++	if (reset_rc == MD_OK && !contains_math(node))
+ 		reset_rc = renderer_puts(renderer, "\n\n");
+ 	return rc == MD_OK ? reset_rc : rc;
+ }
+@@ -2419,7 +2718,7 @@ static int render_node(struct morph_md_kitty *renderer, cmark_node *node)
+ 	if (type == MORPH_MD_NODE_MATH_INLINE ||
+ 	    type == MORPH_MD_NODE_MATH_BLOCK) {
+ 		literal = morph_md_math_literal(node);
+-		if (type == MORPH_MD_NODE_MATH_BLOCK)
++		if (type == MORPH_MD_NODE_MATH_BLOCK && renderer->line_started)
+ 			if (renderer_putc(renderer, '\n') != MD_OK)
+ 				return -EIO;
+ 		rc = render_formula(renderer, literal ? literal : "",
+@@ -2427,7 +2726,7 @@ static int render_node(struct morph_md_kitty *renderer, cmark_node *node)
+ 				    type == MORPH_MD_NODE_MATH_BLOCK ?
+ 				    MJX_STYLE_DISPLAY : MJX_STYLE_INLINE);
+ 		if (rc == MD_OK && type == MORPH_MD_NODE_MATH_BLOCK)
+-			rc = renderer_putc(renderer, '\n');
++			rc = renderer_puts(renderer, "\n\n");
+ 		return rc;
+ 	}
+ 	if (type == CMARK_NODE_TEXT && literal)
+@@ -2487,6 +2786,9 @@ static int render_node(struct morph_md_kitty *renderer, cmark_node *node)
+ 	if (type == CMARK_NODE_HEADING)
+ 		return render_heading(renderer, node);
+ 	if (type == CMARK_NODE_PARAGRAPH) {
++		if (contains_math(node))
++			return render_math_flow(renderer, node);
++
+ 		rc = render_children(renderer, node);
+ 		if (rc == MD_OK)
+ 			rc = renderer_puts(renderer,
+@@ -2780,7 +3082,7 @@ struct morph_md_kitty *morph_md_kitty_create(
+ 		renderer->options.write = stdout_write;
+ 	if (renderer->options.font_size <= 0.0)
+ 		renderer->options.font_size =
+-			terminal_cell_size(renderer->options.terminal_fd).height;
++			terminal_cell_size(renderer).height * 0.85;
+ 	if (renderer->options.dpi == 0)
+ 		renderer->options.dpi = 72u;
+ 	if (!options) {
+diff --git a/sdk/kitty/morph-markdown/tests/test_morph_markdown_kitty.c b/sdk/kitty/morph-markdown/tests/test_morph_markdown_kitty.c
+index 90d22a7..546b19d 100644
+--- a/sdk/kitty/morph-markdown/tests/test_morph_markdown_kitty.c
++++ b/sdk/kitty/morph-markdown/tests/test_morph_markdown_kitty.c
+@@ -755,6 +755,45 @@ static void test_streaming_media_callbacks_emit_once_in_place(void)
+ 	morph_md_kitty_destroy(renderer);
+ }
+ 
++static void test_math_flow_preserves_media_callback_order(void)
++{
++	struct morph_md_kitty_options options = {0};
++	struct capture output;
++	struct morph_md_kitty *renderer;
++	const char *markdown = "before $x^2$ ![plot](file:///tmp/plot.jpg) "
++		"between $y^2$ [clip](file:///tmp/demo.mp4) after\n";
++	const char *before;
++	const char *image;
++	const char *between;
++	const char *video;
++	const char *after;
++
++	capture_reset(&output);
++	options.font_path = MORPH_TEST_MATH_FONT_PATH;
++	options.features = MORPH_MD_FEATURE_GFM | MORPH_MD_FEATURE_MATH;
++	options.write = capture_write;
++	options.user_data = &output;
++	options.media = capture_ordered_media;
++	options.media_user_data = &output;
++	options.terminal_fd = -1;
++	options.terminal_columns = 80u;
++	renderer = morph_md_kitty_create(&options);
++	assert(renderer != NULL);
++	assert(morph_md_kitty_append(renderer, markdown, strlen(markdown), 1) == 0);
++	assert(morph_md_kitty_render(renderer) == 0);
++	assert(output.len < sizeof(output.bytes));
++	output.bytes[output.len] = '\0';
++	before = strstr(output.bytes, "before");
++	image = strstr(output.bytes, "<image:/tmp/plot.jpg>");
++	between = strstr(output.bytes, "between");
++	video = strstr(output.bytes, "<video:/tmp/demo.mp4>");
++	after = strstr(output.bytes, "after");
++	assert(before && image && between && video && after);
++	assert(before < image && image < between && between < video && video < after);
++	assert(substring_count(output.bytes, "\033_Ga=T,f=32,s=") == 2);
++	morph_md_kitty_destroy(renderer);
++}
++
+ static void test_local_png_renders_in_blocks_and_tables(void)
+ {
+ 	struct morph_md_kitty_options options;
+@@ -991,6 +1030,7 @@ static void test_math_uses_native_size_kitty_transfer(void)
+ 	memset(&options, 0, sizeof(options));
+ 	memset(&output, 0, sizeof(output));
+ 	options.font_path = MORPH_TEST_MATH_FONT_PATH;
++	options.font_size = 18.0;
+ 	options.features = MORPH_MD_FEATURE_GFM | MORPH_MD_FEATURE_MATH;
+ 	options.fg_color = 0xFFFFFFFFu;
+ 	options.write = capture_write;
+@@ -1006,8 +1046,7 @@ static void test_math_uses_native_size_kitty_transfer(void)
+ 	assert(output.len < sizeof(output.bytes));
+ 	output.bytes[output.len] = '\0';
+ 	assert(strstr(output.bytes, "\033_Ga=T,f=32,s=") != NULL);
+-	assert(strstr(output.bytes,
+-		      "  123456789 \n  \033_Ga=T,f=32,s=") != NULL);
++	assert(strstr(output.bytes, "  123456789\n") != NULL);
+ 	assert(strstr(output.bytes, ",U=1,q=2,c=") != NULL);
+ 	assert(strstr(output.bytes, "\364\216\273\256") != NULL);
+ 	assert(strstr(output.bytes, "│ $x^2$ ") == NULL);
+@@ -1368,6 +1407,7 @@ int main(void)
+ 	test_heading_underline_excludes_left_padding();
+ 	test_local_png_bypasses_media_callback();
+ 	test_media_callbacks_follow_document_order();
++	test_math_flow_preserves_media_callback_order();
+ 	test_streaming_media_callbacks_emit_once_in_place();
+ 	test_local_png_renders_in_blocks_and_tables();
+ 	test_streaming_image_is_transmitted_once();

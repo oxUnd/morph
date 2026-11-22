@@ -252,6 +252,9 @@ set(MORPH_MATHJAX_DIR "${CMAKE_SOURCE_DIR}/vendor/mathjax-c" CACHE PATH
 set(MORPH_MARKDOWN_BUILD_TESTS ${BUILD_TESTS} CACHE BOOL "" FORCE)
 set(MORPH_MARKDOWN_BUILD_KITTY ON CACHE BOOL "" FORCE)
 set(MORPH_MARKDOWN_BUILD_KITTY_DEMO OFF CACHE BOOL "" FORCE)
+include(cmake/ApplyRenderingPatches.cmake)
+morph_apply_rendering_patch("Markdown inline math"
+	"${CMAKE_CURRENT_SOURCE_DIR}/fronts/morph-markdown" "morph-markdown-inline-math.patch")
 add_subdirectory(fronts/morph-markdown)
 include(cmake/FixCmarkGfm.cmake)
 
@@ -335,6 +338,8 @@ set(NT_STB_RESIZE_TARGET morph-media)
 if(MORPH_NOTHING_TUI_SOURCE_DIR AND
    NOT MORPH_NOTHING_TUI_SOURCE_DIR STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/../nothing-tui")
 	set(nothing_tui_SOURCE_DIR "${MORPH_NOTHING_TUI_SOURCE_DIR}")
+	morph_apply_rendering_patch("Windows Terminal Sixel cells"
+		"${nothing_tui_SOURCE_DIR}" "nothing-tui-windows-sixel-cells.patch")
 	add_subdirectory("${nothing_tui_SOURCE_DIR}" nothing-tui EXCLUDE_FROM_ALL)
 else()
 	# Populate the pinned framework before configuring its targets.
@@ -345,6 +350,8 @@ else()
 		SOURCE_SUBDIR include
 	)
 	FetchContent_MakeAvailable(nothing_tui)
+	morph_apply_rendering_patch("Windows Terminal Sixel cells"
+		"${nothing_tui_SOURCE_DIR}" "nothing-tui-windows-sixel-cells.patch")
 	add_subdirectory("${nothing_tui_SOURCE_DIR}" "${nothing_tui_BINARY_DIR}" EXCLUDE_FROM_ALL)
 endif()
 

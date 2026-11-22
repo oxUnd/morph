@@ -19,6 +19,7 @@ extern "C" {
 }
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <fcntl.h>
 #include <string>
@@ -128,6 +129,11 @@ class CliRetainedMediaTest : public ::testing::Test
 						 self->document, self->source.c_str(), 1));
 	}
 
+	virtual int Columns() const
+	{
+		return 80;
+	}
+
 	void SetUp() override
 	{
 		for (const char *key : {"TERM", "KITTY_WINDOW_ID", "TERM_PROGRAM", "ITERM_PROFILE",
@@ -146,7 +152,7 @@ class CliRetainedMediaTest : public ::testing::Test
 		ASSERT_NE(input = fopen(ptsname(master), "r+"), nullptr);
 		ASSERT_NE(output = fdopen(dup(fileno(input)), "w"), nullptr);
 		struct winsize size{};
-		size.ws_col = 80;
+		size.ws_col = static_cast<unsigned short>(Columns());
 		size.ws_row = 12;
 		ASSERT_EQ(ioctl(fileno(input), TIOCSWINSZ, &size), 0);
 		struct nt_application_options options{};
@@ -314,6 +320,140 @@ TEST_F(CliRetainedMediaTest, PlainMathAndLiteralCodeDoNotProduceImages)
 		ASSERT_EQ(cli_markdown_render_retained(&rendered, sample.first, 80, sample.second), 0);
 		EXPECT_EQ(strstr(nb_buf_cstr(&rendered), "\033_G"), nullptr);
 		EXPECT_NE(strstr(nb_buf_cstr(&rendered), sample.second ? "x^2" : "\\frac"), nullptr);
+	}
+}
+
+class CliMathLayoutTest : public CliRetainedMediaTest, public ::testing::WithParamInterface<int>
+{
+      protected:
+	int Columns() const override
+	{
+		return GetParam();
+	}
+};
+
+TEST_P(CliMathLayoutTest, InlineMathSharesTheTextRowAndKeepsCellProportions)
+{
+	Present();
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_markdown_render_retained(&rendered,
+		"**before** $x^2$ *middle* $\\frac{\\sqrt{5}}{2}$ after.\n", Columns(), 1), 0);
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(document, nb_buf_cstr(&rendered), 1), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	ASSERT_EQ(placements.size(), 2u);
+	const auto before = plain.find("before"), middle = plain.find("middle");
+	const auto after = plain.find("after.");
+	ASSERT_NE(before, std::string::npos) << plain;
+	ASSERT_NE(middle, std::string::npos) << plain;
+	ASSERT_NE(after, std::string::npos) << plain;
+	EXPECT_EQ(plain.rfind('\n', before), plain.rfind('\n', middle)) << plain;
+	EXPECT_EQ(plain.rfind('\n', before), plain.rfind('\n', after)) << plain;
+	const int text_row = static_cast<int>(std::count(plain.begin(), plain.begin() + before, '\n'));
+	for (const auto &image : placements) {
+		EXPECT_LE(image.y, text_row);
+		EXPECT_GT(image.y + image.height, text_row);
+		EXPECT_EQ(image.source_width, image.width * 9);
+		EXPECT_EQ(image.source_height, image.height * 18);
+	}
+
+	EXPECT_NE(strstr(nb_buf_cstr(&rendered), "\033[1m"), nullptr);
+	EXPECT_NE(strstr(nb_buf_cstr(&rendered), "\033[3m"), nullptr);
+}
+
+TEST_F(CliRetainedMediaTest, WindowsMathUsesTheSixelVirtualCellSize)
+{
+	setenv("WT_SESSION", "math-layout-test", 1);
+	setenv("TERM", "xterm-256color", 1);
+	unsetenv("KITTY_WINDOW_ID");
+	struct nt_terminal_capabilities capabilities;
+	ASSERT_EQ(nt_capabilities_detect(&capabilities, input, output, 0), 0);
+	EXPECT_EQ(capabilities.cell_pixel_width, 10);
+	EXPECT_EQ(capabilities.cell_pixel_height, 20);
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_markdown_render_retained(&rendered, "before $x^2$ after\n", 80, 1), 0);
+	const char *transfer = strstr(nb_buf_cstr(&rendered), "\033_Ga=T,f=32,s=");
+	ASSERT_NE(transfer, nullptr);
+	unsigned width = 0, height = 0, cells = 0, rows = 0;
+	ASSERT_EQ(sscanf(transfer, "\033_Ga=T,f=32,s=%u,v=%u,i=%*u,U=1,q=2,c=%u,r=%u",
+		&width, &height, &cells, &rows), 4);
+	EXPECT_EQ(width, cells * 10u);
+	EXPECT_EQ(height, rows * 20u);
+}
+
+TEST_P(CliMathLayoutTest, WrappedMathPreservesSentenceOrderAndPunctuation)
+{
+	Present();
+	const std::string prefix(static_cast<size_t>(Columns() - 12), 'a');
+	const std::string markdown = prefix + " $\\frac{\\sqrt{5}}{2}$, after sentence.\n";
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_markdown_render_retained(&rendered, markdown.c_str(), Columns(), 1), 0);
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(document, nb_buf_cstr(&rendered), 1), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	ASSERT_EQ(placements.size(), 1u);
+	EXPECT_NE(plain.find(prefix), std::string::npos) << plain;
+	EXPECT_NE(plain.find(", after"), std::string::npos) << plain;
+	EXPECT_NE(plain.find("sentence."), std::string::npos) << plain;
+	EXPECT_LT(plain.find(prefix), plain.find(", after"));
+	EXPECT_LE(placements[0].x + placements[0].width, Columns());
+}
+
+INSTANTIATE_TEST_SUITE_P(TerminalWidths, CliMathLayoutTest, ::testing::Values(120, 80, 60));
+
+TEST_F(CliRetainedMediaTest, WideFormulasRetainIntrinsicSizeInNarrowDocuments)
+{
+	std::string dimensions;
+	for (int columns : {120, 20}) {
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+		ASSERT_EQ(cli_markdown_render_retained(&rendered,
+			"before $a+b+c+d+e+f+g+h+i+j+k+l+m+n+o+p$ after\n", columns, 1), 0);
+		const char *transfer = strstr(nb_buf_cstr(&rendered), "\033_Ga=T,f=32,s=");
+		ASSERT_NE(transfer, nullptr);
+		unsigned width = 0, height = 0, cells = 0, rows = 0;
+		ASSERT_EQ(sscanf(transfer, "\033_Ga=T,f=32,s=%u,v=%u,i=%*u,U=1,q=2,c=%u,r=%u",
+			&width, &height, &cells, &rows), 4);
+		EXPECT_GT(cells, 20u);
+		const auto current = std::to_string(width) + "," + std::to_string(height) + "," +
+			std::to_string(cells) + "," + std::to_string(rows);
+		if (dimensions.empty())
+			dimensions = current;
+		else
+			EXPECT_EQ(dimensions, current);
+	}
+}
+
+TEST_F(CliRetainedMediaTest, DisplayMathOwnsExactlyOneBlankRowOnEachSide)
+{
+	Present();
+	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_markdown_render_retained(&rendered,
+		"before\n\n$$x^2$$\n\nafter\n", 80, 1), 0);
+	ASSERT_EQ(cli_rich_document_set_rendered_copy(document, nb_buf_cstr(&rendered), 1), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	ASSERT_EQ(placements.size(), 1u);
+	const auto before = plain.find("before"), after = plain.find("after");
+	ASSERT_NE(before, std::string::npos) << plain;
+	ASSERT_NE(after, std::string::npos) << plain;
+	const auto before_row = static_cast<int>(std::count(plain.begin(), plain.begin() + before, '\n'));
+	const auto after_row = static_cast<int>(std::count(plain.begin(), plain.begin() + after, '\n'));
+	EXPECT_EQ(placements[0].y, before_row + 2) << plain;
+	EXPECT_EQ(after_row, placements[0].y + placements[0].height + 1) << plain;
+}
+
+TEST_F(CliRetainedMediaTest, MathListMarkersAlignWithTheFirstTextLine)
+{
+	Present();
+	for (const char *marker : {"- ", "1. ", "- [x] "}) {
+		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {};
+		const std::string markdown = std::string(marker) +
+			"before $\\frac{\\sqrt{5}}{2}$ after\n";
+		ASSERT_EQ(cli_markdown_render_retained(&rendered, markdown.c_str(), 80, 1), 0);
+		ASSERT_EQ(cli_rich_document_set_rendered_copy(document, nb_buf_cstr(&rendered), 1), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		ASSERT_EQ(placements.size(), 1u);
+		const char *expected = !strcmp(marker, "- ") ? "• before" :
+			(!strcmp(marker, "1. ") ? "1. before" : "☑ before");
+		EXPECT_NE(plain.find(expected), std::string::npos) << plain;
+		EXPECT_NE(plain.find("after"), std::string::npos) << plain;
 	}
 }
 

@@ -260,6 +260,11 @@ The presenter manages stream buffers, Markdown rendering and artifact deduplicat
 Retained math uses MathJax-C bitmaps through native Kitty, iTerm2 or Sixel image
 views. Preserve math block contents during Markdown normalization, and let the
 math syntax extension consume backslash delimiters before Markdown escaping.
+Inline formulas share a measured line box with surrounding text, including
+wrapping, inline styles and vertical alignment. Pad the bitmap to its cell canvas
+without stretching the glyphs; keep oversized formulas at their intrinsic size.
+Display formulas own one trailing blank row. Windows Terminal Sixel uses a virtual
+10 by 20 pixel cell, independently of the display font and zoom.
 The input adapter owns cancellable stream reads and the per-application Readline
 callback used for blocking prompts outside active chat. Chat owns its native TextField, recall
 history, completion actions and adaptive TextView footer. Feed and turn services query final-output visibility

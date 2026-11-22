@@ -4,6 +4,7 @@
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
+#include <nothing/tui/capabilities.h>
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "morph_markdown_kitty.h"
@@ -45,6 +46,12 @@ static void cli_markdown_options(struct morph_md_kitty_options *options, unsigne
 	options->content_padding_left_columns = indent;
 	options->content_padding_right_columns = CLI_CONTENT_RIGHT_PADDING;
 	options->initial_cursor_column = initial_column;
+	struct nt_terminal_capabilities capabilities;
+	nt_capabilities_init(&capabilities);
+	if (capabilities.cell_pixel_width > 0 && capabilities.cell_pixel_height > 0) {
+		options->cell_pixel_width = (unsigned)capabilities.cell_pixel_width;
+		options->cell_pixel_height = (unsigned)capabilities.cell_pixel_height;
+	}
 }
 
 static int cli_markdown_document_write(const char *bytes, size_t length, void *opaque)

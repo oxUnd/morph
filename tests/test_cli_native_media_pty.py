@@ -111,7 +111,7 @@ def run_case(binary, server, protocol):
             elif protocol == 'iterm':
                 assert 'width=2;height=1;' in terminal.raw
             else:
-                assert 'q"1;1;16;16' in terminal.raw
+                assert 'q"1;1;20;20' in terminal.raw
             terminal.send('/clear\r')
             start = len(terminal.raw)
             terminal.send('/render ' + str(first) + '\r')
@@ -119,7 +119,7 @@ def run_case(binary, server, protocol):
             wait_packets(terminal, protocol, start=start)
             direct = packets(terminal.raw[start:], protocol)
             dimensions = {'kitty': 'c=40,r=10,', 'iterm': 'width=40;height=10;',
-                          'sixel': 'q"1;1;320;160'}
+                          'sixel': 'q"1;1;400;200'}
             assert any(dimensions[protocol] in packet for packet in direct), direct
             terminal.send('/clear\r')
             terminal.send('render native fixture\r')

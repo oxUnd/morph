@@ -116,3 +116,34 @@ Regressions: `Cleanup.JsonStringCopyAndOwnerTransfer`,
   `mathjax_parser_ownership`; tests owned transfer, borrowed stack resources with
   local registrations, failure preservation and repeated context/parse teardown.
   The original `test_md_html` must also pass with LeakSanitizer enabled.
+
+## Markdown: inline math line layout and bitmap padding
+
+- Patch: `morph-markdown-inline-math.patch`
+- Base companion checkout: `6c481edfbddb773063d09e2a662a9c9c19ef3a2d`.
+- Scope: reuse the Kitty SDK's measured inline pieces for math paragraphs and
+  headings. Text and atomic formulas wrap into shared line boxes; inline styles,
+  list prefixes and media callback order survive the layout pass. Math bitmaps
+  retain their intrinsic dimensions in narrow documents and tables. Transparent
+  padding fills the reserved cell canvas without stretching glyphs. Default math
+  text size is 85 percent of cell height. Display formulas own their block spacing.
+- Applied before `add_subdirectory(fronts/morph-markdown)` through
+  `cmake/ApplyRenderingPatches.cmake`. The tracked patch includes the SDK header
+  and its native regression changes so fresh checkouts build the same renderer.
+- Regressions: `test_morph_markdown_kitty`, `CliRetainedMediaTest`, parameterized
+  `CliMathLayoutTest` at 120/80/60 columns, and `cli_native_media_pty_integration`.
+
+## nothing-tui: Windows Terminal Sixel virtual cells
+
+- Patch: `nothing-tui-windows-sixel-cells.patch`
+- Base framework: `5eaf7c976d0f847c01801e45632c3f9090f1e1a8`.
+- Windows Terminal's default Sixel emulation uses a 10 by 20 virtual pixel cell,
+  independent of physical font size and zoom. Its implementation documents this
+  in [SixelParser::CellSizeForLevel](https://github.com/microsoft/terminal/blob/main/src/terminal/adapter/SixelParser.cpp)
+  and [AdaptDispatch::WindowManipulation](https://github.com/microsoft/terminal/blob/main/src/terminal/adapter/adaptDispatch.cpp).
+  Use those dimensions for the renderer and Markdown bitmap canvas; an empty
+  pixel-size ioctl result must retain them. This also fixes small and vertically
+  displaced native images when Cygwin cannot report pixel geometry.
+- Applied to fetched and explicit framework sources before configuring targets.
+  Both rendering patches use canonical source paths, isolated Git discovery,
+  reverse/forward checks and conflict rejection, preserving unrelated changes.
