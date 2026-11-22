@@ -27,9 +27,15 @@ if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) {
 $shell = New-Object -ComObject WScript.Shell
 $shortcutPath = Join-Path $desktop 'Morph.lnk'
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $env:ComSpec
-$shortcut.Arguments = '/d /k ""{0}""' -f $launcher
 $shortcut.WorkingDirectory = (Resolve-Path -LiteralPath $WorkingDirectory).Path
+$terminal = Get-Command wt.exe -CommandType Application -ErrorAction SilentlyContinue
+if ($terminal) {
+    $shortcut.TargetPath = $terminal.Source
+    $shortcut.Arguments = '-w new new-tab --title Morph -d "{0}" "{1}" /d /k call "{2}"' -f $shortcut.WorkingDirectory,$env:ComSpec,$launcher
+} else {
+    $shortcut.TargetPath = $env:ComSpec
+    $shortcut.Arguments = '/d /k ""{0}""' -f $launcher
+}
 $shortcut.IconLocation = "$icon,0"
 $shortcut.Description = 'Morph interactive CLI'
 $shortcut.WindowStyle = 1

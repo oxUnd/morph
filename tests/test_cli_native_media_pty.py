@@ -24,7 +24,7 @@ class TextStream:
     def feed(self, data):
         self.pending += data
         while self.pending:
-            start = re.search(r'\x1b[_\]]', self.pending)
+            start = re.search(r'\x1b(?:_|P|\])', self.pending)
             if start is None:
                 keep = 1 if self.pending.endswith('\x1b') else 0
                 self.stream.feed(self.pending[:-keep] if keep else self.pending)
@@ -57,6 +57,8 @@ def png(path, width, height, color):
 def packets(raw, protocol):
     if protocol == 'kitty':
         return re.findall(r'\x1b_Ga=p,[^;]*;\x1b\\', raw)
+    if protocol == 'sixel':
+        return re.findall(r'\x1bP0;1;0q.*?\x1b\\', raw, re.S)
     return re.findall(r'\x1b\]1337;File=[^\x07]*\x07', raw)
 
 
@@ -90,9 +92,11 @@ def run_case(binary, server, protocol):
                        'PATH': str(binaries) + os.pathsep + os.environ['PATH']}
         if protocol == 'kitty':
             environment.update(TERM='xterm-kitty', KITTY_WINDOW_ID='1')
-        else:
+        elif protocol == 'iterm':
             environment.update(TERM='xterm-256color', TERM_PROGRAM='iTerm.app',
                                ITERM_PROFILE='native-test')
+        else:
+            environment.update(TERM='xterm-256color', WT_SESSION='native-test')
         terminal = Terminal(binary, directory, server.server_port,
                             extra_env=environment, hooks_enabled=False)
         terminal.stream = TextStream(terminal.screen)
@@ -104,16 +108,19 @@ def run_case(binary, server, protocol):
                 terminal.screen.display)
             if protocol == 'kitty':
                 assert re.search(r'\x1b\[2;3H\x1b_Ga=p,[^;]*c=2,r=1,', terminal.raw)
-            else:
+            elif protocol == 'iterm':
                 assert 'width=2;height=1;' in terminal.raw
+            else:
+                assert 'q"1;1;16;16' in terminal.raw
             terminal.send('/clear\r')
             start = len(terminal.raw)
             terminal.send('/render ' + str(first) + '\r')
             wait_visible(terminal, 'image:')
             wait_packets(terminal, protocol, start=start)
             direct = packets(terminal.raw[start:], protocol)
-            assert any(('c=40,r=10,' if protocol == 'kitty' else 'width=40;height=10;')
-                       in packet for packet in direct), direct
+            dimensions = {'kitty': 'c=40,r=10,', 'iterm': 'width=40;height=10;',
+                          'sixel': 'q"1;1;320;160'}
+            assert any(dimensions[protocol] in packet for packet in direct), direct
             terminal.send('/clear\r')
             terminal.send('render native fixture\r')
             _, release = terminal.request()
@@ -194,7 +201,7 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for protocol in ('kitty', 'iterm'):
+        for protocol in ('kitty', 'iterm', 'sixel'):
             run_case(binary, server, protocol)
     finally:
         server.shutdown()

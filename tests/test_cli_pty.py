@@ -73,7 +73,8 @@ def terminal_environment(directory, extra=None):
     home = directory / 'home'
     home.mkdir(exist_ok=True)
     environment = {key: value for key, value in os.environ.items()
-                   if key not in ('TERM_PROGRAM', 'KITTY_WINDOW_ID', 'ITERM_PROFILE')}
+                   if key not in ('TERM_PROGRAM', 'KITTY_WINDOW_ID', 'ITERM_PROFILE',
+                                  'WT_SESSION')}
     environment.update(HOME=str(home), TERM='xterm-256color',
                        MORPH_PTY_API_KEY='local-test')
     environment.update(extra or {})

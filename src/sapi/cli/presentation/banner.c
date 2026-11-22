@@ -1,11 +1,11 @@
 #include "sapi/cli/presentation/banner.h"
+#include "sapi/cli/adapters/media/asset.h"
 #include "runtime/resources.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/list.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
-#include <nb/encoding.h>
 #include <nb/file.h>
 #include <nb/utf8.h>
 #include <nothing/tui/terminal/text.h>
@@ -28,15 +28,8 @@ enum nt_media_protocol cli_banner_read_logo(struct cli_application *ctx, nb_buf 
 	if (!cli_output_color_enabled(ctx) || getenv("TMUX") || getenv("STY"))
 		return NT_MEDIA_PROTOCOL_NONE;
 
-	const char *term = getenv("TERM");
-	const char *program = getenv("TERM_PROGRAM");
-	enum nt_media_protocol protocol;
-	if (getenv("KITTY_WINDOW_ID") || (term && strstr(term, "kitty")) ||
-	    (program && !strcmp(program, "ghostty")))
-		protocol = NT_MEDIA_PROTOCOL_KITTY;
-	else if (getenv("ITERM_PROFILE") || (program && !strcmp(program, "iTerm.app")))
-		protocol = NT_MEDIA_PROTOCOL_ITERM2;
-	else
+	enum nt_media_protocol protocol = nt_media_protocol_select(NULL);
+	if (protocol < NT_MEDIA_PROTOCOL_KITTY)
 		return NT_MEDIA_PROTOCOL_NONE;
 
 	char path[PATH_MAX];
@@ -45,6 +38,12 @@ enum nt_media_protocol cli_banner_read_logo(struct cli_application *ctx, nb_buf 
 		return NT_MEDIA_PROTOCOL_NONE;
 
 	return protocol;
+}
+
+static void cli_banner_asset_cleanup(struct nt_media_asset **asset)
+{
+	nt_media_asset_release(*asset);
+	*asset = NULL;
 }
 
 static int cli_banner_logo(struct cli_application *ctx)
@@ -57,42 +56,20 @@ static int cli_banner_logo(struct cli_application *ctx)
 	if (protocol == NT_MEDIA_PROTOCOL_NONE)
 		return 0;
 
-	nb_buf encoded_bytes NB_CLEANUP(nb_buf_destroy) = {0};
 	nb_buf control NB_CLEANUP(nb_buf_cleanup) = {0};
-	int rc;
-	size_t length = nb_buf_len(&data);
-	if (nb_base64_encode((const unsigned char *)nb_buf_cstr(&data), length, NB_B64_STD, true,
-			     &encoded_bytes, NULL) != NB_OK)
+	struct nt_media_asset *asset NB_CLEANUP(cli_banner_asset_cleanup) = NULL;
+	if (cli_media_asset_from_png(&asset, (const unsigned char *)data.ptr, data.len))
 		return 0;
 
-	const char *encoded = nb_buf_cstr(&encoded_bytes);
-	/* The bundled 36px PNG fits a single Kitty graphics packet. */
-	if (strlen(encoded) > 4096 ||
-	    (nb_buf_init(&control), nb_buf_reserve(&control, 4096) ? 0 : NB_ERR_NOMEM) != 0)
+	if (!nb_buf_append_cstr(&control, "\0337") ||
+	    nt_media_encode(asset, protocol, 0, 0, 2, 1, &control) != NT_OK ||
+	    !nb_buf_append_cstr(&control, "\0338\033[2C"))
 		return 0;
 
-	if (protocol == NT_MEDIA_PROTOCOL_KITTY) {
-		rc = (nb_buf_printf(&control, "\033_Ga=T,f=100,c=2,r=1,C=1,q=2;%s\033\\\033[2C",
-				    encoded)
-			      ? 0
-			      : NB_ERR_NOMEM);
-	} else {
-		rc = (nb_buf_printf(&control,
-				    "\0337\033]1337;File=inline=1;size=%zu;width=2;height=1;"
-				    "preserveAspectRatio=1:%s\a\0338\033[2C",
-				    length, encoded)
-			      ? 0
-			      : NB_ERR_NOMEM);
-	}
+	if (fflush(stdout))
+		return 0;
 
-	if (rc == 0) {
-		fflush(stdout);
-		size_t written = fwrite(control.ptr, 1, control.len, stdout);
-
-		rc = written == control.len ? 0 : NB_ERR_IO;
-	}
-
-	return rc == 0;
+	return fwrite(control.ptr, 1, control.len, stdout) == control.len;
 }
 
 static void cli_banner_spaces(struct cli_application *ctx, size_t count)
