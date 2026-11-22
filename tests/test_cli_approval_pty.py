@@ -68,6 +68,11 @@ def main():
                                 'command': command, 'host': True})}}]}
                         release.set()
                         text = until(terminal, lambda text: 'Enter confirm' in text)
+                        terminal.send('\x1b[57353;1:1u\x1b[57353;1:3u')
+                        focused = [row.strip() for row in terminal.screen.display
+                                   if row.lstrip().startswith('› ●')]
+                        assert focused == ['› ● 2. Allow for this session'], focused
+                        terminal.send('\x1b[57352;1:1u\x1b[57352;1:3u')
                         first = closed_card(terminal)
                         assert 'Yes once' in text and 'Allow for this session' in text, text
                         assert 'Always allow for this project' in text, text

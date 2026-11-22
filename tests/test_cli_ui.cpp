@@ -94,6 +94,31 @@ TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
 	EXPECT_NE(output.find("queued error"), std::string::npos);
 }
 
+TEST_F(CliUiTest, WorkerOutputOwnsItsTextAndWaitsForEnabledOwnerDelivery)
+{
+	ASSERT_EQ(cli_event_queue_set_events_enabled(&ctx, 0), 0);
+	int result = 0;
+	testing::internal::CaptureStdout();
+	std::thread worker([&] {
+		std::string text = "first worker output\n";
+		result = cli_event_queue_post_output(&ctx, text.c_str());
+		text.assign("second worker output\n");
+		if (!result)
+			result = cli_event_queue_post_output(&ctx, text.c_str());
+	});
+	worker.join();
+	EXPECT_EQ(result, 0);
+	EXPECT_FALSE(cli_event_queue_owner_call_pending(&ctx));
+	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
+	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_queue_set_events_enabled(&ctx, 1), 0);
+	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
+	EXPECT_EQ(testing::internal::GetCapturedStdout(),
+		  "first worker output\nsecond worker output\n");
+}
+
 TEST_F(CliUiTest, TaskMutationsAvoidDuplicateToolOutput)
 {
 	struct morph_event event{};
@@ -475,6 +500,7 @@ TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
 		MORPH_EVENT_ERROR, "background.error", "end", "shutdown output", nullptr, nullptr};
 	ASSERT_EQ(cli_event_queue_post_morph_event(&ctx, &event), 0);
 	ASSERT_EQ(cli_event_queue_stop_owner_calls(&ctx), 0);
+	ASSERT_EQ(cli_event_queue_post_output(&ctx, "command shutdown output\n"), 0);
 	EXPECT_FALSE(cli_event_queue_owner_call_pending(&ctx));
 	/* Joining cannot depend on pumping a prompt after the UI has stopped. */
 	EXPECT_EQ(cli_command_job_finish(&job), NB_ERR_CANCELLED);
@@ -488,8 +514,9 @@ TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
 	EXPECT_EQ(ran_on_owner, 0);
 	testing::internal::CaptureStdout();
 	EXPECT_EQ(cli_event_queue_drain(&ctx), 0);
-	EXPECT_NE(testing::internal::GetCapturedStdout().find("shutdown output"),
-		  std::string::npos);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("shutdown output"), std::string::npos);
+	EXPECT_NE(output.find("command shutdown output"), std::string::npos);
 	cli_command_job_cleanup(&job);
 }
 

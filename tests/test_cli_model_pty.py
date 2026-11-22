@@ -2,6 +2,7 @@
 import http.server
 from loopback_http import LoopbackHTTPServer
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -112,7 +113,7 @@ def no_color_startup(driver, server):
             terminal.send('/model ultra\r')
             wait_for(terminal, lambda: any(row.startswith('» ') for row in terminal.screen.display))
             terminal.pump(1.1)
-            assert '\x1b[48;5;98m' not in terminal.raw
+            assert not re.search(r'\x1b\[(?:\d+;)*48;5;98m', terminal.raw)
             assert '\x1b[1;38;5;141m' not in terminal.raw
             print('PASS: saved Ultra startup and no-color prompt without animation', flush=True)
         finally:
@@ -167,7 +168,8 @@ def main():
                     wait_for(terminal, lambda: 'model mode: ultra' in '\n'.join(terminal.screen.display))
                     assert 'Select Model Mode' not in '\n'.join(terminal.screen.display)
                     composer(terminal, True)
-                    assert '\x1b[48;5;98m' in terminal.raw[start:], 'Ultra ignition did not paint'
+                    assert re.search(r'\x1b\[(?:\d+;)*48;5;98m', terminal.raw[start:]), \
+                        'Ultra ignition did not paint'
                     # Type during the animation and verify that its frames never alter the draft.
                     draft = 'editable 中文 draft'
                     terminal.send(draft)

@@ -5,6 +5,12 @@
 #include "agent/tool_context.h"
 
 struct cli_application;
+struct nb_cancel;
+
+/* Worker-side native request. Returns the existing once/session/always decision;
+ * zero denies. The operation and cancellation token remain borrowed while waiting. */
+int cli_approval_request(struct cli_application *, const struct tool_operation *,
+			 const char *tool_name, const char *tool_args, const struct nb_cancel *);
 
 void cli_approval_render_tool(struct cli_application *ctx, const char *tool_name,
 			      const char *tool_args);

@@ -198,12 +198,25 @@ def main():
         'message': ('nt_view_add', 'nt_label_add', 'cli_report_text_add'),
         'tool_call': ('cli_report_add', 'nt_component_'),
         'report': ('nt_view_add', 'nt_text_view_add'),
-        'selector': ('nt_list_view_add', 'nt_label_add')
+        'selector': ('nt_list_view_add', 'nt_label_add'),
+        'question_form': ('nt_choice_list_add', 'nt_text_field_add', 'cli_shortcut_hint_add')
     }.items():
         component = code_only((CLI / f'components/{module}.c').read_text())
         for api in apis:
             if api not in component:
                 errors.append(f'components/{module}.c: domain component must compose base controls ({api})')
+    question = code_only((CLI / 'pages/question.c').read_text())
+    if re.search(r'\b(?:nt_choice_prompt_run|cli_chat_prompt_choice|nt_screen_poll)\s*\(', question):
+        errors.append('pages/question.c: human questions must mount native controls')
+    for directory in ('pages', 'components'):
+        for source in (CLI / directory).rglob('*.c'):
+            if re.search(r'\b(?:nt_choice_prompt_run|nt_screen_(?:open|poll|run)|nt_input_read)\s*\(',
+                         code_only(source.read_text())):
+                errors.append(f'{source}: interactive views must use application dispatch')
+    for module in ('pages/hooks.c', 'pages/subagents.c', 'components/agents_browser.c'):
+        if re.search(r'\bnt_(?:list_state|menu_state)_(?:update|layout)\w*\s*\(',
+                     code_only((CLI / module).read_text())):
+            errors.append(f'{module}: navigation and viewport state belong to native controls')
     for source in sorted(CLI.rglob('*')):
         if source.suffix not in ('.c', '.h'):
             continue
@@ -236,6 +249,11 @@ def main():
         if relative != 'application.c' and re.search(
                 r'\bnt_application_(?:init(?:_with_class)?|run|deinit)\s*\(', code):
             errors.append(f'{source}: Application host lifecycle belongs in application.c')
+    footer = code_only((CLI / 'presentation/composer_footer.c').read_text())
+    if re.search(r'\b(?:cli_permissions_policy_get|runtime_permission_get_policy|'
+                 r'cli_sessions_request(?:_current)?)\s*\(', footer):
+        errors.append('presentation/composer_footer.c: rendering must read permission snapshots; '
+                      'synchronous requests can deadlock an active approval')
     for relative in ('pages/setup/controls.c', 'components/setup_form.c'):
         code = code_only((CLI / relative).read_text())
         if re.search(r'\bnt_(?:screen_|inline_region_|surface_|canvas_|draw_)\w*\s*\(', code):

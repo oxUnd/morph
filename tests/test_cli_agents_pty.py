@@ -102,7 +102,7 @@ def run(driver, port, columns):
             assert hasattr(terminal.screen, '_main_screen'), 'empty filter opened a conversation'
             terminal.send('\x1b[Z\x1b[Z\x1b[Z')
             wait_for(terminal, lambda: 'Main conversation' in '\n'.join(terminal.screen.display))
-            terminal.send('\x1b[B')
+            terminal.send('\x1b[1;1:1B\x1b[1;1:3B')
             wait_for(terminal, lambda: 'CHILD_ACTIVITY_TASK' in '\n'.join(terminal.screen.display))
             terminal.send('\x1b[C\x1b[6~')
             wait_for(terminal, lambda: 'scroll details' in terminal.screen.display[-2])

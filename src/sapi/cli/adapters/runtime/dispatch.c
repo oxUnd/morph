@@ -17,6 +17,8 @@ int cli_dispatch_event(struct cli_application *ctx, const struct cli_event_queue
 
 	if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT)
 		rc = cli_runtime_events_deliver(ctx, &item->event);
+	else if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OUTPUT)
+		rc = cli_output_fputs(ctx, item->message, stdout) == EOF ? NB_ERR_IO : 0;
 	else if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL) {
 		int updating = cli_feed_update_active(ctx);
 

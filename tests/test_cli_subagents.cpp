@@ -12,6 +12,7 @@ extern "C" {
 #include "sapi/cli/presentation/subagents.h"
 #include "cli_agents_browser_fixture.h"
 #include <nothing/tui/input.h>
+#include <nothing/tui/views/scroll_view.h>
 #include "sapi/cli/presentation/transcript.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
@@ -44,19 +45,18 @@ TEST(CliAgentsBrowserTest, FiltersMapVisibleSelectionBackToTheSnapshot)
 	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
 	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 0), 0);
 	EXPECT_EQ(cli_agents_browser_selected(&state), 0u);
-	for (size_t expected : {1u, 2u, 3u, 4u, 5u, 0u}) {
-		EXPECT_EQ(cli_agents_browser_update(&state, '\t'), NT_NAVIGATION_CHANGED);
-		EXPECT_EQ(cli_agents_browser_selected(&state), expected);
+	for (int filter = CLI_AGENTS_BROWSER_RUNNING; filter < CLI_AGENTS_BROWSER_FILTER_COUNT; filter++) {
+		state.filter = (cli_agents_browser_filter)filter;
+		state.selected = 0;
+		ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, SIZE_MAX), 0);
+		EXPECT_EQ(cli_agents_browser_selected(&state), filter == CLI_AGENTS_BROWSER_INACTIVE
+			? 0u : (size_t)filter);
 	}
 
-	cli_agents_browser_update(&state, NT_KEY_BACK_TAB);
-	EXPECT_EQ(cli_agents_browser_selected(&state), 5u);
 	state.filter = CLI_AGENTS_BROWSER_RUNNING;
 	agents[0].status = AGENT_COMPLETED;
 	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
 	EXPECT_EQ(cli_agents_browser_selected(&state), SIZE_MAX);
-	EXPECT_EQ(cli_agents_browser_update(&state, '\r'), NT_NAVIGATION_UNHANDLED);
-	EXPECT_EQ(cli_agents_browser_update(&state, 27), NT_NAVIGATION_CANCEL);
 }
 
 TEST(CliAgentsBrowserTest, RefreshKeepsTheSelectedAgentAcrossReorderAndFilterChanges)
@@ -72,14 +72,14 @@ TEST(CliAgentsBrowserTest, RefreshKeepsTheSelectedAgentAcrossReorderAndFilterCha
 	data.count = 3;
 	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
 	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 0), 0);
-	ASSERT_EQ(cli_agents_browser_update(&state, '\t'), NT_NAVIGATION_CHANGED);
-	ASSERT_EQ(cli_agents_browser_update(&state, NT_KEY_DOWN), NT_NAVIGATION_CHANGED);
+	state.filter = CLI_AGENTS_BROWSER_RUNNING;
+	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 3), 0);
 	ASSERT_STREQ(agents[cli_agents_browser_selected(&state) - 1].id, "/c");
 
 	std::swap(agents[0], agents[2]);
 	data.root_running = 1;
 	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
-	ASSERT_EQ(state.selection.index, 1u);
+	ASSERT_EQ(state.selected, 1u);
 	ASSERT_EQ(cli_agents_browser_selected(&state), 1u);
 	EXPECT_EQ(state.counts[CLI_AGENTS_BROWSER_ALL], 4u);
 	EXPECT_EQ(state.counts[CLI_AGENTS_BROWSER_RUNNING], 3u);
@@ -226,12 +226,19 @@ TEST(CliAgentsBrowserTest, DetailScrollingKeepsItsHeadingAndTaskSelection)
 	data.count = 1;
 	cli_agents_browser_state state NB_CLEANUP(cli_agents_browser_state_cleanup) = {};
 	ASSERT_EQ(cli_agents_browser_set_snapshot(&state, &data, 1), 0);
-	cli_agents_browser_update(&state, NT_KEY_RIGHT);
-	cli_agents_browser_update(&state, NT_KEY_PAGE_DOWN);
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ((nb_buf_init(&output), nb_buf_reserve(&output, 128) ? 0 : NB_ERR_NOMEM), 0);
-	ASSERT_EQ(test_agents_browser_render(&output, &state, &data, 120, 12, 0, nullptr), 0);
-	EXPECT_GT(state.detail_scroll, 0u);
+	auto scroll = [](nt_view *view, cli_agents_browser_state *, const cli_agents_browser_data *, int) {
+		int rc = cli_agents_browser_focus(view, 1);
+		if (rc)
+			return rc;
+
+		nt_view *viewport = nt_view_child(view, 6);
+		rc = nt_scroll_view_handle_key(viewport, NT_KEY_PAGE_DOWN);
+		EXPECT_GT(nt_scroll_view_offset(viewport), 0);
+		return rc < 0 ? rc : 0;
+	};
+	ASSERT_EQ(test_agents_browser_render(&output, &state, &data, 120, 12, 0, scroll), 0);
 	EXPECT_EQ(cli_agents_browser_selected(&state), 1u);
 	EXPECT_NE(std::string(output.ptr).find("Task details"), std::string::npos);
 	EXPECT_NE(std::string(output.ptr).find("scroll details"), std::string::npos);

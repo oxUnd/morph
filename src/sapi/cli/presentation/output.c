@@ -326,7 +326,8 @@ int cli_output_block_append(nb_buf *out, const char *text, struct nt_view_insets
 static int cli_output_write_output(struct cli_application *ctx, const char *text)
 {
 	if (cli_chat_active(ctx))
-		return cli_chat_output(ctx, text);
+		return cli_event_queue_is_owner(ctx) ? cli_chat_output(ctx, text)
+						     : cli_event_queue_post_output(ctx, text);
 
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
 	    ctx->output.command_result_pending) {
@@ -424,7 +425,7 @@ int cli_output_putchar(struct cli_application *ctx, int ch)
 		return ch;
 
 	if (cli_chat_active(ctx))
-		return cli_chat_output(ctx, text) == 0 ? ch : EOF;
+		return cli_output_write_output(ctx, text) == 0 ? ch : EOF;
 
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
 	    ctx->output.command_result_pending) {

@@ -427,6 +427,11 @@ if(Python3_Interpreter_FOUND AND UNIX)
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_approval_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_active_resize_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_active_resize_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_active_resize_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 60)
 	add_test(NAME cli_mcp_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
@@ -460,6 +465,11 @@ if(Python3_Interpreter_FOUND AND UNIX)
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_external_io_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_native_restore_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_native_restore_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_native_restore_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 60)
 	add_test(NAME cli_completion_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_completion_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

@@ -203,6 +203,12 @@ def run(driver, port, columns):
             press(terminal, '/subagents\r')
             wait_for(terminal, lambda: 'Main conversation' in visible(terminal))
             assert 'worker' in '\n'.join(panel(terminal, marker))
+            press(terminal, '\x1b[1;1:1B')
+            focused = [row for row in stable_rows(terminal) if row.startswith('> /root')]
+            assert len(focused) == 1, visible(terminal)
+            press(terminal, '\x1b[1;1:3B')
+            assert [row for row in stable_rows(terminal) if row.startswith('> /root')] == focused
+            press(terminal, '\x1b[H')
             for width in (60, 120, 80, columns):
                 resize(terminal, marker, width)
             press(terminal, '\t')

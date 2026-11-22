@@ -13,6 +13,9 @@
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "sapi/cli/presentation/list.h"
+#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/pages/confirmation.h"
+#include <nb/cleanup.h>
 
 static void cli_sync_print_sync_field(struct cli_application *ctx, const char *ancestor,
 				      int is_last, const char *name, const char *value, int columns)
@@ -268,30 +271,80 @@ static int cli_sync_confirm_db_replace(struct cli_application *ctx, const char *
 	return answer == CLI_INPUT_CONFIRM_ACCEPTED;
 }
 
+struct cli_sync_replace_request {
+	struct cli_application *application;
+	struct morph_sync_restore_plan plan;
+};
+
+static void cli_sync_replace_cleanup(struct cli_sync_replace_request **owner)
+{
+	struct cli_sync_replace_request *request = *owner;
+	if (!request)
+		return;
+
+	if (request->plan.token[0]) {
+		(void)morph_sync_rollback_db_replace(&request->plan);
+		if (request->application->running)
+			(void)runtime_sync_start_instance(request->application->runtime, NULL,
+							  NULL);
+	}
+
+	free(request);
+	*owner = NULL;
+}
+
+static void cli_sync_replace_release(void *data)
+{
+	struct cli_sync_replace_request *request NB_CLEANUP(cli_sync_replace_cleanup) = data;
+}
+
+static void cli_sync_replace_confirmed(struct cli_application *ctx, int accepted, void *data)
+{
+	struct cli_sync_replace_request *request = data;
+	if (!accepted) {
+		cli_command_print_cancelled(ctx);
+		return;
+	}
+
+	ctx->db_restore_plan = request->plan;
+	memset(&request->plan, 0, sizeof(request->plan));
+	ctx->pending_db_restore = 1;
+	ctx->running = 0;
+	CMD_OK(ctx, "restore prepared; restarting Morph to replace %s", ctx->db_restore_plan.path);
+}
+
 static int cli_sync_command_replace_db(struct cli_application *ctx, const char *snapshot_id,
 				       int confirmed)
 {
-	struct morph_sync_restore_plan plan;
-	int rc;
+	struct cli_sync_replace_request *request NB_CLEANUP(cli_sync_replace_cleanup) =
+		calloc(1, sizeof(*request));
+	if (!request)
+		return NB_ERR_NOMEM;
 
-	rc = runtime_sync_prepare_db_replace(ctx->runtime, snapshot_id, &plan);
-	if (rc != 0) {
+	request->application = ctx;
+	int rc = runtime_sync_prepare_db_replace(ctx->runtime, snapshot_id, &request->plan);
+	if (rc) {
 		CMD_ERROR(ctx, "database restore preparation failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
 		return rc;
 	}
 
-	if (!confirmed && !cli_sync_confirm_db_replace(ctx, plan.path)) {
-		(void)morph_sync_rollback_db_replace(&plan);
-		(void)runtime_sync_start_instance(ctx->runtime, NULL, NULL);
-		cli_command_print_cancelled(ctx);
-		return 0;
+	if (!confirmed && cli_chat_active(ctx)) {
+		cli_confirm_prompt_show(ctx, CLI_CONFIRM_PROMPT_REPLACE_DATABASE,
+					request->plan.path);
+		cli_confirm_prompt_end(ctx);
+		rc = cli_confirmation_show(ctx, NULL, cli_sync_replace_confirmed, request,
+					   cli_sync_replace_release);
+		if (!rc)
+			request = NULL;
+
+		return rc;
 	}
 
-	ctx->db_restore_plan = plan;
-	ctx->pending_db_restore = 1;
-	ctx->running = 0;
-	CMD_OK(ctx, "restore prepared; restarting Morph to replace %s", plan.path);
+	if (!confirmed)
+		confirmed = cli_sync_confirm_db_replace(ctx, request->plan.path);
+
+	cli_sync_replace_confirmed(ctx, confirmed, request);
 	return 0;
 }
 

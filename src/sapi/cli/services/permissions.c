@@ -12,6 +12,17 @@ static int cli_permissions_use_client(const struct cli_application *ctx)
 	return ctx->sessions && cli_sessions_current_id(ctx) > 0;
 }
 
+static int cli_permissions_policy_publish(struct cli_application *ctx,
+					  const struct permission_policy *policy, int result)
+{
+	if (!result) {
+		ctx->input_status.permissions = *policy;
+		ctx->input_status.permissions_ready = 1;
+	}
+
+	return result;
+}
+
 int cli_permissions_policy_get(struct cli_application *ctx, struct permission_policy *out)
 {
 	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = NULL;
@@ -20,17 +31,19 @@ int cli_permissions_policy_get(struct cli_application *ctx, struct permission_po
 		return NB_ERR_INVAL;
 
 	if (!cli_permissions_use_client(ctx))
-		return runtime_permission_get_policy(ctx->runtime, out);
+		return cli_permissions_policy_publish(
+			ctx, out, runtime_permission_get_policy(ctx->runtime, out));
 
 	int rc = cli_sessions_request_current(ctx, "permission.get", NULL, &result);
 
 	if (rc != 0)
 		return rc;
 
-	return permission_policy_parse(
+	rc = permission_policy_parse(
 		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "access")),
 		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "approval")),
 		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result, "reviewer")), out);
+	return cli_permissions_policy_publish(ctx, out, rc);
 }
 
 int cli_permissions_policy_update(struct cli_application *ctx,
@@ -42,8 +55,13 @@ int cli_permissions_policy_update(struct cli_application *ctx,
 	if (!ctx || permission_policy_validate(policy) != 0)
 		return NB_ERR_INVAL;
 
-	if (!cli_permissions_use_client(ctx))
-		return runtime_permission_set_policy(ctx->runtime, policy);
+	if (!cli_permissions_use_client(ctx)) {
+		int rc = runtime_permission_set_policy(ctx->runtime, policy);
+		if (!rc)
+			ctx->input_status.updated = 0;
+
+		return cli_permissions_policy_publish(ctx, policy, rc);
+	}
 
 	if (!params ||
 	    !cJSON_AddStringToObject(params, "scope", "session_and_defaults") ||
@@ -54,7 +72,11 @@ int cli_permissions_policy_update(struct cli_application *ctx,
 		permission_reviewer_name(policy->reviewer)))
 		return NB_ERR_NOMEM;
 
-	return cli_sessions_request_current(ctx, "permission.update", params, &result);
+	int rc = cli_sessions_request_current(ctx, "permission.update", params, &result);
+	if (!rc)
+		ctx->input_status.updated = 0;
+
+	return cli_permissions_policy_publish(ctx, policy, rc);
 }
 
 static const char *cli_permissions_field(const cJSON *item, const char *name)

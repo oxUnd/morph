@@ -18,76 +18,8 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include <nothing/tui/choice_prompt.h>
+#include "sapi/cli/pages/choice_dialog.h"
 #include <sys/ioctl.h>
-
-static int cli_approval_select_choice(struct cli_application *ctx, int scoped, int ephemeral)
-{
-	FILE *tty = NULL;
-	FILE *input = stdin;
-	const char *items[4];
-	int verdicts[4];
-	size_t count = 0;
-	int verdict = 0;
-
-	if (!isatty(STDOUT_FILENO))
-		return NB_ERR_NOT_TERMINAL;
-
-	if (!isatty(STDIN_FILENO)) {
-		/* Open the actual device: macOS poll rejects the /dev/tty alias. */
-		const char *path = ttyname(STDOUT_FILENO);
-
-		tty = path ? fopen(path, "r") : NULL;
-		input = tty;
-	}
-
-	if (!nt_terminal_available(input, stdout)) {
-		if (tty)
-			fclose(tty);
-
-		return NB_ERR_NOT_TERMINAL;
-	}
-
-	items[count] = "Yes once";
-	verdicts[count++] = 1;
-	if (scoped) {
-		items[count] = "Allow for this session";
-		verdicts[count++] = 2;
-	}
-
-	if (!ephemeral) {
-		items[count] = scoped ? "Always allow for this project" : "Always allow";
-		verdicts[count++] = scoped ? 3 : 2;
-	}
-
-	items[count] = "No";
-	verdicts[count++] = 0;
-	struct nt_selection_model model = {0};
-	struct nt_choice_list_state state = {0};
-	const struct nt_choice_prompt_options options = {
-		.items = items,
-		.interrupted = &ctx->interrupted,
-		.cancel_token = ctx->input->input_cancel_token,
-		.color = cli_output_color_enabled(ctx),
-	};
-	int rc = nt_selection_model_init(&model, count, 0, 1, 1);
-
-	if (!rc) {
-		cli_output_printf(ctx, "\n");
-		fflush(stdout);
-		rc = cli_chat_prompt_choice(ctx, (int)count + 2, &model, &state, &options,
-					    input, NULL);
-	}
-
-	if (!rc)
-		verdict = verdicts[state.list.index];
-
-	nt_selection_model_deinit(&model);
-	if (tty)
-		fclose(tty);
-
-	return verdict;
-}
 
 /* Preserve the line-oriented fallback for terminals without selector support. */
 static int cli_approval_read_choice(struct cli_application *ctx, int scoped, int ephemeral)
@@ -125,10 +57,7 @@ static int cli_approval_prompt_approval(struct cli_application *ctx, const char 
 	if (ctx->input->prompt_lock_ready)
 		nb_mutex_lock(ctx->input->prompt_lock);
 
-	int v = cli_approval_select_choice(ctx, scoped, ephemeral);
-
-	if (v == NB_ERR_NOT_TERMINAL)
-		v = cli_approval_read_choice(ctx, scoped, ephemeral);
+	int v = cli_approval_read_choice(ctx, scoped, ephemeral);
 
 	if (v < 0) {
 		if (ctx->input->prompt_lock_ready)
@@ -340,6 +269,14 @@ enum hitl_verdict cli_approval_tool_callback(const char *tool_name, const char *
 
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return cli_approval_json_hitl_approval(ctx, tool_name, tool_args);
+
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && !cli_event_queue_is_owner(ctx)) {
+		int decision = cli_approval_request(ctx, NULL, tool_name, tool_args, NULL);
+		return decision == 2 ? HITL_ALWAYS : decision == 1 ? HITL_APPROVE : HITL_DENY;
+	}
+
+	if (cli_chat_active(ctx))
+		return HITL_DENY;
 
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
 		struct cli_approval_hitl_call call = {tool_name, tool_args};
@@ -639,6 +576,17 @@ enum tool_operation_verdict cli_approval_operation_callback(const struct tool_op
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return cli_approval_json_operation_approval(ctx, op);
 
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && !cli_event_queue_is_owner(ctx)) {
+		int decision = cli_approval_request(ctx, op, NULL, NULL, NULL);
+		return decision == 3   ? TOOL_OP_ALWAYS
+		       : decision == 2 ? TOOL_OP_SESSION
+		       : decision == 1 ? TOOL_OP_ALLOW
+				       : TOOL_OP_DENY;
+	}
+
+	if (cli_chat_active(ctx))
+		return TOOL_OP_DENY;
+
 	if (ctx->events && !cli_event_queue_is_owner(ctx)) {
 		struct cli_approval_operation_call call = {.operation = op};
 
@@ -664,4 +612,121 @@ enum tool_operation_verdict cli_approval_operation_callback(const struct tool_op
 		return TOOL_OP_ALLOW;
 
 	return TOOL_OP_DENY;
+}
+
+struct cli_approval_request {
+	const struct tool_operation *operation;
+	const char *tool_name, *tool_args;
+	const struct nb_cancel *cancel;
+};
+
+struct cli_approval_pending {
+	struct cli_approval_request *request;
+	struct cli_event_queue_owner_call *completion;
+	int verdicts[4];
+	int count;
+};
+
+static void cli_approval_pending_cleanup(struct cli_approval_pending **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
+static void cli_approval_pending_release(void *data)
+{
+	free(data);
+}
+
+static void cli_approval_native_complete(struct cli_application *ctx, int result, size_t index,
+					 const char *answer, void *data)
+{
+	(void)answer;
+	struct cli_approval_pending *pending = data;
+	const struct tool_operation *op = pending->request->operation;
+	int scoped = op != NULL;
+	const char *subject =
+		op ? cli_approval_operation_approval_subject(op) : pending->request->tool_name;
+	int decision = !result && index < (size_t)pending->count ? pending->verdicts[index] : 0;
+	if (decision) {
+		cli_output_printf(ctx, ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
+		(void)cli_output_print_untrusted(ctx, subject, MORPH_TERMINAL_TEXT_SINGLE_LINE);
+		cli_output_printf(ctx, "%s)\n",
+				  scoped && decision == 2	 ? ", session"
+				  : decision == (scoped ? 3 : 2) ? ", always"
+								 : "");
+	} else {
+		cli_output_printf(ctx, ANSI_DIM CLI_FEED_CANCELLED " Denied" ANSI_RESET " (");
+		(void)cli_output_print_untrusted(ctx, subject, MORPH_TERMINAL_TEXT_SINGLE_LINE);
+		cli_output_printf(ctx, ")\n");
+	}
+
+	cli_cancel_state_reset(ctx);
+	cli_event_queue_complete_owner_call(pending->completion, decision);
+}
+
+static int cli_approval_native_start(struct cli_application *ctx, void *data,
+				     struct cli_event_queue_owner_call *completion)
+{
+	struct cli_approval_request *request = data;
+	if (!cli_chat_active(ctx))
+		return NB_ERR_NOT_TERMINAL;
+
+	struct cli_approval_pending *pending NB_CLEANUP(cli_approval_pending_cleanup) =
+		calloc(1, sizeof(*pending));
+	if (!pending)
+		return NB_ERR_NOMEM;
+
+	pending->request = request;
+	pending->completion = completion;
+	const struct tool_operation *op = request->operation;
+	int ephemeral = op && op->tool_name && !strcmp(op->tool_name, "exec") &&
+			(op->kind == TOOL_OP_PATH_WRITE || op->kind == TOOL_OP_PATH_DELETE);
+	cli_cancel_monitor_clear(ctx);
+	cli_presentation_prepare_prompt(ctx);
+	if (op)
+		cli_approval_render_operation(ctx, op);
+	else
+		cli_approval_render_tool(ctx, request->tool_name, request->tool_args);
+
+	const char *items[4] = {"Yes once"};
+	pending->verdicts[pending->count++] = 1;
+	if (op) {
+		items[pending->count] = "Allow for this session";
+		pending->verdicts[pending->count++] = 2;
+	}
+
+	if (!ephemeral) {
+		items[pending->count] = op ? "Always allow for this project" : "Always allow";
+		pending->verdicts[pending->count++] = op ? 3 : 2;
+	}
+
+	items[pending->count] = "No";
+	pending->verdicts[pending->count++] = 0;
+	const struct nb_cancel *cancel =
+		request->cancel ? request->cancel : ctx->input->input_cancel_token;
+	int rc = cli_choice_dialog_show(
+		ctx, &(struct cli_choice_dialog_options){.choices = items,
+							 .count = pending->count,
+							 .cancel = cancel,
+							 .complete = cli_approval_native_complete,
+							 .data = pending,
+							 .release = cli_approval_pending_release});
+	if (!rc)
+		pending = NULL;
+
+	return rc;
+}
+
+int cli_approval_request(struct cli_application *ctx, const struct tool_operation *operation,
+			 const char *tool_name, const char *tool_args,
+			 const struct nb_cancel *cancel)
+{
+	struct cli_approval_request request = {.operation = operation,
+					       .tool_name = tool_name,
+					       .tool_args = tool_args,
+					       .cancel = cancel};
+	int decision =
+		cli_event_queue_call_owner_deferred(ctx, cli_approval_native_start, &request);
+	return decision < 0 ? 0 : decision;
 }

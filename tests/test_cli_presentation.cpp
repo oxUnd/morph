@@ -376,6 +376,8 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 	ASSERT_EQ(runtime_open(&options, &opened), 0);
 	std::unique_ptr<struct runtime, decltype(&runtime_close)> owner(opened, runtime_close);
 	ctx.runtime = owner.get();
+	ASSERT_EQ(runtime_permission_get_policy(ctx.runtime, &ctx.input_status.permissions), 0);
+	ctx.input_status.permissions_ready = 1;
 	ctx.input_status.tokens = 1234;
 	ctx.input_status.credits = 42;
 	for (int width : {120, 80, 60}) {
@@ -412,6 +414,16 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 		}
 	}
 
+	struct permission_policy changed;
+	ASSERT_EQ(runtime_permission_preset("full", &changed), 0);
+	ASSERT_EQ(runtime_permission_set_policy(ctx.runtime, &changed), 0);
+	ctx.turn_active = 1;
+	nb_buf snapshot NB_CLEANUP(nb_buf_cleanup) = {0};
+	ASSERT_EQ(cli_composer_footer_render(&ctx, 80, &snapshot), 0);
+	EXPECT_NE(std::string(nb_buf_cstr(&snapshot)).find("perm: ask"), std::string::npos);
+	EXPECT_STREQ(runtime_permission_preset_name(&ctx.input_status.permissions), "ask");
+	ASSERT_EQ(runtime_permission_get_policy(ctx.runtime, &changed), 0);
+	EXPECT_STREQ(runtime_permission_preset_name(&changed), "full");
 	ctx.runtime = nullptr;
 }
 

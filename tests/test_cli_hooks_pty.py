@@ -109,6 +109,16 @@ def main():
             text = snapshot('lifecycle event overview')
             assert 'Lifecycle events' in text and 'INSTALLED' in text, text
             assert 'PreCompact' in text and 'Interrupt' in text, text
+            def selected_row():
+                return next(row.strip() for row in terminal.screen.display if '▏' in row)
+            first = selected_row()
+            terminal.send('\x1b[1;1:1B')
+            second = selected_row()
+            assert first != second, terminal.screen.display
+            terminal.send('\x1b[1;1:3B')
+            assert selected_row() == second, terminal.screen.display
+            terminal.send('\x1b[57352;1:1u\x1b[57352;1:3u')
+            assert selected_row() == first, terminal.screen.display
             for columns in (80, 60):
                 resize(24, columns)
                 text = snapshot(f'event overview at {columns} columns')

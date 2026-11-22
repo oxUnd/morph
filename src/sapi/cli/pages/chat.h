@@ -2,7 +2,6 @@
 #define MORPH_CLI_PAGES_CHAT_H
 
 #include <nothing/tui/application.h>
-#include <nothing/tui/choice_prompt.h>
 
 struct cli_application;
 struct cli_transcript_tool;
@@ -35,9 +34,6 @@ void cli_chat_turn_begin(struct cli_application *);
 void cli_chat_turn_end(struct cli_application *, int result);
 int cli_chat_reset(struct cli_application *);
 int cli_chat_yield_input(struct cli_application *);
-int cli_chat_prompt_choice(struct cli_application *, int rows, struct nt_selection_model *,
-			   struct nt_choice_list_state *, const struct nt_choice_prompt_options *,
-			   FILE *input, char **custom);
 int cli_chat_panel_active(const struct cli_application *);
 typedef struct nt_view *(*cli_chat_panel_build_fn)(struct nt_builder *, struct nt_view *, void *);
 typedef void (*cli_chat_panel_complete_fn)(struct cli_application *, void *, int);
@@ -48,6 +44,7 @@ int cli_chat_panel_mount(struct cli_application *, cli_chat_panel_build_fn, void
 int cli_chat_panel_close(struct cli_application *, int result);
 void cli_chat_panel_set_refresh(struct cli_application *,
 				int (*refresh)(void *, const struct nt_event *));
+void cli_chat_panel_set_interaction(struct cli_application *, int interaction);
 int cli_chat_overlay_mount(struct cli_application *, cli_chat_panel_build_fn, void *data,
 	cli_chat_panel_complete_fn complete);
 int cli_chat_overlay_close(struct cli_application *);

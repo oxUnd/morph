@@ -11,6 +11,8 @@ struct cli_event_queue_owner_call;
 typedef int (*cli_event_queue_dispatch_fn)(struct cli_application *,
 					   const struct cli_event_queue_item *);
 typedef int (*cli_event_queue_call_fn)(struct cli_application *ctx, void *data);
+typedef int (*cli_event_queue_start_fn)(struct cli_application *ctx, void *data,
+					struct cli_event_queue_owner_call *completion);
 
 int cli_event_queue_init(struct cli_application *ctx, cli_event_queue_dispatch_fn dispatch);
 int cli_event_queue_run_owner_call(struct cli_application *ctx,
@@ -26,7 +28,13 @@ int cli_event_queue_events_enabled(const struct cli_application *ctx);
 int cli_event_queue_post_morph_event(struct cli_application *ctx, const struct morph_event *event);
 int cli_event_queue_post_notification(struct cli_application *ctx,
 				      const struct notification *notification);
+int cli_event_queue_post_output(struct cli_application *ctx, const char *text);
 int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call_fn fn, void *data);
+/* Worker waits while the owner mounts native controls and returns to its event loop.
+ * A successful start must complete exactly once, including teardown/cancellation. */
+int cli_event_queue_call_owner_deferred(struct cli_application *, cli_event_queue_start_fn,
+					void *data);
+void cli_event_queue_complete_owner_call(struct cli_event_queue_owner_call *, int result);
 /* Owner-only shutdown gate: cancel queued/future calls while retaining output. */
 int cli_event_queue_stop_owner_calls(struct cli_application *ctx);
 void cli_event_queue_notify(struct cli_application *ctx);

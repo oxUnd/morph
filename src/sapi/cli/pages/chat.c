@@ -91,7 +91,7 @@ struct cli_chat_panel {
 	void *data;
 	cli_chat_panel_complete_fn complete;
 	int (*refresh)(void *, const struct nt_event *);
-	int result, closed;
+	int result, closed, interaction;
 };
 
 struct cli_chat_overlay {
@@ -133,7 +133,7 @@ struct cli_chat_page {
 	nb_vec history;
 	char *draft;
 	size_t history_index;
-	int stream_kind, ready, columns, agents_waiting, prompt_rows;
+	int stream_kind, ready, columns, agents_waiting;
 	int64_t turn_started;
 };
 
@@ -367,7 +367,7 @@ int cli_chat_panel_active(const struct cli_application *ctx)
 
 static int cli_chat_switch_input(struct cli_chat_page *page, struct nt_view *focus)
 {
-	int rc = nt_component_state_set_bool(page->modal, page->panel || page->prompt_rows);
+	int rc = nt_component_state_set_bool(page->modal, page->panel);
 	if (!rc)
 		rc = nt_view_flush_state(nt_view_controller_root_view(&page->base));
 
@@ -392,8 +392,7 @@ static int cli_chat_queue_hidden(void *data, struct nt_value *value)
 static int cli_chat_sync_bottom_button(struct cli_chat_page *page)
 {
 	const struct nt_scroll_state *scroll = nt_scroll_view_state(page->scroll);
-	int hidden = !scroll->viewport || scroll->offset == nt_scroll_max(scroll) ||
-		     page->panel || page->prompt_rows;
+	int hidden = !scroll->viewport || scroll->offset == nt_scroll_max(scroll) || page->panel;
 	return nt_view_set_hidden(page->bottom_button, hidden);
 }
 
@@ -420,44 +419,6 @@ static int cli_chat_bottom_pointer(void *data, const struct nt_view_event *event
 	(void)data;
 	/* Let the button receive the synthesized click while the editor keeps focus. */
 	return event->input->mouse.button == NT_MOUSE_LEFT;
-}
-
-int cli_chat_prompt_choice(struct cli_application *ctx, int rows, struct nt_selection_model *model,
-			   struct nt_choice_list_state *state,
-			   const struct nt_choice_prompt_options *options, FILE *input,
-			   char **custom)
-{
-	if (!cli_chat_active(ctx))
-		return nt_choice_prompt_run(model, state, options, input, stdout, custom);
-
-	struct cli_chat_page *page = ctx->chat;
-	if (rows < 1 || page->panel || page->prompt_rows)
-		return NB_ERR_INVAL;
-
-	page->prompt_rows = rows;
-	int rc = cli_chat_switch_input(page, NULL);
-	if (!rc)
-		rc = nt_application_render(&ctx->base);
-
-	if (!rc) {
-		struct nt_view_rect frame = nt_view_frame(page->panel_host);
-		rc = nt_terminal_clear_below(stdout, frame.y + 2, frame.x + 1);
-	}
-
-	if (!rc)
-		rc = nt_choice_prompt_run(model, state, options, input, stdout, custom);
-
-	page->prompt_rows = 0;
-	int focus_rc = cli_chat_switch_input(page, page->editor);
-	int terminal_rc = nt_application_restore_terminal(&ctx->base);
-	int render_rc = nt_application_render(&ctx->base);
-	if (rc)
-		return rc;
-
-	if (focus_rc)
-		return focus_rc;
-
-	return terminal_rc ? terminal_rc : render_rc;
 }
 
 static void cli_chat_panel_deinit(struct nt_view *view)
@@ -529,6 +490,12 @@ void cli_chat_panel_set_refresh(struct cli_application *ctx,
 		ctx->chat->panel->refresh = refresh;
 }
 
+void cli_chat_panel_set_interaction(struct cli_application *ctx, int interaction)
+{
+	if (cli_chat_panel_active(ctx))
+		ctx->chat->panel->interaction = interaction;
+}
+
 int cli_chat_panel_close(struct cli_application *ctx, int result)
 {
 	if (!cli_chat_panel_active(ctx))
@@ -541,6 +508,7 @@ int cli_chat_panel_close(struct cli_application *ctx, int result)
 	panel->closed = 1;
 	panel->result = result ? result : rc;
 	int clear_rc = nt_view_clear_children(page->panel_host);
+	cli_event_queue_notify(ctx);
 	if (rc || clear_rc)
 		return rc ? rc : clear_rc;
 
@@ -1322,7 +1290,7 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 		} else if (ctx->input_job->active && !strcmp(input, "/recap"))
 			(void)cli_recap_start(ctx, 0);
 		else if (!ctx->input_job->active && command &&
-		    !strcmp(command->name, "/compress")) {
+			 (!strcmp(command->name, "/compress") || !strcmp(command->name, "/ext"))) {
 			rc = cli_command_job_start(ctx->input_job, ctx, input);
 			if (!rc)
 				page->command_running = 1;
@@ -1330,7 +1298,8 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 			(void)ctx->input_execute(ctx, input);
 
 		(void)cli_event_queue_drain(ctx);
-		if (page->panel || nt_application_transition_pending(app))
+		if (!page->command_running &&
+		    (page->panel || nt_application_transition_pending(app)))
 			ctx->application_command = 1;
 		else if (!page->command_running)
 			cli_presentation_command_end(ctx);
@@ -1896,6 +1865,7 @@ static int cli_chat_footer_action(void *data, const struct nt_view_event *event)
 static int cli_chat_page_layout(struct nt_view *view)
 {
 	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(view);
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	struct nt_view_rect content = nt_view_content_rect(view);
 	if (page->columns != content.width) {
 		int rc = cli_chat_page_footer(page, content.width);
@@ -1909,13 +1879,10 @@ static int cli_chat_page_layout(struct nt_view *view)
 	}
 
 	struct nt_view_size editor = {0}, footer = {0}, composer;
-	int modal = page->panel || page->prompt_rows;
+	int modal = page->panel != NULL;
 	struct nt_view *input_view = modal ? page->panel_host : page->editor;
 	int rc = 0;
-	if (page->prompt_rows)
-		editor.height = page->prompt_rows;
-	else
-		rc = nt_view_measure(input_view, content.width, &editor);
+	rc = nt_view_measure(input_view, content.width, &editor);
 
 	if (!rc && !modal)
 		rc = nt_view_measure(page->footer, content.width, &footer);
@@ -1949,13 +1916,11 @@ static int cli_chat_page_layout(struct nt_view *view)
 	}
 
 	int composer_space = content.height - footer_rows - auxiliary_rows;
+	size_t count = nt_view_child_count(page->feed);
+	int separated = count && page->command_tail == nt_view_child(page->feed, count - 1);
 	if (modal)
 		composer = editor;
 	else {
-		size_t count = nt_view_child_count(page->feed);
-		int separated = count && page->command_tail ==
-			nt_view_child(page->feed, count - 1);
-
 		rc = cli_composer_fit(page->composer, content.width, composer_space, separated);
 		if (!rc)
 			rc = nt_view_measure(page->composer, content.width, &composer);
@@ -1968,6 +1933,20 @@ static int cli_chat_page_layout(struct nt_view *view)
 	int controls = footer_rows + auxiliary_rows + composer_rows;
 	/* The conversation fills the viewport above the fixed bottom controls. */
 	int rows = content.height > controls ? content.height - controls : 0;
+	int feed_top = 0;
+	if ((page->panel && !page->panel->interaction) ||
+	    (!modal && !ctx->turn_active && !page->command_running && separated)) {
+		struct nt_view_size history = {0};
+		rc = nt_view_measure(page->feed, content.width, &history);
+		if (rc)
+			return rc;
+
+		if (history.height < rows) {
+			feed_top = rows - history.height;
+			rows = history.height;
+		}
+	}
+
 	/* A wheel event can clear follow even at the boundary. Preserve the old
 	 * tail before laying out appended content or resizing the viewport. */
 	const struct nt_scroll_state *scroll = nt_scroll_view_state(page->scroll);
@@ -1978,12 +1957,12 @@ static int cli_chat_page_layout(struct nt_view *view)
 	}
 
 	struct nt_view_rect button_row = {0};
-	struct nt_view_rect feed_slot = {content.x, content.y, content.width, rows};
+	struct nt_view_rect feed_slot = {content.x, content.y + feed_top, content.width, rows};
 	rc = nt_view_arrange(page->scroll, feed_slot);
 	if (rc)
 		return rc;
 
-	int offset = rows;
+	int offset = feed_top + rows;
 	for (size_t i = 0; i < nt_view_child_count(view); i++) {
 		struct nt_view *child = nt_view_child(view, i);
 		if (nt_view_is_hidden(child) || child == page->scroll ||
@@ -2041,7 +2020,7 @@ static int cli_chat_page_layout(struct nt_view *view)
 static int cli_chat_panel_cursor(struct nt_view *view, struct nt_canvas *canvas)
 {
 	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(view);
-	if (page->panel && nt_view_is_focused(page->panel->focus)) {
+	if (page->panel && !page->panel->interaction && nt_view_is_focused(page->panel->focus)) {
 		struct nt_view_rect panel = nt_view_content_rect(page->panel_host);
 		struct nt_view_rect root = nt_view_content_rect(view);
 		nt_canvas_cursor(canvas, panel.x - root.x, panel.y - root.y);
@@ -2082,7 +2061,7 @@ static int cli_chat_capture_input(struct nt_view *view, const struct nt_event *e
 		}
 	}
 
-	if (page->panel || page->prompt_rows || nt_view_is_focused(page->editor))
+	if (page->panel || nt_view_is_focused(page->editor))
 		return 0;
 
 	struct nt_event input = *event;
@@ -2356,7 +2335,7 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 
 	struct nt_terminal_environment environment = {0};
 	(void)nt_application_environment(&ctx->base, &environment);
-	int showing = page->files_open && !page->panel && !page->prompt_rows;
+	int showing = page->files_open && !page->panel;
 	int narrow = environment.columns < 100;
 	if (narrow) {
 		int rc = nt_view_cancel_animation(page->workspace,
@@ -2384,9 +2363,10 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 	if (rc)
 		return rc;
 
-	if (now / 1000 != ctx->input_status.updated) {
+	if (now / 1000 != ctx->input_status.updated && !(page->panel && page->panel->interaction)) {
 		struct permission_policy policy;
-		if (!cli_permissions_policy_get(ctx, &policy)) {
+		if (!ctx->turn_active && !cli_sessions_running_count(ctx) &&
+		    !cli_permissions_policy_get(ctx, &policy)) {
 			ctx->input_status.permissions = policy;
 			ctx->input_status.permissions_ready = 1;
 		}
@@ -2460,7 +2440,8 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 	}
 
 	int modal = page->panel || nt_application_depth(app) > 1;
-	if (cli_application_prompt_deferred(ctx) && cli_event_queue_owner_call_pending(ctx)) {
+	if (cli_application_prompt_deferred(ctx) && cli_event_queue_owner_call_pending(ctx) &&
+	    !(page->panel && page->panel->interaction)) {
 		if (page->panel)
 			(void)cli_chat_panel_close(ctx, NB_ERR_CANCELLED);
 		else if (!nt_application_transition_pending(app))

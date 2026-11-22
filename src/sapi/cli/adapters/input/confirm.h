@@ -10,7 +10,7 @@ enum cli_input_confirm_result {
 	CLI_INPUT_CONFIRM_READ_ERROR = 3,
 };
 
-/* Active chat uses its native prompt; plain output reads the controlling terminal. */
+/* Plain output reads the controlling terminal. Active chat must use pages/confirmation. */
 enum cli_input_confirm_result cli_input_confirm_yes_no(struct cli_application *ctx);
 enum cli_input_confirm_result cli_input_confirm_phrase(struct cli_application *ctx,
 						      const char *phrase);

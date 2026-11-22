@@ -55,6 +55,12 @@ def main():
                 release.set()
                 until(terminal, lambda text: 'Working ·' not in text)
 
+            def focused_choice(number, label):
+                rows = terminal.screen.display
+                focused = [row.strip() for row in rows if row.lstrip().startswith('› ●')]
+                assert focused == [f'› ● {number}. {label}'], '\n'.join(rows)
+                return next(i for i, row in enumerate(rows) if '1. Blue' in row)
+
             for columns in (120, 80, 60):
                 terminal.child.setwinsize(24, columns)
                 terminal.screen.resize(24, columns)
@@ -62,6 +68,22 @@ def main():
                 ask(f'Pick a color at {columns}', ['Blue', 'Red'])
                 text = terminal.snapshot('inline selector')
                 assert 'Other · Type your own answer' in text, text
+                anchor = focused_choice(1, 'Blue')
+                for down, up in (('\x1b[B', '\x1b[A'),
+                                 ('\x1b[1;1:1B\x1b[1;1:3B',
+                                  '\x1b[1;1:1A\x1b[1;1:3A'),
+                                 ('\x1b[57353;1:1u\x1b[57353;1:3u',
+                                  '\x1b[57352;1:1u\x1b[57352;1:3u')):
+                    terminal.send(down)
+                    assert focused_choice(2, 'Red') == anchor
+                    terminal.send(up)
+                    assert focused_choice(1, 'Blue') == anchor
+                terminal.send('\x1b[1;1:2B')
+                focused_choice(2, 'Red')
+                terminal.send('\x1b[1;1:3B\x1b[13;1:3u\x1b[27;1:3u')
+                focused_choice(2, 'Red')
+                assert Model.requests.empty(), 'key release submitted or cancelled the question'
+                terminal.send('\x1b[A')
                 terminal.send('\x1b[200~j \r\x1b[201~')
                 terminal.send('\x1b[B\r')
                 answer(['Red'])
@@ -79,6 +101,7 @@ def main():
 
                 ask(f'Automatic color at {columns}', ['Blue', 'Red'],
                     recommended_indices=[1], response_policy='optional', timeout_seconds=1)
+                terminal.send('\x1b[1;1:3B\x1b[13;1:3u')
                 answer(['Red'], 'timeout_recommended')
 
             ask('Editing prevents automatic choice', ['Blue', 'Red'],
@@ -101,14 +124,16 @@ def main():
             answer([], 'timeout_no_input')
 
             ask('Optional free text editing', response_policy='optional', timeout_seconds=2)
-            terminal.send('custom')
+            terminal.send('\x1b[99;1:1u\x1b[99;1:3uustom')
             terminal.pump(2.2)
             assert Model.requests.empty(), 'custom input lost to auto-continue'
             terminal.send('\r')
             answer(['custom'], 'user')
 
             ask('Describe another color', ['Blue', 'Red'])
-            terminal.send('\x1b[F\r')
+            other_row = next(i for i, row in enumerate(terminal.screen.display)
+                             if 'Other · Type your own answer' in row)
+            terminal.send(f'\x1b[<0;3;{other_row + 1}M\x1b[<0;3;{other_row + 1}m')
             terminal.send('\r')
             assert 'non-empty answer' in terminal.snapshot('empty custom answer rejected')
             terminal.send('discard this\x1b')
@@ -122,7 +147,7 @@ def main():
                 selection_mode='multi', min_choices=2, max_choices=2)
             terminal.send('\r')
             assert 'Selection limit' in terminal.snapshot('minimum enforced')
-            terminal.send(' \x1b[B \x1b[B ')
+            terminal.send('\x1b[32;1:1u\x1b[32;1:3u\x1b[B \x1b[B ')
             text = terminal.snapshot('maximum enforced')
             assert '2 selected' in text and 'Selection limit' in text, text
             terminal.send('\x1b[A \x1b[F\r')

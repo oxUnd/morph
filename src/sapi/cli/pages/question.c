@@ -12,10 +12,11 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/services/event_queue.h"
+#include "sapi/cli/services/sessions.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
-#include <nothing/tui/choice_prompt.h>
-#include <nothing/tui/terminal.h>
+#include "sapi/cli/components/question_form.h"
+#include <nothing/tui/models/selection_model.h>
 #include <nb/cleanup.h>
 
 static int cli_question_set_ask_user_answers(char ***answers, int *answers_count,
@@ -264,138 +265,6 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	else
 		snprintf(hint, sizeof(hint), "  Waiting for your answer · Esc cancel");
 
-	int use_selector = choices_count > 0 || timeout || cli_chat_active(ctx);
-	if (use_selector && isatty(STDOUT_FILENO)) {
-		FILE *tty = NULL;
-		FILE *input = stdin;
-
-		if (!isatty(STDIN_FILENO)) {
-			/* macOS poll rejects the /dev/tty alias. Open the actual
-			 * terminal device when standard input is redirected. */
-			const char *path = ttyname(STDOUT_FILENO);
-
-			tty = path ? fopen(path, "r") : NULL;
-			input = tty;
-		}
-
-		if (nt_terminal_available(input, stdout)) {
-			struct nt_selection_model model = {0};
-			struct nt_choice_list_state state = {0};
-			char *labels[ASK_USER_CHOICES_MAX] = {0};
-			const char *items[ASK_USER_CHOICES_MAX] = {0};
-			int label_rc = 0;
-			for (int i = 0; i < choices_count; i++) {
-				int recommended = 0;
-				for (int j = 0; options && j < options->recommended_count; j++)
-					recommended |= options->recommended_indices[j] == i;
-
-				nb_buf label NB_CLEANUP(nb_buf_cleanup) = {0};
-				label_rc = (nb_buf_init(&label),
-					    nb_buf_reserve(&label, 128) ? 0 : NB_ERR_NOMEM);
-				if (!label_rc)
-					label_rc =
-						(nb_buf_printf(&label, "%s%s", choices[i],
-							       recommended ? " (Recommended)" : "")
-							 ? 0
-							 : NB_ERR_NOMEM);
-
-				if (!label_rc) {
-					labels[i] = strdup(nb_buf_cstr(&label));
-					if (!labels[i])
-						label_rc = NB_ERR_NOMEM;
-				}
-
-				nb_buf_cleanup(&label);
-				items[i] = labels[i];
-				if (label_rc)
-					break;
-			}
-
-			const struct nt_choice_prompt_options select_options = {
-				.items = items,
-				.interrupted = &ctx->interrupted,
-				.color = cli_output_color_enabled(ctx),
-				.allow_custom = 1,
-				.custom_max_bytes = ASK_USER_ANSWER_MAX_BYTES,
-				.timeout_seconds = timeout,
-				.hint = hint,
-				.cancel_token = options ? options->cancel_token : NULL,
-			};
-			char *custom = NULL;
-			int rc = label_rc ? label_rc
-					  : nt_selection_model_init(
-						    &model, (size_t)choices_count + 1, multi,
-						    (size_t)min_choices,
-						    multi ? (size_t)(max_choices ? max_choices
-										 : choices_count)
-							  : 1);
-
-			if (!rc && options && options->recommended_count) {
-				if (multi) {
-					for (int i = 0; i < options->recommended_count; i++) {
-						state.list.index =
-							(size_t)options->recommended_indices[i];
-						(void)nt_selection_model_set_selected(&model, state.list.index, 1);
-					}
-				}
-
-				state.list.index = (size_t)options->recommended_indices[0];
-			}
-
-			if (!rc)
-				rc = cli_chat_prompt_choice(ctx, choices_count > 7 ? 12 : choices_count + 5,
-							    &model, &state, &select_options,
-							    input, &custom);
-
-			if (rc == NB_ERR_CANCELLED || rc == NB_ERR_INTERRUPTED)
-				cli_request_cancel(ctx);
-
-			if (!rc) {
-				const char *values[64];
-				int count = 0;
-
-				for (int i = 0; i < choices_count && count < 64; i++) {
-					if (nt_selection_model_is_selected(&model, (size_t)i))
-						values[count++] = choices[i];
-				}
-
-				if (custom && count < 64)
-					values[count++] = custom;
-
-				rc = cli_question_set_ask_user_answers(answers, answers_count,
-								       values, count);
-				if (!rc) {
-					for (int i = 0; i < count; i++) {
-						cli_output_printf(ctx, "  %s" ANSI_GREEN CLI_FEED_DONE
-						       " " ANSI_RESET, i + 1 < count ? "├ " : "└ ");
-						(void)cli_output_print_untrusted(
-							ctx, values[i],
-							MORPH_TERMINAL_TEXT_SINGLE_LINE);
-						cli_output_printf(ctx, "\n");
-					}
-				}
-			}
-
-			nt_selection_model_deinit(&model);
-			for (int i = 0; i < choices_count; i++)
-				free(labels[i]);
-
-			free(custom);
-			if (tty)
-				fclose(tty);
-
-			if (rc == NB_ERR_TIMEOUT)
-				cli_output_printf(ctx, "  No response; %s.\n",
-				       options->recommended_count
-					       ? "continuing with recommended choices"
-					       : "continuing without input");
-
-			return rc;
-		}
-
-		if (tty)
-			fclose(tty);
-	}
 
 	char prompt[128];
 	cli_output_printf(ctx, "%s\n", hint);
@@ -495,6 +364,149 @@ static int cli_question_ask_user_prompt(const char *question, const char *const 
 	}
 }
 
+struct cli_question_pending {
+	struct cli_question_ask_user_call *call;
+	struct cli_event_queue_owner_call *completion;
+	struct nt_view *form;
+	int result;
+};
+
+static void cli_question_pending_cleanup(struct cli_question_pending **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
+static void cli_question_form_complete(void *data, struct nt_view *view, int result)
+{
+	struct cli_question_pending *pending = data;
+	struct cli_question_ask_user_call *call = pending->call;
+	struct cli_application *ctx = cli_application_from_view(view);
+	if (!result) {
+		const struct nt_selection_model *model = cli_question_form_selection(view);
+		const char *values[ASK_USER_CHOICES_MAX + 1] = {0};
+		int count = 0;
+		for (int i = 0; i < call->choices_count; i++) {
+			if (nt_selection_model_is_selected(model, (size_t)i))
+				values[count++] = call->choices[i];
+		}
+
+		const char *custom = cli_question_form_custom(view);
+		if (custom && nt_selection_model_is_selected(model, (size_t)call->choices_count))
+			values[count++] = custom;
+
+		result = cli_question_set_ask_user_answers(call->answers, call->answers_count,
+							   values, count);
+		for (int i = 0; !result && i < count; i++) {
+			cli_output_printf(ctx, "  %s" ANSI_GREEN CLI_FEED_DONE " " ANSI_RESET,
+					  i + 1 < count ? "├ " : "└ ");
+			(void)cli_output_print_untrusted(ctx, values[i],
+							 MORPH_TERMINAL_TEXT_SINGLE_LINE);
+			cli_output_printf(ctx, "\n");
+		}
+	}
+
+	if (result == NB_ERR_CANCELLED || result == NB_ERR_INTERRUPTED)
+		cli_request_cancel(ctx);
+
+	if (result == NB_ERR_TIMEOUT)
+		cli_output_printf(ctx, "  No response; %s.\n",
+				  call->options && call->options->recommended_count
+					  ? "continuing with recommended choices"
+					  : "continuing without input");
+
+	pending->result = result;
+	(void)cli_chat_panel_close(ctx, 0);
+}
+
+static struct nt_view *cli_question_build(struct nt_builder *builder, struct nt_view *parent,
+					  void *data)
+{
+	struct cli_question_pending *pending = data;
+	struct cli_question_ask_user_call *call = pending->call;
+	int multi = call->selection_mode && !strcmp(call->selection_mode, "multi");
+	pending->form = cli_question_form_add(
+		builder, parent,
+		&(struct cli_question_form_options){
+			.choices = call->choices,
+			.count = call->choices_count,
+			.multi = multi,
+			.minimum = call->min_choices,
+			.maximum = multi ? (call->max_choices ? call->max_choices
+							      : call->choices_count)
+					 : 1,
+			.preferences = call->options,
+			.allow_custom = 1,
+			.complete = cli_question_form_complete,
+			.data = pending});
+	return pending->form ? cli_question_form_focus(pending->form) : NULL;
+}
+
+static void cli_question_panel_complete(struct cli_application *ctx, void *data, int result)
+{
+	struct cli_question_pending *pending = data;
+	struct cli_event_queue_owner_call *completion = pending->completion;
+	int rc = result ? result : pending->result;
+	if (rc == NB_ERR_CANCELLED || rc == NB_ERR_INTERRUPTED) {
+		if (cli_sessions_active(ctx))
+			(void)cli_sessions_interrupt(ctx, 0);
+		else
+			cli_request_cancel(ctx);
+
+		cli_cancel_state_reset(ctx);
+	}
+
+	free(pending);
+	cli_event_queue_complete_owner_call(completion, rc);
+}
+
+static int cli_question_refresh(void *data, const struct nt_event *event)
+{
+	(void)event;
+	struct cli_question_pending *pending = data;
+	return cli_question_form_refresh(pending->form);
+}
+
+static int cli_question_start(struct cli_application *ctx, void *data,
+			      struct cli_event_queue_owner_call *completion)
+{
+	struct cli_question_ask_user_call *call = data;
+	if (!cli_chat_active(ctx)) {
+		int rc = cli_question_ask_user_on_owner(ctx, data);
+		cli_event_queue_complete_owner_call(completion, rc);
+		return 0;
+	}
+
+	if (!call->answers || !call->answers_count || call->choices_count < 0 ||
+	    call->choices_count > ASK_USER_CHOICES_MAX || call->min_choices < 0 ||
+	    call->max_choices < 0)
+		return NB_ERR_INVAL;
+
+	*call->answers = NULL;
+	*call->answers_count = 0;
+	struct cli_question_pending *pending NB_CLEANUP(cli_question_pending_cleanup) =
+		calloc(1, sizeof(*pending));
+	if (!pending)
+		return NB_ERR_NOMEM;
+
+	*pending = (struct cli_question_pending){
+		.call = call, .completion = completion, .result = NB_ERR_CANCELLED};
+	cli_cancel_monitor_clear(ctx);
+	cli_presentation_prepare_prompt(ctx);
+	cli_output_printf(ctx, CLI_FEED_QUESTION_STYLE CLI_FEED_QUESTION " ");
+	(void)cli_output_print_untrusted(ctx, call->question, MORPH_TERMINAL_TEXT_SINGLE_LINE);
+	cli_output_printf(ctx, ANSI_RESET "\n");
+	int rc =
+		cli_chat_panel_mount(ctx, cli_question_build, pending, cli_question_panel_complete);
+	if (!rc) {
+		pending = NULL;
+		cli_chat_panel_set_interaction(ctx, 1);
+		cli_chat_panel_set_refresh(ctx, cli_question_refresh);
+	}
+
+	return rc;
+}
+
 int cli_question_callback(const char *question, const char *const *choices, int choices_count,
 			  const char *selection_mode, int min_choices, int max_choices,
 			  const struct ask_user_options *options, char ***answers,
@@ -516,8 +528,15 @@ int cli_question_callback(const char *question, const char *const *choices, int 
 			.answers = answers,
 			.answers_count = answers_count,
 		};
-		return cli_event_queue_call_owner(ctx, cli_question_ask_user_on_owner, &call);
+		return ctx->presentation_mode == CLI_PRESENT_INTERACTIVE
+			       ? cli_event_queue_call_owner_deferred(ctx, cli_question_start, &call)
+			       : cli_event_queue_call_owner(ctx, cli_question_ask_user_on_owner,
+							    &call);
 	}
+
+	/* Interactive callbacks wait on a worker; the UI owner only mounts controls. */
+	if (cli_chat_active(ctx))
+		return NB_ERR_BUSY;
 
 	const struct nb_cancel *previous = ctx->input->input_cancel_token;
 	ctx->input->input_cancel_token = options ? options->cancel_token : NULL;

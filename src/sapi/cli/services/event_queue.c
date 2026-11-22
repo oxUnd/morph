@@ -19,6 +19,7 @@ struct cli_event_queue_owner_call {
 	nb_mutex *mutex;
 	nb_cond *cond;
 	cli_event_queue_call_fn fn;
+	cli_event_queue_start_fn start;
 	void *data;
 	int result;
 	int complete;
@@ -58,7 +59,7 @@ static void cli_event_queue_item_clear(struct cli_event_queue_item **owner)
 	*owner = NULL;
 }
 
-static void cli_event_queue_complete_owner_call(struct cli_event_queue_owner_call *call, int result)
+void cli_event_queue_complete_owner_call(struct cli_event_queue_owner_call *call, int result)
 {
 	if (!call)
 		return;
@@ -366,7 +367,26 @@ int cli_event_queue_post_notification(struct cli_application *ctx,
 	return 0;
 }
 
-int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call_fn fn, void *data)
+int cli_event_queue_post_output(struct cli_application *ctx, const char *text)
+{
+	if (!ctx || !text)
+		return NB_ERR_INVAL;
+
+	struct cli_event_queue_item *item NB_CLEANUP(cli_event_queue_item_clear) =
+		calloc(1, sizeof(*item));
+	if (!item)
+		return NB_ERR_NOMEM;
+
+	item->kind = CLI_EVENT_QUEUE_UI_ITEM_OUTPUT;
+	item->message = strdup(text);
+	if (!item->message)
+		return NB_ERR_NOMEM;
+
+	return cli_event_queue_enqueue_take(ctx, &item);
+}
+
+static int cli_event_queue_call(struct cli_application *ctx, cli_event_queue_call_fn fn,
+				cli_event_queue_start_fn start, void *data)
 {
 	struct cli_event_queue_owner_call call;
 	struct cli_event_queue_item *item NB_CLEANUP(cli_event_queue_item_clear) = NULL;
@@ -374,10 +394,13 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 	int cond_rc;
 	int rc;
 
-	if (!ctx || !ctx->events || !fn)
+	if (!ctx || !ctx->events || (!fn && !start))
 		return NB_ERR_INVAL;
 
 	if (cli_event_queue_is_owner(ctx)) {
+		if (start)
+			return NB_ERR_BUSY;
+
 		nb_mutex_lock(ctx->events->mutex);
 		int stopped = ctx->events->owner_calls_stopped;
 
@@ -400,6 +423,7 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 	}
 
 	call.fn = fn;
+	call.start = start;
 	call.data = data;
 	item = calloc(1, sizeof(*item));
 	if (!item) {
@@ -426,6 +450,17 @@ int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call
 	(nb_cond_free(call.cond), call.cond = NULL);
 	(nb_mutex_free(call.mutex), call.mutex = NULL);
 	return rc;
+}
+
+int cli_event_queue_call_owner(struct cli_application *ctx, cli_event_queue_call_fn fn, void *data)
+{
+	return cli_event_queue_call(ctx, fn, NULL, data);
+}
+
+int cli_event_queue_call_owner_deferred(struct cli_application *ctx, cli_event_queue_start_fn start,
+					void *data)
+{
+	return cli_event_queue_call(ctx, NULL, start, data);
 }
 
 int cli_event_queue_stop_owner_calls(struct cli_application *ctx)
@@ -476,6 +511,14 @@ int cli_event_queue_run_owner_call(struct cli_application *ctx,
 	if (!call)
 		return NB_ERR_INVAL;
 
+	if (call->start) {
+		result = call->start(ctx, call->data, call);
+		if (result)
+			cli_event_queue_complete_owner_call(call, result);
+
+		return result;
+	}
+
 	result = cli_event_queue_call_owner(ctx, call->fn, call->data);
 	cli_event_queue_complete_owner_call(call, result);
 	return result;
@@ -513,14 +556,15 @@ int cli_event_queue_set_events_enabled(struct cli_application *ctx, int enabled)
 	return 0;
 }
 
-static int cli_event_queue_pending_ready(struct cli_event_queue *ui)
+static int cli_event_queue_pending_ready(struct cli_event_queue *ui, int defer_calls)
 {
 	nb_queue *link;
 	NB_QUEUE_FOREACH(link, &ui->pending)
 	{
 		struct cli_event_queue_item *item =
 			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
-		if (ui->events_enabled || item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
+		if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL ? !defer_calls
+								     : ui->events_enabled)
 			return 1;
 	}
 
@@ -557,7 +601,7 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 		struct cli_event_queue_item *item =
 			NB_QUEUE_DATA(link, struct cli_event_queue_item, link);
 		if (defer_calls && item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
-			break;
+			continue;
 
 		if (!ui->events_enabled && item->kind != CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
 			continue;
@@ -565,9 +609,11 @@ static int cli_event_queue_drain_limit(struct cli_application *ctx, int limit)
 		nb_queue_remove(link);
 		nb_queue_insert_tail(&local, link);
 		taken++;
+		if (item->kind == CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL)
+			break;
 	}
 
-	int remaining = cli_event_queue_pending_ready(ui);
+	int remaining = cli_event_queue_pending_ready(ui, defer_calls);
 
 	nb_mutex_unlock(ui->mutex);
 	if (remaining)

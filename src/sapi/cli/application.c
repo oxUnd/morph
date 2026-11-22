@@ -245,6 +245,9 @@ static void cli_application_run_session(struct cli_application *ctx)
 		if (!app_rc)
 			app_rc = nt_application_run(&ctx->base);
 
+		nb_log_write(ctx->logger, NB_LOG_DEBUG, "TUI event loop finished with status %d",
+			     app_rc);
+
 		nt_application_deinit(&ctx->base);
 		cli_feed_set_hidden(ctx, 0);
 	}
@@ -288,6 +291,11 @@ int cli_application_flush_output(struct cli_application *ctx)
 {
 	if (ctx && ctx->output.capture)
 		return 0;
+
+	if (ctx && ctx->events && !cli_event_queue_is_owner(ctx)) {
+		cli_event_queue_notify(ctx);
+		return 0;
+	}
 
 	struct nt_application *app = cli_application_tui_borrow(ctx);
 	if (app)

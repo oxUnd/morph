@@ -552,7 +552,7 @@ static int cli_hooks_cell(struct nt_canvas *row, int x, int width, const char *t
 static const char *cli_hooks_source(void *data, size_t index)
 {
 	struct cli_hooks_page *s = data;
-	int i = s->first + (int)index;
+	int i = (int)index;
 	return cli_hooks_navigation(s)->section == HOOKS_EVENTS
 		       ? cli_hooks_event_name(i)
 		       : cli_hooks_field(cli_hooks_view_row(s, s->rows, i), "event");
@@ -579,7 +579,7 @@ static int cli_hooks_row(void *data, struct nt_canvas *line, size_t index, size_
 			 int selected)
 {
 	struct cli_hooks_page *s = data;
-	int i = (int)index + s->first;
+	int i = (int)index;
 	struct nt_text_style style = cli_hooks_style(selected ? HOOK_SELECTED : HOOK_TEXT);
 	(void)group;
 	int rc = selected ? nt_canvas_fill_styled(line, &style) : 0;
@@ -713,8 +713,8 @@ static int cli_hooks_text(struct cli_hooks_page *s, nb_vec *lines, int wrap)
 static int cli_hooks_batch_text(struct cli_hooks_page *s, nb_vec *lines)
 {
 	char label[256];
-	for (int i = 0; i < s->page_size; i++) {
-		const cJSON *row = cJSON_GetArrayItem(s->rows, s->scroll + i);
+	for (int i = 0; i < cJSON_GetArraySize(s->rows); i++) {
+		const cJSON *row = cJSON_GetArrayItem(s->rows, i);
 		if (!row)
 			break;
 
@@ -776,11 +776,10 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 		snprintf(title, sizeof(title), "Trust lifecycle hooks?");
 		snprintf(subtitle, sizeof(subtitle), "%s",
 			 cli_hooks_field(cJSON_GetArrayItem(s->rows, 0), "cwd"));
-		s->scroll = (int)nt_scroll_offset_after_key((size_t)s->scroll, (size_t)count,
-							    (size_t)s->page_size, 0);
-		int end = s->scroll + s->page_size;
+		int first = s->scroll / 3;
+		int end = first + s->page_size;
 		snprintf(range, sizeof(range), "Showing %d–%d of %d · PgUp/PgDn to scroll",
-			 count ? s->scroll + 1 : 0, end < count ? end : count, count);
+			 count ? first + 1 : 0, end < count ? end : count, count);
 		hint = "↑↓ Choose  Enter Confirm  Esc Keep unchanged";
 	} else if (events) {
 		snprintf(title, sizeof(title), "Lifecycle events");
@@ -823,7 +822,7 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 			 c.command > 6 ? "COMMAND" : "", c.source, c.source ? "SOURCE" : "",
 			 c.state ? "STATE" : "");
 		snprintf(range, sizeof(range), "Showing %d–%d of %d", s->first + 1,
-			 s->first + visible, total);
+			 s->first + visible < total ? s->first + visible : total, total);
 		hint = count > s->page_size ? "↑↓ Select  Enter Review  e Events  a Review all  ←→ "
 					      "Page  r Refresh  Esc Close"
 					    : "↑↓ Select  Enter Review  e Events  a Review all  r "
@@ -852,11 +851,12 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 	if (!rc)
 		rc = cli_hooks_text(s, &lines, list || review);
 
-	int offset = review ? (int)nt_scroll_offset_after_key((size_t)s->scroll,
-							      (size_t)s->document_lines,
-							      (size_t)s->document_height, 0)
-			    : 0;
-	if (review)
+	int offset = (review || batch)
+			     ? (int)nt_scroll_offset_after_key((size_t)s->scroll,
+							       (size_t)s->document_lines,
+							       (size_t)s->document_height, 0)
+			     : 0;
+	if (review || batch)
 		s->scroll = offset;
 
 	if (!rc)
@@ -925,10 +925,13 @@ static int cli_hooks_sync(struct cli_hooks_page *s)
 				     parts[i].height);
 
 	if (!rc && (list || events))
-		rc = nt_list_view_set_source(s->list, (size_t)visible, cli_hooks_source, s);
+		rc = nt_list_view_set_page_size(s->list, (size_t)s->page_size);
+
+	if (!rc && (list || events))
+		rc = nt_list_view_set_source(s->list, (size_t)total, cli_hooks_source, s);
 
 	if (!rc && (list || events) && visible)
-		rc = nt_list_view_select(s->list, (size_t)(selected - s->first));
+		rc = nt_list_view_select(s->list, (size_t)selected);
 
 	if (!rc && choices)
 		rc = nt_list_view_set_source(s->choices, (size_t)choices, cli_hooks_choice, s);
@@ -979,28 +982,13 @@ static int cli_hooks_refresh(struct cli_application *ctx, cJSON **rows,
 	return 0;
 }
 
-static void cli_hooks_choose(int *index, int count, int page, int key, unsigned flags)
-{
-	struct nt_menu_state menu = {0};
-
-	menu.list.index = (size_t)*index;
-	menu.list.flags = flags;
-	if ((flags & NT_LIST_VIEW_WRAP) && key != NT_KEY_UP && key != NT_KEY_DOWN && key != 'k' &&
-	    key != 'j' && key != '\t')
-		key = 0;
-
-	nt_list_state_layout(&menu.list, (size_t)count, page > 0 ? (size_t)page : 1);
-	(void)nt_menu_state_update(&menu, key);
-	*index = (int)menu.list.index;
-}
-
 static int cli_hooks_update(void *data, const struct nt_event *event)
 {
 	struct cli_hooks_page *screen = data;
 	struct cli_application *ctx = cli_application_from_controller(&screen->base);
 	cJSON **rows = &screen->rows;
 
-	if (event->type != NT_EVENT_KEY || event->pasting)
+	if (event->type != NT_EVENT_KEY || event->pasting || event->action == NT_KEY_ACTION_RELEASE)
 		return NT_NAVIGATION_UNHANDLED;
 
 	struct cli_hooks_navigation nav = *cli_hooks_navigation(screen);
@@ -1047,8 +1035,6 @@ static int cli_hooks_update(void *data, const struct nt_event *event)
 	}
 
 	if (nav.section == HOOKS_EVENTS && !nav.batch) {
-		cli_hooks_choose(&screen->event_focus, CLI_HOOKS_HOOK_EVENT_COUNT,
-				 screen->height - 10, key, NT_LIST_VIEW_VIM | NT_LIST_VIEW_PAGED);
 		if (key == '\r' || key == '\n') {
 			screen->focus = 0;
 			screen->scroll = 0;
@@ -1059,12 +1045,6 @@ static int cli_hooks_update(void *data, const struct nt_event *event)
 	}
 
 	if (nav.batch) {
-		cli_hooks_choose(&screen->choice, 3, 1, key,
-				 NT_LIST_VIEW_WRAP | NT_LIST_VIEW_VIM | NT_LIST_VIEW_TAB);
-		if (key == NT_KEY_PAGE_UP || key == NT_KEY_PAGE_DOWN)
-			screen->scroll = (int)nt_scroll_offset_after_key(
-				(size_t)screen->scroll, (size_t)cJSON_GetArraySize(*rows),
-				(size_t)screen->page_size, key);
 
 		if (key == '\r' || key == '\n') {
 			if (screen->choice == 2) {
@@ -1107,17 +1087,8 @@ static int cli_hooks_update(void *data, const struct nt_event *event)
 	const cJSON *row = cli_hooks_view_row(screen, *rows, screen->focus);
 	struct cli_hooks_action items[4];
 	int count = cli_hooks_actions(row, items);
-	int total = cli_hooks_view_count(screen, *rows);
-
-	if (nav.section == HOOKS_REVIEW) {
-		cli_hooks_choose(&screen->choice, count, 1, key,
-				 NT_LIST_VIEW_WRAP | NT_LIST_VIEW_VIM | NT_LIST_VIEW_TAB);
-		if (key == NT_KEY_PAGE_UP || key == NT_KEY_PAGE_DOWN || key == NT_KEY_HOME ||
-		    key == NT_KEY_END)
-			screen->scroll = (int)nt_scroll_offset_after_key(
-				(size_t)screen->scroll, (size_t)screen->document_lines,
-				(size_t)screen->document_height, key);
-	}
+	if (nav.section == HOOKS_REVIEW && (screen->choice < 0 || screen->choice >= count))
+		return NB_ERR_INVAL;
 
 	if (key == '\r' || key == '\n') {
 		if (!row)
@@ -1151,11 +1122,6 @@ static int cli_hooks_update(void *data, const struct nt_event *event)
 			if (rc != 0)
 				return rc;
 		}
-	} else if (nav.section != HOOKS_REVIEW && total > 0) {
-		cli_hooks_choose(&screen->focus, total, screen->page_size, key,
-				 NT_LIST_VIEW_VIM | NT_LIST_VIEW_HORIZONTAL_PAGES |
-					 NT_LIST_VIEW_PAGED);
-		screen->scroll = 0;
 	}
 
 	return NT_NAVIGATION_CHANGED;
@@ -1168,6 +1134,14 @@ static int cli_hooks_handle(struct cli_hooks_page *s, const struct nt_event *eve
 		rc = nt_view_controller_dismiss(&s->base, 0);
 	} else if (rc == NT_NAVIGATION_CHANGED) {
 		rc = cli_hooks_sync(s);
+		if (!rc)
+			rc = nt_view_focus(
+				cli_hooks_navigation(s)->batch ||
+						cli_hooks_navigation(s)->section == HOOKS_REVIEW
+					? s->choices
+				: nt_list_view_count(s->list) && !nt_view_is_hidden(s->list)
+					? s->list
+					: s->root);
 	}
 
 	return rc < 0 ? rc : NT_VIEW_EVENT_STOP;
@@ -1175,7 +1149,39 @@ static int cli_hooks_handle(struct cli_hooks_page *s, const struct nt_event *eve
 
 static int cli_hooks_key(void *data, const struct nt_view_event *event)
 {
-	return cli_hooks_handle(data, event->input);
+	struct cli_hooks_page *s = data;
+	const struct nt_event *input = event->input;
+	if (input->pasting || input->action == NT_KEY_ACTION_RELEASE)
+		return NT_VIEW_EVENT_PASS;
+
+	const struct cli_hooks_navigation *nav = cli_hooks_navigation(s);
+	int key = input->key;
+	if ((s->height < (nav->batch ? 18 : 10) || s->width < (nav->batch ? 40 : 24)) &&
+	    key != 27 && key != 3 && key != 4 && key != 'q')
+		return NT_VIEW_EVENT_STOP;
+
+	if ((nav->batch || nav->section == HOOKS_REVIEW) &&
+	    (key == NT_KEY_PAGE_UP || key == NT_KEY_PAGE_DOWN ||
+	     (nav->section == HOOKS_REVIEW && (key == NT_KEY_HOME || key == NT_KEY_END)))) {
+		int rc = nt_scroll_view_handle_key(s->viewport, key);
+		return rc < 0 ? rc : NT_VIEW_EVENT_STOP;
+	}
+
+	if (key != 27 && key != 3 && key != 4 && key != 'q' && key != 'e' && key != 'a' &&
+	    key != 'r')
+		return NT_VIEW_EVENT_PASS;
+
+	return cli_hooks_handle(s, input);
+}
+
+static int cli_hooks_scrolled(void *data, const struct nt_view_event *event)
+{
+	struct cli_hooks_page *s = data;
+	if (s->syncing || event->target != s->viewport)
+		return 0;
+
+	s->scroll = nt_scroll_view_offset(s->viewport);
+	return cli_hooks_sync(s);
 }
 
 static int cli_hooks_selected(void *data, const struct nt_view_event *event)
@@ -1187,9 +1193,9 @@ static int cli_hooks_selected(void *data, const struct nt_view_event *event)
 	if (event->target == s->choices)
 		s->choice = (int)event->index;
 	else if (cli_hooks_navigation(s)->section == HOOKS_EVENTS)
-		s->event_focus = s->first + (int)event->index;
+		s->event_focus = (int)event->index;
 	else
-		s->focus = s->first + (int)event->index;
+		s->focus = (int)event->index;
 
 	if (event->type == NT_VIEW_EVENT_ACTIVATE)
 		return cli_hooks_handle(s, &(struct nt_event){.type = NT_EVENT_KEY, .key = '\r'});
@@ -1203,9 +1209,20 @@ static int cli_hooks_size(void *data, const struct nt_view_event *event)
 	if (event->target != s->root)
 		return 0;
 
+	int recovering = s->height < (cli_hooks_navigation(s)->batch ? 18 : 10) ||
+			 s->width < (cli_hooks_navigation(s)->batch ? 40 : 24);
 	s->width = event->rect.width > 0 ? event->rect.width : 1;
 	s->height = event->rect.height;
-	return cli_hooks_sync(s);
+	int rc = cli_hooks_sync(s);
+	if (!rc && recovering && s->height >= (cli_hooks_navigation(s)->batch ? 18 : 10) &&
+	    s->width >= (cli_hooks_navigation(s)->batch ? 40 : 24))
+		rc = nt_view_focus(cli_hooks_navigation(s)->batch ||
+						   cli_hooks_navigation(s)->section == HOOKS_REVIEW
+					   ? s->choices
+				   : nt_view_is_hidden(s->list) ? s->root
+								: s->list);
+
+	return rc;
 }
 
 static int cli_hooks_back(void *data)
@@ -1218,7 +1235,7 @@ static int cli_hooks_back(void *data)
 	s->scroll = 0;
 	s->message[0] = '\0';
 	rc = cli_hooks_sync(s);
-	return rc ? rc : nt_view_focus(s->root);
+	return rc ? rc : nt_view_focus(nt_view_is_hidden(s->list) ? s->root : s->list);
 }
 
 static void cli_hooks_build(struct nt_view_controller *controller, struct nt_builder *builder)
@@ -1264,14 +1281,21 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 
 	nt_builder_fail(builder, nt_scroll_view_set_scrollbars(s->viewport, 0));
 	nt_builder_fail(builder, nt_text_view_set_fill_lines(s->document, 1));
+	nt_builder_fail(builder, nt_list_view_set_navigation(
+					 s->list, NT_LIST_VIEW_VIM | NT_LIST_VIEW_HORIZONTAL_PAGES |
+							  NT_LIST_VIEW_PAGED));
+	nt_builder_fail(builder, nt_list_view_set_navigation(s->choices, NT_LIST_VIEW_WRAP |
+										 NT_LIST_VIEW_VIM |
+										 NT_LIST_VIEW_TAB));
 	nt_builder_fail(builder, nt_list_view_set_row_renderer(s->list, cli_hooks_row, s));
 	nt_builder_fail(builder,
 			nt_list_view_set_row_renderer(s->choices, cli_hooks_choice_row, s));
 	if (!nt_view_on_full(
-		    s->root, NT_VIEW_EVENT_KEY,
+		    s->layout.root, NT_VIEW_EVENT_KEY,
 		    &(struct nt_view_listener_options){.flags = NT_VIEW_LISTEN_CAPTURE,
 						       NT_VIEW_LISTENER(cli_hooks_key, s)}) ||
-	    !nt_view_on(s->root, NT_VIEW_EVENT_SIZE_CHANGED, cli_hooks_size, s))
+	    !nt_view_on(s->root, NT_VIEW_EVENT_SIZE_CHANGED, cli_hooks_size, s) ||
+	    !nt_view_on(s->viewport, NT_VIEW_EVENT_SCROLLED, cli_hooks_scrolled, s))
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 
 	struct nt_view *lists[] = {s->list, s->choices};
@@ -1282,7 +1306,9 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 
 	nt_builder_fail(builder, cli_hooks_sync(s));
 	nt_builder_fail(builder, nt_view_set_focusable(s->root, 1));
-	nt_builder_fail(builder, nt_view_focus(s->root));
+	nt_builder_fail(builder, nt_view_focus(cli_hooks_navigation(s)->batch ? s->choices
+					       : nt_view_is_hidden(s->list)   ? s->root
+									      : s->list));
 }
 
 static void cli_hooks_destroy(struct nt_view_controller *controller)

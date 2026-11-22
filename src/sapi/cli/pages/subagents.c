@@ -84,7 +84,7 @@ struct cli_subagents_page {
 	struct nt_view_controller base;
 	struct cli_page_layout layout;
 	struct cli_agents_browser_state browser;
-	struct nt_list_state selection;
+	size_t selected;
 	struct agent_info *items;
 	int count;
 	struct cli_subagents_feed *feed;
@@ -165,7 +165,7 @@ static const char *cli_subagents_selected(const struct cli_subagents_page *page)
 {
 	size_t selected = page->fullscreen && !page->viewing
 				  ? cli_agents_browser_selected(&page->browser)
-				  : page->selection.index;
+				  : page->selected;
 	if (!selected || selected > (size_t)page->count)
 		return "/root";
 
@@ -268,7 +268,7 @@ static int cli_subagents_refresh(struct cli_application *ctx, struct cli_subagen
 	cli_agents_list_free(page->items, page->count);
 	page->items = items;
 	page->count = count;
-	page->selection.index = selected == SIZE_MAX ? 0 : selected;
+	page->selected = selected == SIZE_MAX ? 0 : selected;
 
 	struct cli_subagents_feed *feed = page->feed;
 	if (feed && feed->detail) {
@@ -427,7 +427,7 @@ static int cli_subagents_document(struct cli_subagents_page *page)
 static const char *cli_subagents_picker_row(void *data, size_t index)
 {
 	struct cli_subagents_page *page = data;
-	const char *marker = page->selection.index == index ? ">" : " ";
+	const char *marker = page->selected == index ? ">" : " ";
 	nb_buf_clear(&page->picker_row);
 	if (!index)
 		nb_buf_printf(&page->picker_row, "%s /root  Main conversation", marker);
@@ -506,10 +506,9 @@ static int cli_subagents_sync(struct cli_subagents_page *page)
 		rc = cli_page_layout_set_subpage(&page->layout,
 						 cli_subagents_label(feed->thread->id));
 
-	const struct agent_info *agent =
-		page->selection.index && page->selection.index <= (size_t)page->count
-			? &page->items[page->selection.index - 1]
-			: feed->detail;
+	const struct agent_info *agent = page->selected && page->selected <= (size_t)page->count
+						 ? &page->items[page->selected - 1]
+						 : feed->detail;
 	if (!rc &&
 	    !nb_buf_printf(&label, "  %s · %s%s", cli_agents_status(agent->status),
 			   cli_subagents_activity(agent), feed->details ? " · Tool details" : ""))
@@ -527,8 +526,6 @@ static int cli_subagents_sync(struct cli_subagents_page *page)
 	if (!rc && !feed->follow)
 		rc = nt_scroll_view_set_offset(view->scroll, feed->scroll);
 
-	if (rc >= 0 && nt_component_state_get_bool(view->editing))
-		rc = nt_view_focus(view->editor);
 
 	return rc < 0 ? rc : 0;
 }
@@ -545,8 +542,7 @@ static int cli_subagents_back(void *data)
 
 	if (!page->fullscreen) {
 		struct cli_agents_browser_data snapshot = cli_subagents_browser_data(ctx, page);
-		int rc = cli_agents_browser_set_snapshot(&page->browser, &snapshot,
-							page->selection.index);
+		int rc = cli_agents_browser_set_snapshot(&page->browser, &snapshot, page->selected);
 		if (rc)
 			return rc;
 
@@ -564,7 +560,7 @@ static int cli_subagents_back(void *data)
 	if (!rc)
 		rc = cli_subagents_sync(page);
 
-	return rc ? rc : nt_view_focus(page->layout.body);
+	return rc ? rc : cli_agents_browser_focus(page->ui.browser, 0);
 }
 
 static int cli_subagents_picker_update(struct cli_application *ctx, struct cli_subagents_page *page,
@@ -572,55 +568,25 @@ static int cli_subagents_picker_update(struct cli_application *ctx, struct cli_s
 {
 	if (event->type == NT_EVENT_TICK || event->type == NT_EVENT_WAKE) {
 		if (cli_event_queue_owner_call_pending(ctx))
-			return NT_SCREEN_CLOSE;
+			return NT_NAVIGATION_BACK;
 
 		if (nb_time_monotonic_ms() - page->refreshed >= 500) {
 			int rc = cli_subagents_refresh(ctx, page);
-			return rc != 0 ? rc : NT_SCREEN_REDRAW;
+			return rc != 0 ? rc : NT_NAVIGATION_CHANGED;
 		}
 
-		return NT_SCREEN_CONTINUE;
+		return NT_NAVIGATION_UNHANDLED;
 	}
 
 	if (event->type == NT_EVENT_RESIZE)
-		return NT_SCREEN_REDRAW;
+		return NT_NAVIGATION_CHANGED;
 
 	if (event->type != NT_EVENT_KEY || event->pasting)
-		return NT_SCREEN_CONTINUE;
+		return NT_NAVIGATION_UNHANDLED;
 
 	int key = event->key;
-	if (page->fullscreen) {
-		int action = cli_agents_browser_update(&page->browser, key);
-		size_t selected = cli_agents_browser_selected(&page->browser);
-		page->selection.index = selected == SIZE_MAX ? 0 : selected;
-		if (action == NT_NAVIGATION_CANCEL)
-			return NT_SCREEN_CLOSE;
-
-		if (action == NT_NAVIGATION_SUBMIT) {
-			int rc = cli_subagents_select(ctx, page);
-			return rc != 0 ? rc : NT_SCREEN_CLOSE;
-		}
-
-		return action == NT_NAVIGATION_CHANGED ? NT_SCREEN_REDRAW : NT_SCREEN_CONTINUE;
-	}
-
-	if (key == 27 || key == 3 || key == 4 || key == 'q')
-		return NT_SCREEN_CLOSE;
-
-	if (key == '\r' || key == '\n') {
-		int rc = cli_subagents_select(ctx, page);
-		return rc != 0 ? rc : NT_SCREEN_CLOSE;
-	}
-
-	if (key == '\t' || key == NT_KEY_RIGHT || key == NT_KEY_LEFT || key == NT_KEY_BACK_TAB) {
-		size_t count = (size_t)page->count + 1;
-		int backward = key == NT_KEY_LEFT || key == NT_KEY_BACK_TAB;
-		page->selection.index = backward ? (page->selection.index + count - 1) % count
-						 : (page->selection.index + 1) % count;
-	} else
-		(void)nt_list_state_update(&page->selection, key);
-
-	return NT_SCREEN_REDRAW;
+	return key == 27 || key == 3 || key == 4 || key == 'q' ? NT_NAVIGATION_BACK
+							       : NT_NAVIGATION_UNHANDLED;
 }
 
 static int cli_subagents_update(void *data, const struct nt_event *event)
@@ -629,13 +595,14 @@ static int cli_subagents_update(void *data, const struct nt_event *event)
 	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	if (!page->viewing) {
 		int result = cli_subagents_picker_update(ctx, page, event);
-		return result == NT_SCREEN_CLOSE && page->viewing ? NT_SCREEN_REDRAW : result;
+		return result == NT_NAVIGATION_BACK && page->viewing ? NT_NAVIGATION_CHANGED
+								     : result;
 	}
 
 	struct cli_subagents_feed *feed = page->feed;
 	if (event->type == NT_EVENT_TICK || event->type == NT_EVENT_WAKE) {
 		if (cli_event_queue_owner_call_pending(ctx))
-			return NT_SCREEN_CLOSE;
+			return NT_NAVIGATION_BACK;
 
 		if (nb_time_monotonic_ms() - page->refreshed >= 500) {
 			int rc = cli_subagents_refresh(ctx, page);
@@ -643,24 +610,24 @@ static int cli_subagents_update(void *data, const struct nt_event *event)
 				return rc;
 
 			if (!page->viewing)
-				return NT_SCREEN_CLOSE;
+				return NT_NAVIGATION_BACK;
 
-			return NT_SCREEN_REDRAW;
+			return NT_NAVIGATION_CHANGED;
 		}
 
-		return feed->dirty ? NT_SCREEN_REDRAW : NT_SCREEN_CONTINUE;
+		return feed->dirty ? NT_NAVIGATION_CHANGED : NT_NAVIGATION_UNHANDLED;
 	}
 
 	if (event->type == NT_EVENT_RESIZE)
-		return NT_SCREEN_REDRAW;
+		return NT_NAVIGATION_CHANGED;
 
 	if (event->type != NT_EVENT_KEY)
-		return NT_SCREEN_CONTINUE;
+		return NT_NAVIGATION_UNHANDLED;
 
 	int key = event->key;
 	if (nt_component_state_get_bool(page->ui.editing)) {
 		if (key != 27 && key != 3)
-			return NT_SCREEN_CONTINUE;
+			return NT_NAVIGATION_UNHANDLED;
 
 		nb_buf_clear(&feed->draft);
 		if (!nb_buf_append_cstr(&feed->draft, nt_text_field_text(page->ui.editor)))
@@ -671,31 +638,31 @@ static int cli_subagents_update(void *data, const struct nt_event *event)
 			rc = nt_view_flush_state(page->layout.root);
 
 		if (!rc)
-			rc = nt_view_focus(page->layout.body);
+			rc = nt_view_focus(page->ui.scroll);
 
-		return rc ? rc : NT_SCREEN_REDRAW;
+		return rc ? rc : NT_NAVIGATION_CHANGED;
 	}
 
 	if (event->pasting)
-		return NT_SCREEN_CONTINUE;
+		return NT_NAVIGATION_UNHANDLED;
 
 	if (key == 27) {
 		int rc = cli_subagents_back(page);
-		return rc < 0 ? rc : NT_SCREEN_REDRAW;
+		return rc < 0 ? rc : NT_NAVIGATION_CHANGED;
 	} else if (key == 3 || key == 4 || key == 'q') {
-		return NT_SCREEN_CLOSE;
+		return NT_NAVIGATION_BACK;
 	} else if (key == '\t' || key == NT_KEY_RIGHT || key == NT_KEY_LEFT ||
 		   key == NT_KEY_BACK_TAB) {
 		size_t count = (size_t)page->count + 1;
 		int backward = key == NT_KEY_LEFT || key == NT_KEY_BACK_TAB;
-		page->selection.index = backward ? (page->selection.index + count - 1) % count
-						 : (page->selection.index + 1) % count;
+		page->selected = backward ? (page->selected + count - 1) % count
+					  : (page->selected + 1) % count;
 		int rc = cli_subagents_select(ctx, page);
 		if (rc != 0)
 			return rc;
 
 		if (!page->viewing)
-			return NT_SCREEN_CLOSE;
+			return NT_NAVIGATION_BACK;
 	} else if (key == 'd' || key == 20) {
 		feed->details = !feed->details;
 		feed->dirty = 1;
@@ -708,7 +675,7 @@ static int cli_subagents_update(void *data, const struct nt_event *event)
 				return rc;
 
 			rc = nt_component_state_set_bool(page->ui.editing, true);
-			return rc ? rc : NT_SCREEN_REDRAW;
+			return rc ? rc : NT_NAVIGATION_CHANGED;
 		} else {
 			int rc = cli_agents_interrupt(ctx, feed->thread->id);
 			nb_buf_clear(&feed->message);
@@ -717,17 +684,9 @@ static int cli_subagents_update(void *data, const struct nt_event *event)
 				rc ? nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc)
 				   : "Interrupt requested");
 		}
-	} else {
-		int rc = nt_scroll_view_handle_key(page->ui.scroll, key);
-		if (rc < 0)
-			return rc;
-
-		const struct nt_scroll_state *scroll = nt_scroll_view_state(page->ui.scroll);
-		feed->scroll = scroll->offset;
-		feed->follow = scroll->offset == nt_scroll_max(scroll);
 	}
 
-	return NT_SCREEN_REDRAW;
+	return NT_NAVIGATION_CHANGED;
 }
 
 static int cli_subagents_submit(void *data, const struct nt_view_event *event)
@@ -735,9 +694,9 @@ static int cli_subagents_submit(void *data, const struct nt_view_event *event)
 	struct cli_subagents_page *page = data;
 	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	struct cli_subagents_feed *feed = page->feed;
-	(void)event;
 	int rc = cli_agents_followup(ctx, feed->thread->id,
-					nt_text_field_text(page->ui.editor));
+				     event->text ? event->text
+						 : nt_text_field_text(page->ui.editor));
 	nb_buf_clear(&feed->message);
 	if (!nb_buf_append_cstr(&feed->message,
 				rc ? nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc)
@@ -750,7 +709,7 @@ static int cli_subagents_submit(void *data, const struct nt_view_event *event)
 			error = nt_view_flush_state(page->layout.root);
 
 		if (!error)
-			error = nt_view_focus(page->layout.body);
+			error = nt_view_focus(page->ui.scroll);
 
 		if (error)
 			return error;
@@ -764,12 +723,12 @@ static int cli_subagents_submit(void *data, const struct nt_view_event *event)
 static int cli_subagents_handle(struct cli_subagents_page *page, const struct nt_event *event)
 {
 	int action = cli_subagents_update(page, event);
-	if (action == NT_SCREEN_CLOSE) {
+	if (action == NT_NAVIGATION_BACK) {
 		int rc = nt_view_controller_dismiss(&page->base, 0);
 		return rc < 0 ? rc : 1;
 	}
 
-	if (action == NT_SCREEN_REDRAW) {
+	if (action == NT_NAVIGATION_CHANGED) {
 		int rc = cli_subagents_sync(page);
 		return rc ? rc : 1;
 	}
@@ -780,18 +739,61 @@ static int cli_subagents_handle(struct cli_subagents_page *page, const struct nt
 static int cli_subagents_input(void *data, const struct nt_view_event *event)
 {
 	struct cli_subagents_page *page = data;
-	if (event->input->action == NT_KEY_ACTION_RELEASE)
+	const struct nt_event *input = event->input;
+	if (input->action == NT_KEY_ACTION_RELEASE || input->pasting)
+		return NT_VIEW_EVENT_PASS;
+
+	int key = input->key;
+	int editing = page->viewing && nt_component_state_get_bool(page->ui.editing);
+	if (editing ? key != 27 && key != 3
+	    : !page->viewing
+		    ? key != 27 && key != 3 && key != 4 && key != 'q'
+		    : key != 27 && key != 3 && key != 4 && key != 'q' && key != 'd' && key != 20 &&
+			      key != 'f' && key != 'k' && key != '\t' && key != NT_KEY_BACK_TAB &&
+			      key != NT_KEY_LEFT && key != NT_KEY_RIGHT)
+		return NT_VIEW_EVENT_PASS;
+
+	int rc = cli_subagents_handle(page, input);
+	if (rc >= 0 && page->viewing && !editing && key == 'f')
+		rc = nt_view_focus(page->ui.editor);
+
+	return rc < 0 ? rc : NT_VIEW_EVENT_STOP;
+}
+
+static int cli_subagents_browser_action(void *data, const struct nt_view_event *event)
+{
+	struct cli_subagents_page *page = data;
+	if (event->target != page->ui.browser)
 		return 0;
 
-	int key = event->input->key;
-	if (page->viewing && nt_component_state_get_bool(page->ui.editing) &&
-	    !event->input->pasting && (key == '\r' || key == '\n')) {
-		int rc = cli_subagents_submit(page, event);
-		return rc < 0 ? rc : NT_VIEW_EVENT_STOP;
-	}
+	page->selected = event->index == SIZE_MAX ? 0 : event->index;
+	if (event->type == NT_VIEW_EVENT_SELECTION_CHANGED)
+		return cli_subagents_sync(page);
 
-	int rc = cli_subagents_handle(page, event->input);
-	return rc > 0 ? NT_VIEW_EVENT_STOP : rc;
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	int rc = cli_subagents_select(ctx, page);
+	if (!rc && !page->viewing)
+		return nt_view_controller_dismiss(&page->base, 0);
+
+	if (!rc)
+		rc = cli_subagents_sync(page);
+
+	if (!rc)
+		rc = nt_view_focus(page->ui.scroll);
+
+	return rc ? rc : NT_VIEW_EVENT_STOP;
+}
+
+static int cli_subagents_scrolled(void *data, const struct nt_view_event *event)
+{
+	struct cli_subagents_page *page = data;
+	if (event->target != page->ui.scroll || !page->feed)
+		return 0;
+
+	const struct nt_scroll_state *scroll = nt_scroll_view_state(page->ui.scroll);
+	page->feed->scroll = scroll->offset;
+	page->feed->follow = scroll->offset == nt_scroll_max(scroll);
+	return 0;
 }
 
 static int cli_subagents_size(void *data, const struct nt_view_event *event)
@@ -862,7 +864,8 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 						      cli_subagents_status_hidden, view->height));
 	nt_builder_fail(builder, nt_view_bind_compute(view->help, NT_PROP_TEXT, cli_subagents_help,
 						      view->editing));
-	nt_builder_fail(builder, nt_view_set_focusable(root, 1));
+	nt_builder_fail(builder, nt_view_set_focusable(view->scroll, 1));
+	nt_builder_fail(builder, nt_view_set_focusable(view->text, 0));
 	nt_builder_fail(builder, nt_text_view_set_wrap_mode(view->text, NT_TEXT_WRAP_NONE));
 	nt_builder_fail(builder, nt_scroll_view_set_scrollbars(view->scroll, 0));
 	nt_builder_fail(builder, nt_text_field_set_multiline(view->editor, 1));
@@ -871,11 +874,17 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 				     .flags = NT_VIEW_LISTEN_CAPTURE,
 				     NT_VIEW_LISTENER(cli_subagents_input, page)}) ||
 	    !nt_view_on(root, NT_VIEW_EVENT_SIZE_CHANGED, cli_subagents_size, page) ||
-	    !nt_view_on(view->editor, NT_VIEW_EVENT_SUBMIT, cli_subagents_submit, page))
+	    !nt_view_on(view->editor, NT_VIEW_EVENT_SUBMIT, cli_subagents_submit, page) ||
+	    !nt_view_on(view->browser, NT_VIEW_EVENT_ACTIVATE, cli_subagents_browser_action,
+			page) ||
+	    !nt_view_on(view->browser, NT_VIEW_EVENT_SELECTION_CHANGED,
+			cli_subagents_browser_action, page) ||
+	    !nt_view_on(view->scroll, NT_VIEW_EVENT_SCROLLED, cli_subagents_scrolled, page))
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 
 	nt_builder_fail(builder, cli_subagents_sync(page));
-	nt_builder_fail(builder, nt_view_focus(root));
+	nt_builder_fail(builder, page->viewing ? nt_view_focus(view->scroll)
+					       : cli_agents_browser_focus(view->browser, 0));
 }
 
 static void cli_subagents_closed(struct cli_application *ctx, struct cli_subagents_page *page)
@@ -966,7 +975,8 @@ static int cli_subagents_picker_sync(struct cli_subagents_page *page)
 		height = budget;
 
 	int list_height = height > 2 ? height - 2 : 1;
-	nt_list_state_layout(&page->selection, (size_t)page->count + 1, (size_t)list_height);
+	if (page->selected > (size_t)page->count)
+		page->selected = (size_t)page->count;
 	int rc = nt_component_state_set_int(page->picker->height, height);
 	struct nt_view_options options = nt_view_options(page->picker->list);
 	if (!rc && options.height != list_height) {
@@ -979,7 +989,7 @@ static int cli_subagents_picker_sync(struct cli_subagents_page *page)
 					     cli_subagents_picker_row, page);
 
 	if (!rc)
-		rc = nt_list_view_select(page->picker->list, page->selection.index);
+		rc = nt_list_view_select(page->picker->list, page->selected);
 
 	return rc;
 }
@@ -990,11 +1000,11 @@ static int cli_subagents_picker_event(void *data, const struct nt_event *event)
 	struct nt_view_controller *host = nt_view_controller(&page->picker->base.base);
 	struct cli_application *ctx = cli_application_from_controller(host);
 	int action = cli_subagents_picker_update(ctx, page, event);
-	if (action == NT_SCREEN_CLOSE)
+	if (action == NT_NAVIGATION_BACK)
 		return cli_chat_panel_active(ctx) ? cli_chat_panel_close(ctx, 0)
 						  : nt_view_controller_dismiss(host, 0);
 
-	if (action == NT_SCREEN_REDRAW)
+	if (action == NT_NAVIGATION_CHANGED)
 		return cli_subagents_picker_sync(page);
 
 	return action < 0 ? action : 0;
@@ -1002,11 +1012,32 @@ static int cli_subagents_picker_event(void *data, const struct nt_event *event)
 
 static int cli_subagents_picker_input(void *data, const struct nt_view_event *event)
 {
-	if (event->input->action == NT_KEY_ACTION_RELEASE || event->input->pasting)
-		return NT_VIEW_EVENT_STOP;
+	const struct nt_event *input = event->input;
+	if (input->action == NT_KEY_ACTION_RELEASE || input->pasting)
+		return NT_VIEW_EVENT_PASS;
 
-	int rc = cli_subagents_picker_event(data, event->input);
+	if (input->key != 27 && input->key != 3 && input->key != 4 && input->key != 'q')
+		return NT_VIEW_EVENT_PASS;
+
+	int rc = cli_subagents_picker_event(data, input);
 	return rc < 0 ? rc : NT_VIEW_EVENT_STOP;
+}
+
+static int cli_subagents_picker_action(void *data, const struct nt_view_event *event)
+{
+	struct cli_subagents_page *page = data;
+	page->selected = event->index;
+	if (event->type != NT_VIEW_EVENT_ACTIVATE)
+		return NT_VIEW_EVENT_HANDLED;
+
+	struct nt_view_controller *host = nt_view_controller(event->target);
+	struct cli_application *ctx = cli_application_from_controller(host);
+	int rc = cli_subagents_select(ctx, page);
+	if (rc)
+		return rc;
+
+	return cli_chat_panel_active(ctx) ? cli_chat_panel_close(ctx, 0)
+					  : nt_view_controller_dismiss(host, 0);
 }
 
 static struct nt_view *cli_subagents_picker_build(struct nt_builder *builder,
@@ -1048,17 +1079,23 @@ static struct nt_view *cli_subagents_picker_build(struct nt_builder *builder,
 	nt_builder_fail(builder,
 			nt_view_bind_compute(help, NT_PROP_HIDDEN, cli_subagents_picker_hint_hidden,
 					     page->picker->height));
-	nt_builder_fail(builder, nt_view_set_focusable(root, 1));
+	nt_builder_fail(builder, nt_list_view_set_navigation(page->picker->list,
+							     NT_LIST_VIEW_WRAP | NT_LIST_VIEW_TAB |
+								     NT_LIST_VIEW_VIM));
 	nt_builder_fail(builder, nt_list_view_set_row_style(page->picker->list,
 							    cli_subagents_picker_style, ctx));
 	if (!nt_view_on_full(root, NT_VIEW_EVENT_KEY,
 			     &(struct nt_view_listener_options){
 				     .flags = NT_VIEW_LISTEN_CAPTURE,
-				     NT_VIEW_LISTENER(cli_subagents_picker_input, page)}))
+				     NT_VIEW_LISTENER(cli_subagents_picker_input, page)}) ||
+	    !nt_view_on(page->picker->list, NT_VIEW_EVENT_CHANGED, cli_subagents_picker_action,
+			page) ||
+	    !nt_view_on(page->picker->list, NT_VIEW_EVENT_ACTIVATE, cli_subagents_picker_action,
+			page))
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 
 	nt_builder_fail(builder, cli_subagents_picker_sync(page));
-	return root;
+	return page->picker->list;
 }
 
 static void cli_subagents_picker_page_build(struct nt_view_controller *controller,
@@ -1219,8 +1256,8 @@ static int cli_subagents_show_mode(struct cli_application *ctx, const char *id, 
 		for (int i = 0; i < page->count; i++) {
 			if (!strcmp(id, page->items[i].id) ||
 			    !strcmp(id, cli_subagents_label(page->items[i].id))) {
-				page->selection.index = (size_t)i + 1;
-				page->browser.selection.index = page->selection.index;
+				page->selected = (size_t)i + 1;
+				page->browser.selected = page->selected;
 				found = 1;
 				break;
 			}

@@ -86,6 +86,7 @@ struct cli_sessions_interaction_job {
 	nb_atomic_int done;
 	struct nb_cancel cancel;
 	int result;
+	int native_interaction;
 };
 
 struct cli_sessions_execute_input {
@@ -439,7 +440,73 @@ static int cli_sessions_interaction_on_owner(struct cli_application *ctx, void *
 		return 0;
 	}
 
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
+	    (!strcmp(cli_sessions_text(job->message->data, "kind"), "ask_user") ||
+	     !strcmp(cli_sessions_text(job->message->data, "kind"), "tool_approval") ||
+	     !strcmp(cli_sessions_text(job->message->data, "kind"), "operation_approval"))) {
+		const cJSON *request =
+			cJSON_GetObjectItemCaseSensitive(job->message->data, "request");
+		int optional =
+			cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "optional")) ||
+			!strcmp(cli_sessions_text(request, "response_policy"), "optional");
+		if (optional) {
+			cJSON *progress NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+			if (!progress ||
+			    !cJSON_AddStringToObject(progress, "interaction_id", job->message->id))
+				return NB_ERR_NOMEM;
+
+			int rc = cli_sessions_request(ctx, "interaction.progress", progress, NULL);
+			if (rc)
+				return rc;
+		}
+
+		ctx->sessions->interaction_active = 1;
+		job->native_interaction = 1;
+		return 0;
+	}
+
 	return cli_sessions_interaction(ctx, job->message);
+}
+
+static int cli_sessions_native_run(struct cli_sessions_interaction_job *job)
+{
+	struct cli_application *ctx = job->application;
+	const cJSON *request = cJSON_GetObjectItemCaseSensitive(job->message->data, "request");
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	int rc = result ? 0 : NB_ERR_NOMEM;
+	const char *kind = cli_sessions_text(job->message->data, "kind");
+	if (!rc && !strcmp(kind, "ask_user"))
+		rc = cli_sessions_question(ctx, request, result, &job->cancel);
+	else if (!rc) {
+		struct tool_operation operation = {
+			.kind = (enum tool_operation_kind)cli_sessions_number(request, "kind", 0),
+			.tool_name = cli_sessions_text(request, "tool_name"),
+			.principal = cli_sessions_text(request, "principal"),
+			.action = cli_sessions_text(request, "action"),
+			.target = cli_sessions_text(request, "target"),
+			.scope = cli_sessions_text(request, "scope"),
+			.details_json = cli_sessions_text(request, "details_json"),
+			.reason = cli_sessions_text(request, "reason"),
+			.path_access = (unsigned)cli_sessions_number(request, "path_access", 0),
+			.host = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "host")),
+			.network =
+				cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "network")),
+		};
+		int scoped = !strcmp(kind, "operation_approval");
+		int decision = cli_approval_request(
+			ctx, scoped ? &operation : NULL, cli_sessions_text(request, "tool_name"),
+			cli_sessions_text(request, "arguments_json"), &job->cancel);
+		const char *name = decision == (scoped ? 3 : 2) ? "always"
+				   : scoped && decision == 2	? "session"
+				   : decision == 1		? "allow"
+								: "deny";
+		if (!cJSON_AddStringToObject(result, "decision", name))
+			rc = NB_ERR_NOMEM;
+	}
+
+	struct runtime_reply reply = {.id = job->message->id, .result = result, .error_code = rc};
+	int send_rc = runtime_client_reply_copy(ctx->sessions->client, &reply);
+	return send_rc == NB_ERR_NOT_FOUND ? 0 : send_rc;
 }
 
 static void *cli_sessions_interaction_run(void *opaque)
@@ -447,6 +514,8 @@ static void *cli_sessions_interaction_run(void *opaque)
 	struct cli_sessions_interaction_job *job = opaque;
 	job->result = cli_event_queue_call_owner(job->application,
 		cli_sessions_interaction_on_owner, job);
+	if (!job->result && job->native_interaction)
+		job->result = cli_sessions_native_run(job);
 	nb_atomic_int_store(&job->done, 1);
 	cli_event_queue_notify(job->application);
 	return NULL;
@@ -484,6 +553,7 @@ static void cli_sessions_interaction_join(struct cli_sessions *sessions)
 	runtime_message_destroy(job->message);
 	free(job);
 	sessions->interaction_job = NULL;
+	sessions->interaction_active = 0;
 }
 
 static int cli_sessions_message(struct cli_application *ctx, struct runtime_message **owner)

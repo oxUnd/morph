@@ -15,6 +15,8 @@
 #include "sapi/cli/pages/permissions.h"
 #include "sapi/cli/services/permissions.h"
 #include "sapi/cli/application.h"
+#include "sapi/cli/pages/chat.h"
+#include "sapi/cli/pages/confirmation.h"
 
 #include <stdint.h>
 
@@ -237,6 +239,67 @@ static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, c
 	return rc;
 }
 
+static int cli_permissions_clear(struct cli_application *ctx, int all_projects)
+{
+	int deleted = 0;
+	int rc = cli_permissions_grants_clear(ctx, all_projects, &deleted);
+	if (!rc)
+		CMD_OK(ctx, "revoked %d persistent permission%s%s", deleted,
+		       deleted == 1 ? "" : "s", all_projects ? " across all projects" : "");
+
+	return rc;
+}
+
+struct cli_permissions_clear_request {
+	int all_projects;
+};
+
+static void cli_permissions_clear_cleanup(struct cli_permissions_clear_request **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
+static void cli_permissions_clear_release(void *data)
+{
+	free(data);
+}
+
+static void cli_permissions_clear_confirmed(struct cli_application *ctx, int accepted, void *data)
+{
+	struct cli_permissions_clear_request *request = data;
+	if (!accepted) {
+		cli_command_print_cancelled(ctx);
+		return;
+	}
+
+	int rc = cli_permissions_clear(ctx, request->all_projects);
+	if (rc)
+		CMD_ERROR(ctx, "%s", nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));
+}
+
+static int cli_permissions_clear_show(struct cli_application *ctx, int all_projects)
+{
+	struct cli_permissions_clear_request *request NB_CLEANUP(cli_permissions_clear_cleanup) =
+		calloc(1, sizeof(*request));
+	if (!request)
+		return NB_ERR_NOMEM;
+
+	request->all_projects = all_projects;
+	cli_confirm_prompt_show(ctx,
+				all_projects ? CLI_CONFIRM_PROMPT_CLEAR_ALL_PERMISSIONS
+					     : CLI_CONFIRM_PROMPT_CLEAR_PROJECT_PERMISSIONS,
+				NULL);
+	cli_confirm_prompt_end(ctx);
+	int rc = cli_confirmation_show(ctx, all_projects ? "clear all" : NULL,
+				       cli_permissions_clear_confirmed, request,
+				       cli_permissions_clear_release);
+	if (!rc)
+		request = NULL;
+
+	return rc;
+}
+
 static int cli_permissions_command_permissions(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *action = cli_cmd_arg_borrow(argc, argv, 1);
@@ -328,6 +391,9 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 			}
 		}
 
+		if (!confirmed && cli_chat_active(ctx))
+			return cli_permissions_clear_show(ctx, all_projects);
+
 		if (!confirmed)
 			confirmed = cli_permissions_confirm_clear(ctx, all_projects);
 
@@ -336,13 +402,7 @@ static int cli_permissions_command_permissions(struct cli_application *ctx, int 
 			return 0;
 		}
 
-		rc = cli_permissions_grants_clear(ctx, all_projects, &deleted);
-		if (rc != 0)
-			return rc;
-
-		CMD_OK(ctx, "revoked %d persistent permission%s%s", deleted,
-		       deleted == 1 ? "" : "s", all_projects ? " across all projects" : "");
-		return 0;
+		return cli_permissions_clear(ctx, all_projects);
 	}
 
 	CMD_ERROR(ctx, "usage: /permissions [list|revoke <id|program>|"

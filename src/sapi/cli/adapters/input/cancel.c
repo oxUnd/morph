@@ -84,6 +84,8 @@ void cli_signal_received(int number, void *opaque)
 {
 	struct cli_application *ctx = opaque;
 
+	nb_log_write(ctx->logger, NB_LOG_DEBUG, "CLI received signal %d", number);
+
 	if (number == SIGWINCH)
 		nb_atomic_int_store(&ctx->resized, 1);
 	else {

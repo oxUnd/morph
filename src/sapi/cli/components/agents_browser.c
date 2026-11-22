@@ -89,7 +89,7 @@ int cli_agents_browser_set_snapshot(struct cli_agents_browser_state *state,
 
 	memcpy(state->offsets, next, sizeof(next));
 	if (state->filter == CLI_AGENTS_BROWSER_ALL && selected < count)
-		state->selection.index = selected;
+		state->selected = selected;
 
 	for (size_t i = 0; i < count; i++) {
 		enum cli_agents_browser_filter group = cli_agents_browser_group(data, i);
@@ -99,11 +99,12 @@ int cli_agents_browser_set_snapshot(struct cli_agents_browser_state *state,
 		size_t slot = next[group]++;
 		rows[slot] = i;
 		if (group == state->filter && i == selected)
-			state->selection.index = slot - state->offsets[group];
+			state->selected = slot - state->offsets[group];
 	}
 
-	nt_list_state_layout(&state->selection, state->counts[state->filter],
-			     state->selection.page);
+	if (state->selected >= state->counts[state->filter])
+		state->selected =
+			state->counts[state->filter] ? state->counts[state->filter] - 1 : 0;
 	state->root_running = data->root_running;
 	state->revision++;
 	return 0;
@@ -128,55 +129,14 @@ static size_t cli_agents_browser_index(const struct cli_agents_browser_state *st
 
 size_t cli_agents_browser_selected(const struct cli_agents_browser_state *state)
 {
-	return cli_agents_browser_index(state, state->selection.index);
+	return cli_agents_browser_index(state, state->selected);
 }
 
 static void cli_agents_browser_set_filter(struct cli_agents_browser_state *state,
 					  enum cli_agents_browser_filter filter)
 {
 	state->filter = filter;
-	state->selection.index = 0;
-	nt_list_state_layout(&state->selection, state->counts[filter], state->selection.page);
-	state->detail_scroll = 0;
-}
-
-int cli_agents_browser_update(struct cli_agents_browser_state *state, int key)
-{
-	if (key == 27 || key == 3 || key == 4 || key == 'q')
-		return NT_NAVIGATION_CANCEL;
-
-	if (key == '\r' || key == '\n')
-		return cli_agents_browser_selected(state) == SIZE_MAX ? NT_NAVIGATION_UNHANDLED
-								      : NT_NAVIGATION_SUBMIT;
-
-	if (key == '\t' || key == NT_KEY_BACK_TAB) {
-		int delta = key == '\t' ? 1 : CLI_AGENTS_BROWSER_FILTER_COUNT - 1;
-		cli_agents_browser_set_filter(
-			state, (enum cli_agents_browser_filter)(((int)state->filter + delta) %
-								CLI_AGENTS_BROWSER_FILTER_COUNT));
-	} else if (key == '?') {
-		state->help = !state->help;
-	} else if (key == NT_KEY_RIGHT || key == NT_KEY_LEFT) {
-		state->detail_focus = key == NT_KEY_RIGHT;
-	} else if (state->detail_focus) {
-		if (key == NT_KEY_DOWN || key == NT_KEY_PAGE_DOWN) {
-			state->detail_scroll += key == NT_KEY_DOWN ? 1u : 8u;
-		} else if (key == NT_KEY_UP || key == NT_KEY_PAGE_UP) {
-			size_t delta = key == NT_KEY_UP ? 1u : 8u;
-			state->detail_scroll =
-				state->detail_scroll > delta ? state->detail_scroll - delta : 0;
-		} else if (key == NT_KEY_HOME) {
-			state->detail_scroll = 0;
-		} else {
-			return NT_NAVIGATION_UNHANDLED;
-		}
-	} else if (nt_list_state_update(&state->selection, key) == NT_NAVIGATION_CHANGED) {
-		state->detail_scroll = 0;
-	} else {
-		return NT_NAVIGATION_UNHANDLED;
-	}
-
-	return NT_NAVIGATION_CHANGED;
+	state->selected = 0;
 }
 
 static const char *cli_agents_browser_marker(enum agent_status status)
@@ -205,12 +165,11 @@ struct cli_agents_browser {
 	struct nt_view *detail_heading, *detail_scroll, *detail_text, *footer;
 	int external_footer;
 	struct nt_component_state *agent_count, *hint;
-	const char *last_hint;
 	nb_buf project, model;
 	nb_buf row_text, clean_text;
 	size_t counts[CLI_AGENTS_BROWSER_FILTER_COUNT];
 	uint64_t revision;
-	size_t selected, detail_offset;
+	size_t selected;
 	enum cli_agents_browser_filter filter;
 	int styled, restyle, details_changed, syncing, width, split, body_top, body_rows, divider;
 };
@@ -468,7 +427,6 @@ static int cli_agents_browser_layout(struct nt_view *view)
 	int snapshot = b->revision != b->state->revision;
 	int tabs = (w < 100) != (b->width < 100) ||
 		   memcmp(b->counts, b->state->counts, sizeof(b->counts));
-	nt_list_state_layout(&b->state->selection, count, (size_t)(list_rows > 0 ? list_rows : 1));
 	size_t selected = cli_agents_browser_selected(b->state);
 	int rc = 0;
 	if (geometry || !b->revision)
@@ -491,8 +449,8 @@ static int cli_agents_browser_layout(struct nt_view *view)
 	if (!rc && nt_list_view_count(b->list) != count)
 		rc = nt_list_view_set_source(b->list, count, cli_agents_browser_source, b);
 
-	if (!rc && count && nt_list_view_selected(b->list) != b->state->selection.index)
-		rc = nt_list_view_select(b->list, b->state->selection.index);
+	if (!rc && count && nt_list_view_selected(b->list) != b->state->selected)
+		rc = nt_list_view_select(b->list, b->state->selected);
 
 	b->syncing = 0;
 	if (rc)
@@ -528,17 +486,7 @@ static int cli_agents_browser_layout(struct nt_view *view)
 		rc = nt_view_arrange(children[i], slots[i]);
 	}
 
-	if (!rc && detail_rows > 1) {
-		int offset =
-			b->state->detail_scroll > INT_MAX ? INT_MAX : (int)b->state->detail_scroll;
-		rc = nt_scroll_view_set_offset(b->detail_scroll, offset);
-		if (rc >= 0) {
-			b->state->detail_scroll = (size_t)nt_scroll_view_offset(b->detail_scroll);
-			rc = 0;
-		}
-	}
 
-	b->detail_offset = b->state->detail_scroll;
 	return rc;
 }
 
@@ -554,6 +502,64 @@ static int cli_agents_browser_draw(struct nt_view *view, struct nt_canvas *canva
 	return 0;
 }
 
+static int cli_agents_browser_hint(struct cli_agents_browser *browser)
+{
+	if (!browser->state)
+		return 0;
+
+	const char *hint =
+		browser->state->help ? "Esc back · Enter open · Tab/Shift+Tab filter · Left/Right "
+				       "focus · PageUp/PageDown scroll"
+		: nt_view_is_focused(browser->detail_scroll)
+			? "Esc back · ↑/↓ scroll details · Left tasks · Enter open · ? help"
+			: "Esc back · ↑/↓ move · Enter open · Tab filter · ? help";
+	int rc = nt_component_state_set_string(browser->hint, hint);
+	return rc;
+}
+
+int cli_agents_browser_focus(struct nt_view *view, int details)
+{
+	struct cli_agents_browser *browser = (struct cli_agents_browser *)view;
+	return nt_view_focus(details ? browser->detail_scroll : browser->list);
+}
+
+static int cli_agents_browser_capture(struct nt_view *view, const struct nt_event *event)
+{
+	struct cli_agents_browser *browser = (struct cli_agents_browser *)view;
+	if (!browser->state || event->type != NT_EVENT_KEY || event->pasting)
+		return 0;
+
+	int rc = 0;
+	if (event->key == '\t' || event->key == NT_KEY_BACK_TAB) {
+		int previous = (int)browser->state->filter;
+		int delta = event->key == '\t' ? 1 : CLI_AGENTS_BROWSER_FILTER_COUNT - 1;
+		size_t next = (size_t)((previous + delta) % CLI_AGENTS_BROWSER_FILTER_COUNT);
+		rc = nt_tab_bar_select(browser->tabs, next);
+		return rc < 0 ? rc : NT_VIEW_EVENT_STOP;
+	}
+
+	if (!nt_view_is_focused(browser->tabs) &&
+	    (event->key == NT_KEY_LEFT || event->key == NT_KEY_RIGHT)) {
+		rc = cli_agents_browser_focus(view, event->key == NT_KEY_RIGHT);
+		return rc ? rc : NT_VIEW_EVENT_STOP;
+	}
+
+	if (event->key == '?') {
+		browser->state->help = !browser->state->help;
+		rc = cli_agents_browser_hint(browser);
+		return rc ? rc : NT_VIEW_EVENT_STOP;
+	}
+
+	if ((event->key == '\r' || event->key == '\n') &&
+	    nt_view_is_focused(browser->detail_scroll)) {
+		size_t selected = cli_agents_browser_selected(browser->state);
+		if (selected != SIZE_MAX)
+			return nt_view_emit(view, NT_VIEW_EVENT_ACTIVATE, selected, NULL);
+	}
+
+	return 0;
+}
+
 static int cli_agents_browser_control_changed(void *data, const struct nt_view_event *event)
 {
 	struct cli_agents_browser *browser = data;
@@ -561,17 +567,28 @@ static int cli_agents_browser_control_changed(void *data, const struct nt_view_e
 	if (browser->syncing || !state)
 		return NT_VIEW_EVENT_PASS;
 
-	if (event->target == browser->tabs && event->index < CLI_AGENTS_BROWSER_FILTER_COUNT) {
-		cli_agents_browser_set_filter(state, (enum cli_agents_browser_filter)event->index);
-	} else if (event->target == browser->list && event->index < state->counts[state->filter]) {
-		state->selection.index = event->index;
-		state->detail_scroll = 0;
-	} else {
-		return NT_VIEW_EVENT_PASS;
+	if (event->type == NT_VIEW_EVENT_FOCUS_GAINED)
+		return cli_agents_browser_hint(browser);
+
+	if (event->type == NT_VIEW_EVENT_ACTIVATE && event->target == browser->list) {
+		size_t selected = cli_agents_browser_selected(state);
+		return selected == SIZE_MAX ? 0
+					    : nt_view_emit(&browser->base, NT_VIEW_EVENT_ACTIVATE,
+							   selected, NULL);
 	}
 
+	if (event->target == browser->tabs && event->index < CLI_AGENTS_BROWSER_FILTER_COUNT)
+		cli_agents_browser_set_filter(state, (enum cli_agents_browser_filter)event->index);
+	else if (event->target == browser->list && event->index < state->counts[state->filter])
+		state->selected = event->index;
+	else
+		return NT_VIEW_EVENT_PASS;
+
+	int rc = nt_scroll_view_set_offset(browser->detail_scroll, 0);
 	nt_view_invalidate(&browser->base, 1);
-	return NT_VIEW_EVENT_HANDLED;
+	return rc < 0 ? rc
+		      : nt_view_emit(&browser->base, NT_VIEW_EVENT_SELECTION_CHANGED,
+				     cli_agents_browser_selected(state), NULL);
 }
 
 static void cli_agents_browser_destroy(struct nt_view *view)
@@ -592,6 +609,7 @@ struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_vie
 		.instance_size = sizeof(struct cli_agents_browser),
 		.layout = cli_agents_browser_layout,
 		.draw = cli_agents_browser_draw,
+		.capture_event = cli_agents_browser_capture,
 		.deinit = cli_agents_browser_destroy,
 	};
 	struct cli_agents_browser *b =
@@ -628,12 +646,14 @@ struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_vie
 	nt_builder_fail(builder, nt_scroll_view_set_scrollbars(b->detail_scroll, 0));
 	nt_builder_fail(builder, nt_text_view_set_wrap_mode(b->detail_text, NT_TEXT_WRAP_CHAR));
 	if (!nt_view_on(b->list, NT_VIEW_EVENT_CHANGED, cli_agents_browser_control_changed, b) ||
-	    !nt_view_on(b->tabs, NT_VIEW_EVENT_CHANGED, cli_agents_browser_control_changed, b))
+	    !nt_view_on(b->tabs, NT_VIEW_EVENT_CHANGED, cli_agents_browser_control_changed, b) ||
+	    !nt_view_on(b->list, NT_VIEW_EVENT_ACTIVATE, cli_agents_browser_control_changed, b) ||
+	    !nt_view_on(v, NT_VIEW_EVENT_FOCUS_GAINED, cli_agents_browser_control_changed, b))
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 
-	struct nt_view *focus[] = {b->list, b->tabs, b->detail_text, b->detail_scroll};
-	for (size_t i = 0; i < sizeof(focus) / sizeof(focus[0]); i++)
-		nt_builder_fail(builder, nt_view_set_focusable(focus[i], 0));
+	nt_builder_fail(builder, nt_view_set_focusable(b->detail_text, 0));
+	nt_builder_fail(builder, nt_view_set_focusable(b->detail_scroll, 1));
+	nt_builder_fail(builder, nt_list_view_set_navigation(b->list, NT_LIST_VIEW_VIM));
 
 	return v;
 }
@@ -658,23 +678,18 @@ int cli_agents_browser_sync(struct nt_view *view, struct cli_agents_browser_stat
 			return NB_ERR_NOMEM;
 	}
 
-	const char *hint =
-		state->help ? "Esc back · Enter open · Tab/Shift+Tab filter · Left/Right focus · "
-			      "PageUp/PageDown scroll"
-		: state->detail_focus
-			? "Esc back · ↑/↓ scroll details · Left tasks · Enter open · ? help"
-			: "Esc back · ↑/↓ move · Enter open · Tab filter · ? help";
 	int rc = 0;
 	if (b->data.count != data->count)
 		rc = nt_component_state_set_int(b->agent_count, data->count);
 
-	if (!rc && b->last_hint != hint)
-		rc = nt_component_state_set_string(b->hint, hint);
+	if (!rc) {
+		b->state = state;
+		rc = cli_agents_browser_hint(b);
+	}
 
 	if (rc)
 		return rc;
 
-	b->last_hint = hint;
 	b->state = state;
 	b->data = *data;
 	b->data.project = nb_buf_cstr(&b->project);
@@ -697,8 +712,7 @@ int cli_agents_browser_sync(struct nt_view *view, struct cli_agents_browser_stat
 	}
 
 	if (b->restyle || b->details_changed || b->revision != state->revision ||
-	    b->filter != state->filter || b->selected != cli_agents_browser_selected(state) ||
-	    b->detail_offset != state->detail_scroll)
+	    b->filter != state->filter || b->selected != cli_agents_browser_selected(state))
 		nt_view_invalidate(view, 1);
 	else if (clock_changed && b->divider > 70 && state->live_elapsed)
 		nt_view_invalidate(b->list, 0);

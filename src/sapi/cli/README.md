@@ -71,6 +71,20 @@ empty activity rows collapse together with their margins.
 The conversation scrolls independently above them. The status bar uses native
 Labels and a distinct MCP Button, which opens a right-side floating card without
 changing the conversation or composer geometry.
+Human questions, approvals and command confirmations mount
+`components/question_form` in the chat panel using native ChoiceList and TextField
+controls. Interaction workers wait for deferred owner calls; command confirmations
+use completion callbacks. The UI thread continues the normal application event
+loop. Selection, scrolling, key actions, text editing and focus belong to those
+controls. Completion, cancellation and shutdown release the worker after the panel
+retires. Destructive command confirmations default to cancellation, and pending
+database restores roll back their staged files when dismissed or shut down.
+Extension commands run on the command worker; their build confirmation uses the
+same deferred native question path. Worker output is copied into the event queue
+and rendered by the UI owner, including subprocess output and completion receipts.
+The footer reads the UI's permission snapshot. Successful policy reads and updates
+publish that snapshot; layout and rendering never query the permission service.
+This keeps window resizing responsive while an approval is waiting for user input.
 `components/message` composes Label and content-sized TextView controls;
 `components/tool_call`, plan and notice bind domain state to rich text through
 `components/report`. View margin/padding determine
@@ -143,11 +157,13 @@ current subpage. Ancestor links are underlined and the current location is bold.
 Each page owns its return action and content state. The shared layout reserves
 content space between its navigation and shortcut footer.
 
-The full-screen `components/agents_browser` owns its split and stacked layouts,
-filters, selection and detail scrolling. It indexes the borrowed snapshot once
-per change so the native list can look up a visible row directly. The subagents
-page refreshes snapshots, preserves the selected agent by ID and opens its
-conversation.
+The full-screen `components/agents_browser` composes a native TabBar, ListView and
+ScrollView in split and stacked layouts. Those controls own keyboard navigation,
+focus and detail scrolling. The component indexes the borrowed snapshot once per
+change so the native list can look up a visible row directly. The subagents page
+refreshes snapshots, preserves the selected agent by ID and opens its conversation.
+The hooks page also delegates selection and paging to its native ListView and
+review scrolling to its ScrollView; application handlers only perform hook actions.
 
 ## Execution and teardown
 
@@ -242,7 +258,7 @@ restoration. Keep the slash-command presentation contract in
 The application owns the presenter, the input adapter and the runtime lifecycle.
 The presenter manages stream buffers, Markdown rendering and artifact deduplication.
 The input adapter owns cancellable stream reads and the per-application Readline
-callback used for a blocking prompt. Chat owns its native TextField, recall
+callback used for blocking prompts outside active chat. Chat owns its native TextField, recall
 history, completion actions and adaptive TextView footer. Feed and turn services query final-output visibility
 through the presenter interface.
 

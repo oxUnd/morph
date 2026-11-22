@@ -12,6 +12,8 @@ add_library(morph-cli STATIC
 
 	# Page controllers
 	pages/approval.c
+	pages/choice_dialog.c
+	pages/confirmation.c
 	pages/chat.c
 	pages/history.c
 	pages/hooks.c
@@ -35,6 +37,7 @@ add_library(morph-cli STATIC
 	components/banner.c
 	components/skill_tree.c
 	components/selector.c
+	components/question_form.c
 	components/composer.c
 	components/status_bar.c
 	components/shortcut_hint.c

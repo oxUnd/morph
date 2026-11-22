@@ -8,6 +8,7 @@ enum cli_event_queue_item_kind {
 	CLI_EVENT_QUEUE_UI_ITEM_MORPH_EVENT,
 	CLI_EVENT_QUEUE_UI_ITEM_NOTIFICATION,
 	CLI_EVENT_QUEUE_UI_ITEM_OWNER_CALL,
+	CLI_EVENT_QUEUE_UI_ITEM_OUTPUT,
 };
 
 struct cli_event_queue_owner_call;
