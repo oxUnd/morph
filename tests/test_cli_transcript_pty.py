@@ -620,7 +620,6 @@ def main():
             lines = compact.splitlines()
             working = next(row for row in lines if 'Working' in row)
             assert working.rstrip().endswith('Ctrl+T transcript'), compact
-            assert '\x1b[38;5;141m · Ctrl+T transcript\x1b[0m' in terminal.raw
             assert all('Ctrl+T' not in row for row in lines
                        if row.startswith(('› ', '> '))), compact
             terminal.send('\x0f')

@@ -335,7 +335,7 @@ TEST_F(CliTerminalTest, FinishedTurnCommitsOneDurationRow)
 	cli_feed_turn_begin(&ctx);
 	cli_feed_render_frame(&ctx, 1);
 	std::string active = collect_terminal_output(master);
-	EXPECT_NE(active.find("esc to interrupt"), std::string::npos);
+	EXPECT_NE(active.find("Esc to interrupt"), std::string::npos);
 	ctx.presenter->final_rendered = 1;
 	cli_feed_turn_end(&ctx, 0);
 	cli_feed_turn_end(&ctx, 0);

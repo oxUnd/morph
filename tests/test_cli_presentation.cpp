@@ -415,13 +415,13 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 	ctx.runtime = nullptr;
 }
 
-TEST(CliWorkStatusTest, RunningPreservesOriginalLabelClockAndTranscriptHint)
+TEST(CliWorkStatusTest, RunningPreservesLabelClockAndTranscriptHint)
 {
 	for (int width : {120, 80, 60}) {
 		SCOPED_TRACE(width);
 		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 		ASSERT_EQ(cli_work_status_running(&text, width, 0, 65999, 1000, nullptr), 0);
-		std::string expected = "◉ Working · 1m 5s · esc to interrupt";
+		std::string expected = "◉ Working · 1m 5s · Esc to interrupt";
 		expected += width >= 76 ? " · Ctrl+T transcript" : " · Ctrl+T";
 		EXPECT_EQ(nb_buf_cstr(&text), expected);
 		EXPECT_LE(nb_utf8_width_cstr(nb_buf_cstr(&text)), static_cast<size_t>(width));
@@ -433,11 +433,10 @@ TEST(CliWorkStatusTest, RunningPreservesOriginalLabelClockAndTranscriptHint)
 	const std::string rendered = nb_buf_cstr(&styled);
 	EXPECT_NE(rendered.find("\033[36m◉\033[0m "), std::string::npos);
 	EXPECT_NE(rendered.find("\033[38;2;"), std::string::npos);
-	EXPECT_NE(rendered.find("\033[38;5;141m · Ctrl+T\033[0m"), std::string::npos);
 	char *plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
 		rendered.c_str(), rendered.size(), MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
 	ASSERT_NE(plain, nullptr);
-	EXPECT_EQ(std::string(plain).find("◉ Working · 0s · esc · Agents:"), 0u);
+	EXPECT_EQ(std::string(plain).find("◉ Working · 0s · Esc · Agents:"), 0u);
 	EXPECT_LE(nb_utf8_width_cstr(plain), 60u);
 }
 

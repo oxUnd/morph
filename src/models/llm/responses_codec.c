@@ -219,18 +219,22 @@ static int responses_terminal(struct llm_stream_ctx *ctx, cJSON *root, const cha
 	}
 	if (!error)
 		error = cJSON_GetObjectItem(root, "error");
-	detail = cJSON_GetStringValue(cJSON_GetObjectItem(error, "message"));
+	if (!error && !strcmp(event_type, "error"))
+		error = root;
+
+	detail = llm_codec_error_message_borrow(error);
 	if (!detail)
 		detail = cJSON_GetStringValue(cJSON_GetObjectItem(root, "message"));
 	if (inconsistent)
 		detail = "Model terminal event has inconsistent response status.";
 	if (!detail)
 		detail = reason ? reason : "Model stream ended without a complete response.";
-	ctx->terminal_error = !strcmp(event_type, "response.failed") || !strcmp(event_type, "error")
-				      ? MORPH_ERR_API
-				      : NB_ERR_PROTOCOL;
 	llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
 		      !strcmp(event_type, "response.incomplete") ? "incomplete" : "failed");
+	if (!strcmp(event_type, "response.failed") || !strcmp(event_type, "error"))
+		return llm_codec_stream_error(ctx, error, detail);
+
+	ctx->terminal_error = NB_ERR_PROTOCOL;
 	return llm_stream_string_copy(&ctx->terminal_detail, detail);
 }
 

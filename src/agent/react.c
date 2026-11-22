@@ -1745,9 +1745,7 @@ static int react_recover_stream(struct react_context *ctx, const struct chat_res
 	struct model *model = ctx->llm_model;
 	int limit = model->retry_count > 10 ? 10 : model->retry_count;
 	if (!ctx->llm_output_started || !ctx->llm_stream_recoverable ||
-	    (status != MORPH_ERR_NETWORK && status != NB_ERR_TIMEOUT &&
-	     status != NB_ERR_PROTOCOL && status != NB_ERR_CONNECTION_RESET &&
-	     status != NB_ERR_CONNECTION_REFUSED))
+	    status >= 0 || status == NB_ERR_CANCELLED || status == NB_ERR_INTERRUPTED)
 		return 0;
 	if (*recoveries >= limit) {
 		nb_log_write(ctx->logger, NB_LOG_WARN,
@@ -3690,8 +3688,10 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 			}
 		}
 
-		if (status == MORPH_ERR_CONTEXT_LIMIT && ctx->history_enabled &&
-		    ctx->compress.in_turn_compaction && !ctx->llm_output_started &&
+		if (status == MORPH_ERR_CONTEXT_LIMIT && iteration + 1 < ctx->max_iterations &&
+		    ctx->history_enabled && ctx->history_db &&
+		    ctx->compress.max_context_tokens > 0 && ctx->compress.in_turn_compaction &&
+		    !ctx->llm_output_started &&
 		    ctx->context_recovery_count < 2) {
 			ctx->context_recovery_count++;
 			ctx->force_compaction = 1;

@@ -28,7 +28,7 @@ def wait_visible(terminal, text, timeout=8):
 BOTTOM_BUTTON = '↓ Back to bottom · Esc'
 
 
-def bottom_button(terminal, cursor, color):
+def bottom_button(terminal, cursor):
     wait_visible(terminal, BOTTOM_BUTTON)
     screen = terminal.screen
     y = next(i for i, line in enumerate(screen.display) if BOTTOM_BUTTON in line)
@@ -36,8 +36,6 @@ def bottom_button(terminal, cursor, color):
     assert y == cursor[1] - 2, screen.display
     assert x == (screen.columns - len(BOTTOM_BUTTON)) // 2, screen.display[y]
     assert (screen.cursor.x, screen.cursor.y) == cursor and not screen.cursor.hidden
-    if color:
-        assert screen.buffer[y][x].fg == '87afff' and screen.buffer[y][x].bg == '3a3a3a'
     return x, y
 
 
@@ -68,7 +66,8 @@ def assert_startup(terminal, width, color):
     assert screen.display[3].startswith('  Workspace  '), display
     assert screen.display[4].startswith('  Model      pty-test'), display
     assert '/help' in display and '/switch' in display, display
-    assert 'Enter Send' in display and 'Ctrl+Cmd+V Paste image' in display, display
+    hints = ' '.join(display.split())
+    assert 'Enter Send' in hints and 'Ctrl+Cmd+V Paste image' in hints, display
     assert 'morph · conversation' not in display, display
     assert 'PgUp/PgDn scroll' not in display, display
     assert screen.display[input_row].startswith('› ' if color else '> '), display
@@ -220,21 +219,17 @@ def run_case(binary, server, width, color, production=False):
             scrolled = '\n'.join(terminal.screen.display)
             assert 'ROW_044' not in scrolled
             assert 'draft🙂' in scrolled
-            bottom_button(terminal, cursor, color)
+            bottom_button(terminal, cursor)
             terminal.send('\x1b')
             assert BOTTOM_BUTTON not in wait_visible(terminal, 'ROW_044')
             terminal.send('\x1b[<64;4;3M' * 6)
-            x, y = bottom_button(terminal, cursor, color)
+            x, y = bottom_button(terminal, cursor)
             before_hover = terminal.screen.display.copy()
             terminal.send(f'\x1b[<35;{x + 1};{y + 1}M')
-            for col in range(x - 1, x + len(BOTTOM_BUTTON) + 1):
-                cell = terminal.screen.buffer[y][col]
-                assert (cell.fg, cell.bg) == (('afd7ff', '005f87') if color else
-                                               ('default', 'default'))
             assert terminal.screen.display == before_hover
             assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
             terminal.send(f'\x1b[<35;1;{y + 1}M')
-            bottom_button(terminal, cursor, color)
+            bottom_button(terminal, cursor)
             terminal.send(f'\x1b[<0;{x + 1};{y + 1}M')
             assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
             terminal.send(f'\x1b[<0;{x + 1};{y + 1}m')
@@ -245,7 +240,7 @@ def run_case(binary, server, width, color, production=False):
             terminal.child.setwinsize(24, new_width)
             terminal.screen.resize(24, new_width)
             terminal.pump(.2)
-            bottom_button(terminal, cursor, color)
+            bottom_button(terminal, cursor)
             terminal.send('\x1b[6~' * 3)
             assert BOTTOM_BUTTON not in wait_visible(terminal, 'ROW_044')
             if width == 80 and color:

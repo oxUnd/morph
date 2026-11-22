@@ -333,16 +333,30 @@ void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root)
 			(double)ctx->usage.cached_tokens * 100.0 / (double)ctx->usage.input_tokens);
 }
 
-void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, cJSON *choice)
+int llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, cJSON *choice)
 {
 	cJSON *finish;
 
 	if (!ctx || !choice)
-		return;
+		return 0;
+
 	finish = cJSON_GetObjectItem(choice, "finish_reason");
 	if (cJSON_IsString(finish) && finish->valuestring && finish->valuestring[0]) {
 		llm_usage_copy(ctx->usage.finish_reason, sizeof(ctx->usage.finish_reason),
 			       finish->valuestring);
 		ctx->terminal_received = 1;
+		if (!strcmp(finish->valuestring, "content_filter") ||
+		    !strcmp(finish->valuestring, "error")) {
+			ctx->terminal_error = MORPH_ERR_API;
+			ctx->terminal_kind = MODEL_ERROR_API;
+			llm_usage_copy(ctx->terminal_code, sizeof(ctx->terminal_code),
+				      finish->valuestring);
+			return llm_stream_string_copy(&ctx->terminal_detail,
+				!strcmp(finish->valuestring, "content_filter")
+					? "Model response ended with content_filter."
+					: "Model response ended with an error finish reason.");
+		}
 	}
+
+	return 0;
 }

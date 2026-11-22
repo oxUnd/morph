@@ -962,7 +962,8 @@ int react_checkpoint_create(const char *text, void *user_data, char **out)
 	if (strcmp(usage.finish_reason, "length") == 0)
 		invalid = "Context compression exhausted the model output budget; "
 			  "the checkpoint is incomplete.";
-	else if ((usage.finish_reason[0] && strcmp(usage.finish_reason, "stop") != 0) ||
+	else if ((usage.finish_reason[0] && strcmp(usage.finish_reason, "stop") != 0 &&
+		  strcmp(usage.finish_reason, "completed") != 0) ||
 		 strstr(nb_buf_cstr(&b), "<｜｜DSML｜｜") || strstr(nb_buf_cstr(&b), "<tool_call>"))
 		invalid = "Context compression returned tool protocol or an unexpected "
 			  "finish reason instead of a checkpoint.";

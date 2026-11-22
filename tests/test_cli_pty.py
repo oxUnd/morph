@@ -342,7 +342,7 @@ def main():
             terminal.send('\r')
             starting = terminal.snapshot('immediate turn status')
             assert 'Starting' not in starting and 'Thinking' not in starting, starting
-            assert '◉ Working ·' in starting and 'esc to interrupt' in starting, starting
+            assert '◉ Working ·' in starting and 'Esc to interrupt' in starting, starting
             starting_rows = starting.splitlines()
             user_row = next(i for i, row in enumerate(starting_rows)
                             if row.startswith('› initial task'))

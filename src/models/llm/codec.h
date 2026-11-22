@@ -31,6 +31,15 @@ cJSON *llm_codec_schema_copy(const cJSON *params);
 
 int llm_codec_add_options(struct nb_log *logger, cJSON *root, const char *json);
 
+int llm_codec_error_is_context(const char *code, const char *message);
+/* Error payload and strings borrow their parsed JSON owner's lifetime. */
+const cJSON *llm_codec_error_borrow(const cJSON *root);
+const char *llm_codec_error_code_borrow(const cJSON *error);
+const char *llm_codec_error_message_borrow(const cJSON *error);
+enum model_error_kind llm_codec_error_kind(const cJSON *error);
+int llm_codec_stream_error(struct llm_stream_ctx *ctx, const cJSON *error,
+			   const char *detail);
+
 #ifdef __cplusplus
 }
 #endif

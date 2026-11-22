@@ -1,6 +1,7 @@
 #include "errors.h"
 #include <gtest/gtest.h>
 #include <nb/err.h>
+#include <nb/str.h>
 
 extern "C" {
 #include "mcp/mcp_internal.h"
@@ -339,6 +340,26 @@ struct McpHttpReply {
 struct McpHttpRequest {
 	std::string headers;
 	std::string body;
+
+	std::string header(const char *name) const
+	{
+		std::istringstream lines(headers);
+		std::string line;
+		while (std::getline(lines, line)) {
+			size_t colon = line.find(':');
+			if (colon == std::string::npos)
+				continue;
+
+			if (nb_str_eq_icase(nb_str_from_parts(line.data(), colon),
+					    nb_str_from_cstr(name))) {
+				nb_str value = nb_str_trim(
+					nb_str_from_cstr(line.c_str() + colon + 1));
+				return std::string(value.ptr, value.len);
+			}
+		}
+
+		return {};
+	}
 };
 
 /* A real HTTP peer: inspect what libcurl sends, not a mocked transport API. */
@@ -528,13 +549,12 @@ TEST_F(McpHttpProtocolTest, ModernCallsMirrorSchemaHeadersAndCorrelateSseRespons
 	tool_result_cleanup(&result);
 	auto requests = server.captured();
 	ASSERT_EQ(requests.size(), 3U);
-	EXPECT_NE(requests.back().headers.find("Mcp-Param-Tenant: =?base64?YQpi?="),
-		std::string::npos);
-	EXPECT_NE(requests.back().headers.find("Mcp-Name: tool"), std::string::npos);
+	EXPECT_EQ(requests.back().header("Mcp-Param-Tenant"), "=?base64?YQpi?=");
+	EXPECT_EQ(requests.back().header("Mcp-Name"), "tool");
 	for (const auto &wire : requests) {
-		EXPECT_NE(wire.headers.find("MCP-Protocol-Version: 2026-07-28"), std::string::npos);
-		EXPECT_NE(wire.headers.find("Mcp-Method: "), std::string::npos);
-		EXPECT_EQ(wire.headers.find("Mcp-Session-Id:"), std::string::npos);
+		EXPECT_EQ(wire.header("MCP-Protocol-Version"), "2026-07-28");
+		EXPECT_FALSE(wire.header("Mcp-Method").empty());
+		EXPECT_TRUE(wire.header("Mcp-Session-Id").empty());
 		EXPECT_NE(wire.body.find("io.modelcontextprotocol/clientCapabilities"),
 			std::string::npos);
 	}
@@ -570,15 +590,14 @@ TEST_F(McpHttpProtocolTest, LegacyFallbackKeepsSessionAndServerSelectedVersion)
 	EXPECT_EQ(std::string(client.session_id), session);
 	auto requests = server.captured();
 	ASSERT_EQ(requests.size(), 4U);
-	EXPECT_EQ(requests[1].headers.find("MCP-Protocol-Version:"), std::string::npos);
-	EXPECT_EQ(requests[1].headers.find("Mcp-Method:"), std::string::npos);
+	EXPECT_TRUE(requests[1].header("MCP-Protocol-Version").empty());
+	EXPECT_TRUE(requests[1].header("Mcp-Method").empty());
 	EXPECT_NE(requests[1].body.find("\"protocolVersion\":\"2025-11-25\""),
 		std::string::npos);
-	EXPECT_NE(requests.back().headers.find("Mcp-Session-Id: " + session), std::string::npos);
-	EXPECT_NE(requests.back().headers.find("MCP-Protocol-Version: 2025-06-18"),
-		std::string::npos);
+	EXPECT_EQ(requests.back().header("Mcp-Session-Id"), session);
+	EXPECT_EQ(requests.back().header("MCP-Protocol-Version"), "2025-06-18");
 	EXPECT_EQ(requests.back().body.find("_meta"), std::string::npos);
-	EXPECT_EQ(requests.back().headers.find("Mcp-Method:"), std::string::npos);
+	EXPECT_TRUE(requests.back().header("Mcp-Method").empty());
 }
 
 TEST_F(McpHttpProtocolTest, AuthAndServerFailuresNeverSelectLegacyProtocol)

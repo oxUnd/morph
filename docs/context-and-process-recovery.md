@@ -85,16 +85,24 @@ path receives them.
 
 Models retain a structured error category, HTTP status, provider code, retry delay,
 and whether output started. Context overflow is identified from known provider
-codes or explicit context-limit messages in HTTP 400/413 responses. Unknown errors
-remain ordinary API errors. HTTP 401/403 are authentication errors; 429 is rate
-limiting; 5xx is a server error. Failed streams after output begins are incomplete
-responses and are not automatically replayed.
+codes or explicit context-limit messages (including case-insensitive `Input too
+large`) in HTTP 400/413 responses and provider error events in chat or Responses
+streams. Error payloads may carry top-level fields, a nested error object, or an
+error string. HTTP 200 with an error JSON body still fails. Unknown errors remain
+ordinary API errors. HTTP 401/403 are authentication errors; 429 is rate limiting;
+5xx is a server error. Failed streams after output
+begins are incomplete responses and are not automatically replayed.
 
-Transient requests without output use bounded retries. `Retry-After` supports
+Transient requests without output use bounded retries, including known rate-limit
+and server-error codes delivered inside a successful HTTP stream. Quota failures
+and unknown provider codes are not retried. `Retry-After` supports
 seconds or HTTP dates, is capped at one day, and waits remain cancellable.
 Compaction calls are tagged `phase=compaction` in usage metadata; ordinary calls
 are `phase=turn`. Cached and uncached input are recorded separately from the
-estimated active request size.
+estimated active request size. Text-only requests, including compaction, use the
+configured adapter and the same error handling as tool-enabled requests. Each
+request replaces its own error details. Chat `content_filter` and `error` finish
+reasons fail without executing pending tool calls.
 
 Compaction failure never installs an empty placeholder checkpoint. Context-limit
 recovery removes at most 32 old tool groups from a candidate summary input while
@@ -102,8 +110,10 @@ preserving user requests and prior summaries. Call/output pairing is preserved
 even when steering messages intervene. Omitted evidence is explicitly marked
 unavailable and is not recorded as semantically covered by the new summary.
 Formal history changes only after successful summarization and replay validation.
-Normal inference can request at most two overflow recoveries per turn. Three
-successive compactions reducing context by less than 5% stop with an explicit
+Normal inference can request at most two overflow recoveries per turn, when a
+compaction path and another iteration are available. Otherwise it retains the
+original context-limit error. Three successive compactions reducing context by
+less than 5% stop with an explicit
 context-limit error; the existing post-compaction budget check remains stricter
 when the request still cannot fit. These limits prevent endless compaction loops.
 

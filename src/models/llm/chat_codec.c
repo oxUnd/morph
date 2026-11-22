@@ -101,6 +101,9 @@ nb_status llm_chat_decode_event(nb_sse *parser, const nb_sse_event *event, void 
 	if (!data.len)
 		return NB_OK;
 
+	if (ctx->terminal_error)
+		return NB_OK;
+
 	if (nb_str_eq_cstr(data, "[DONE]")) {
 		ctx->terminal_received = 1;
 		nb_log_write(ctx ? ctx->logger : NULL, NB_LOG_DEBUG,
@@ -111,6 +114,15 @@ nb_status llm_chat_decode_event(nb_sse *parser, const nb_sse_event *event, void 
 	cJSON *root = cJSON_ParseWithLength(data.ptr, data.len);
 	if (!root)
 		return 0;
+
+	const cJSON *error = cJSON_GetObjectItemCaseSensitive(root, "error");
+	if (cJSON_IsObject(error) || cJSON_IsString(error)) {
+		const char *detail = llm_codec_error_message_borrow(error);
+		int rc = llm_codec_stream_error(ctx, error, detail);
+
+		cJSON_Delete(root);
+		return rc;
+	}
 
 	llm_stream_parse_metadata(ctx, root);
 	llm_stream_parse_usage(ctx, root);
@@ -126,7 +138,11 @@ nb_status llm_chat_decode_event(nb_sse *parser, const nb_sse_event *event, void 
 		cJSON_Delete(root);
 		return 0;
 	}
-	llm_stream_parse_finish_reason(ctx, first);
+	int finish_rc = llm_stream_parse_finish_reason(ctx, first);
+	if (finish_rc != 0) {
+		cJSON_Delete(root);
+		return finish_rc;
+	}
 
 	cJSON *delta = cJSON_GetObjectItem(first, "delta");
 	if (!delta) {

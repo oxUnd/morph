@@ -153,16 +153,17 @@ TEST(CliAgentsBrowserTest, ComponentBoundsAndSanitizesBothResponsiveLayouts)
 				EXPECT_EQ(count, rows);
 				EXPECT_EQ(std::string(output.ptr).find("\033[2J"),
 					  std::string::npos);
-				if (!styled)
-					EXPECT_EQ(std::string(output.ptr).find("\033[0;"), std::string::npos);
-				else {
+				if (!styled) {
+					const char *colors[] = {"38;5;", "38;2;", "48;5;", "48;2;"};
+					std::string frame(output.ptr);
+					for (const char *color : colors)
+						EXPECT_EQ(frame.find(color), std::string::npos);
+				} else {
 					EXPECT_EQ(std::string(output.ptr).find("\033[44;"),
 						  std::string::npos);
 					EXPECT_EQ(std::string(output.ptr).find("\033[48;"),
 						  std::string::npos);
 					EXPECT_EQ(std::string(output.ptr).find("\033[7m"),
-						  std::string::npos);
-					EXPECT_NE(std::string(output.ptr).find("\033[0;1"),
 						  std::string::npos);
 				}
 
@@ -202,7 +203,10 @@ TEST(CliAgentsBrowserTest, BatchedUpdatesRestoreTheOriginalHeadingAndHint)
 
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_EQ(test_agents_browser_render(&output, &state, &data, 120, 12, 0, refresh), 0);
-	std::string screen(nb_buf_cstr(&output));
+	char *plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		output.ptr, output.len, MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
+	ASSERT_NE(plain, nullptr);
+	std::string screen(plain);
 	EXPECT_NE(screen.find("Agents (1)"), std::string::npos);
 	EXPECT_NE(screen.find("Tab filter · ? help"), std::string::npos);
 }

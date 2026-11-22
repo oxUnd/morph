@@ -10,6 +10,7 @@
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/buf.h>
+#include <nb/vec.h>
 #include "errors.h"
 #include "media/image.h"
 #include "http/request.h"
@@ -146,18 +147,12 @@ static char *llm_extract_error(const char *raw)
 {
 	if (!raw || !*raw)
 		return NULL;
-	cJSON *root = cJSON_Parse(raw);
+	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(raw);
 	if (!root)
 		return NULL;
-	char *msg = NULL;
-	cJSON *err_obj = cJSON_GetObjectItem(root, "error");
-	if (cJSON_IsObject(err_obj)) {
-		cJSON *msg_item = cJSON_GetObjectItem(err_obj, "message");
-		if (cJSON_IsString(msg_item) && msg_item->valuestring)
-			msg = strdup(msg_item->valuestring);
-	}
-	cJSON_Delete(root);
-	return msg;
+
+	const char *message = llm_codec_error_message_borrow(llm_codec_error_borrow(root));
+	return message ? strdup(message) : NULL;
 }
 
 static int llm_retryable_status(int status)
@@ -168,7 +163,8 @@ static int llm_retryable_status(int status)
 
 static int llm_stream_started(const struct llm_stream_ctx *ctx)
 {
-	return ctx->emitted || ctx->accumulated.len > 0 || ctx->tool_call_count > 0;
+	return ctx->emitted || ctx->accumulated.len > 0 || ctx->reasoning.len > 0 ||
+	       ctx->tool_call_count > 0;
 }
 
 static int llm_retry_delay_seconds(int retry_index)
@@ -181,11 +177,9 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 			     long retry_after_seconds)
 {
 	struct model_error_info *info = &self->error_info;
-	cJSON *json = raw ? cJSON_Parse(raw) : NULL;
-	const cJSON *error = cJSON_GetObjectItemCaseSensitive(json, "error");
-	const char *code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "code"));
-	if (!code)
-		code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "type"));
+	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = raw ? cJSON_Parse(raw) : NULL;
+	const cJSON *error = llm_codec_error_borrow(json);
+	const char *code = llm_codec_error_code_borrow(error);
 	memset(info, 0, sizeof(*info));
 	info->http_status = status > 0 ? status : 0;
 	info->output_started = started;
@@ -203,15 +197,7 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 	else if (status >= 400)
 		info->kind = MODEL_ERROR_API;
 	if (status == 400 || status == 413) {
-		if (code &&
-		    (!strcmp(code, "context_length_exceeded") ||
-		     !strcmp(code, "context_window_exceeded") || !strcmp(code, "prompt_too_long")))
-			info->kind = MODEL_ERROR_CONTEXT;
-		const char *message =
-			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "message"));
-		if (message && (strstr(message, "maximum context length") ||
-				strstr(message, "exceeds the context window") ||
-				strstr(message, "prompt is too long")))
+		if (llm_codec_error_kind(error) == MODEL_ERROR_CONTEXT)
 			info->kind = MODEL_ERROR_CONTEXT;
 	}
 	if (info->kind == MODEL_ERROR_CONTEXT && started)
@@ -229,7 +215,6 @@ static void llm_record_error(struct model *self, int status, const char *raw, in
 					status == NB_ERR_PROTOCOL || status == NB_ERR_TIMEOUT ||
 					status == NB_ERR_CONNECTION_RESET ||
 					status == NB_ERR_CONNECTION_REFUSED);
-	cJSON_Delete(json);
 }
 
 static int llm_post_sse_with_retry(struct model *self, const char *operation,
@@ -321,6 +306,22 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		char *detail NB_CLEANUP(nb_charp_cleanup) = NULL;
 		if (status >= 400 && hctx.error_buf.len > 0)
 			detail = llm_extract_error(hctx.error_buf.ptr);
+
+		if (status >= 0 && status < 400 && !ctx.terminal_received &&
+		    !hctx.callback_error && hctx.error_buf.len > 0) {
+			cJSON *json NB_CLEANUP(cJSON_DeleteOwner) =
+				cJSON_ParseWithOpts(nb_buf_cstr(&hctx.error_buf), NULL, 1);
+			const cJSON *error = cJSON_GetObjectItemCaseSensitive(json, "error");
+			if (cJSON_IsObject(error) || cJSON_IsString(error)) {
+				int rc = llm_codec_stream_error(&ctx, error,
+					llm_codec_error_message_borrow(error));
+				if (rc != 0) {
+					status = rc;
+					hctx.callback_error = rc;
+				}
+			}
+		}
+
 		if (status >= 0 && status < 400 && requires_terminal_event &&
 		    !hctx.callback_error) {
 			if (!ctx.terminal_received) {
@@ -346,12 +347,26 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 			self->error_info.recoverable = 0;
 		}
 
-		if (requires_terminal_event && ctx.terminal_error) {
-			self->error_info.kind = ctx.terminal_error == MORPH_ERR_API
-				? MODEL_ERROR_API : MODEL_ERROR_INCOMPLETE;
+		if (requires_terminal_event && ctx.terminal_error && http_status < 400 &&
+		    !hctx.callback_error) {
+			if (ctx.terminal_error == MORPH_ERR_CONTEXT_LIMIT) {
+				self->error_info.kind = llm_stream_started(&ctx)
+					? MODEL_ERROR_INCOMPLETE : MODEL_ERROR_CONTEXT;
+				if (llm_stream_started(&ctx))
+					status = MORPH_ERR_API;
+			} else {
+				self->error_info.kind = ctx.terminal_error == MORPH_ERR_API
+					? ctx.terminal_kind : MODEL_ERROR_INCOMPLETE;
+			}
+
+			llm_usage_copy(self->error_info.provider_code,
+				      sizeof(self->error_info.provider_code), ctx.terminal_code);
 			self->error_info.http_status = http_status > 0 ? http_status : 0;
 			int interrupted_stream = missing_terminal && status == NB_ERR_PROTOCOL;
-			self->error_info.retryable = interrupted_stream && !llm_stream_started(&ctx);
+			int transient = self->error_info.kind == MODEL_ERROR_RATE_LIMIT ||
+				self->error_info.kind == MODEL_ERROR_SERVER;
+			self->error_info.retryable = (interrupted_stream || transient) &&
+				!llm_stream_started(&ctx) && !hctx.callback_error;
 			self->error_info.recoverable = interrupted_stream && llm_stream_started(&ctx);
 		}
 		if (self->error_info.kind == MODEL_ERROR_CONTEXT) {
@@ -396,92 +411,6 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		llm_stream_move(result, &ctx);
 		return status;
 	}
-}
-
-static int llm_chat(struct model *self, const char *system_prompt, const char **messages, int n,
-		    const struct model_chat_options *opts, sse_callback cb, void *user_data)
-{
-	int max_tokens;
-	long timeout;
-
-	if (!model_api_key_borrow(self)[0]) {
-		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-			     "llm_chat: no API key configured");
-		if (self) {
-			model_clear_last_error(self);
-			self->error_info.kind = MODEL_ERROR_CONFIG;
-		}
-		return nb_err_trace(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED,
-				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
-				    __LINE__);
-	}
-
-	nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
-		     "llm_chat: start, model=%s, api_base=%s", self->model_id, self->api_base);
-	max_tokens = opts && opts->max_tokens > 0 ? opts->max_tokens : self->max_tokens;
-	timeout = opts && opts->timeout_seconds > 0
-			  ? opts->timeout_seconds
-			  : (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
-
-	char *body NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
-	size_t body_len = 0;
-	int rc = llm_chat_body_create(self ? self->http.logger : NULL, self->model_id,
-				      system_prompt, messages, n, max_tokens, 1,
-				      self->extra_body_json, llm_adapter_borrow(self),
-				      opts ? opts->disable_thinking : 0, &body, &body_len);
-	if (rc < 0)
-		return rc;
-
-	size_t clean_len = nb_utf8_sanitize_into(body, body, body_len);
-	body[clean_len] = '\0';
-	body_len = clean_len;
-
-	char url[512];
-	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
-
-	nb_buf auth_header NB_CLEANUP(nb_buf_cleanup) = {0};
-	rc = model_authorization_header_create(self, &auth_header);
-	if (rc != 0)
-		return rc;
-	const char *extra_headers[] = {nb_buf_cstr(&auth_header)};
-
-	nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
-		     "llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
-	struct llm_stream_ctx ctx NB_CLEANUP(llm_stream_cleanup) = {0};
-	char *detail NB_CLEANUP(nb_charp_cleanup) = NULL;
-	int status = llm_post_sse_with_retry(self, "llm_chat", opts ? opts->usage_phase : NULL, url,
-						     body, body_len, extra_headers, timeout, cb,
-						     NULL, NULL, 1,
-					     user_data, &ctx, &detail);
-	nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
-		     "llm_chat: SSE request done, status=%d", status);
-
-	if (status < 0) {
-		model_set_last_error(
-			self, "%s",
-			detail ? detail
-			       : nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, status));
-		nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-			     "llm_chat: SSE request failed: %s",
-			     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, status));
-		return status;
-	}
-	if (status >= 400) {
-		if (detail)
-			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-				     "llm_chat: API returned HTTP %d: %s", status, detail);
-		else
-			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
-				     "llm_chat: API returned HTTP %d", status);
-		return nb_err_trace(self ? self->http.logger : NULL, MORPH_ERR_API,
-				    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
-				    __LINE__);
-	}
-
-	llm_usage_report(self, &ctx, body_len);
-	if (opts && opts->usage)
-		*opts->usage = ctx.usage;
-	return status;
 }
 
 static int add_system_message(cJSON *messages, const char *system_prompt)
@@ -783,7 +712,8 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 				    struct chat_message *messages, int msg_count,
 				    struct tool_desc *tools, int tool_count,
 				    struct chat_response *response, sse_callback thought_cb,
-				    llm_stream_callback stream_cb, void *stream_ud)
+				    llm_stream_callback stream_cb, void *stream_ud,
+				    const struct model_chat_options *opts)
 {
 	const struct llm_codec *codec = llm_codec_borrow(self);
 	const struct llm_adapter *adapter = llm_adapter_borrow(self);
@@ -815,8 +745,15 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 		return rc;
 	cJSON_AddStringToObject(root, "model", self->model_id);
 	cJSON_AddBoolToObject(root, "stream", 1);
-	codec->configure(self, root, tool_count);
+	struct model configuration = *self;
+	if (opts && opts->max_tokens > 0)
+		configuration.max_tokens = opts->max_tokens;
+
+	codec->configure(&configuration, root, tool_count);
 	rc = llm_codec_add_options(self->http.logger, root, self->extra_body_json);
+	if (rc == 0 && opts && opts->disable_thinking && adapter->disable_thinking)
+		rc = adapter->disable_thinking(root);
+
 	if (rc != 0) {
 		cJSON_Delete(root);
 		return rc;
@@ -831,8 +768,12 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 	if (rc != 0)
 		return rc;
 	const char *headers[] = {nb_buf_cstr(&authorization)};
-	timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
-	status = llm_post_sse_with_retry(self, "llm_chat_with_tools", NULL, url, body, strlen(body),
+	timeout = opts && opts->timeout_seconds > 0
+		? opts->timeout_seconds
+		: (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
+	status = llm_post_sse_with_retry(self, "llm_chat_with_tools",
+					 opts ? opts->usage_phase : NULL,
+					 url, body, strlen(body),
 					 headers, timeout, thought_cb, stream_cb, codec->event,
 					 codec->requires_terminal_event, stream_ud, &ctx, &detail);
 	llm_usage_finalize(self, &ctx, strlen(body));
@@ -869,6 +810,40 @@ static int llm_chat_with_tools_impl(struct model *self, const char *system_promp
 	return status;
 }
 
+static int llm_chat(struct model *self, const char *system_prompt, const char **messages, int n,
+		    const struct model_chat_options *opts, sse_callback cb, void *user_data)
+{
+	nb_vec input NB_CLEANUP(nb_vec_cleanup) = {0};
+	struct chat_response response NB_CLEANUP(chat_response_free) = {0};
+	struct chat_message sample = {0};
+
+	if (!self || n < 0)
+		return NB_ERR_INVAL;
+
+	nb_vec_init(&input, sizeof(sample));
+	for (int i = 0; i < n; i++) {
+		sample.role = i % 2 == 0 ? "user" : "assistant";
+		sample.content = (char *)(messages && messages[i] ? messages[i] : "");
+		if (!nb_vec_push_copy(&input, &sample))
+			return NB_ERR_NOMEM;
+	}
+
+	int rc = llm_chat_with_tools_impl(self, system_prompt, (void *)input.data, n,
+					  NULL, 0, &response,
+					  cb, NULL, user_data, opts);
+	if (opts && opts->usage)
+		*opts->usage = response.usage;
+
+	if (rc >= 0 && response.tool_call_count > 0) {
+		self->error_info.kind = MODEL_ERROR_INCOMPLETE;
+		model_set_last_error(self,
+				     "Text-only model request returned unexpected tool calls.");
+		return NB_ERR_PROTOCOL;
+	}
+
+	return rc;
+}
+
 static int llm_chat_with_tools(struct model *self, const char *system_prompt,
 			       struct chat_message *messages, int msg_count,
 			       struct tool_desc *tools, int tool_count,
@@ -876,7 +851,7 @@ static int llm_chat_with_tools(struct model *self, const char *system_prompt,
 			       void *thought_ud)
 {
 	return llm_chat_with_tools_impl(self, system_prompt, messages, msg_count, tools, tool_count,
-					response, thought_cb, NULL, thought_ud);
+					response, thought_cb, NULL, thought_ud, NULL);
 }
 
 static int llm_chat_with_tools_stream(struct model *self, const char *system_prompt,
@@ -886,7 +861,7 @@ static int llm_chat_with_tools_stream(struct model *self, const char *system_pro
 				      void *stream_ud)
 {
 	return llm_chat_with_tools_impl(self, system_prompt, messages, msg_count, tools, tool_count,
-					response, NULL, stream_cb, stream_ud);
+					response, NULL, stream_cb, stream_ud, NULL);
 }
 
 static int llm_generate(struct model *self, const char *prompt, const char *out_path)

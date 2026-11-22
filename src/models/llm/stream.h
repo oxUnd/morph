@@ -26,6 +26,8 @@ struct llm_stream_ctx {
 	int emitted;
 	int terminal_received;
 	int terminal_error;
+	enum model_error_kind terminal_kind;
+	char terminal_code[96];
 	char *terminal_detail;
 	struct model_usage usage;
 };
@@ -65,7 +67,7 @@ void llm_stream_parse_metadata(struct llm_stream_ctx *ctx, cJSON *root);
 
 void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root);
 
-void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, cJSON *choice);
+int llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx, cJSON *choice);
 
 #ifdef __cplusplus
 }

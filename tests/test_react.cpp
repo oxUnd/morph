@@ -3456,6 +3456,10 @@ TEST_F(ReactAgentConvergenceTest, RepeatedFinalProposalsAndInterimMailDoNotReset
 TEST(HttpTimeoutTest, NativeCallsRejectInvalidUrlsAndRefusedConnections)
 {
 	HttpProbe probe;
+	nb_http_client_options options;
+	nb_http_client_options_init(&options);
+	options.proxy_url = "";
+	ASSERT_EQ(nb_http_client_new(&options, &probe.client, nullptr), NB_OK);
 	EXPECT_EQ(probe.run("POST", nullptr), NB_ERR_INVAL);
 	EXPECT_NE(probe.run("POST", "http://127.0.0.1:1/test", NB_STR_LIT("{}")), NB_OK);
 }
@@ -3482,6 +3486,7 @@ struct mock_server {
 	int transient_error_status;
 	int transient_failures;
 	int transient_sse_body;
+	int response_json_body;
 	int transient_partial_file;
 	int request_count;
 	char request_method[16];
@@ -3555,7 +3560,8 @@ static void *mock_http_server_thread(void *arg)
 		const char *data = transient ? srv->transient_error_body : srv->response_body;
 		int status = transient ? srv->transient_error_status : srv->response_status;
 		bool streaming = transient ? srv->transient_sse_body != 0 :
-			data && is_sse && (status == 0 || status == 200);
+			!srv->response_json_body && data && is_sse &&
+			(status == 0 || status == 200);
 		if (!status)
 			status = data ? 200 : 404;
 		if (!data)
@@ -3595,6 +3601,7 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 	int saved_transient_status = srv->transient_error_status;
 	int saved_transient_failures = srv->transient_failures;
 	int saved_transient_sse_body = srv->transient_sse_body;
+	int saved_json_body = srv->response_json_body;
 	int saved_partial_file = srv->transient_partial_file;
 	memset(srv, 0, sizeof(*srv));
 	srv->response_body = saved_body;
@@ -3604,6 +3611,7 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 	srv->transient_error_status = saved_transient_status;
 	srv->transient_failures = saved_transient_failures;
 	srv->transient_sse_body = saved_transient_sse_body;
+	srv->response_json_body = saved_json_body;
 	srv->transient_partial_file = saved_partial_file;
 	srv->server_fd = -1;
 	srv->server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -4582,6 +4590,470 @@ TEST_F(MockServerTest, LlmClassifiesContextOverflowWithoutBlindRetry)
 
 	model_destroy(model);
 	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmRecognizesInputTooLargeAndKeepsOtherErrorsDistinct)
+{
+	srv.response_body = "{}";
+	srv.response_status = 400;
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "test-key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	struct error_case {
+		int status;
+		const char *body;
+		enum model_error_kind kind;
+	};
+	const error_case cases[] = {
+		{400, R"({"error":{"message":"Input too large"}})", MODEL_ERROR_CONTEXT},
+		{413, R"({"error":{"message":"INPUT TOO LARGE for this model"}})",
+		 MODEL_ERROR_CONTEXT},
+		{400, R"({"error":{"message":"Input is too large."}})", MODEL_ERROR_CONTEXT},
+		{400, R"({"error":{"message":"rejected","code":"input_too_large"}})",
+		 MODEL_ERROR_CONTEXT},
+		{400, R"({"error":{"message":"Maximum context length exceeded"}})",
+		 MODEL_ERROR_CONTEXT},
+		{400, R"({"code":"context_length_exceeded","message":"too much context"})",
+		 MODEL_ERROR_CONTEXT},
+		{400, R"({"error":"Input too large"})", MODEL_ERROR_CONTEXT},
+		{400, R"({"error":{"code":"400","type":"prompt_too_long"}})",
+		 MODEL_ERROR_CONTEXT},
+		{400, R"({"error":{"message":"invalid parameter"}})", MODEL_ERROR_API},
+		{413, R"({"error":{"message":"request body too large"}})", MODEL_ERROR_API},
+		{401, R"({"error":{"message":"Input too large"}})", MODEL_ERROR_AUTH},
+		{403, R"({"error":{"message":"Input too large"}})", MODEL_ERROR_AUTH},
+		{429, R"({"error":{"message":"Input too large"}})", MODEL_ERROR_RATE_LIMIT},
+		{500, R"({"error":{"message":"Input too large"}})", MODEL_ERROR_SERVER},
+	};
+	model->retry_count = 0;
+	for (const auto &test : cases) {
+		SCOPED_TRACE(test.body);
+		srv.response_status = test.status;
+		srv.response_body = test.body;
+		struct chat_message message{};
+		message.role = const_cast<char *>("user");
+		message.content = const_cast<char *>("continue");
+		struct chat_response response NB_CLEANUP(chat_response_free) = {};
+		int requests = srv.request_count;
+		EXPECT_EQ(model->chat_with_tools(model.get(), nullptr, &message, 1, nullptr, 0,
+			&response, nullptr, nullptr),
+			test.kind == MODEL_ERROR_CONTEXT ? MORPH_ERR_CONTEXT_LIMIT : MORPH_ERR_API);
+		EXPECT_EQ(model->error_info.kind, test.kind);
+		EXPECT_EQ(srv.request_count, requests + 1);
+	}
+}
+
+TEST_F(MockServerTest, StreamContextErrorsPreserveCodesAndDoNotReplayPartialOutput)
+{
+	srv.response_status = 200;
+	srv.response_body = "{}";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "test-key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	struct stream_case {
+		const char *adapter;
+		const char *event;
+		const char *code;
+	};
+	const stream_case cases[] = {
+		{"openai-chat", R"({"error":{"message":"Input too large"}})", ""},
+		{"openai-chat", R"({"error":"Input too large"})", ""},
+		{"openai-chat", R"({"error":{"code":"input_too_large","message":"rejected"}})",
+		 "input_too_large"},
+		{"openai-responses", R"({"type":"error","message":"Input too large"})", ""},
+		{"openai-responses", R"({"type":"error","error":"Input too large"})", ""},
+		{"openai-responses",
+		 R"({"type":"error","code":"input_too_large","message":"rejected"})",
+		 "input_too_large"},
+		{"openai-responses",
+		 "{\"type\":\"response.failed\",\"response\":{\"error\":{"
+		 "\"code\":\"context_length_exceeded\",\"message\":\"rejected\"}}}",
+		 "context_length_exceeded"},
+	};
+	for (const auto &test : cases) {
+		SCOPED_TRACE(test.event);
+		strcpy(model->adapter, test.adapter);
+		for (bool partial : {false, true}) {
+			SCOPED_TRACE(partial);
+			std::string body;
+			if (partial) {
+				body = !strcmp(test.adapter, "openai-responses")
+					? "{\"type\":\"response.output_text.delta\","
+					  "\"delta\":\"partial\"}"
+					: R"({"choices":[{"delta":{"content":"partial"}}]})";
+				body += "\n\ndata: ";
+			}
+
+			body += test.event;
+			srv.response_body = body.c_str();
+			struct chat_message message{};
+			message.role = const_cast<char *>("user");
+			message.content = const_cast<char *>("continue");
+			struct chat_response response NB_CLEANUP(chat_response_free) = {};
+			int requests = srv.request_count;
+			EXPECT_EQ(model->chat_with_tools_stream(model.get(), nullptr, &message, 1,
+				nullptr, 0, &response, nullptr, nullptr),
+				partial ? MORPH_ERR_API : MORPH_ERR_CONTEXT_LIMIT);
+			EXPECT_EQ(model->error_info.kind,
+				partial ? MODEL_ERROR_INCOMPLETE : MODEL_ERROR_CONTEXT);
+			EXPECT_STREQ(model->error_info.provider_code, test.code);
+			EXPECT_EQ(model->error_info.output_started, partial);
+			EXPECT_EQ(model->error_info.retryable, 0);
+			EXPECT_EQ(model->error_info.recoverable, 0);
+			EXPECT_EQ(srv.request_count, requests + 1);
+			if (partial)
+				EXPECT_STREQ(response.content, "partial");
+		}
+	}
+
+	/* HTTP failures retain their category even when the body contains SSE errors. */
+	srv.transient_sse_body = 1;
+	srv.transient_failures = srv.request_count + 1;
+	srv.transient_error_status = 401;
+	srv.transient_error_body =
+		R"({"type":"error","code":"input_too_large","message":"Input too large"})";
+	struct chat_message message{};
+	message.role = const_cast<char *>("user");
+	message.content = const_cast<char *>("continue");
+	struct chat_response response NB_CLEANUP(chat_response_free) = {};
+	EXPECT_EQ(model->chat_with_tools_stream(model.get(), nullptr, &message, 1, nullptr, 0,
+		&response, nullptr, nullptr), MORPH_ERR_API);
+	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_AUTH);
+}
+
+TEST_F(MockServerTest, InputTooLargeCompactsHistoryAndContinuesTheTurn)
+{
+	srv.transient_failures = 1;
+	srv.transient_error_status = 400;
+	srv.transient_error_body = R"({"error":{"message":"Input too large"}})";
+	srv.response_status = 200;
+	srv.response_body =
+		R"({"choices":[{"delta":{"content":"Recovered answer"},"finish_reason":"stop"}]})";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "test-key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	struct db database NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	struct session session{};
+	ASSERT_EQ(session_create(&database, "overflow-recovery", "mock", &session), 0);
+	std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+		react_context_create(nullptr, nullptr, nullptr, nullptr), react_context_destroy);
+	ASSERT_NE(context, nullptr);
+	context->llm_model = model.get();
+	context->workdir = strdup("/tmp");
+	context->history_enabled = 1;
+	context->history_db = &database;
+	context->history_session_id = session.id;
+	context->compress.max_context_tokens = 128000;
+	context->compress.in_turn_compaction = 1;
+	context->compress.summarize_threshold_ratio = .8;
+	context->compress.compress_target_ratio = .1;
+	context->compress.compaction_summary_max_tokens = 1000;
+	context->compress.compaction_user_message_tokens = 2000;
+	int summaries = 0;
+	context->compress.summarize_user_data = &summaries;
+	context->compress.summarize = [](const char *, void *data, char **out) -> int {
+		++*static_cast<int *>(data);
+		*out = strdup("Earlier investigation completed; continue the user's request.");
+		return *out ? 0 : NB_ERR_NOMEM;
+	};
+	ASSERT_EQ(react_set_turn_id(context.get(), "prior-turn"), 0);
+	ASSERT_EQ(agent_history_record_user(context.get(), "Investigate the error"), 0);
+	std::string evidence;
+	for (int i = 0; i < 20000; i++)
+		evidence += "word ";
+
+	ASSERT_EQ(agent_history_record_assistant(context.get(), evidence.c_str()), 0);
+	context->state = REACT_STATE_DONE;
+	context->outcome = REACT_OUTCOME_SUCCESS;
+	ASSERT_EQ(agent_history_record_turn_outcome(context.get()), 0);
+	ASSERT_EQ(agent_history_reload(context.get()), 0);
+	ASSERT_EQ(react_set_turn_id(context.get(), "recovery-turn"), 0);
+	EXPECT_EQ(react_run(context.get(), "Continue investigating", nullptr, nullptr), 0);
+	EXPECT_EQ(context->outcome, REACT_OUTCOME_SUCCESS);
+	EXPECT_STREQ(context->final_answer, "Recovered answer");
+	EXPECT_EQ(context->context_recovery_count, 1);
+	EXPECT_EQ(context->in_turn_compaction_count, 1);
+	EXPECT_EQ(summaries, 1);
+	EXPECT_EQ(srv.request_count, 2);
+}
+
+TEST_F(MockServerTest, ProviderStreamRetriesOnlyKnownTransientErrorsBeforeOutput)
+{
+	for (const char *adapter : {"openai-chat-compatible", "openai-responses"}) {
+		for (const char *code : {"rate_limit_exceeded", "server_error",
+					"insufficient_quota", "unknown_error"}) {
+			for (bool partial : {false, true}) {
+				SCOPED_TRACE(adapter);
+				SCOPED_TRACE(code);
+				SCOPED_TRACE(partial);
+				bool responses = !strcmp(adapter, "openai-responses");
+				bool transient = !strcmp(code, "rate_limit_exceeded") ||
+					!strcmp(code, "server_error");
+				std::string event = std::string("{\"error\":{\"code\":\"") + code +
+					"\",\"message\":\"provider rejected the request\"}" +
+					(responses ? ",\"type\":\"error\"}" : "}");
+				if (partial) {
+					std::string delta = responses
+						? "{\"type\":\"response.output_text.delta\","
+						  "\"delta\":\"partial\"}"
+						: "{\"choices\":[{\"delta\":{"
+						  "\"content\":\"partial\"}}]}";
+					event = delta + "\n\ndata: " + event;
+				}
+
+				srv.transient_failures = 1;
+				srv.transient_error_status = 200;
+				srv.transient_sse_body = 1;
+				srv.transient_error_body = event.c_str();
+				srv.response_status = 200;
+				srv.response_body = responses
+					? "{\"type\":\"response.output_text.delta\","
+					  "\"delta\":\"recovered\"}\n\ndata: "
+					  "{\"type\":\"response.completed\",\"response\":{}}"
+					: R"({"choices":[{"delta":{"content":"recovered"}}]})";
+				START_MOCK_OR_SKIP(&srv);
+				char base[256];
+				snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+				std::unique_ptr<model, decltype(&model_destroy)> model(
+					model_llm_create(nullptr, "test", "mock", base, "key"),
+					model_destroy);
+				ASSERT_NE(model, nullptr);
+				strcpy(model->adapter, adapter);
+				model->retry_count = 1;
+				struct chat_message message{};
+				message.role = const_cast<char *>("user");
+				message.content = const_cast<char *>("continue");
+				struct chat_response response NB_CLEANUP(chat_response_free) = {};
+				bool recovered = transient && !partial;
+				EXPECT_EQ(model->chat_with_tools_stream(
+					model.get(), nullptr, &message, 1, nullptr, 0,
+					&response, nullptr, nullptr),
+					recovered ? 200 : MORPH_ERR_API);
+				EXPECT_EQ(srv.request_count, recovered ? 2 : 1);
+				const char *expected = recovered ? "recovered" : "partial";
+				if (recovered || partial)
+					EXPECT_STREQ(response.content, expected);
+
+				if (!recovered) {
+					EXPECT_STREQ(model->error_info.provider_code, code);
+					EXPECT_EQ(model->error_info.output_started, partial);
+				}
+
+				mock_server_stop(&srv);
+			}
+		}
+	}
+}
+
+TEST_F(MockServerTest, FailedChatFinishReasonsNeverExecutePendingTools)
+{
+	srv.response_status = 200;
+	srv.response_body = "{}";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	struct tool_registry tools NB_CLEANUP(tool_registry_cleanup) = {};
+	tool_registry_init(nullptr, &tools);
+	int executions = 0;
+	ASSERT_EQ(tool_register_borrow(TOOL_ORIGIN_BUILTIN, &tools, "probe", "Count executions",
+		"{}", call_count_tool_fn, &executions, nullptr), 0);
+	for (const char *finish : {"content_filter", "error"}) {
+		SCOPED_TRACE(finish);
+		std::string body =
+			"{\"choices\":[{\"delta\":{\"content\":\"Incomplete result\","
+			"\"tool_calls\":[{\"index\":0,\"id\":\"pending\",\"function\":{"
+			"\"name\":\"probe\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"";
+		body += std::string(finish) + "\"}]}";
+		srv.response_body = body.c_str();
+		std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+			react_context_create(&tools, nullptr, nullptr, nullptr),
+			react_context_destroy);
+		ASSERT_NE(context, nullptr);
+		context->llm_model = model.get();
+		context->workdir = strdup("/tmp");
+		context->max_iterations = 2;
+		EXPECT_EQ(react_run(context.get(), "continue", nullptr, nullptr), MORPH_ERR_API);
+		EXPECT_EQ(context->outcome, REACT_OUTCOME_LLM_ERROR);
+		EXPECT_EQ(executions, 0);
+		ASSERT_NE(context->last_error_detail, nullptr);
+		EXPECT_NE(strstr(context->last_error_detail, finish), nullptr);
+	}
+}
+
+TEST_F(MockServerTest, SuccessfulHttpStatusDoesNotHideJsonErrorBodies)
+{
+	srv.response_status = 200;
+	srv.response_json_body = 1;
+	srv.response_body = R"({"error":{"message":"Input too large"}})";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	const char *messages[] = {"continue"};
+	EXPECT_EQ(model->chat(model.get(), nullptr, messages, 1, nullptr, nullptr, nullptr),
+		MORPH_ERR_CONTEXT_LIMIT);
+	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_CONTEXT);
+	EXPECT_NE(strstr(model->last_error, "Input too large"), nullptr);
+	EXPECT_EQ(srv.request_count, 1);
+	srv.response_body = R"({"error":"invalid parameter"})";
+	EXPECT_EQ(model->chat(model.get(), nullptr, messages, 1, nullptr, nullptr, nullptr),
+		MORPH_ERR_API);
+	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_API);
+	EXPECT_NE(strstr(model->last_error, "invalid parameter"), nullptr);
+	EXPECT_EQ(srv.request_count, 2);
+}
+
+TEST_F(MockServerTest, SimpleChatErrorsAreRequestLocal)
+{
+	srv.response_status = 400;
+	srv.response_body = R"({"error":{"message":"invalid parameter"}})";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	const char *messages[] = {"continue"};
+	EXPECT_EQ(model->chat(model.get(), nullptr, messages, 1, nullptr, nullptr, nullptr),
+		MORPH_ERR_API);
+	EXPECT_NE(strstr(model->last_error, "invalid parameter"), nullptr);
+	srv.response_body = R"({"error":{"message":"Input too large"}})";
+	EXPECT_EQ(model->chat(model.get(), nullptr, messages, 1, nullptr, nullptr, nullptr),
+		MORPH_ERR_CONTEXT_LIMIT);
+	srv.response_status = 200;
+	srv.response_body = R"({"choices":[{"delta":{"content":"ok"}}]})";
+	EXPECT_EQ(model->chat(model.get(), nullptr, messages, 1, nullptr, nullptr, nullptr), 200);
+	EXPECT_STREQ(model->last_error, "");
+	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_NONE);
+	srv.response_status = 401;
+	srv.response_body = R"({"error":{"message":"invalid credential"}})";
+	EXPECT_EQ(model->chat(model.get(), nullptr, messages, 1, nullptr, nullptr, nullptr),
+		MORPH_ERR_API);
+	EXPECT_NE(strstr(model->last_error, "invalid credential"), nullptr);
+	EXPECT_EQ(strstr(model->last_error, "Input too large"), nullptr);
+}
+
+TEST_F(MockServerTest, CompactionUsesTheConfiguredResponsesAdapter)
+{
+	srv.response_status = 200;
+	srv.response_body =
+		"{\"type\":\"response.output_text.delta\",\"delta\":\"Complete checkpoint\"}"
+		"\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\","
+		"\"usage\":{\"input_tokens\":20,\"output_tokens\":4}}}";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	strcpy(model->adapter, "openai-responses");
+	std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+		react_context_create(nullptr, nullptr, nullptr, nullptr), react_context_destroy);
+	ASSERT_NE(context, nullptr);
+	context->llm_model = model.get();
+	context->history_compaction_prompt = strdup("Write a plain text checkpoint.");
+	context->compress.compaction_summary_max_tokens = 789;
+	char *summary NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	EXPECT_EQ(context->compress.summarize("Historical evidence", context.get(), &summary), 0);
+	EXPECT_STREQ(summary, "Complete checkpoint");
+	EXPECT_NE(strstr(srv.last_request, "POST /v1/responses "), nullptr);
+	const char *body = strstr(srv.last_request, "\r\n\r\n");
+	ASSERT_NE(body, nullptr);
+	cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(body + 4);
+	ASSERT_NE(request, nullptr);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(request, "max_output_tokens")), 789);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(request, "input")), 1);
+	EXPECT_NE(cJSON_GetObjectItem(request, "instructions"), nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(request, "messages"), nullptr);
+}
+
+TEST_F(MockLlmTest, RecoverableTransportStatusesContinueInsteadOfStopping)
+{
+	for (int error : {NB_ERR_NETWORK, NB_ERR_IO, NB_ERR_NOT_FOUND}) {
+		SCOPED_TRACE(error);
+		struct probe {
+			int calls;
+			int status;
+		} probe{0, error};
+		struct model model{};
+		strcpy(model.api_key, "key");
+		model.handle = &probe;
+		model.retry_count = 1;
+		model.chat_with_tools = [](struct model *self, const char *, struct chat_message *,
+			int, struct tool_desc *, int, struct chat_response *response,
+			sse_callback, void *) -> int {
+			auto *state = static_cast<struct probe *>(self->handle);
+			memset(&self->error_info, 0, sizeof(self->error_info));
+			if (++state->calls == 1) {
+				self->error_info.output_started = 1;
+				self->error_info.recoverable = 1;
+				response->content = strdup("Partial result");
+				return state->status;
+			}
+
+			response->content = strdup("Recovered answer");
+			return 200;
+		};
+		std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+			react_context_create(&tools, tok, &cfg, nullptr), react_context_destroy);
+		ASSERT_NE(context, nullptr);
+		context->llm_model = &model;
+		context->workdir = strdup("/tmp");
+		EXPECT_EQ(react_run(context.get(), "continue", nullptr, nullptr), 0);
+		EXPECT_STREQ(context->final_answer, "Recovered answer");
+		EXPECT_EQ(probe.calls, 2);
+	}
+}
+
+TEST_F(MockServerTest, ContextOverflowAtIterationLimitKeepsTheActualError)
+{
+	srv.response_status = 400;
+	srv.response_body = R"({"error":{"message":"Input too large"}})";
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	std::unique_ptr<model, decltype(&model_destroy)> model(
+		model_llm_create(nullptr, "test", "mock", base, "key"), model_destroy);
+	ASSERT_NE(model, nullptr);
+	struct db database NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	struct session session{};
+	ASSERT_EQ(session_create(&database, "overflow", "mock", &session), 0);
+	std::unique_ptr<react_context, decltype(&react_context_destroy)> context(
+		react_context_create(nullptr, nullptr, nullptr, nullptr), react_context_destroy);
+	ASSERT_NE(context, nullptr);
+	context->llm_model = model.get();
+	context->workdir = strdup("/tmp");
+	context->max_iterations = 1;
+	context->history_enabled = 1;
+	context->history_db = &database;
+	context->history_session_id = session.id;
+	context->compress.max_context_tokens = 128000;
+	context->compress.in_turn_compaction = 1;
+	context->compress.summarize_threshold_ratio = .8;
+	EXPECT_EQ(react_run(context.get(), "continue", nullptr, nullptr), MORPH_ERR_CONTEXT_LIMIT);
+	EXPECT_EQ(context->outcome, REACT_OUTCOME_LLM_ERROR);
+	EXPECT_EQ(context->context_recovery_count, 0);
+	EXPECT_EQ(srv.request_count, 1);
+	ASSERT_NE(context->last_error_detail, nullptr);
+	EXPECT_NE(strstr(context->last_error_detail, "Input too large"), nullptr);
 }
 
 TEST_F(MockServerTest, LlmDoesNotRetryAfterStreamContentWasEmitted) {
