@@ -43,6 +43,12 @@
 #include <nothing/tui/window.h>
 #include "cJSON.h"
 
+#if defined(_WIN32) || defined(__CYGWIN__)
+#define CLI_APPLICATION_WHEEL_SCROLL_CELLS 3
+#else
+#define CLI_APPLICATION_WHEEL_SCROLL_CELLS 1
+#endif
+
 struct cli_application *cli_application_from_controller(const struct nt_view_controller *controller)
 {
 	return (struct cli_application *)nt_view_controller_application(controller);
@@ -71,12 +77,14 @@ int cli_application_show_page(struct cli_application *ctx, struct nt_view_contro
 
 	int standalone = !cli_application_tui_borrow(ctx);
 	if (standalone) {
-		const struct nt_application_options options = {.input = stdin,
-							       .output = stdout,
-							       .external_signals = 1,
-							       .terminal_flags = NT_TERMINAL_MOUSE |
-										 NT_TERMINAL_PASTE,
-							       .synchronized_output = 1};
+		const struct nt_application_options options = {
+			.input = stdin,
+			.output = stdout,
+			.external_signals = 1,
+			.terminal_flags = NT_TERMINAL_MOUSE | NT_TERMINAL_PASTE,
+			.synchronized_output = 1,
+			.wheel_scroll_columns = CLI_APPLICATION_WHEEL_SCROLL_CELLS,
+			.wheel_scroll_lines = CLI_APPLICATION_WHEEL_SCROLL_CELLS};
 		rc = nt_application_init(&ctx->base, &options);
 		if (rc)
 			return rc;
@@ -114,7 +122,9 @@ int cli_application_run_page(struct cli_application *ctx, struct nt_view_control
 		.input = input,
 		.output = output,
 		.terminal_flags = NT_TERMINAL_MOUSE | NT_TERMINAL_PASTE | NT_TERMINAL_FOCUS,
-		.synchronized_output = 1};
+		.synchronized_output = 1,
+		.wheel_scroll_columns = CLI_APPLICATION_WHEEL_SCROLL_CELLS,
+		.wheel_scroll_lines = CLI_APPLICATION_WHEEL_SCROLL_CELLS};
 	int rc = nt_application_init(&ctx->base, &options);
 	if (rc)
 		return rc;
@@ -212,6 +222,8 @@ static void cli_application_run_session(struct cli_application *ctx)
 {
 	struct nt_application_options options = cli_chat_options();
 	options.synchronized_output = 1;
+	options.wheel_scroll_columns = CLI_APPLICATION_WHEEL_SCROLL_CELLS;
+	options.wheel_scroll_lines = CLI_APPLICATION_WHEEL_SCROLL_CELLS;
 	static const struct nt_application_class type = {
 		.superclass = &nt_application_base_class,
 		.instance_size = sizeof(*ctx),

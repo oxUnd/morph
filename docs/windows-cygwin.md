@@ -88,6 +88,10 @@ characters when the console has no native graphics protocol; `--no-color`
 keeps the textual image reference.
 The CLI uses cell differences when repainting, so scrolling does not resend
 unchanged text and backgrounds across whole rows.
+Windows ScrollView wheel input moves three content rows or columns per
+terminal report. Arrow keys still move one row, and scrollbar dragging and
+explicit content offsets keep their existing coordinates. Wheel reports are
+processed in order, including fine wheel increments accumulated by the terminal.
 
 The launcher uses the Windows user profile as `HOME` when it is not already
 configured, keeping `.morph` settings outside the program directory. It also

@@ -1,5 +1,6 @@
 """Scroll long retained content without repainting unchanged rows or moving drafts."""
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -9,6 +10,7 @@ from test_cli_pty import Terminal
 
 def main():
     binary = Path(sys.argv[1]).resolve()
+    expected_step = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     with tempfile.TemporaryDirectory(prefix='morph-scroll-pty-') as temp:
         directory = Path(temp)
         document = directory / 'scroll.md'
@@ -28,10 +30,16 @@ def main():
             terminal.pump(.2)
             start = len(terminal.raw.encode('utf-8'))
             buttons = [64] * 12 + [65] * 12
+            previous = None
             for index, button in enumerate(buttons):
                 terminal.child.send(f'\x1b[<{button};4;4M')
                 terminal.pump(.08)
                 assert 'SCROLL_PROTECTED_DRAFT' in terminal.screen.display[row], display(terminal)
+                first = min(int(value) for value in re.findall(r'SCROLL_ROW_(\d{4})',
+                                                              display(terminal)))
+                if 0 < index < 12:
+                    assert previous - first == expected_step, (previous, first, display(terminal))
+                previous = first
                 if index == 11:
                     assert 'SCROLL_ROW_0399' not in display(terminal), display(terminal)
             terminal.pump(.2)
