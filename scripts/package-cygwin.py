@@ -27,6 +27,16 @@ def copy_tree(source, destination):
         shutil.copytree(source, destination, ignore_dangling_symlinks=True)
 
 
+def copy_runtime_notices(sysroot, output):
+    documents = sysroot / "usr/share/doc"
+    for source in sorted(documents.rglob("*")):
+        if source.is_file() and source.name.lower().startswith(
+                ("copying", "copyright", "license", "licence")):
+            destination = output / "licenses/cygwin" / source.relative_to(documents)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+
 def archive_bundle(output):
     archive = output.with_name(output.name + ".zip")
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED,
@@ -121,6 +131,7 @@ def main():
     copy_tree(args.sysroot / "usr/share/terminfo", output / "usr/share/terminfo")
     copy_tree(args.sysroot / "usr/share/fonts", output / "usr/share/fonts")
     copy_tree(args.sysroot / "etc/fonts", output / "etc/fonts")
+    copy_runtime_notices(args.sysroot, output)
     font_configs = args.sysroot / "usr/share/fontconfig/conf.avail"
     if font_configs.is_dir():
         target = output / "etc/fonts/conf.d"
@@ -148,6 +159,8 @@ def main():
         b'"%~dp0bin\\morph.exe" %*\r\nexit /b %ERRORLEVEL%\r\n')
     (output / "README.txt").write_text(
         "Morph for Windows x86-64 (Cygwin)\n\n"
+        "Windows 10 version 2004 (build 19041) or later, or Windows 11, x64.\n"
+        "Use Windows Terminal 1.22 or newer for native image previews.\n\n"
         "Run morph.cmd from Windows Terminal, or bin/morph.exe from a Cygwin shell.\n"
         "The Cygwin DLLs and common shell commands are included. Keep bin, etc,\n"
         "usr, tmp, and home together. Configure models with morph.cmd setup.\n"

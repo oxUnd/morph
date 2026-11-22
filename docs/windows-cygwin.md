@@ -1,5 +1,10 @@
 # Windows builds with Cygwin
 
+Release packages target Windows 10 version 2004 (build 19041) or newer and
+Windows 11, x64. Windows 11 has been validated on a real machine. Use Windows
+Terminal 1.22 or newer for Sixel image previews. The ZIP includes the Cygwin
+runtime and does not require a separate Cygwin installation.
+
 Morph can target Windows x86-64 through Cygwin's POSIX runtime. The executable
 depends on `cygwin1.dll`; it does not require Wine on Windows. Keep all linked
 libraries in the same Cygwin runtime family rather than mixing in MinGW/MSYS2
