@@ -77,6 +77,10 @@ Use the generated ZIP when transferring the bundle: it preserves the empty
 initialization even before any shell command is executed. The adjacent
 `.zip.sha256` file records the archive checksum.
 
+The pinned TUI uses environment-based capability detection on native Windows
+console streams. It avoids probe replies appearing in the composer while
+retaining active capability queries on transparent Cygwin PTYs such as mintty.
+
 The launcher uses the Windows user profile as `HOME` when it is not already
 configured, keeping `.morph` settings outside the program directory. It also
 selects the bundled CA certificates unless a certificate environment override

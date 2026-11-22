@@ -36,9 +36,9 @@ the MathJax and Markdown source trees at the paths shown below.
 CMake fetches a pinned post-v0.1.0 nothing-tui revision, including native
 text selection, draggable split views, resize pointers, view-owned animations,
 grouped, searchable shortcut help with bold key labels, source-preserving tab
-alignment, and bounded application updates for the CLI. Use
+alignment, bounded application updates, and clean Cygwin console startup. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/f591eb426a652b9537e7824658661ba3cca0cd2f)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/87fb6e75f077e3405f6d09b439f78c0018b7d579)
 
 Morph and nothing-tui share one `nbase::nbase` target built from a pinned
 post-v0.1.0 nothing revision under the MIT license. Morph uses nbase's HTTP backend
