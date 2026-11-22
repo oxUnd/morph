@@ -54,9 +54,10 @@ the MathJax and Markdown source trees at the paths shown below.
 CMake fetches a pinned post-v0.1.0 nothing-tui revision, including native
 text selection, draggable split views, resize pointers, view-owned animations,
 grouped, searchable shortcut help with bold key labels, source-preserving tab
-alignment, bounded application updates, and clean Cygwin console startup. Use
+alignment, bounded application updates, clean Cygwin console startup, and Windows
+Terminal Sixel cell geometry. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/6a63175fbe1dffb0ceeabcccee648b9d5c0b7312)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/705095d25ca3c876635555e1618aaa95732b08b8)
 
 Morph and nothing-tui share one `nbase::nbase` target built from a pinned
 post-v0.1.0 nothing revision under the MIT license. Morph uses nbase's HTTP backend
@@ -66,6 +67,10 @@ parser for model and MCP events. Cygwin builds apply the executable-path patch i
 [nothing source](https://codeberg.org/oxund/nothing/src/commit/fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3)
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
+
+The morph-markdown checkout must include [inline math line layout](https://github.com/oxUnd/morph-markdown/commit/785ad7fa38c7d61b0f8b41f1a9a9bc5ea6e213ea)
+or a newer revision. Both renderers include their math layout and Windows Terminal
+cell-size fixes in source; Morph does not apply local patches to these checkouts.
 
 ```bash
 git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c
