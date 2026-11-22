@@ -34,10 +34,14 @@ matching the request ID, ignoring progress notifications and unrelated replies.
 The default is `protocol_version = "auto"`:
 
 1. Send a modern `server/discover` request with per-request metadata. A valid
-   modern response selects `2026-07-28`; no initialization or session ID is used.
-2. A recognized modern protocol error never selects a legacy adapter. Unknown
-   modern versions fail explicitly. Auth failures, HTTP 5xx, malformed successful
-   responses and HTTP transport failures also do not trigger downgrade.
+   response advertising `2026-07-28` selects that revision; no initialization or
+   session ID is used. If discovery advertises only older revisions, select the
+   newest one supported by both Morph and the transport, then initialize it.
+   The order of the server's version list does not affect this preference.
+2. A recognized modern protocol error never selects a legacy adapter. Discovery
+   without a mutually supported revision fails explicitly. Auth failures, HTTP
+   5xx, malformed successful responses and HTTP transport failures also do not
+   trigger downgrade.
 3. Legacy evidence (including a correlated non-modern JSON-RPC rejection on HTTP
    200) selects the `initialize` handshake, offering `2025-11-25`. Its initial
    HTTP request omits the not-yet-negotiated protocol-version header.

@@ -195,6 +195,15 @@ while IFS= read -r line; do
    case "$2" in
    exit) exit 0 ;;
    silent) continue ;;
+   advertised_*)
+     versions='"2025-06-18","2024-11-05","2099-01-01","2025-11-25"'
+     [ "$2" = advertised_june ] && versions='"2025-06-18"'
+     [ "$2" = advertised_2024 ] && versions='"2024-11-05"'
+     [ "$2" = advertised_unknown ] && versions='"2099-01-01"'
+     printf '{"jsonrpc":"2.0","id":%s,"result":{' "$id"
+     printf '"resultType":"complete","supportedVersions":[%s],' "$versions"
+     printf '"capabilities":{"tools":{}}}}\n'
+     ;;
    legacy*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"Initialize first"}}\n' "$id" ;;
    unsupported) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32022,"message":"Unsupported version","data":{"supported":["2099-01-01"]}}}\n' "$id" ;;
    malformed) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
@@ -205,6 +214,8 @@ while IFS= read -r line; do
    version=2025-06-18
    [ "$2" = legacy_november ] && version=2025-11-25
    [ "$2" = legacy_unknown ] && version=2099-01-01
+   [ "$2" = advertised_legacy ] && version=2025-11-25
+   [ "$2" = advertised_2024 ] && version=2024-11-05
    printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"%s","capabilities":{"tools":{}},"serverInfo":{"name":"legacy","version":"1"}}}\n' "$id" "$version"
    ;;
  *'"method":"ping"'*)
@@ -287,6 +298,41 @@ TEST_F(McpStdioProtocolTest, NovemberLegacyVersionIsSupported)
 {
 	ASSERT_EQ(connect("legacy_november"), 0);
 	EXPECT_STREQ(client.negotiated_version, "2025-11-25");
+}
+
+TEST_F(McpStdioProtocolTest, DiscoveryChoosesNewestCommonLegacyVersion)
+{
+	ASSERT_EQ(connect("advertised_legacy"), 0);
+	EXPECT_STREQ(client.negotiated_version, "2025-11-25");
+	EXPECT_STREQ(client.server_name, "legacy");
+	ASSERT_EQ(mcp_ping(&client), 0);
+	std::string log = wire_log();
+	EXPECT_NE(log.find("\"method\":\"server/discover\""), std::string::npos);
+	EXPECT_NE(log.find("\"protocolVersion\":\"2025-11-25\""), std::string::npos);
+	EXPECT_NE(log.find("notifications/initialized"), std::string::npos);
+}
+
+TEST_F(McpStdioProtocolTest, DiscoveryOffersTheAdvertisedOlderLegacyVersion)
+{
+	ASSERT_EQ(connect("advertised_june"), 0);
+	EXPECT_STREQ(client.negotiated_version, "2025-06-18");
+	EXPECT_NE(wire_log().find("\"protocolVersion\":\"2025-06-18\""), std::string::npos);
+	EXPECT_EQ(wire_log().find("\"protocolVersion\":\"2025-11-25\""), std::string::npos);
+}
+
+TEST_F(McpStdioProtocolTest, DiscoveryAllowsNovember2024OverStdio)
+{
+	ASSERT_EQ(connect("advertised_2024"), 0);
+	EXPECT_STREQ(client.negotiated_version, "2024-11-05");
+	EXPECT_NE(wire_log().find("\"protocolVersion\":\"2024-11-05\""), std::string::npos);
+}
+
+TEST_F(McpStdioProtocolTest, DiscoveryWithNoCommonVersionDoesNotInitialize)
+{
+	EXPECT_EQ(connect("advertised_unknown"), NB_ERR_UNSUPPORTED);
+	EXPECT_EQ(wire_log().find("\"method\":\"initialize\""), std::string::npos);
+	EXPECT_EQ(client.connected, 0);
+	EXPECT_EQ(client.protocol, nullptr);
 }
 
 TEST_F(McpStdioProtocolTest, ServerExitingOnProbeIsRestartedForLegacyHandshake)
@@ -600,6 +646,60 @@ TEST_F(McpHttpProtocolTest, LegacyFallbackKeepsSessionAndServerSelectedVersion)
 	EXPECT_TRUE(requests.back().header("Mcp-Method").empty());
 }
 
+TEST_F(McpHttpProtocolTest, DiscoverySelectsNewestTransportCompatibleLegacyVersion)
+{
+	McpProtocolHttpServer server([](const McpHttpRequest &wire) {
+		McpHttpReply reply;
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(wire.body.c_str());
+		std::string method = cJSON_GetObjectItem(request, "method")->valuestring;
+		if (method == "server/discover") {
+			reply.body = rpc_result(request,
+				R"({"supportedVersions":["2024-11-05","2025-03-26"],
+				"capabilities":{"tools":{}}})");
+		} else if (method == "initialize") {
+			reply.body = rpc_result(request,
+				R"({"protocolVersion":"2025-03-26","capabilities":{"tools":{}},
+				"serverInfo":{"name":"legacy","version":"1"}})");
+			reply.headers = "Mcp-Session-Id: advertised-legacy-session\r\n";
+		} else if (method == "notifications/initialized") {
+			reply.status = 202;
+		} else {
+			reply.body = rpc_result(request, "{}");
+		}
+
+		return reply;
+	});
+	ASSERT_NE(server.port, 0U);
+	ASSERT_EQ(connect(server), 0);
+	ASSERT_EQ(mcp_ping(&client), 0);
+	EXPECT_STREQ(client.negotiated_version, "2025-03-26");
+	EXPECT_STREQ(client.session_id, "advertised-legacy-session");
+	auto requests = server.captured();
+	ASSERT_EQ(requests.size(), 4U);
+	EXPECT_NE(requests[1].body.find("\"protocolVersion\":\"2025-03-26\""),
+		std::string::npos);
+	EXPECT_TRUE(requests[1].header("MCP-Protocol-Version").empty());
+	EXPECT_TRUE(requests[1].header("Mcp-Method").empty());
+	EXPECT_EQ(requests.back().header("MCP-Protocol-Version"), "2025-03-26");
+	EXPECT_EQ(requests.back().header("Mcp-Session-Id"), "advertised-legacy-session");
+	EXPECT_EQ(requests.back().body.find("_meta"), std::string::npos);
+}
+
+TEST_F(McpHttpProtocolTest, DiscoveryRejectsNovember2024OnlyWithoutInitializing)
+{
+	McpProtocolHttpServer server([](const McpHttpRequest &wire) {
+		McpHttpReply reply;
+		cJSON *request NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(wire.body.c_str());
+		reply.body = rpc_result(request,
+			R"({"supportedVersions":["2024-11-05"],"capabilities":{}})");
+		return reply;
+	});
+	ASSERT_NE(server.port, 0U);
+	EXPECT_EQ(connect(server), NB_ERR_UNSUPPORTED);
+	EXPECT_EQ(server.captured().size(), 1U);
+	EXPECT_EQ(client.protocol, nullptr);
+}
+
 TEST_F(McpHttpProtocolTest, AuthAndServerFailuresNeverSelectLegacyProtocol)
 {
 	for (int status : {401, 403, 500, 503}) {
@@ -697,6 +797,7 @@ TEST_F(McpStdioProtocolTest, PinnedLegacySkipsProbeAndRejectsDifferentServerVers
 TEST_F(McpStdioProtocolTest, PinnedModernNeverFallsBackToLegacyHandshake)
 {
 	strcpy(client.config.protocol_version, MCP_PROTOCOL_VERSION);
+	EXPECT_EQ(connect("advertised_legacy"), NB_ERR_UNSUPPORTED);
 	EXPECT_EQ(connect("legacy"), NB_ERR_UNSUPPORTED);
 	EXPECT_EQ(wire_log().find("\"method\":\"initialize\""), std::string::npos);
 	ASSERT_EQ(connect("modern"), 0);

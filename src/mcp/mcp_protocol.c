@@ -11,7 +11,7 @@
 #define MCP_PROBE_TIMEOUT_MS 5000
 #define MCP_META_PREFIX "io.modelcontextprotocol/"
 
-/* Versions are explicit: an unknown date never silently selects a codec. */
+/* Known revisions, newest first; an unknown date never selects a codec. */
 static const struct mcp_protocol_adapter adapters[] = {
 	{MCP_PROTOCOL_VERSION, 1},
 	{MCP_LEGACY_PROTOCOL_VERSION, 0},
@@ -370,6 +370,24 @@ static int version_list_contains(cJSON *versions, const char *version)
 	return 0;
 }
 
+static const struct mcp_protocol_adapter *discovered_legacy_borrow(
+	cJSON *versions, enum mcp_transport_type transport)
+{
+	for (size_t i = 0; i < sizeof(adapters) / sizeof(adapters[0]); i++) {
+		const struct mcp_protocol_adapter *adapter = &adapters[i];
+
+		if (adapter->per_request ||
+		    (transport == MCP_TRANSPORT_STREAMABLE_HTTP &&
+		     strcmp(adapter->version, "2024-11-05") == 0))
+			continue;
+
+		if (version_list_contains(versions, adapter->version))
+			return adapter;
+	}
+
+	return NULL;
+}
+
 static void server_details(struct mcp_client *client, cJSON *result, int modern)
 {
 	cJSON *caps = cJSON_GetObjectItemCaseSensitive(result, "capabilities");
@@ -399,7 +417,8 @@ static void server_details(struct mcp_client *client, cJSON *result, int modern)
 }
 
 /* Only positive legacy evidence permits downgrade; auth/outages never do. */
-static int modern_probe(struct mcp_client *client, int *legacy)
+static int modern_probe(struct mcp_client *client,
+	const struct mcp_protocol_adapter **legacy)
 {
 	const struct mcp_protocol_adapter *modern = mcp_protocol_borrow(MCP_PROTOCOL_VERSION);
 	struct mcp_wire_reply reply = {0};
@@ -420,7 +439,7 @@ static int modern_probe(struct mcp_client *client, int *legacy)
 	int rc = protocol_exchange(client, modern, id, "server/discover", NULL,
 		timeout, &reply);
 
-	*legacy = 0;
+	*legacy = NULL;
 	if (rc == 0)
 		rc = mcp_protocol_decode(client->config.logger, &reply, id, &object);
 	cJSON *evidence = reply.json ? cJSON_Parse(reply.json) : NULL;
@@ -449,11 +468,15 @@ static int modern_probe(struct mcp_client *client, int *legacy)
 			rc = nb_err_trace(client ? client->config.logger : NULL, NB_ERR_PROTOCOL,
 					  morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
 					  __LINE__);
-		if (rc == 0 && !version_list_contains(versions, modern->version))
-			rc = nb_err_trace(client ? client->config.logger : NULL, NB_ERR_UNSUPPORTED,
-					  morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
-					  __LINE__);
-		if (rc == 0) {
+		if (rc == 0 && !version_list_contains(versions, modern->version)) {
+			*legacy = discovered_legacy_borrow(versions, client->config.transport);
+			if (!*legacy)
+				rc = nb_err_trace(client->config.logger, NB_ERR_UNSUPPORTED,
+					morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+					__LINE__);
+		}
+
+		if (rc == 0 && !*legacy) {
 			client->protocol = modern;
 			server_details(client, result, 1);
 		}
@@ -463,7 +486,7 @@ static int modern_probe(struct mcp_client *client, int *legacy)
 		    ((reply.http_status >= 400 && reply.http_status < 500 &&
 		      reply.http_status != 401 && reply.http_status != 403) ||
 		     (rc == NB_ERR_PROTOCOL && object && error && reply.http_status < 400)))) {
-		*legacy = 1;
+		*legacy = mcp_protocol_borrow(MCP_LEGACY_PROTOCOL_VERSION);
 		rc = 0;
 	}
 	cJSON_Delete(evidence);
@@ -538,7 +561,7 @@ static int legacy_initialize(struct mcp_client *client,
 
 int mcp_protocol_initialize(struct mcp_client *client)
 {
-	int legacy = 0;
+	const struct mcp_protocol_adapter *legacy = NULL;
 	int rc;
 
 	if (!client)
@@ -583,8 +606,7 @@ int mcp_protocol_initialize(struct mcp_client *client)
 			client->next_req_id = 1;
 		}
 		if (rc == 0)
-			rc = legacy_initialize(client,
-					       mcp_protocol_borrow(MCP_LEGACY_PROTOCOL_VERSION), 0);
+			rc = legacy_initialize(client, legacy, 0);
 	}
 	if (rc == 0) {
 		snprintf(client->negotiated_version, sizeof(client->negotiated_version),
