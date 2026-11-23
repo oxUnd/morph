@@ -1,5 +1,7 @@
 #include "sapi/cli/components/agents_browser.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "sapi/cli/components/shortcut_hint.h"
 
 #include "sapi/cli/presentation/agents.h"
@@ -600,6 +602,20 @@ static void cli_agents_browser_destroy(struct nt_view *view)
 	nb_buf_destroy(&browser->model);
 }
 
+static const struct nt_keymap *cli_agents_browser_keymap(const struct nt_view *view)
+{
+	(void)view;
+	static const struct nt_key_binding bindings[] = {
+		{.key = '\t', .description = "Next agent filter"},
+		{.key = '\t', .modifiers = NT_MOD_SHIFT, .description = "Previous agent filter"},
+		{.key = NT_KEY_LEFT, .description = "Focus agent list"},
+		{.key = NT_KEY_RIGHT, .description = "Focus agent details"},
+		{.key = '?', .description = "Toggle agent browser help"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	return &map;
+}
+
 struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_view *parent,
 				      struct nt_view *footer)
 {
@@ -610,6 +626,7 @@ struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_vie
 		.layout = cli_agents_browser_layout,
 		.draw = cli_agents_browser_draw,
 		.capture_event = cli_agents_browser_capture,
+		.keymap = cli_agents_browser_keymap,
 		.deinit = cli_agents_browser_destroy,
 	};
 	struct cli_agents_browser *b =
@@ -618,6 +635,7 @@ struct nt_view *cli_agents_browser_add(struct nt_builder *builder, struct nt_vie
 		return NULL;
 
 	struct nt_view *v = &b->base;
+	nt_builder_fail(builder, nt_view_set_help_label(v, "Agents"));
 	nt_builder_fail(builder, nt_view_use_state_int(v, 0, &b->agent_count));
 	nt_builder_fail(builder, nt_view_use_state_string(v, "", &b->hint));
 	b->heading = nt_label_add(builder, v, "", NULL);

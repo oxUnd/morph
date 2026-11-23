@@ -16,6 +16,7 @@
 #include <nothing/tui/controls/tab_bar.h>
 #include <nothing/tui/controls/text_field.h>
 #include <nothing/tui/input.h>
+#include <nothing/tui/keymap.h>
 #include <nothing/tui/theme.h>
 #include <nothing/tui/view_controller.h>
 #include <nothing/tui/views/card_view.h>
@@ -1091,12 +1092,26 @@ static void cli_setup_form_deinit(struct nt_view *view)
 		free(form->drafts[i].text);
 }
 
+static const struct nt_keymap *cli_setup_form_keymap(const struct nt_view *view)
+{
+	(void)view;
+	static const struct nt_key_binding bindings[] = {
+		{.key = NT_KEY_F10, .description = "Save configuration"},
+		{.key = '\r', .modifiers = NT_MOD_CTRL, .description = "Save configuration"},
+		{.key = 27, .description = "Cancel setup"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Cancel setup"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	return &map;
+}
+
 static const struct nt_view_class cli_setup_form_class = {
 	.superclass = &nt_stack_view_class,
 	.instance_size = sizeof(struct cli_setup_form),
 	.kind = "cli_setup_form",
 	.layout = cli_setup_form_layout,
 	.capture_event = cli_setup_form_capture,
+	.keymap = cli_setup_form_keymap,
 	.deinit = cli_setup_form_deinit,
 };
 
@@ -1120,6 +1135,7 @@ struct nt_view *cli_setup_form_add_borrow(struct nt_builder *builder, struct nt_
 		return NULL;
 
 	struct nt_view *view = &form->base.base;
+	nt_builder_fail(builder, nt_view_set_help_label(view, "Setup"));
 	form->state = state;
 	form->builder = builder;
 	form->styled = styled;

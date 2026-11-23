@@ -17,6 +17,7 @@
 #include <nothing/tui/application.h>
 #include <nothing/tui/component_state.h>
 #include <nothing/tui/input.h>
+#include <nothing/tui/keymap.h>
 #include <nothing/tui/terminal.h>
 #include <nothing/tui/view_controller.h>
 #include <nothing/tui/views/label.h>
@@ -105,6 +106,15 @@ static void cli_turn_details_build(struct nt_view_controller *controller,
 	cli_page_layout_build(builder, &page->layout, "turn details", &nt_stack_view_class,
 			      NULL, NULL);
 	struct nt_view *root = page->layout.body;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 'r', .help = "R", .description = "Toggle raw JSON"},
+		{.key = 't', .modifiers = NT_MOD_CTRL, .description = "Back to conversation"},
+		{.key = 27, .description = "Back to conversation"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Back to conversation"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(page->layout.root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(page->layout.root, "Turn details"));
 	nt_builder_fail(builder, nt_view_use_state_bool(root, false, &page->raw));
 	const struct nt_view_options header = {.padding = {.bottom = 1}};
 	struct nt_view *heading =

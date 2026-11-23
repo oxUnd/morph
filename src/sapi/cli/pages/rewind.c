@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/rewind.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/services/checkpoints.h"
 #include "sapi/cli/components/page_layout.h"
@@ -264,6 +266,16 @@ static void cli_rewind_build(struct nt_view_controller *controller, struct nt_bu
 	cli_page_layout_build(builder, &page->layout, "rewind", &nt_view_base_class,
 			      cli_rewind_back, page);
 	struct nt_view *root = page->layout.body;
+	static const struct nt_key_binding bindings[] = {
+		{.key = NT_KEY_LEFT, .description = "Back or close rewind picker"},
+		{.key = 27, .description = "Back or close rewind picker"},
+		{.key = 'q', .help = "Q", .description = "Close rewind picker"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close rewind picker"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Close rewind picker"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(page->layout.root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(page->layout.root, "Rewind"));
 	const struct nt_view_options heading = cli_panel_heading(NT_AUTO);
 	const struct nt_view_options hint = cli_panel_hint(NT_AUTO);
 	for (int i = 0; i < 4; i++)

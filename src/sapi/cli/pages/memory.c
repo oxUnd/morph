@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/memory.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/components/list.h"
 #include "sapi/cli/components/page_layout.h"
@@ -352,6 +354,16 @@ static void cli_memory_build(struct nt_view_controller *controller, struct nt_bu
 	cli_page_layout_build(builder, &page->layout, "memory", &nt_stack_view_class,
 			      cli_memory_back, page);
 	struct nt_view *root = page->layout.body;
+	static const struct nt_key_binding bindings[] = {
+		{.key = '/', .description = "Search memories"},
+		{.key = 'r', .help = "R", .description = "Refresh memories"},
+		{.key = 'q', .help = "Q", .description = "Back or close memories"},
+		{.key = 27, .description = "Back or close memories"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close memories"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(page->layout.root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(page->layout.root, "Memory"));
 	struct nt_view *description = nt_label_add(builder, root, "", NULL);
 	page->list = cli_list_add(builder, root, &fill);
 	page->document = nt_text_view_add(builder, root, "", &fill);

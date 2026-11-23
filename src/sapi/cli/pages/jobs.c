@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/jobs.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "sapi/cli/components/shortcut_hint.h"
 #include "errors.h"
 #include "sapi/cli/components/list.h"
@@ -175,6 +177,16 @@ static void cli_jobs_controller_build(struct nt_view_controller *controller,
 	cli_page_layout_build(builder, &page->layout, "jobs", &nt_stack_view_class,
 			      cli_jobs_back, page);
 	struct nt_view *root = page->layout.body;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 'k', .help = "K", .description = "Stop selected background job"},
+		{.key = 'r', .help = "R", .description = "Refresh background jobs"},
+		{.key = 'q', .help = "Q", .description = "Back or close background jobs"},
+		{.key = 27, .description = "Back or close background jobs"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close background jobs"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(page->layout.root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(page->layout.root, "Background jobs"));
 	if (!root)
 		return;
 

@@ -11,6 +11,7 @@
 #include "sapi/cli/presentation/output.h"
 #include <nothing/tui/controls/list_view.h>
 #include <nothing/tui/controls/text_field.h>
+#include <nothing/tui/keymap.h>
 #include <nothing/tui/terminal/text.h>
 #include <nothing/tui/views/stack_view.h>
 #include <nothing/tui/views/label.h>
@@ -617,6 +618,20 @@ static void cli_history_build(struct nt_view_controller *controller, struct nt_b
 	struct nt_view *root = page->layout.body;
 	if (!root)
 		return;
+
+	static const struct nt_key_binding bindings[] = {
+		{.key = '/', .description = "Search conversation history"},
+		{.key = '\t', .description = "Next history filter"},
+		{.key = 's', .help = "S", .description = "Show last model request"},
+		{.key = 'v', .help = "V", .description = "Toggle request or stored history"},
+		{.key = 'q', .help = "Q", .description = "Back or close history"},
+		{.key = 27, .description = "Back or close history"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close history"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Close history"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(page->layout.root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(page->layout.root, "History"));
 
 	nb_vec_init(&page->matches, sizeof(page->report));
 	int columns, rows;

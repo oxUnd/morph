@@ -14,6 +14,7 @@
 #include <nothing/tui/controls/list_view.h>
 #include <nothing/tui/controls/tab_bar.h>
 #include <nothing/tui/input.h>
+#include <nothing/tui/keymap.h>
 #include <nothing/tui/terminal/text.h>
 #include <nothing/tui/views/label.h>
 #include <nothing/tui/views/scroll_view.h>
@@ -417,6 +418,28 @@ static int cli_file_browser_key(struct nt_view *view, const struct nt_event *eve
 	return event->key == 3 ? nt_view_emit(view, NT_VIEW_EVENT_CANCEL, 0, NULL) : 0;
 }
 
+static const struct nt_keymap *cli_file_browser_keymap(const struct nt_view *view)
+{
+	const struct cli_file_browser *browser = (const struct cli_file_browser *)view;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 27, .description = "Back to file list or close files"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close files"},
+		{.key = 'w', .modifiers = NT_MOD_CTRL, .description = "Close file tab"},
+		{.key = NT_KEY_PAGE_UP, .modifiers = NT_MOD_CTRL,
+		 .description = "Previous file tab"},
+		{.key = NT_KEY_LEFT, .modifiers = NT_MOD_ALT,
+		 .description = "Previous file tab"},
+		{.key = NT_KEY_PAGE_DOWN, .modifiers = NT_MOD_CTRL,
+		 .description = "Next file tab"},
+		{.key = NT_KEY_RIGHT, .modifiers = NT_MOD_ALT,
+		 .description = "Next file tab"},
+	};
+	static const struct nt_keymap list = {bindings, 2};
+	static const struct nt_keymap single = {bindings, 3};
+	static const struct nt_keymap tabs = {bindings, NT_ARRAY_SIZE(bindings)};
+	return !browser->viewing ? &list : browser->viewers.len > 1 ? &tabs : &single;
+}
+
 static void cli_file_browser_destroy(struct nt_view *view)
 {
 	struct cli_file_browser *browser = (struct cli_file_browser *)view;
@@ -435,6 +458,7 @@ struct nt_view *cli_file_browser_add(struct nt_builder *builder, struct nt_view 
 		.draw = cli_file_browser_draw,
 		.capture_event = cli_file_browser_capture,
 		.handle_event = cli_file_browser_key,
+		.keymap = cli_file_browser_keymap,
 		.deinit = cli_file_browser_destroy,
 	};
 	struct cli_file_browser *browser = (struct cli_file_browser *)nt_view_add(builder,
@@ -443,6 +467,7 @@ struct nt_view *cli_file_browser_add(struct nt_builder *builder, struct nt_view 
 		return NULL;
 
 	browser->builder = builder;
+	nt_builder_fail(builder, nt_view_set_help_label(&browser->base.base, "Files"));
 	browser->model = model;
 	browser->workdir = workdir;
 	browser->styled = styled;

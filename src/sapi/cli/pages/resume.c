@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/resume.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
@@ -589,6 +591,17 @@ static void cli_resume_build(struct nt_view_controller *controller, struct nt_bu
 	struct cli_resume_picker *page = (struct cli_resume_picker *)controller;
 	cli_page_layout_build(builder, &page->layout, "resume", &nt_view_base_class, NULL, NULL);
 	struct nt_view *root = page->layout.body;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 'n', .help = "N", .description = "Next page of sessions"},
+		{.key = 'p', .help = "P", .description = "Previous page of sessions"},
+		{.key = 'q', .help = "Q", .description = "Close session picker"},
+		{.key = 27, .description = "Close session picker"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close session picker"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Close session picker"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(page->layout.root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(page->layout.root, "Sessions"));
 	const struct nt_view_options hint = cli_panel_hint(1);
 	cli_shortcut_hint_add(builder, page->layout.footer,
 		     "Up/Down Select · Enter Resume · Left/Right Page · Esc Back", &hint);

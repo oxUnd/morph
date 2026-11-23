@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/subagents.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "sapi/cli/components/shortcut_hint.h"
 
 #include "config/config.h"
@@ -835,6 +837,29 @@ static void cli_subagents_build(struct nt_view_controller *controller, struct nt
 	struct nt_view *browser_help = nt_column_add(builder, page->layout.footer, 0, NULL);
 	view->browser = cli_agents_browser_add(builder, root, browser_help);
 	view->reader = nt_column_add(builder, root, 0, &fill);
+	static const struct nt_key_binding bindings[] = {
+		{.key = 'f', .help = "F", .description = "Send agent follow-up"},
+		{.key = 'k', .help = "K", .description = "Interrupt agent"},
+		{.key = 'd', .help = "D", .description = "Toggle agent turn details"},
+		{.key = 't', .modifiers = NT_MOD_CTRL, .description = "Toggle agent turn details"},
+		{.key = '\t', .description = "Next agent conversation"},
+		{.key = '\t', .modifiers = NT_MOD_SHIFT,
+		 .description = "Previous agent conversation"},
+		{.key = NT_KEY_RIGHT, .description = "Next agent conversation"},
+		{.key = NT_KEY_LEFT, .description = "Previous agent conversation"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(view->reader, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(view->reader, "Agent conversation"));
+	static const struct nt_key_binding back_bindings[] = {
+		{.key = 27, .description = "Back or cancel agent follow-up"},
+		{.key = 'q', .help = "Q", .description = "Close agents"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Back or close agents"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Close agents"},
+	};
+	static const struct nt_keymap back_map = {back_bindings, NT_ARRAY_SIZE(back_bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(page->layout.root, &back_map));
+	nt_builder_fail(builder, nt_view_set_help_label(page->layout.root, "Agents"));
 	view->status = nt_label_add(builder, view->reader, "", &dim);
 	view->gap = nt_label_add(builder, view->reader, "", &row);
 	view->scroll = nt_scroll_view_add(builder, view->reader, &fill);
@@ -1054,6 +1079,15 @@ static struct nt_view *cli_subagents_picker_build(struct nt_builder *builder,
 		return NULL;
 
 	page->picker = (struct cli_subagents_picker_view *)root;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 27, .description = "Close subagent picker"},
+		{.key = 'q', .help = "Q", .description = "Close subagent picker"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close subagent picker"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Close subagent picker"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(root, "Subagents"));
 	struct cli_application *ctx = cli_application_from_view(root);
 	struct nt_view_options title = {.height = 1}, hint = {.height = 1};
 	if (cli_output_color_enabled(ctx)) {

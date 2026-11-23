@@ -104,6 +104,9 @@ auto_connect = true
                 if width == 120:
                     terminal.send('\x0b')
                     until(terminal, lambda text: 'Keyboard shortcuts' in text)
+                    terminal.send('Cancel question')
+                    help_text = '\n'.join(terminal.screen.display)
+                    assert 'Ctrl+C' in help_text and 'Ctrl+D' in help_text, help_text
                     terminal.send('\x1b')
                     until(terminal, lambda text: 'Other · Type your own answer' in text)
                 terminal.send(keys)

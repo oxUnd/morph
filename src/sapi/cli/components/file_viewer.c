@@ -11,6 +11,7 @@
 #include <nb/err.h>
 #include <nb/file.h>
 #include <nothing/tui/input.h>
+#include <nothing/tui/keymap.h>
 #include <nothing/tui/shortcut.h>
 #include <nothing/tui/views/label.h>
 #include <nothing/tui/views/scroll_view.h>
@@ -300,6 +301,20 @@ static int cli_file_viewer_capture(struct nt_view *view, const struct nt_event *
 	return nt_view_class_methods(viewer->document)->handle_event(viewer->document, &find);
 }
 
+static const struct nt_keymap *cli_file_viewer_keymap(const struct nt_view *view)
+{
+	const struct cli_file_viewer *viewer = (const struct cli_file_viewer *)view;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 'r', .help = "R", .description = "Reload file preview"},
+		{.key = 'f', .modifiers = NT_MOD_CTRL, .description = "Find in file"},
+		{.key = 'm', .help = "M", .description = "Toggle Markdown source"},
+	};
+	static const struct nt_keymap plain = {bindings, 2};
+	static const struct nt_keymap markdown = {bindings, NT_ARRAY_SIZE(bindings)};
+	return viewer->preview && viewer->preview->markdown && !viewer->preview->status
+		? &markdown : &plain;
+}
+
 struct nt_view *cli_file_viewer_add(struct nt_builder *builder, struct nt_view *parent,
 	const char *path, const char *workdir, int styled)
 {
@@ -310,6 +325,7 @@ struct nt_view *cli_file_viewer_add(struct nt_builder *builder, struct nt_view *
 		.layout = cli_file_viewer_layout,
 		.capture_event = cli_file_viewer_capture,
 		.handle_event = cli_file_viewer_key,
+		.keymap = cli_file_viewer_keymap,
 		.prepare_deinit = cli_file_viewer_prepare_deinit,
 		.deinit = cli_file_viewer_destroy,
 	};
@@ -325,6 +341,7 @@ struct nt_view *cli_file_viewer_add(struct nt_builder *builder, struct nt_view *
 		return NULL;
 
 	viewer->builder = builder;
+	nt_builder_fail(builder, nt_view_set_help_label(&viewer->base, "File preview"));
 	viewer->path = nb_charp_steal(&copy);
 	viewer->workdir = workdir;
 	viewer->styled = styled;

@@ -68,6 +68,7 @@
 #include <nothing/tui/controls/button.h>
 #include <nothing/tui/controls/list_view.h>
 #include <nothing/tui/controls/text_field.h>
+#include <nothing/tui/keymap.h>
 #include <nothing/tui/shortcut.h>
 #include <nothing/tui/terminal.h>
 #include <nothing/tui/view_controller.h>
@@ -242,7 +243,10 @@ static int cli_chat_files_close(struct cli_chat_page *page)
 		return rc;
 
 	page->files_open = page->files_focus = 0;
-	rc = nt_view_set_hidden(page->files_view, 1);
+	rc = nt_view_set_keymap(page->workspace, NULL);
+	if (!rc)
+		rc = nt_view_set_hidden(page->files_view, 1);
+
 	if (!rc)
 		rc = nt_view_set_hidden(page->primary, 0);
 
@@ -304,7 +308,15 @@ int cli_chat_files_show(struct cli_application *ctx, const char *url)
 	cli_chat_files_session(page);
 	int opening = !page->files_open;
 	page->files_open = page->files_focus = 1;
-	int rc = cli_file_browser_sync(page->files_view);
+	static const struct nt_key_binding bindings[] = {
+		{.key = 'o', .modifiers = NT_MOD_CTRL,
+		 .description = "Switch focus between chat and files"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	int rc = nt_view_set_keymap(page->workspace, &map);
+	if (!rc)
+		rc = cli_file_browser_sync(page->files_view);
+
 	if (!rc)
 		rc = nt_view_set_hidden(page->files_view, 0);
 
@@ -2034,6 +2046,35 @@ static int cli_chat_editor_key(void *data, const struct nt_view_event *event)
 	return cli_chat_page_key(data, event->input);
 }
 
+static const struct nt_keymap *cli_chat_keymap(const struct nt_view *view)
+{
+	const struct cli_chat_page *page =
+		(const struct cli_chat_page *)nt_view_controller(view);
+	static const struct nt_key_binding bindings[] = {
+		{.key = '\r', .help = "Enter", .description = "Send message or queue follow-up"},
+		{.key = 'j', .modifiers = NT_MOD_CTRL, .description = "Insert new line"},
+		{.key = 't', .modifiers = NT_MOD_CTRL, .description = "Toggle turn details"},
+		{.key = 'v', .modifiers = NT_MOD_CTRL, .description = "Paste text or image"},
+		{.key = 'v', .modifiers = NT_MOD_CTRL | NT_MOD_SUPER,
+		 .help = "Ctrl+Cmd+V", .description = "Paste image"},
+		{.key = NT_KEY_PAGE_UP, .description = "Scroll conversation up"},
+		{.key = NT_KEY_PAGE_DOWN, .description = "Scroll conversation down"},
+		{.key = NT_KEY_PAGE_UP, .modifiers = NT_MOD_CTRL,
+		 .description = "Previous session"},
+		{.key = NT_KEY_PAGE_DOWN, .modifiers = NT_MOD_CTRL,
+		 .description = "Next session"},
+		{.key = NT_KEY_UP, .description = "Previous input in history"},
+		{.key = NT_KEY_DOWN, .description = "Next input in history"},
+		{.key = 27, .description = "Cancel work or return to bottom"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL,
+		 .description = "Cancel work and clear input"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Exit morph"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	static const struct nt_keymap navigation = {bindings + 2, NT_ARRAY_SIZE(bindings) - 2};
+	return page->panel ? NULL : view == page->editor ? &map : &navigation;
+}
+
 static int cli_chat_capture_input(struct nt_view *view, const struct nt_event *event)
 {
 	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(view);
@@ -2162,8 +2203,10 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 		.instance_size = sizeof(struct nt_view),
 		.layout = cli_chat_page_layout,
 		.capture_event = cli_chat_capture_input,
+		.keymap = cli_chat_keymap,
 		.draw_overlay = cli_chat_panel_cursor};
 	page->workspace = nt_split_view_add(builder, NULL, NT_SPLIT_VIEW_HORIZONTAL, 64, NULL);
+	nt_builder_fail(builder, nt_view_set_help_label(page->workspace, "Workspace"));
 	if (page->workspace &&
 	    (!nt_view_on(page->workspace, NT_VIEW_EVENT_OPEN, cli_chat_files_link, page) ||
 	     !nt_view_on_full(page->workspace, NT_VIEW_EVENT_MOUSE,
@@ -2176,6 +2219,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 		return;
 
 	page->primary = root;
+	nt_builder_fail(builder, nt_view_set_help_label(root, "Chat"));
 	(void)nb_str_copy_to(nb_str_from_cstr(ctx->workdir), page->files_workdir,
 		sizeof(page->files_workdir));
 	page->files_view = cli_file_browser_add(builder, page->workspace, &page->files,
@@ -2237,6 +2281,9 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 						      cli_chat_queue_hidden, page));
 
 	if (!nt_builder_error(builder)) {
+		nt_builder_fail(builder, nt_view_set_keymap(page->editor,
+			cli_chat_keymap(page->editor)));
+		nt_builder_fail(builder, nt_view_set_help_label(page->editor, "Chat"));
 		nt_builder_fail(builder, nt_text_field_set_prompt_hanging_indent(page->editor, 0));
 		nt_builder_fail(builder, nt_text_field_set_completion(page->editor, 1));
 		nt_builder_fail(builder, nt_text_field_set_prompt(page->editor,

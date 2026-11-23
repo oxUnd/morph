@@ -1,5 +1,7 @@
 #include "sapi/cli/components/question_form.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "agent/tools/ask_user.h"
 #include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/presentation/style.h"
@@ -178,6 +180,20 @@ static int cli_question_form_action(void *data, const struct nt_view_event *even
 	return 0;
 }
 
+static const struct nt_keymap *cli_question_form_keymap(const struct nt_view *view)
+{
+	const struct cli_question_form *form = (const struct cli_question_form *)view;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 27, .description = "Cancel question or return from custom answer"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Cancel question"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Cancel question"},
+		{.key = 'e', .help = "E", .description = "Edit custom answer"},
+	};
+	static const struct nt_keymap cancel = {bindings, 3};
+	static const struct nt_keymap custom = {bindings, NT_ARRAY_SIZE(bindings)};
+	return form->options.allow_custom && !form->editing ? &custom : &cancel;
+}
+
 static int cli_question_form_row(void *data, struct nt_canvas *canvas, size_t index,
 				 const char *label, int focused, int checked)
 {
@@ -219,6 +235,7 @@ struct nt_view *cli_question_form_add(struct nt_builder *builder, struct nt_view
 		.instance_size = sizeof(struct cli_question_form),
 		.kind = "cli_question_form",
 		.capture_event = cli_question_form_capture,
+		.keymap = cli_question_form_keymap,
 		.deinit = cli_question_form_deinit,
 	};
 	if (!options || options->count < 0 || options->count > ASK_USER_CHOICES_MAX ||
@@ -245,6 +262,7 @@ struct nt_view *cli_question_form_add(struct nt_builder *builder, struct nt_view
 	if (options->allow_custom)
 		items[options->count] = "Other · Type your own answer";
 	struct nt_view *root = &form->base.base;
+	nt_builder_fail(builder, nt_view_set_help_label(root, "Question"));
 	form->list = nt_choice_list_add(builder, root, items, (size_t)count, options->multi,
 					(size_t)options->minimum, (size_t)options->maximum, 0,
 					&(struct nt_view_options){.height = rows});

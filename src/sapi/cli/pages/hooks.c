@@ -1,5 +1,7 @@
 #include "sapi/cli/pages/hooks.h"
 
+#include <nothing/tui/keymap.h>
+
 #include "sapi/cli/components/shortcut_hint.h"
 #include "sapi/cli/components/page_layout.h"
 #include "sapi/cli/presentation/panel.h"
@@ -1244,6 +1246,18 @@ static void cli_hooks_build(struct nt_view_controller *controller, struct nt_bui
 	cli_page_layout_build(builder, &s->layout, "hooks", &nt_view_base_class,
 			      cli_hooks_back, s);
 	s->root = s->layout.body;
+	static const struct nt_key_binding bindings[] = {
+		{.key = 'e', .help = "E", .description = "Browse hook events"},
+		{.key = 'a', .help = "A", .description = "Review all hooks"},
+		{.key = 'r', .help = "R", .description = "Refresh hooks"},
+		{.key = 'q', .help = "Q", .description = "Close hooks"},
+		{.key = 27, .description = "Back or close hooks"},
+		{.key = 'c', .modifiers = NT_MOD_CTRL, .description = "Close hooks"},
+		{.key = 'd', .modifiers = NT_MOD_CTRL, .description = "Close hooks"},
+	};
+	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
+	nt_builder_fail(builder, nt_view_set_keymap(s->layout.root, &map));
+	nt_builder_fail(builder, nt_view_set_help_label(s->layout.root, "Hooks"));
 	nt_builder_fail(builder, nt_view_use_reducer(s->root,
 						     &(struct nt_component_state_options){
 							     .size = sizeof(s->initial),

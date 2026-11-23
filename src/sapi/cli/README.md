@@ -120,6 +120,11 @@ The window's native `Ctrl+K` popup collects shortcut metadata from commands and
 controls. It supports group tabs, search and independent scrolling, and restores
 the previous focus and caret on close. This window shortcut takes precedence over
 the text editor's `Ctrl+K` action to delete through the end of the line.
+Morph's raw key handlers register structured `nt_keymap` metadata on their owning
+page or component, with help labels for the popup's groups. Mode-dependent
+components expose their current bindings through the view class's `keymap`
+query. The chat editor also registers its capture-handler overrides before the
+native editing bindings, so actions such as `Ctrl+T` describe Morph's behavior.
 
 Explicit `/mcp connect` and `/mcp disconnect` commands always print their own
 result or error receipt, independently of the background lifecycle events.
