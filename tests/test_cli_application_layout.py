@@ -7,7 +7,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / 'src/sapi/cli'
 ROOT_FILES = {'main.c', 'application.c', 'application.h', 'application_internal.h',
-              'CMakeLists.txt', 'README.md'}
+              'CMakeLists.txt', 'README.md', 'AGENTS.md'}
 APP_DIRS = {'models', 'pages', 'components', 'commands', 'services', 'adapters', 'presentation'}
 MODULE_NAMES = {'models/composer.c': 'composer_model',
                 'adapters/runtime/observer.c': 'runtime_observer'}

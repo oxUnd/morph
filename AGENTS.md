@@ -1,9 +1,24 @@
 # morph Agent Guide
 
 ## Build & Test
+
 - CMake ≥ 3.20. Build: `cmake -S . -B build && cmake --build build`; clean: `rm -rf build`
-- Tests ON by default. All: `cd build && ctest --output-on-failure`; one: `ctest -R Cleanup`; direct from the repository root: `build/bin/morph-tests --gtest_filter='Cleanup.*'`
-- ASAN: add `-DENABLE_ASAN=ON`; FastCGI front-end: add `-DBUILD_FASTCGI=ON`
+- Tests ON by default. From the repository root, run all with
+  `ctest --test-dir build --output-on-failure`; select one suite with
+  `ctest --test-dir build -R Cleanup --output-on-failure`, or run
+  `build/bin/morph-tests --gtest_filter='Cleanup.*'` directly.
+- ASan + UBSan: add `-DENABLE_ASAN=ON`; FastCGI: add `-DBUILD_FASTCGI=ON`.
+- Convention checks require Python 3. PTY regressions also require `pexpect`
+  and `pyte` in the interpreter configured through
+  `-DPython3_EXECUTABLE=/path/to/venv/bin/python`.
+  See the [build instructions](README.md#build) for environment setup.
+- For C-family source changes, run `source_control_flow_conventions`,
+  `nbase_usage_conventions` and relevant behavior tests. CLI code and related
+  tests also follow the [CLI guide](src/sapi/cli/AGENTS.md).
+- Confirm required tests are registered (`ctest --test-dir build -N`) and
+  actually run. A skipped test, missing registration or a filter matching no
+  tests does not validate a change. Resolve missing dependencies where possible;
+  report any remaining validation gaps and their reasons.
 
 ## Architecture
 - **ReAct** `src/agent/react.c`: Thought → Action → Observation → Guardrail → Final, via OpenAI Function Calling (not text parsing).
@@ -14,7 +29,9 @@
   `struct nt_application` and owns execution modes and lifecycle. Keep native
   controllers in `pages/`, reusable state-driven views in `components/` and
   CLI output formatting in `presentation/`. Workers post model events to the
-  UI owner thread. See [the application layout](docs/tui-application-layout.md).
+  UI owner thread. Before changing CLI code or related tests, read the
+  [CLI guide](src/sapi/cli/AGENTS.md). See also
+  [the application layout](docs/tui-application-layout.md).
 - **Permissions** `src/permission/`: shared access/approval/reviewer policy, grants and review routing. Runtime owns the context, human/model adapters and application presets; frontends use `runtime_permission_get_policy()` / `_set_policy()`. Concrete tools describe operations; opaque tools use the registry gate. Descendants share authority. See `docs/permissions-design.md` and `docs/permissions-acceptance.md`.
 - **Tools** `src/agent/tools/`:
   - inspection: credits, memory, file_read/list/info, img_info; interaction and session state: memory_preference, memory_update, plan, update_plan, activate_skill, ask_user
@@ -49,124 +66,6 @@
 - Add regressions for successful Full execution without an approval callback,
   restricted-mode approval/denial, and denial leaving files unchanged. Verify
   policy rejection separately from operating-system filesystem errors.
-
-## CLI Status Symbols
-
-- Terminal status glyphs and styles are defined in `src/sapi/cli/presentation/style.h`. All CLI
-  commands, pages, tool feeds, background jobs, subagents, plans, notifications,
-  diagnostics and setup flows reuse those definitions.
-  Do not hardcode alternative status glyphs or small
-  `•` / `◦` step bullets in application sources.
-- Use `◯` (dim gray) for queued/pending, `◉` (cyan) for running,
-  `●` (green) for successful completion, `✖` (bold red) for errors/failures,
-  and `?` (bold yellow) for questions/approval awaiting user input. Running
-  activity may animate without changing marker width or layout. The `Working`
-  row and background-job summary start with `◉`, alternating normal/dim cyan
-  every 500 ms on the same monotonic-clock phase. Blink only transient live
-  indicators; keep completed history static and no-color/plain output steady.
-  Update dots in place without erasing the composer or replaying tool output.
-- Align every top-level status marker in the same leftmost column, including
-  `Working`, background summaries, tools, plans and completion receipts. Represent
-  parent/child relationships with explicit `├` / `└` branches and `│` continuation
-  lines where needed; indentation alone must never imply a relationship.
-- Use `–` (dim gray) for cancelled/interrupted/skipped work and `⚠` (yellow)
-  for warnings. `◇` is reserved for neutral system information, not outcomes.
-  A plain message/section bullet may use `●` without claiming success.
-- Timeouts are failures (`✖`, with `TIMEOUT` text), never successful completion.
-  Historical calls without a recorded result are pending/unknown (`◯`), never
-  successful. Disabled features are inactive (`◯`), not failures.
-- Shape and explicit status text must remain meaningful without color. Preserve
-  `--no-color`, plain/JSON event contracts, terminal sanitization and display-width
-  clipping. UI radio/checkbox controls, Markdown bullets, password masks and
-  user/model content are separate from application status markers.
-- Error and question marker styles include bold in the shared definitions.
-  Do not substitute mathematical circled crosses, combining-circle questions,
-  emoji, checkmarks or differently sized circle variants for the status set.
-- Run `cli_application_layout_conventions` (including the status-literal audit)
-  and relevant presentation/PTY regressions after changing status presentation.
-
-## CLI Slash Command Presentation
-- Every application shortcut hint uses the TUI theme's accent color plus bold
-  for key names; descriptions use the muted theme role. Apply this consistently
-  to startup help, chat activity, panels, popovers, sidebars, setup and help.
-  Use standard TUI controls and native text spans through the shared
-  `components/shortcut_hint` component and `presentation/shortcuts` policy.
-  Never concatenate ANSI escapes or hardcode colors to highlight shortcuts in
-  page, component or formatter code. Preserve plain/JSON and no-color output;
-  do not restyle user/model text or tool payloads as application shortcut hints.
-- Shortcut labels use title-case modifiers (`Ctrl`, `Shift`, `Alt`, `Cmd`,
-  `Meta`), `+` separators, and uppercase letter keys: `Ctrl+J`,
-  `Ctrl+Cmd+V`, `Shift+Tab`. Named keys keep their normal display form,
-  such as `Enter`, `Esc`, and `Tab`. Apply this to UI hints and docs.
-- CLI application module ownership and naming follow
-  [src/sapi/cli/README.md](src/sapi/cli/README.md) and
-  [the shared application layout](docs/tui-application-layout.md). The complete
-  CLI is the application; its root `application.c/.h` owns the embedded TUI base
-  and all execution modes. Keep page controllers in `pages/`, reusable app
-  components in `components/`, models in `models/`, use cases in `services/`,
-  external integrations in `adapters/`, command actions in `commands/` and
-  formatting in `presentation/`. Each module in `components/` builds a reusable
-  NT view or a composition of NT controls. Bind view properties to their owning
-  state and handle interaction through NT view events. Shared text formatters,
-  stream writers and presentation policies belong in `presentation/`.
-  Each presented page embeds `struct nt_view_controller` first. Keep local state
-  on the page and use `cli_application_from_controller()` to access its host.
-  Modal pages inherit `cli_application_panel_class` for command completion.
-  Every implementation includes its sibling
-  header first and imports other interfaces directly. `application_internal.h`
-  owns no function declarations or domain SDK include collection. Run
-  `cli_application_layout_conventions` alongside CLI/TUI behavior regressions
-  after moving modules, adding interfaces or changing private names.
-- TUI View options use four-edge `nt_view_insets` for margin and padding.
-  Measure returns the outer size including margin; arrange accepts an outer slot
-  and applies margin once. Size limits include padding and exclude margin.
-  Custom layouts use `nt_view_content_rect` and pass allocated outer slots
-  directly to child arrange calls. Sibling margins add without collapsing.
-  See [the NT layout guide](https://codeberg.org/oxund/nothing-tui/src/tag/v0.1.0/docs/guide/layout.md) for geometry and extension contracts.
-- Submitted chat boxes own one normal-background row above and below their
-  colored padding. Reasoning, answers, and tools share that outer separator;
-  streaming previews and committed output keep the same position. Keep local
-  slash-command spacing governed by the separate rules below.
-- Treat slash commands as local UI/actions, separate from chat user messages.
-  Do not commit submitted slash commands as `› /command` chat bubbles or retain
-  their editable background in scrollback. Keep each submitted command visible
-  as a separate purple command line on the normal background, followed by its
-  results. Include arguments and aliases as submitted, with terminal controls
-  sanitized. Readline recall history is separate and may retain the submitted
-  command for Up/Down recall.
-- Navigation commands (`/hooks`, `/resume`, `/history`, including aliases) open
-  their panel after committing the plain command line, without a command bubble.
-  Closing/cancelling a panel retains that command line and restores one editable
-  composer and its footer; do not print a close receipt.
-- Queries print their command/result heading and results in the normal output
-  area. State changes print a concise success receipt. Neither uses user-message
-  padding or the composer's background. Failures retain an explicit error.
-- Preserve the composer's vertical position while streaming output or refreshing
-  live tools/background jobs. A shrinking preview, wait transition or batch of
-  completion events must not pull a bottom-positioned composer upward. Reclaim
-  transient rows before history writes and let committed output consume the
-  reservation; keep any remaining space on the normal background above the live
-  feed. Check every published PTY frame with an unsent draft, including wrapped
-  input and 120/80/60-column layouts.
-- Completed turns (including their duration row) and completed command groups
-  each own one trailing blank row on the normal background. Submitted command
-  lines add no leading blank row. Editable composer padding is transient and
-  must not supply history spacing. Check completed turn -> command -> receipt
-  -> next command at 120, 80 and 60 columns, including wrapped receipts.
-- Add one blank row between a submitted command and its first visible result.
-  Defer that row until a result exists: a command without output (including a
-  cancelled navigation panel) leaves only one trailing blank row. Normalize
-  result headings' leading newlines so they do not add a second result gap.
-- Unrecognized commands print an error and clear the editable composer, both
-  idle and during an active turn. Keep them in Readline history for Up/Down
-  recall. Do not forward slash commands as model steering text: while a turn is
-  active, known commands that cannot run yet report that they must wait and
-  keep the input for retry; explicitly supported commands such as `/recap`
-  retain their existing behavior.
-- Keep JSON command events and non-interactive output contracts unchanged.
-  Verify panel cancellation, queries, receipts, unknown-command input clearing,
-  command recall, and the absence of stale/duplicate composer backgrounds in PTY
-  tests whenever command submission or display routing changes.
 
 ## Libraries (all static, from CMake link targets)
 ```
@@ -217,7 +116,8 @@ lives in `src/sapi/cli/presentation/`. Language-block token weights belong to
 
 ## Core Data Structures (include `<nb/*.h>`, link `nbase::nbase`)
 Prefer these over hand-rolled equivalents.
-- **Scope cleanup** `nb/cleanup.h` — required GCC/Clang `NB_CLEANUP(fn)`.
+- **Scope cleanup** `nb/cleanup.h` — required GCC/Clang `NB_CLEANUP(fn)` for local
+  owners; each resource must have one clearly defined cleanup owner.
   Initialize local owners to `NULL`/`{0}`. Callbacks are typed. Heap objects own
   their fields. Application fallible `*_take` APIs clear the source only after
   success; infallible typed steal transfers without allocating. See
@@ -268,6 +168,7 @@ Prefer these over hand-rolled equivalents.
   logger or change the global allocator while runtimes are executing.
 
 ## `goto`
+
 - Do not use `goto` in project-owned C/C++/Objective-C source, including macros,
   platform-specific branches, tests, examples and extensions. Vendor code is excluded.
 - Use direct returns with initialized typed scope cleanup for local resources.
@@ -289,13 +190,33 @@ Prefer these over hand-rolled equivalents.
   language linkage and platform-specific conditional includes.
 - No `//` comments — `/* */` only.
 - Source strings in English for errors, logs, status, UI, model instructions; keep non-English only as input data/fixtures/examples. Localization lives in a shared i18n layer, not business logic.
-- `sizeof(var)`, not `sizeof(type)`.
-- Use `<limits.h>` for system limits: paths → `PATH_MAX`; stdio → `BUFSIZ`; `strncpy` uses `sizeof(dst) - 1`. Do **not** use `NAME_MAX` for logical names (tool/skill names) — use app `#define`s like `TOOL_NAME_MAX`.
+- Prefer `sizeof(var)` for an existing object and `sizeof(*ptr)` when allocating
+  its pointee. Use `sizeof(type)` for type metadata, such as TUI `instance_size`,
+  or when no suitable object expression exists.
+- Use `<limits.h>` for system limits: paths → `PATH_MAX`; stdio → `BUFSIZ`.
+  Do **not** use `NAME_MAX` for logical names (tool/skill names); use app
+  constants such as `TOOL_NAME_MAX`.
+- String copies use the destination's byte capacity. `sizeof(dst)` gives that
+  capacity only for an actual array, never for a pointer or array parameter.
+  Pointer destinations require an explicit capacity. Prefer checked APIs such
+  as `nb_str_copy_to`; handle insufficient capacity explicitly. If using
+  `strncpy`, require nonzero capacity, copy at most `capacity - 1` bytes and
+  explicitly NUL-terminate. Handle truncation explicitly; do not silently
+  truncate paths or logical identifiers.
 - Use `NB_ERR_*` portable statuses or application `NB_ERR_USER` codes; use explicit `return code;` for error returns.
-- Memory: ordinary heap ownership with required `NB_CLEANUP(fn)` for local owners; `nb_buf`/`nb_vec` for growth. Every object has typed cleanup/destroy. No bulk allocation contexts. Transfers use success-only `*_take(T **)` or infallible typed steal; failure retains the source. Do not shallow-copy owned fields. Raw allocations need NULL checks and cleanup on every path.
+- Memory: ordinary heap ownership with required `NB_CLEANUP(fn)` for local
+  owners. Use `nb_buf`/`nb_vec` for growth. Every object has typed cleanup/destroy.
+  No bulk allocation contexts. Transfers use success-only `*_take(T **)` or infallible
+  typed steal; failure retains the source. Do not shallow-copy owned fields.
+  Raw allocations need NULL checks and cleanup on every path.
 - Multi-statement macros wrapped in `do { } while (0)`.
 - Naming: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`.
-- Do not introduce global variables.
+- Do not introduce mutable objects with static storage: file-scope variables,
+  function-local statics or thread-local variables. Immutable tables, strings
+  and function tables are allowed; qualify the object itself, for example
+  `const char *const names[]`, not `const char *names[]`. Third-party internal
+  state is excluded. See [state ownership](docs/state-ownership.md) for the
+  optional `-DENABLE_GLOBAL_STATE_AUDIT=ON` AST check and its verification steps.
 - `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`; CI must pass with 0 warnings.
 - Tab indent (8); soft 80 / hard 100 columns.
 

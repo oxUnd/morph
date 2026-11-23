@@ -6,6 +6,7 @@ responsibility, including commands, configuration and noninteractive modes.
 
 ```text
 <application>/
+  AGENTS.md                    optional scoped development rules and verification
   main.c                       process entry and bootstrap
   application.c, .h            Application subclass, composition and lifecycle
   application_internal.h       optional implementation conveniences

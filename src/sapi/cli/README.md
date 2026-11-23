@@ -5,11 +5,13 @@ The entire CLI is a `nothing-tui` application. `struct cli_application` embeds
 execution mode, workers, models and presentation state. There is one application
 identity; chat, selectors and modal pages share its controller stack.
 
-Follow the shared [TUI application conventions](../../../docs/tui-application-layout.md).
+Follow the [CLI agent guide](AGENTS.md) and the shared
+[TUI application conventions](../../../docs/tui-application-layout.md).
 The framework's internal source layers are not application directories.
 
 ```text
 cli/
+  AGENTS.md                    CLI development rules and verification requirements
   main.c                       arguments, logging and process bootstrap
   application.c, .h            application state, modes, host and teardown
   application_internal.h       common implementation/output conveniences
