@@ -78,6 +78,9 @@ can use a different provider and key. Existing provider presets and token
 validation apply to the generated defaults. The wizard does not perform network capability or
 credential tests: a configured key means present, not provider-verified.
 
+See [image understanding and upload fidelity](image-understanding.md) for
+`img_qa` resizing, API detail levels, and dense-image limitations.
+
 Missing credentials can be completed later. Setup still collects every required
 model and saves its settings, prints the needed environment-variable exports,
 then exits. Re-run `morph setup` to continue editing, or export the keys before

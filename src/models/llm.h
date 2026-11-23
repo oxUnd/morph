@@ -97,7 +97,11 @@ struct model_chat_options {
 struct model_image_chat_options {
 	int max_tokens;
 	long timeout_seconds;
+	/* Local upload size cap; zero preserves dimensions within image safety limits. */
 	int max_dim;
+	/* Borrowed API detail hint: auto (default), low, high or original.
+	 * Original requires support from the configured vision model. */
+	const char *detail;
 };
 
 enum model_error_kind {

@@ -2,7 +2,9 @@
 #include "models/image_gen.h"
 #include "models/media_output.h"
 #include "agent/tools/annotation.h"
+#include "agent_http_test_support.hpp"
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <set>
 #include <thread>
@@ -42,6 +44,7 @@ struct FakeImageQaState {
 	int max_tokens{};
 	long timeout_seconds{};
 	int max_dim{};
+	char detail[16]{};
 	const struct nb_cancel *cancel_token{};
 };
 
@@ -57,6 +60,7 @@ static int fake_chat_with_image(struct model *self, const char *system_prompt, c
 	qa.max_tokens = opts ? opts->max_tokens : 0;
 	qa.timeout_seconds = opts ? opts->timeout_seconds : 0;
 	qa.max_dim = opts ? opts->max_dim : 0;
+	snprintf(qa.detail, sizeof(qa.detail), "%s", opts && opts->detail ? opts->detail : "");
 	if (cb) {
 		int rc = cb("fake ", user_data);
 		if (rc != 0)
@@ -976,7 +980,8 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	EXPECT_STREQ(qa.path, path);
 	EXPECT_EQ(qa.max_tokens, 4096);
 	EXPECT_EQ(qa.timeout_seconds, 120);
-	EXPECT_EQ(qa.max_dim, 2048);
+	EXPECT_EQ(qa.max_dim, MORPH_IMAGE_MAX_DIMENSION);
+	EXPECT_STREQ(qa.detail, "auto");
 	EXPECT_GE(morph_event_recorder_count(&rec), 3u);
 	bool saw_stream = false;
 	for (size_t i = 0; i < morph_event_recorder_count(&rec); i++) {
@@ -1052,21 +1057,120 @@ TEST_F(ImgGenToolTest, QaUsesConfiguredOutputBudgetAndSupportsOriginalDetail)
 		"{\"file_path\":\"/tmp/original.png\",\"detail\":\"original\"}", &result), 0);
 	EXPECT_EQ(qa.max_tokens, 16384);
 	EXPECT_EQ(qa.max_dim, MORPH_IMAGE_MAX_DIMENSION);
+	EXPECT_STREQ(qa.detail, "original");
 	tool_result_cleanup(&result);
 	ASSERT_EQ(tool_exec(&reg, "img_qa",
 		"{\"file_path\":\"/tmp/original.png\",\"max_dim\":6000,\"max_tokens\":8192}",
 		&result), 0);
 	EXPECT_EQ(qa.max_tokens, 8192);
 	EXPECT_EQ(qa.max_dim, 6000);
+	EXPECT_STREQ(qa.detail, "auto");
+	tool_result_cleanup(&result);
+	ASSERT_EQ(tool_exec(&reg, "img_qa",
+		"{\"file_path\":\"/tmp/original.png\",\"detail\":\"high\"}", &result), 0);
+	EXPECT_EQ(qa.max_dim, 2048);
+	EXPECT_STREQ(qa.detail, "high");
 	for (const char *invalid : {
 		"{\"file_path\":\"a.png\",\"max_tokens\":16385}",
 		"{\"file_path\":\"a.png\",\"max_tokens\":1.5}",
 		"{\"file_path\":\"a.png\",\"max_dim\":32769}",
-		"{\"file_path\":\"a.png\",\"detail\":\"low\"}"}) {
+		"{\"file_path\":\"a.png\",\"detail\":\"low\"}",
+		"{\"file_path\":\"a.png\",\"detail\":42}"}) {
 		SCOPED_TRACE(invalid);
 		tool_result_cleanup(&result);
 		EXPECT_EQ(tool_exec(&reg, "img_qa", invalid, &result), NB_ERR_INVAL);
 	}
+}
+
+TEST_F(ImgGenToolTest, QaUploadsOriginalBytesByDefaultAndResizesOnlyWhenRequested)
+{
+	char directory[] = "/tmp/morph-image-qa-request-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	AgentHttpServer server;
+	server.start();
+	const std::string base = "http://127.0.0.1:" + std::to_string(server.port);
+	std::unique_ptr<model, decltype(&model_destroy)> vision(
+		model_llm_create(nullptr, "deepseek", "deepseek-flash", base.c_str(), "test"),
+		model_destroy);
+	ASSERT_NE(vision, nullptr);
+	ASSERT_EQ(img_qa_init(&reg, vision.get(), nullptr), 0);
+	const struct {
+		const char *options;
+		int width;
+		int height;
+		const char *detail;
+		bool unchanged;
+		bool model_defaults = false;
+	} cases[] = {
+		{"", 1200, 6000, "auto", true},
+		{",\"detail\":\"auto\"", 1200, 6000, "auto", true},
+		{",\"detail\":\"original\"", 1200, 6000, "original", true},
+		{",\"detail\":\"high\"", 409, 2048, "high", false},
+		{",\"max_dim\":1000", 200, 1000, "auto", false},
+		{",\"detail\":\"original\",\"max_dim\":1000", 200, 1000, "original", false},
+		{"", 1200, 6000, "auto", true, true},
+	};
+
+	for (const char *extension : {"png", "jpg"}) {
+		const std::string path = std::string(directory) + "/tall." + extension;
+		const bool jpeg = strcmp(extension, "jpg") == 0;
+		ASSERT_EQ(jpeg ? create_solid_jpeg(path.c_str(), 1200, 6000)
+			       : create_solid_png(path.c_str(), 1200, 6000),
+			  0);
+		char *original NB_CLEANUP(nb_charp_cleanup) = test_media_file_payload(path.c_str());
+		ASSERT_NE(original, nullptr);
+
+		for (const auto &expected : cases) {
+			SCOPED_TRACE(std::string(extension) + expected.options);
+			const std::string arguments = "{\"file_path\":\"" + path +
+						      "\",\"prompt\":\"Read small text\"" +
+						      expected.options + "}";
+			struct tool_result result NB_CLEANUP(tool_result_cleanup) = {};
+			if (expected.model_defaults) {
+				ASSERT_EQ(vision->chat_with_image(vision.get(),
+								  "Analyze this image",
+								  "Read small text", path.c_str(),
+								  nullptr, nullptr, nullptr),
+					  200);
+			} else {
+				ASSERT_EQ(tool_exec(&reg, "img_qa", arguments.c_str(), &result), 0);
+			}
+
+			const auto requests = server.snapshot();
+			ASSERT_FALSE(requests.empty());
+			cJSON *request NB_CLEANUP(cJSON_DeleteOwner) =
+				cJSON_Parse(requests.back().c_str());
+			ASSERT_NE(request, nullptr);
+			const cJSON *messages = cJSON_GetObjectItem(request, "messages");
+			const cJSON *user = cJSON_GetArrayItem(messages, 1);
+			const cJSON *content = cJSON_GetObjectItem(user, "content");
+			const cJSON *image = cJSON_GetArrayItem(content, 1);
+			const cJSON *url = cJSON_GetObjectItem(image, "image_url");
+			const char *uri = cJSON_GetStringValue(cJSON_GetObjectItem(url, "url"));
+			ASSERT_NE(uri, nullptr);
+			const char *payload = strchr(uri, ',');
+			ASSERT_NE(payload, nullptr);
+			payload++;
+			if (expected.unchanged)
+				EXPECT_EQ(strcmp(payload, original), 0);
+
+			size_t size = 0;
+			unsigned char *bytes NB_CLEANUP(nb_ucharp_cleanup) =
+				test_decode_bytes(payload, &size);
+			ASSERT_NE(bytes, nullptr);
+			int width = 0;
+			int height = 0;
+			int channels = 0;
+			ASSERT_TRUE(stbi_info_from_memory(bytes, static_cast<int>(size), &width,
+							  &height, &channels));
+			EXPECT_EQ(width, expected.width);
+			EXPECT_EQ(height, expected.height);
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(url, "detail")),
+				     expected.detail);
+		}
+	}
+
+	std::filesystem::remove_all(directory);
 }
 
 TEST_F(ImgGenToolTest, ResizeRegister) {

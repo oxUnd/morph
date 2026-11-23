@@ -24,8 +24,6 @@
 #include <stdio.h>
 #include <time.h>
 
-#define LLM_IMAGE_QA_MAX_DIM 2048
-
 const char *model_api_key_borrow(const struct model *model)
 {
 	return model ? (model->api_key_owned ? model->api_key_owned : model->api_key) : "";
@@ -433,6 +431,7 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 	int max_tokens;
 	int max_dim;
 	long timeout;
+	const char *detail = opts && opts->detail ? opts->detail : "auto";
 
 	model_clear_last_error(self);
 	if (!model_api_key_borrow(self)[0]) {
@@ -449,10 +448,14 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 	if (!prompt || !*prompt || !image_path || !*image_path)
 		return NB_ERR_INVAL;
 
+	if (strcmp(detail, "auto") && strcmp(detail, "low") && strcmp(detail, "high") &&
+	    strcmp(detail, "original"))
+		return NB_ERR_INVAL;
+
 	max_tokens = opts && opts->max_tokens > 0
 			     ? opts->max_tokens
 			     : (self->max_tokens > 0 ? self->max_tokens : 4096);
-	max_dim = opts && opts->max_dim > 0 ? opts->max_dim : LLM_IMAGE_QA_MAX_DIM;
+	max_dim = opts && opts->max_dim > 0 ? opts->max_dim : MORPH_IMAGE_MAX_DIMENSION;
 	timeout = opts && opts->timeout_seconds > 0
 			  ? opts->timeout_seconds
 			  : (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
@@ -519,6 +522,11 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 	cJSON_AddItemToObject(image, "image_url", image_url);
 	cJSON_AddItemToArray(content, image);
 	cJSON_AddItemToArray(messages, user);
+	if (!cJSON_AddStringToObject(image_url, "detail", detail)) {
+		cJSON_Delete(root);
+		return NB_ERR_NOMEM;
+	}
+
 	cJSON_AddBoolToObject(root, "stream", 1);
 	{
 		cJSON *stream_opts = cJSON_CreateObject();
@@ -556,13 +564,13 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 
 	nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
 		     "llm_chat_with_image: sending SSE request to %s, timeout=%lds, max_tokens=%d, "
-		     "max_dim=%d, body=%zu",
-		     url, timeout, max_tokens, max_dim, body_len);
+		     "max_dim=%d, detail=%s, body=%zu",
+		     url, timeout, max_tokens, max_dim, detail, body_len);
 	struct llm_stream_ctx ctx NB_CLEANUP(llm_stream_cleanup) = {0};
-	char *detail NB_CLEANUP(nb_charp_cleanup) = NULL;
+	char *error_detail NB_CLEANUP(nb_charp_cleanup) = NULL;
 	int status = llm_post_sse_with_retry(self, "llm_chat_with_image", NULL, url, body, body_len,
 					     extra_headers, timeout, cb, NULL, NULL, 1, user_data,
-					     &ctx, &detail);
+					     &ctx, &error_detail);
 	nb_log_write(self ? self->http.logger : NULL, NB_LOG_DEBUG,
 		     "llm_chat_with_image: SSE request done, status=%d", status);
 
@@ -575,11 +583,11 @@ static int llm_chat_with_image(struct model *self, const char *system_prompt, co
 		return status;
 	}
 	if (status >= 400) {
-		if (detail) {
+		if (error_detail) {
 			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
 				     "llm_chat_with_image: API returned HTTP %d: %s", status,
-				     detail);
-			model_set_last_error(self, "HTTP %d: %s", status, detail);
+				     error_detail);
+			model_set_last_error(self, "HTTP %d: %s", status, error_detail);
 		} else {
 			nb_log_write(self ? self->http.logger : NULL, NB_LOG_ERROR,
 				     "llm_chat_with_image: API returned HTTP %d", status);

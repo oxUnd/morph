@@ -85,7 +85,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
 	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	struct tool_runtime_stream_sink stream;
-	struct model_image_chat_options opts;
+	struct model_image_chat_options opts = {0};
 	char resolved_path[PATH_MAX];
 	const char *prompt;
 	const char *file_path;
@@ -132,14 +132,17 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	}
 	const cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, "detail");
 	if (detail && (!cJSON_IsString(detail) ||
-		       (strcmp(detail->valuestring, "high") != 0 &&
+		       (strcmp(detail->valuestring, "auto") != 0 &&
+			strcmp(detail->valuestring, "high") != 0 &&
 			strcmp(detail->valuestring, "original") != 0))) {
 		(void)tool_result_error_copy(result, "invalid_detail",
-			"'detail' must be 'high' or 'original'");
+			"'detail' must be 'auto', 'high' or 'original'");
 		return NB_ERR_INVAL;
 	}
-	int image_budget = detail && strcmp(detail->valuestring, "original") == 0
-		? MORPH_IMAGE_MAX_DIMENSION : 2048;
+
+	opts.detail = detail ? detail->valuestring : "auto";
+	int image_budget = strcmp(opts.detail, "high") == 0
+		? 2048 : MORPH_IMAGE_MAX_DIMENSION;
 	opts.max_dim = img_qa_int_arg(root, "max_dim", image_budget, 128,
 				      MORPH_IMAGE_MAX_DIMENSION,
 				      result);
@@ -232,13 +235,15 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 			       "local images as [Image: <path>]; pass that path as file_path and "
 			       "ask the relevant question in prompt. Use the returned analysis "
 			       "instead of guessing from the filename or just repeating the path. "
-			       "Before upload, the "
-			       "image is prepared within max_dim while preserving its format "
-			       "and aspect "
-			       "ratio. High detail uses a maximum side of 2048 pixels; use "
-			       "detail=original for OCR, small text, or fine visual detail. "
-			       "Original detail preserves dimensions within shared image "
-			       "safety limits. max_dim can override this policy. max_tokens "
+			       "By default, preserve original dimensions within shared image "
+			       "safety limits and send detail=auto to the vision API. PNG and "
+			       "JPEG are uploaded without re-encoding unless resized. "
+			       "Use detail=original for OCR, small text, or fine visual detail "
+			       "when the vision model supports it; the API receives this hint. "
+			       "detail=high caps the upload's longest side at 2048 pixels and "
+			       "requests high detail. max_dim overrides the local size cap "
+			       "while preserving aspect ratio. The provider may further resize "
+			       "images; for dense or long images, inspect cropped regions. max_tokens "
 			       "defaults to the configured vision model output budget. "
 			       "timeout_seconds defaults to 120.",
 		.input_schema =
@@ -253,11 +258,13 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 			"model budget; defaults to that budget\"},"
 			"\"timeout_seconds\":{\"type\":\"integer\","
 			"\"description\":\"Hard request timeout in seconds (default 120)\"},"
-			"\"detail\":{\"type\":\"string\",\"enum\":[\"high\",\"original\"],"
-			"\"default\":\"high\"},"
+			"\"detail\":{\"type\":\"string\",\"enum\":[\"auto\",\"high\",\"original\"],"
+			"\"default\":\"auto\",\"description\":\"Vision API detail hint. auto preserves "
+			"local dimensions; high caps the upload at 2048px; original preserves "
+			"local dimensions and requires model support for original detail\"},"
 			"\"max_dim\":{\"type\":\"integer\",\"minimum\":128,\"maximum\":32768,"
-			"\"description\":\"Maximum image side; defaults to 2048 for high detail "
-			"and the original dimensions for original detail\"}},"
+			"\"description\":\"Local maximum image side; defaults to original dimensions "
+			"for auto/original, or 2048 for high. Does not override provider resizing\"}},"
 			"\"required\":[\"file_path\"]}",
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = img_qa_exec,
