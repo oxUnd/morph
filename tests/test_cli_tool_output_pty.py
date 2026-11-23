@@ -1,6 +1,7 @@
 """Click inline tool output links through the real terminal event loop."""
 from pathlib import Path
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -174,7 +175,16 @@ def check_inline_patch_output(driver):
                     receipt = next(message for message in body['messages']
                                    if message.get('role') == 'tool' and
                                    message.get('tool_call_id') == 'inline-patch')
-                    saved_diff = json.loads(receipt['content'])['ui']['patch_diff']
+                    assert 'ui' not in json.loads(receipt['content']), receipt
+                    database = directory / ('data.db' if color else 'home/.morph/data.db')
+                    with sqlite3.connect(database) as connection:
+                        saved = connection.execute(
+                            "SELECT payload_json FROM model_history_items "
+                            "WHERE kind='tool_result' AND provider_call_id=? "
+                            "ORDER BY id DESC LIMIT 1", ('inline-patch',)).fetchone()
+                    assert saved is not None, database
+                    original = json.loads(json.loads(saved[0])['original_content'])
+                    saved_diff = original['ui']['patch_diff']
                     assert '@@ -41,3 +41,5 @@' in saved_diff, saved_diff
                     target.write_text('EXTERNAL_LATER_CHANGE\n')
                     terminal.send('patch draft中文🙂 tail\x1b[D')

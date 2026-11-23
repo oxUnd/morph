@@ -382,9 +382,11 @@ def main():
             before_ticks = terminal.snapshot('settled composer before animation')
             terminal.pump(1.1)
             ticks = terminal.raw[tick_start:]
-            cyan = r'\x1b\[(?:36|38;5;6)m◉'
-            assert re.search(r'\x1b\[2m' + cyan, ticks), 'running dot must enter its dim phase'
-            assert re.search(r'\x1b\[0m' + cyan, ticks), 'running dot must enter its bright phase'
+            cyan = r'(?:36|38;5;6)m◉'
+            dim = r'\x1b\[(?:0;)?2(?:m\x1b\[|;)' + cyan
+            bright = r'\x1b\[0(?:m\x1b\[|;)' + cyan
+            assert re.search(dim, ticks), 'running dot must enter its dim phase'
+            assert re.search(bright, ticks), 'running dot must enter its bright phase'
             animated = terminal.published_frames[tick_frames:]
             assert len(animated) >= 2, 'waiting status must keep animating'
             for frame, cursor in animated:
@@ -549,8 +551,10 @@ def main():
             terminal.snapshot('widen with multiline draft')
             paste_release.set()
             terminal.pump(0.5)
-            terminal.send('\x01\x0b\x15')
             terminal.send('\x03')
+            cleared = terminal.snapshot('Ctrl-C clears multiline draft before exit')
+            composer_rows = [row for row in cleared.splitlines() if row.lstrip().startswith('›')]
+            assert composer_rows and composer_rows[-1].strip() == '›', cleared
             terminal.send('/quit\r')
             terminal.child.expect(pexpect.EOF)
             terminal.child.close()
