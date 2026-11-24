@@ -23,7 +23,6 @@ G_MCP="mcp"
 G_CONTEXT="context"
 G_TRANSLATE="translate"
 G_UPPER="upper"
-G_WEBFETCH="webfetch"
 
 # ---- test registry ----
 
@@ -364,40 +363,6 @@ test_upper_args() {
 	assert_contains "42: upper input_schema has text" "$out" "text"
 }
 
-# ---- J. webfetch ----
-
-test_webfetch_registered() {
-	if [ ! -d "$TMPDIR/.morph/exts/web-fetch" ]; then
-		skip_test "43: web_fetch registered" "web-fetch ext not installed"
-		return
-	fi
-	out=$(run_morph "/ext info web_fetch
-/quit")
-	assert_contains "43: web_fetch registered" "$out" "Fetch content"
-}
-
-test_webfetch_direct() {
-	if [ ! -d "$TMPDIR/.morph/exts/web-fetch" ]; then
-		skip_test "44: web_fetch direct" "web-fetch ext not installed"
-		return
-	fi
-	if ! command -v node >/dev/null 2>&1; then
-		skip_test "44: web_fetch direct" "node not found"
-		return
-	fi
-	if [ ! -d "$TMPDIR/.morph/exts/web-fetch/node_modules" ]; then
-		skip_test "44: web_fetch direct" "node_modules not installed"
-		return
-	fi
-	out=$(echo '{"jsonrpc":"2.0","id":1,"method":"run","params":{"url":"https://httpbin.org/get","format":"text","timeout":15}}' | \
-		HOME="$TMPDIR" node --experimental-strip-types "$TMPDIR/.morph/exts/web-fetch/web-fetch.ts" 2>/dev/null)
-	if [ -n "$out" ]; then
-		assert_contains "44: web_fetch direct" "$out" "content"
-	else
-		skip_test "44: web_fetch direct" "no output (network?)"
-	fi
-}
-
 # ---- register all tests ----
 
 register_test 1  "$G_HELP"      test_help_banner
@@ -442,8 +407,6 @@ register_test 39 "$G_TRANSLATE" test_translate_missing_lang
 register_test 40 "$G_TRANSLATE" test_translate_empty
 register_test 41 "$G_UPPER"     test_upper_registered
 register_test 42 "$G_UPPER"     test_upper_args
-register_test 43 "$G_WEBFETCH"  test_webfetch_registered
-register_test 44 "$G_WEBFETCH"  test_webfetch_direct
 
 # ---- environment setup ----
 
@@ -474,11 +437,6 @@ setup_env() {
 	cp -r "$ROOT_DIR/exts/demo-upper" "$TMPDIR/.morph/exts/"
 	cc -shared -fPIC -o "$TMPDIR/.morph/exts/demo-upper/upper.so" "$ROOT_DIR/exts/demo-upper/upper.c" 2>/dev/null
 	UPPER_SO="$TMPDIR/.morph/exts/demo-upper/upper.so"
-
-	if [ -d "$ROOT_DIR/exts/web-fetch" ]; then
-		cp -r "$ROOT_DIR/exts/web-fetch" "$TMPDIR/.morph/exts/"
-		chmod +x "$TMPDIR/.morph/exts/web-fetch/web-fetch.sh"
-	fi
 
 	# ensure [ext] section exists in config (dir defaults to ~/.morph/exts)
 	if ! grep -q '\[ext\]' "$TMPDIR/.morph/config.toml"; then
