@@ -13,7 +13,7 @@ if(NOT TARGET nbase::nbase)
 	FetchContent_Declare(
 		nbase
 		GIT_REPOSITORY https://codeberg.org/oxund/nothing.git
-		GIT_TAG fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3
+		GIT_TAG 93e57eeb4855b262f5f5f1c702570c2d55972504
 		SOURCE_SUBDIR include
 	)
 	FetchContent_MakeAvailable(nbase)

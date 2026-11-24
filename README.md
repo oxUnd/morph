@@ -57,14 +57,18 @@ grouped, searchable shortcut help with bold key labels, source-preserving tab
 alignment, bounded application updates, clean Cygwin console startup, and Windows
 Terminal Sixel cell geometry. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/705095d25ca3c876635555e1618aaa95732b08b8)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/0df8e4a6980b1f648e2032c51b5ba147e95ba76b)
 
-Morph and nothing-tui share one `nbase::nbase` target built from a pinned
-post-v0.1.0 nothing revision under the MIT license. Morph uses nbase's HTTP backend
+CMake also fetches [nothing-orm](https://codeberg.org/oxund/nothing-orm/src/commit/243633b2deb3550b7fb091950bf88d8e781b37d5)
+from Codeberg at a pinned revision. The database library links its SQLite
+extension target; dependency tests, examples and network drivers are disabled.
+
+Morph, nothing-tui and nothing-orm share one `nbase::nbase` target built from a
+pinned post-v0.1.0 nothing revision under the MIT license. Morph uses nbase's HTTP backend
 for buffered requests, streaming, multipart uploads and downloads, and its SSE
 parser for model and MCP events. Cygwin builds apply the executable-path patch in
 `vendor/patches`.
-[nothing source](https://codeberg.org/oxund/nothing/src/commit/fe8cd34e7bf0b401f553eb908794dbb5f2c6c7a3)
+[nothing source](https://codeberg.org/oxund/nothing/src/commit/93e57eeb4855b262f5f5f1c702570c2d55972504)
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
 

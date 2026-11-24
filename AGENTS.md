@@ -94,7 +94,7 @@ Treat nbase as a third-party dependency: include its public headers with
 
 ## Vendor
 `cmake/FetchNbase.cmake` pins a post-v0.1.0 nothing revision and applies the
-executable-path patch on Cygwin. Morph and nothing-tui share `nbase::nbase`.
+executable-path patch on Cygwin. Morph, nothing-tui and nothing-orm share `nbase::nbase`.
 Morph enables its HTTP backend (libcurl >= 7.85 with asynchronous DNS) and uses
 `nb/http.h` and `nb/sse.h`.
 The nbase Unicode backend vendors utf8proc 2.12.0 (Unicode 18.0.0). cJSON and
@@ -141,7 +141,8 @@ Prefer these over hand-rolled equivalents.
 
 ## Dependencies
 - Core and CLI build prerequisites, companion source checkouts and version requirements are listed in the [build instructions](README.md#build).
-- Fetched: cmark-gfm (Markdown), QuickJS, wasm3, BLAKE3, tree-sitter and GoogleTest v1.14.0; versions are pinned in CMake.
+- Fetched: nothing-orm (SQLite), cmark-gfm (Markdown), QuickJS, wasm3, BLAKE3,
+  tree-sitter and GoogleTest v1.14.0; versions are pinned in CMake.
 - The CLI requires GNU Readline ≥ 8.0. libseccomp is optional for the Linux sandbox.
 
 ## Configuration

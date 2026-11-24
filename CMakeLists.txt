@@ -321,8 +321,9 @@ add_custom_target(morph-data ALL
 	COMMENT "Staging morph runtime data"
 )
 
-# Load the shared nbase target before nothing-tui so both use the same library.
+# Load nbase before its dependents so they share the same library.
 include(cmake/FetchNbase.cmake)
+include(cmake/FetchNothingOrm.cmake)
 
 set(MORPH_NOTHING_TUI_SOURCE_DIR "" CACHE PATH "Optional local nothing-tui source checkout")
 set(NT_BUILD_SAMPLES OFF)
@@ -341,7 +342,7 @@ else()
 	FetchContent_Declare(
 		nothing_tui
 		GIT_REPOSITORY https://codeberg.org/oxund/nothing-tui.git
-		GIT_TAG 705095d25ca3c876635555e1618aaa95732b08b8
+		GIT_TAG 0df8e4a6980b1f648e2032c51b5ba147e95ba76b
 		SOURCE_SUBDIR include
 	)
 	FetchContent_MakeAvailable(nothing_tui)
