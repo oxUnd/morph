@@ -95,6 +95,18 @@ cmake --build build
 cmake --install build --prefix /usr/local   # optional
 ```
 
+CMake exports `build/compile_commands.json` by default. The project `.clangd`
+points clangd-based Vim LSP clients at that database, including the actual nbase,
+nothing-tui, nothing-orm and generated-header paths from each CMake target.
+For an existing build configured with compilation commands disabled, regenerate it:
+
+```bash
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+```
+
+Restart clangd in the editor after regenerating the database. If you use a different
+build directory, update `CompileFlags.CompilationDatabase` in `.clangd` to match.
+
 Runtime data lives in `share/morph` relative to the executable; the installed
 user manual is `share/morph/morph.txt`.
 

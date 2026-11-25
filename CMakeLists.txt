@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
+    "Generate compilation commands for clangd and analysis tools")
 project(morph LANGUAGES C CXX VERSION 0.5.2)
 
 # Modern linkers can resolve static archives independent of their command-line
