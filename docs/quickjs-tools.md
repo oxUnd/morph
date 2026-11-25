@@ -12,7 +12,8 @@ runtime 为每个会话管理工具定义，独立的 `morph-js-runner` 进程�
 - 已将 QuickJS 作为内置依赖构建。
 - 新增 `morph-js-runner` 子进程执行 JS 工具。
 - runner 的图像能力依赖系统 `pkg-config` 包：`vips`、`cairo`、
-  `pangocairo`；WASM 能力通过内嵌 Wasm3 静态库提供。
+  `pangocairo`；macOS 仅使用 Homebrew 安装的版本，CMake 自动补齐
+  keg-only 依赖的搜索路径。WASM 能力通过内嵌 Wasm3 静态库提供。
 - runner 通过 stdin/stdout 接收和返回 JSON-RPC。
 - runner 支持：
   - 普通 `function run(args)`。

@@ -10,20 +10,7 @@ add_dependencies(morph-js-runner morph-data)
 
 target_include_directories(morph-js-runner PRIVATE
 	${CMAKE_SOURCE_DIR}/src
-	${VIPS_INCLUDE_DIRS}
-	${CAIRO_INCLUDE_DIRS}
-	${PANGOCAIRO_INCLUDE_DIRS}
 )
-
-target_link_directories(morph-js-runner PRIVATE
-	${VIPS_LIBRARY_DIRS}
-	${CAIRO_LIBRARY_DIRS}
-	${PANGOCAIRO_LIBRARY_DIRS}
-)
-
-set(MORPH_JS_MEDIA_LIBRARIES
-	${VIPS_LIBRARIES} ${CAIRO_LIBRARIES} ${PANGOCAIRO_LIBRARIES})
-list(REMOVE_DUPLICATES MORPH_JS_MEDIA_LIBRARIES)
 
 target_link_libraries(morph-js-runner PRIVATE
 	quickjs
@@ -31,7 +18,9 @@ target_link_libraries(morph-js-runner PRIVATE
 	nbase::nbase morph-cjson
 	morph-media
 	m3
-	${MORPH_JS_MEDIA_LIBRARIES}
+	PkgConfig::VIPS
+	PkgConfig::CAIRO
+	PkgConfig::PANGOCAIRO
 )
 
 target_compile_options(morph-js-runner PRIVATE

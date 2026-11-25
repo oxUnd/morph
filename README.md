@@ -51,6 +51,19 @@ libcurl ≥ 7.85 with asynchronous DNS, libuv ≥ 1.44, GNU Readline ≥ 8, zlib
 FreeType, HarfBuzz, libvips, Cairo and PangoCairo. A fresh checkout also needs
 the MathJax and Markdown source trees at the paths shown below.
 
+On macOS, install the dependencies with Homebrew:
+
+```bash
+brew install cmake pkgconf sqlite curl libuv readline zlib libffi webp libxml2 \
+  freetype harfbuzz vips cairo pango
+```
+
+The JS runner uses only Homebrew's libvips, Cairo and PangoCairo on macOS.
+CMake discovers the Homebrew prefix and libvips dependencies, including keg-only
+packages such as libarchive; no manual `PKG_CONFIG_PATH` export is needed.
+Media paths use stable Homebrew `opt` links. After upgrading dependencies, rerun
+`cmake -S . -B build` before rebuilding to refresh cached package metadata.
+
 CMake fetches a pinned post-v0.1.0 nothing-tui revision, including native
 text selection, draggable split views, resize pointers, view-owned animations,
 grouped, searchable shortcut help with bold key labels, source-preserving tab

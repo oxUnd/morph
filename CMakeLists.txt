@@ -68,9 +68,8 @@ endif()
 
 pkg_check_modules(FREETYPE REQUIRED freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
-pkg_check_modules(VIPS REQUIRED vips)
-pkg_check_modules(CAIRO REQUIRED cairo)
-pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
+include(cmake/JsMediaDependencies.cmake)
+morph_find_js_media_dependencies()
 
 include(FetchContent)
 
