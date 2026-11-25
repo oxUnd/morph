@@ -55,6 +55,8 @@ add_library(morph-cli STATIC
 	components/report.c
 	components/file_browser.c
 	components/file_viewer.c
+	components/workspace_sidebar.c
+	components/diff_browser.c
 
 	# Commands
 	commands/agents.c
@@ -90,6 +92,7 @@ add_library(morph-cli STATIC
 	services/configuration/role.c
 	services/event_queue.c
 	services/file_preview.c
+	services/git_diff.c
 	services/management.c
 	services/memory.c
 	services/processes.c
@@ -151,6 +154,7 @@ add_library(morph-cli STATIC
 	presentation/presenter.c
 	presentation/rewind.c
 	presentation/tool_preview.c
+	presentation/diff.c
 	presentation/terminal_text.c
 	presentation/tree.c
 	presentation/work_status.c

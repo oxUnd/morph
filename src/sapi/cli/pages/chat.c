@@ -15,7 +15,7 @@
 #include "sapi/cli/components/command.h"
 #include "sapi/cli/components/composer.h"
 #include "sapi/cli/components/status_bar.h"
-#include "sapi/cli/components/file_browser.h"
+#include "sapi/cli/components/workspace_sidebar.h"
 #include "sapi/cli/components/list.h"
 #include "sapi/cli/components/mcp_tree.h"
 #include "sapi/cli/pages/mcp_status.h"
@@ -179,7 +179,7 @@ static void cli_chat_files_session(struct cli_chat_page *page)
 	(void)nb_str_copy_to(nb_str_from_cstr(workdir), page->files_workdir,
 		sizeof(page->files_workdir));
 	if (page->files_view)
-		cli_file_browser_reset(page->files_view);
+		cli_workspace_sidebar_reset(page->files_view);
 }
 
 static int cli_chat_files_markdown(struct cli_application *ctx, const char *text)
@@ -273,9 +273,9 @@ static int cli_chat_files_action(void *data, const struct nt_view_event *event)
 
 		const struct cli_files_entry *entry = nb_vec_at(&page->files.entries, event->index);
 		int line = entry ? entry->line : 0;
-		int rc = event->text ? cli_file_browser_open(page->files_view, event->text, line) : 0;
+		int rc = event->text ? cli_workspace_sidebar_open(page->files_view, event->text, line) : 0;
 		if (!rc)
-			rc = cli_file_browser_focus(page->files_view);
+			rc = cli_workspace_sidebar_focus(page->files_view);
 
 		return rc ? rc : NT_VIEW_EVENT_HANDLED;
 	}
@@ -315,7 +315,7 @@ int cli_chat_files_show(struct cli_application *ctx, const char *url)
 	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
 	int rc = nt_view_set_keymap(page->workspace, &map);
 	if (!rc)
-		rc = cli_file_browser_sync(page->files_view);
+		rc = cli_workspace_sidebar_sync(page->files_view);
 
 	if (!rc)
 		rc = nt_view_set_hidden(page->files_view, 0);
@@ -329,15 +329,15 @@ int cli_chat_files_show(struct cli_application *ctx, const char *url)
 				url, CLI_FILES_REFERENCED);
 
 		if (!rc)
-			rc = cli_file_browser_open(page->files_view, nb_buf_cstr(&path), line);
+			rc = cli_workspace_sidebar_open(page->files_view, nb_buf_cstr(&path), line);
 	}
 
 	if (!rc)
-		rc = cli_file_browser_sync(page->files_view);
+		rc = cli_workspace_sidebar_sync(page->files_view);
 
 	if (!rc)
-		rc = url ? cli_file_browser_focus(page->files_view)
-			: cli_file_browser_list(page->files_view);
+		rc = url ? cli_workspace_sidebar_focus(page->files_view)
+			: cli_workspace_sidebar_list(page->files_view);
 
 	if (!rc && opening)
 		rc = cli_chat_files_reveal(page);
@@ -681,7 +681,7 @@ int cli_chat_session_save(struct cli_application *ctx, struct cli_chat_session_s
 	state->files_session = page->files_session;
 	memcpy(state->files_workdir, page->files_workdir, sizeof(state->files_workdir));
 	page->files_session = 0;
-	cli_file_browser_reset(page->files_view);
+	cli_workspace_sidebar_reset(page->files_view);
 	page->scroll = NULL;
 	page->feed = NULL;
 	page->stream_view = NULL;
@@ -740,7 +740,7 @@ int cli_chat_session_restore(struct cli_application *ctx, struct cli_chat_sessio
 	cli_files_move(&page->files, &state->files);
 	page->files_session = state->files_session;
 	memcpy(page->files_workdir, state->files_workdir, sizeof(page->files_workdir));
-	cli_file_browser_reset(page->files_view);
+	cli_workspace_sidebar_reset(page->files_view);
 	int rc = nt_view_set_hidden(page->scroll, 0);
 	if (!rc)
 		rc = nt_text_field_set_text(page->editor, state->input);
@@ -1471,9 +1471,9 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 
 	if (page->files_open && (key == 15 ||
 	    ((key == 'o' || key == 'O') && mods == NT_MOD_CTRL))) {
-		page->files_focus = !cli_file_browser_focused(page->files_view);
+		page->files_focus = !cli_workspace_sidebar_focused(page->files_view);
 		(void)nt_view_set_hidden(page->primary, 0);
-		int rc = page->files_focus ? cli_file_browser_focus(page->files_view)
+		int rc = page->files_focus ? cli_workspace_sidebar_focus(page->files_view)
 			: nt_view_focus(page->editor);
 		return rc ? rc : 1;
 	}
@@ -1483,7 +1483,7 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 		return 1;
 	}
 
-	if (page->files_open && cli_file_browser_focused(page->files_view))
+	if (page->files_open && cli_workspace_sidebar_focused(page->files_view))
 		return 0;
 
 	if ((key == NT_KEY_PAGE_UP || key == NT_KEY_PAGE_DOWN) && mods == NT_MOD_CTRL) {
@@ -2222,7 +2222,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 	nt_builder_fail(builder, nt_view_set_help_label(root, "Chat"));
 	(void)nb_str_copy_to(nb_str_from_cstr(ctx->workdir), page->files_workdir,
 		sizeof(page->files_workdir));
-	page->files_view = cli_file_browser_add(builder, page->workspace, &page->files,
+	page->files_view = cli_workspace_sidebar_add(builder, page->workspace, &page->files,
 		page->files_workdir, cli_output_color_enabled(ctx));
 	if (page->files_view) {
 		nt_builder_fail(builder, nt_view_set_hidden(page->files_view, 1));
@@ -2376,7 +2376,7 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 
 	int64_t now = cli_chat_now();
 	cli_chat_files_session(page);
-	int files_rc = cli_file_browser_sync(page->files_view);
+	int files_rc = cli_workspace_sidebar_sync(page->files_view);
 	if (files_rc)
 		return files_rc;
 
@@ -2391,7 +2391,7 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 			return rc;
 	}
 
-	if (cli_file_browser_focused(page->files_view))
+	if (cli_workspace_sidebar_focused(page->files_view))
 		page->files_focus = 1;
 	else if (nt_view_is_focused(page->editor))
 		page->files_focus = 0;

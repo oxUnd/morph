@@ -111,6 +111,37 @@ TEST_F(CliFilesTest, InventoryUsesMarkdownLinksAndSuccessfulToolReceipts)
 	EXPECT_EQ(model.entries.len, 4u);
 }
 
+TEST_F(CliFilesTest, RecordedSessionPatchesSurviveReplayAndModelTransferWithoutReadingFiles)
+{
+	struct cli_transcript_tool tool{};
+	tool.id = const_cast<char *>("patch-1");
+	tool.name = const_cast<char *>("apply_patch");
+	tool.state = 1;
+	tool.historical = 1;
+	tool.result = const_cast<char *>(R"({"ok":true,"data":{"files":[]},"ui":{"patch_diff":
+		"*** Update File: never-existed.c\n*** Move to: renamed.c\n@@ -2,1 +2,1 @@\n-old\n+new\n*** Delete File: gone.c\n@@ -1,1 +0,0 @@\n-removed\n"}})");
+	ASSERT_EQ(cli_files_tool(&model, directory, &tool), 0);
+	ASSERT_EQ(model.changes.len, 2u);
+	ASSERT_EQ(cli_files_tool(&model, directory, &tool), 0);
+	EXPECT_EQ(model.changes.len, 2u);
+	auto *first = static_cast<struct cli_files_change *>(nb_vec_at(&model.changes, 0));
+	EXPECT_NE(std::string(first->patch).find("*** Move to: renamed.c"), std::string::npos);
+	EXPECT_EQ(std::string(first->patch).find("*** Delete File"), std::string::npos);
+	auto *second = static_cast<struct cli_files_change *>(nb_vec_at(&model.changes, 1));
+	EXPECT_EQ(second->action, 'D');
+	struct cli_files_model moved NB_CLEANUP(cli_files_cleanup) = {};
+	cli_files_init(&moved);
+	cli_files_move(&moved, &model);
+	EXPECT_EQ(model.changes.len, 0u);
+	EXPECT_EQ(model.patch_bytes, 0u);
+	ASSERT_EQ(moved.changes.len, 2u);
+	EXPECT_GT(moved.patch_bytes, 0u);
+	tool.id = const_cast<char *>("failed-patch");
+	tool.state = -1;
+	ASSERT_EQ(cli_files_tool(&moved, directory, &tool), 0);
+	EXPECT_EQ(moved.changes.len, 2u);
+}
+
 TEST_F(CliFilesTest, PreviewHandlesTextMarkdownMissingAndBinaryFiles)
 {
 	const std::string text = std::string(directory) + "/notes.md";

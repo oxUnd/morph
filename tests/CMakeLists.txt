@@ -97,6 +97,7 @@ set(TEST_SOURCES
 	test_cli_model.cpp
 	test_cli_transcript_model.cpp
 	test_cli_files.cpp
+	test_cli_diff.cpp
 	test_cli_terminal.cpp
 	test_cli_ui.cpp
 	test_utf8.cpp
@@ -245,6 +246,10 @@ if(Python3_Interpreter_FOUND)
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_files_split_pty.py
 			$<TARGET_FILE:morph>)
 	set_tests_properties(cli_files_split_pty_integration PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_diff_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_diff_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_diff_pty_integration PROPERTIES TIMEOUT 90)
 	set(cli_wheel_scroll_step 1)
 	if(WIN32 OR CYGWIN)
 		set(cli_wheel_scroll_step 3)

@@ -4,6 +4,9 @@
 extern "C" {
 #include "sapi/cli/components/message.h"
 #include "sapi/cli/components/file_browser.h"
+#include "sapi/cli/components/workspace_sidebar.h"
+#include "sapi/cli/components/diff_browser.h"
+#include "sapi/cli/presentation/diff.h"
 #include "sapi/cli/components/rich_document.h"
 #include "sapi/cli/models/files.h"
 #include "sapi/cli/presentation/messages.h"
@@ -31,6 +34,7 @@ extern "C" {
 #include <nothing/tui/views/label.h>
 #include <nothing/tui/views/text_view.h>
 #include <nothing/tui/controls/text_field.h>
+#include <nothing/tui/controls/tab_bar.h>
 #include <nothing/tui/models/text_editor.h>
 #include <nothing/tui/models/list_navigation.h>
 #include <nb/cleanup.h>
@@ -101,7 +105,7 @@ static std::string retained_normalized(const char *text)
 class CliRetainedWidgetsTest : public ::testing::Test
 {
       protected:
-	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed, Files, RichDocument,
+	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed, Files, Sidebar, RichDocument,
 		Unstable } kind = Tool;
 	struct cli_files_model files{};
 	int master = -1;
@@ -233,6 +237,9 @@ class CliRetainedWidgetsTest : public ::testing::Test
 					&self->tool, 1, self->details);
 			else if (self->kind == Files)
 				self->component = cli_file_browser_add(builder, root, &self->files,
+					"/workspace", 1);
+			else if (self->kind == Sidebar)
+				self->component = cli_workspace_sidebar_add(builder, root, &self->files,
 					"/workspace", 1);
 			else if (self->kind == RichDocument)
 				self->component = cli_rich_document_add_borrow(builder, root);
@@ -1144,6 +1151,81 @@ TEST_F(CliRetainedWidgetsTest, FileSidebarRendersMarkdownAndSourceAcrossWidths)
 
 	EXPECT_NE(retained_normalized(frame.c_str()).find("Find: document"), std::string::npos)
 		<< retained_normalized(frame.c_str());
+}
+
+TEST_F(CliRetainedWidgetsTest, DiffSidebarDefaultsToSessionAndRetainsItsNativeDocument)
+{
+	kind = Sidebar;
+	struct cli_transcript_tool patch{};
+	patch.id = const_cast<char *>("session-diff");
+	patch.name = const_cast<char *>("apply_patch");
+	patch.summary = const_cast<char *>("completed");
+	patch.state = 1;
+	patch.result = const_cast<char *>(R"({"ok":true,"data":{"files":[]},"ui":{"patch_diff":
+		"*** Update File: source.c\n@@ -12,1 +14,1 @@\n-old value\n+NEW_VALUE\n@@ -40,1 +42,1 @@\n-old second\n+NEW_SECOND\n"}})");
+	ASSERT_EQ(cli_files_tool(&files, "/workspace", &patch), 0);
+	Present();
+	auto *tabs = FindKind(component, "tab_bar");
+	ASSERT_NE(tabs, nullptr);
+	ASSERT_GE(nt_tab_bar_select(tabs, 1), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("Session patches (1)"), std::string::npos);
+	auto *browser = FindKind(component, "cli_diff_browser");
+	ASSERT_NE(browser, nullptr);
+	ASSERT_EQ(cli_diff_browser_focus(browser), 0);
+	ASSERT_EQ(write(master, "\r", 1), 1);
+	for (int i = 0; i < 3; i++)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	auto *document = FindKind(browser, "text_view");
+	ASSERT_NE(document, nullptr);
+	std::string text = nt_text_view_text(document);
+	EXPECT_NE(text.find("   12       - old value"), std::string::npos);
+	EXPECT_NE(text.find("         14 + NEW_VALUE"), std::string::npos);
+	ASSERT_EQ(write(master, "n", 1), 1);
+	for (int i = 0; i < 3; i++)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	EXPECT_EQ(nt_text_view_cursor(document), text.find("@@ -12"));
+	ASSERT_EQ(write(master, "n", 1), 1);
+	for (int i = 0; i < 3; i++)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	const size_t cursor = nt_text_view_cursor(document);
+	EXPECT_EQ(cursor, text.find("@@ -40"));
+	ASSERT_GE(nt_tab_bar_select(tabs, 0), 0);
+	ASSERT_GE(nt_tab_bar_select(tabs, 1), 0);
+	EXPECT_EQ(nt_text_view_cursor(document), cursor);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		EXPECT_EQ(std::string(nt_text_view_text(document)), text);
+		EXPECT_EQ(nt_text_view_cursor(document), cursor);
+	}
+
+	ASSERT_EQ(write(master, "\006NEW", 4), 4);
+	for (int i = 0; i < 4; i++)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	EXPECT_NE(retained_normalized(frame.c_str()).find("Find: NEW"), std::string::npos);
+	ASSERT_EQ(write(master, "\033", 1), 1);
+	for (int i = 0; i < 4; i++)
+		ASSERT_EQ(nt_application_step(app, 10), 0);
+
+	EXPECT_EQ(retained_normalized(frame.c_str()).find("Find: NEW"), std::string::npos);
+	EXPECT_EQ(std::string(nt_text_view_text(document)), text);
+	nb_vec hunks NB_CLEANUP(nb_vec_cleanup) = {};
+	nb_vec_init(&hunks, sizeof(size_t));
+	ASSERT_EQ(cli_diff_present(document, "@@ -1 +1 @@\n-removed\n+added\n", &hunks, 0), 0);
+	EXPECT_EQ(hunks.len, 1u);
+	EXPECT_EQ(std::string(nt_text_view_text(document)).find("\033"), std::string::npos);
+	auto *sources = FindKind(browser, "tab_bar");
+	ASSERT_NE(sources, nullptr);
+	ASSERT_GE(nt_tab_bar_select(sources, 1), 0);
+	ASSERT_EQ(nt_view_set_hidden(component, 1), 0);
+	cli_workspace_sidebar_reset(component);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_EQ(nt_tab_bar_selected(tabs), 0u);
+	EXPECT_EQ(nt_tab_bar_selected(sources), 0u);
 }
 
 TEST_F(CliRetainedWidgetsTest, FileSidebarCodePreservesWhitespaceSelectionAndNoColor)

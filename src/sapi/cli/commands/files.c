@@ -30,7 +30,7 @@ static int cli_files_command(struct cli_application *ctx, int argc, char **argv)
 struct cli_command_group cli_files_commands(void)
 {
 	static const struct cli_command cli_files_entries[] = {
-		{"/side", cli_files_command, "Open conversation files in the sidebar",
+		{"/side", cli_files_command, "Open files and diffs in the sidebar",
 		 "/side [path]"},
 	};
 	return (struct cli_command_group){

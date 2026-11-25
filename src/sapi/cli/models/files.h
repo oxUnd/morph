@@ -13,8 +13,15 @@ struct cli_files_entry {
 	int line;
 };
 
+struct cli_files_change {
+	char *call_id, *path, *patch;
+	char action;
+};
+
 struct cli_files_model {
 	nb_vec entries;
+	nb_vec changes;
+	size_t patch_bytes;
 	uint64_t revision;
 	int truncated;
 };
@@ -26,10 +33,10 @@ void cli_files_move(struct cli_files_model *destination, struct cli_files_model 
  * Web URLs and anchors return NB_ERR_UNSUPPORTED. Output must be empty. */
 int cli_files_resolve(const char *directory, const char *url, nb_buf *path, int *line);
 int cli_files_add(struct cli_files_model *, const char *directory, const char *url,
-	enum cli_files_kind);
+		  enum cli_files_kind);
 int cli_files_markdown(struct cli_files_model *, const char *directory, const char *text);
 struct cli_transcript_tool;
 int cli_files_tool(struct cli_files_model *, const char *directory,
-	const struct cli_transcript_tool *);
+		   const struct cli_transcript_tool *);
 
 #endif

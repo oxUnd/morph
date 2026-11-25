@@ -301,7 +301,28 @@ its terminal session and input handoff just like other modal pages.
 The retained feed receives geometry from the framework. Legacy output adapters
 use the shared terminal-size helper, including row fallback.
 
-`/side` opens a file sidebar beside the conversation. The
+`/side` opens a sidebar beside the conversation with **Files** and **Diff** tabs.
+Click the tabs or use `Alt+1` / `Alt+2`. Diff defaults to **Session**, showing
+actual recorded `apply_patch` changes in the current session, newest first.
+This works without Git and survives restoring saved history. Each list entry is
+one file in one tool patch; repeated edits remain separate historical patches,
+not a net directory diff. Shell commands, external edits and old results without
+recorded diff metadata are not reconstructed from today's files.
+
+Choose **Git** (`Alt+G`) for the current repository's unstaged, staged and untracked
+changes, or **Session** (`Alt+S`) to return. Git reads run on cancellable workers;
+`R` or Refresh reloads the list or current file. New files show additions, deleted
+files show removals, renames retain their original path and binary changes show a
+summary. A missing Git repository has an explicit empty state. Preview output is
+bounded and marks truncation. Native text views provide selection, copy, search
+(`Ctrl+F`) and scrolling; `N` / `P` navigate hunks. Diff rows preserve old/new line
+numbers and addition/removal signs, with theme colors when enabled. The two sources
+and top-level tabs retain independent view state. `Esc` dismisses search, returns
+to the change list, then closes the sidebar. `components/workspace_sidebar` owns
+the top-level tabs, `components/diff_browser` owns the two sources,
+`services/git_diff` owns Git workers and `presentation/diff` formats stored patches.
+
+The Files
 inventory comes from local Markdown references, successful patch receipts and
 generated artifacts, and is rebuilt when saved history is restored. It is scoped
 to the current session. `/side "path:line"` opens a file directly; local links

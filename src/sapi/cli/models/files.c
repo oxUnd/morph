@@ -15,11 +15,20 @@
 #include <string.h>
 
 #define CLI_FILES_LIMIT 2048u
+#define CLI_FILES_PATCH_LIMIT (8u * 1024u * 1024u)
 
 void cli_files_init(struct cli_files_model *model)
 {
 	memset(model, 0, sizeof(*model));
 	nb_vec_init(&model->entries, sizeof(struct cli_files_entry));
+	nb_vec_init(&model->changes, sizeof(struct cli_files_change));
+}
+
+static void cli_files_change_cleanup(struct cli_files_change *change)
+{
+	free(change->call_id);
+	free(change->path);
+	free(change->patch);
 }
 
 void cli_files_cleanup(struct cli_files_model *model)
@@ -28,6 +37,10 @@ void cli_files_cleanup(struct cli_files_model *model)
 		free(((struct cli_files_entry *)nb_vec_at(&model->entries, i))->path);
 
 	nb_vec_cleanup(&model->entries);
+	for (size_t i = 0; i < model->changes.len; i++)
+		cli_files_change_cleanup(nb_vec_at(&model->changes, i));
+
+	nb_vec_cleanup(&model->changes);
 }
 
 void cli_files_move(struct cli_files_model *destination, struct cli_files_model *source)
@@ -38,6 +51,9 @@ void cli_files_move(struct cli_files_model *destination, struct cli_files_model 
 	cli_files_cleanup(destination);
 	cli_files_init(destination);
 	nb_vec_move(&destination->entries, &source->entries);
+	nb_vec_move(&destination->changes, &source->changes);
+	destination->patch_bytes = source->patch_bytes;
+	source->patch_bytes = 0;
 	destination->revision = source->revision;
 	destination->truncated = source->truncated;
 	source->revision = 0;
@@ -75,8 +91,7 @@ int cli_files_resolve(const char *directory, const char *url, nb_buf *path, int 
 	} else {
 		const char *colon = strchr(url, ':');
 		const char *slash = strchr(url, '/');
-		if (colon && (!slash || colon < slash) &&
-		    !isdigit((unsigned char)colon[1]))
+		if (colon && (!slash || colon < slash) && !isdigit((unsigned char)colon[1]))
 			return NB_ERR_UNSUPPORTED;
 	}
 
@@ -129,13 +144,14 @@ int cli_files_resolve(const char *directory, const char *url, nb_buf *path, int 
 	}
 
 	rc = nb_path_is_absolute(nb_buf_cstr(&decoded))
-		? nb_buf_append_cstr(&full, nb_buf_cstr(&decoded)) ? NB_OK : nb_buf_status(&full)
-		: nb_path_join(&full, directory, nb_buf_cstr(&decoded));
+		     ? nb_buf_append_cstr(&full, nb_buf_cstr(&decoded)) ? NB_OK
+									: nb_buf_status(&full)
+		     : nb_path_join(&full, directory, nb_buf_cstr(&decoded));
 	return rc ? rc : nb_path_clean(path, nb_buf_cstr(&full));
 }
 
 int cli_files_add(struct cli_files_model *model, const char *directory, const char *url,
-	enum cli_files_kind kind)
+		  enum cli_files_kind kind)
 {
 	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
 	int line = 0;
@@ -171,8 +187,8 @@ int cli_files_add(struct cli_files_model *model, const char *directory, const ch
 	if (!entry)
 		return NB_ERR_NOMEM;
 
-	*entry = (struct cli_files_entry){
-		.path = nb_charp_steal(&copy), .kind = kind, .line = line};
+	*entry =
+		(struct cli_files_entry){.path = nb_charp_steal(&copy), .kind = kind, .line = line};
 	model->revision++;
 	return NB_OK;
 }
@@ -209,8 +225,8 @@ int cli_files_markdown(struct cli_files_model *model, const char *directory, con
 		    (type != CMARK_NODE_LINK && type != CMARK_NODE_IMAGE))
 			continue;
 
-		int rc = cli_files_add(model, directory,
-			cmark_node_get_url(node), CLI_FILES_REFERENCED);
+		int rc = cli_files_add(model, directory, cmark_node_get_url(node),
+				       CLI_FILES_REFERENCED);
 		if (rc)
 			return rc;
 	}
@@ -218,8 +234,99 @@ int cli_files_markdown(struct cli_files_model *model, const char *directory, con
 	return NB_OK;
 }
 
+static const char *cli_files_patch_header(const char *line, char *action)
+{
+	static const char *const prefixes[] = {
+		"*** Add File: ", "*** Update File: ", "*** Delete File: "};
+	static const char actions[] = {'A', 'M', 'D'};
+	for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+		size_t length = strlen(prefixes[i]);
+		if (!strncmp(line, prefixes[i], length)) {
+			*action = actions[i];
+			return line + length;
+		}
+	}
+
+	return NULL;
+}
+
+static int cli_files_patch(struct cli_files_model *model, const char *directory, const char *id,
+			   const char *patch)
+{
+	if (!id || !patch || !*patch)
+		return NB_OK;
+
+	const char *line = patch;
+	while (*line) {
+		char action = 0;
+		const char *path = cli_files_patch_header(line, &action);
+		const char *end = strchr(line, '\n');
+		if (!path || !end) {
+			line = end ? end + 1 : line + strlen(line);
+			continue;
+		}
+
+		const char *next = end + 1;
+		while (*next) {
+			char ignored = 0;
+			if (cli_files_patch_header(next, &ignored))
+				break;
+
+			const char *newline = strchr(next, '\n');
+			next = newline ? newline + 1 : next + strlen(next);
+		}
+
+		size_t length = (size_t)(next - line);
+		if (model->changes.len >= CLI_FILES_LIMIT ||
+		    length > CLI_FILES_PATCH_LIMIT - model->patch_bytes) {
+			model->truncated = 1;
+			return NB_OK;
+		}
+
+		nb_buf name NB_CLEANUP(nb_buf_cleanup) = {0};
+		nb_buf resolved NB_CLEANUP(nb_buf_cleanup) = {0};
+		if (!nb_buf_append(&name, path, (size_t)(end - path)))
+			return NB_ERR_NOMEM;
+
+		int rc = cli_files_resolve(directory, nb_buf_cstr(&name), &resolved, NULL);
+		if (rc)
+			return rc;
+
+		int exists = 0;
+		for (size_t i = 0; i < model->changes.len; i++) {
+			const struct cli_files_change *change = nb_vec_at(&model->changes, i);
+			if (!strcmp(change->call_id, id) &&
+			    !strcmp(change->path, nb_buf_cstr(&resolved)))
+				exists = 1;
+		}
+
+		if (!exists) {
+			struct cli_files_change change NB_CLEANUP(cli_files_change_cleanup) = {
+				.action = action,
+				.call_id = strdup(id),
+				.path = strdup(nb_buf_cstr(&resolved)),
+				.patch = malloc(length + 1)};
+			if (!change.call_id || !change.path || !change.patch)
+				return NB_ERR_NOMEM;
+
+			memcpy(change.patch, line, length);
+			change.patch[length] = 0;
+			if (!nb_vec_push_copy(&model->changes, &change))
+				return NB_ERR_NOMEM;
+
+			memset(&change, 0, sizeof(change));
+			model->patch_bytes += length;
+			model->revision++;
+		}
+
+		line = next;
+	}
+
+	return NB_OK;
+}
+
 int cli_files_tool(struct cli_files_model *model, const char *directory,
-	const struct cli_transcript_tool *tool)
+		   const struct cli_transcript_tool *tool)
 {
 	if (!tool || !tool->result || cli_transcript_tool_is_running(tool) || tool->state < 0)
 		return NB_OK;
@@ -233,8 +340,15 @@ int cli_files_tool(struct cli_files_model *model, const char *directory,
 		const cJSON *files = cJSON_GetObjectItemCaseSensitive(data, "files");
 		const char *root = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(data, "workspace_root"));
+		const cJSON *ui = cJSON_GetObjectItemCaseSensitive(result, "ui");
+		const char *patch =
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(ui, "patch_diff"));
+		int patch_rc = cli_files_patch(model, root ? root : directory, tool->id, patch);
+		if (patch_rc)
+			return patch_rc;
+
 		const cJSON *file;
-		cJSON_ArrayForEach(file, files) {
+		cJSON_ArrayForEach (file, files) {
 			const char *path = cJSON_GetStringValue(
 				cJSON_GetObjectItemCaseSensitive(file, "path"));
 			const char *action = cJSON_GetStringValue(
@@ -242,8 +356,8 @@ int cli_files_tool(struct cli_files_model *model, const char *directory,
 			if (!path || (action && !strcmp(action, "delete")))
 				continue;
 
-			int rc = cli_files_add(model, root ? root : directory,
-				path, CLI_FILES_MODIFIED);
+			int rc = cli_files_add(model, root ? root : directory, path,
+					       CLI_FILES_MODIFIED);
 			if (rc)
 				return rc;
 		}
@@ -251,9 +365,9 @@ int cli_files_tool(struct cli_files_model *model, const char *directory,
 
 	const cJSON *artifacts = cJSON_GetObjectItemCaseSensitive(result, "artifacts");
 	const cJSON *artifact;
-	cJSON_ArrayForEach(artifact, artifacts) {
-		const char *path = cJSON_GetStringValue(
-			cJSON_GetObjectItemCaseSensitive(artifact, "path"));
+	cJSON_ArrayForEach (artifact, artifacts) {
+		const char *path =
+			cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(artifact, "path"));
 		if (!path)
 			continue;
 
