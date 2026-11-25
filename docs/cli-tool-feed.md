@@ -79,6 +79,8 @@ The chat requests disambiguated modified keys through the
 restoring the previous keyboard mode when leaving. Legacy terminals keep their
 normal input behavior. CSI u and xterm modifyOtherKeys shortcuts are decoded
 when forwarded; shortcuts consumed by the terminal remain terminal-owned.
+Standalone modifier press/repeat/release reports preserve the text selection,
+so pressing Cmd before Cmd+C does not discard the range being copied.
 
 The original welcome banner, adaptive footer, message styles and work rows are
 the visual baseline. Short feeds follow document flow; the composer reaches the

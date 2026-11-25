@@ -110,6 +110,13 @@ def main():
                     mouse(terminal, 0, x1, y1)
                     mouse(terminal, 32, x2, y2)
                     mouse(terminal, 0, x2, y2, release=True)
+                    # Kitty sends standalone modifier events before the copy chord.
+                    for modifier in range(57441, 57455):
+                        terminal.send(f'\x1b[{modifier};9:1u'
+                                      f'\x1b[{modifier};9:2u'
+                                      f'\x1b[{modifier};1:3u')
+                    screen = terminal.snapshot(f'{columns}: modifier events preserve selection')
+                    assert terminal.screen.buffer[y1][x1].reverse, screen
                     for key in ('\x1b[99;9u', '\x1b[67;6u', '\x1b[2;5~', '\x03'):
                         copied.unlink()
                         terminal.send(key)

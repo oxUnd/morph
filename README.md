@@ -67,10 +67,10 @@ Media paths use stable Homebrew `opt` links. After upgrading dependencies, rerun
 CMake fetches a pinned post-v0.1.0 nothing-tui revision, including native
 text selection, draggable split views, resize pointers, view-owned animations,
 grouped, searchable shortcut help with bold key labels, source-preserving tab
-alignment, bounded application updates, clean Cygwin console startup, and Windows
-Terminal Sixel cell geometry. Use
+alignment, bounded application updates, clean Cygwin console startup, Windows
+Terminal Sixel cell geometry, and selection preservation across modifier key events. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
-of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/0df8e4a6980b1f648e2032c51b5ba147e95ba76b)
+of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/9f39b296d40a9a3de058cc7b8303c5732ce77377)
 
 CMake also fetches [nothing-orm](https://codeberg.org/oxund/nothing-orm/src/commit/46115ce4b1cae9e1a9b68f52b1f8ebd85c4779a3)
 from Codeberg at a pinned revision. SQLite is enabled by default. PostgreSQL
