@@ -152,8 +152,8 @@ Prefer these over hand-rolled equivalents.
 
 ## Dependencies
 - Core and CLI build prerequisites, companion source checkouts and version requirements are listed in the [build instructions](README.md#build).
-- Fetched: nothing-orm (SQLite), cmark-gfm (Markdown), QuickJS, wasm3, BLAKE3,
-  tree-sitter and GoogleTest v1.14.0; versions are pinned in CMake.
+- Fetched: nothing-orm (SQLite), morph-markdown and cmark-gfm (Markdown), QuickJS,
+  wasm3, BLAKE3, tree-sitter and GoogleTest v1.14.0; versions are pinned in CMake.
 - The CLI requires GNU Readline ≥ 8.0. libseccomp is optional for the Linux sandbox.
 
 ## Configuration

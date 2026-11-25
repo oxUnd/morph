@@ -49,7 +49,7 @@ Build with CMake ≥ 3.20 and a GCC or Clang toolchain with C11, C++17 and
 scope-cleanup support. Install pkg-config and the development files for SQLite3,
 libcurl ≥ 7.85 with asynchronous DNS, libuv ≥ 1.44, GNU Readline ≥ 8, zlib, libffi, libwebp, libxml2,
 FreeType, HarfBuzz, libvips, Cairo and PangoCairo. A fresh checkout also needs
-the MathJax and Markdown source trees at the paths shown below.
+the MathJax source tree at the path shown below.
 
 On macOS, install the dependencies with Homebrew:
 
@@ -96,13 +96,14 @@ parser for model and MCP events. Cygwin builds apply the executable-path patch i
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).
 
-The morph-markdown checkout must include [inline math line layout](https://github.com/oxUnd/morph-markdown/commit/785ad7fa38c7d61b0f8b41f1a9a9bc5ea6e213ea)
-or a newer revision. Both renderers include their math layout and Windows Terminal
-cell-size fixes in source; Morph does not apply local patches to these checkouts.
+CMake fetches [morph-markdown](https://github.com/oxUnd/morph-markdown/commit/785ad7fa38c7d61b0f8b41f1a9a9bc5ea6e213ea)
+at a pinned revision, including inline math line layout and Windows Terminal
+cell-size fixes. No checkout under `fronts/` is required. To develop against a
+local checkout, configure with
+`-DFETCHCONTENT_SOURCE_DIR_MORPH_MARKDOWN=/path/to/morph-markdown`.
 
 ```bash
 git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c
-git clone https://github.com/oxUnd/morph-markdown fronts/morph-markdown
 cmake -S . -B build
 cmake --build build
 cmake --install build --prefix /usr/local   # optional
@@ -358,7 +359,7 @@ src/
   sandbox/      Sandboxed ext execution
   ipc/          JSON-RPC
   render/       Markdown / image / video terminal rendering
-fronts/         Extra front-end libraries (morph-markdown)
+build/_deps/    CMake-managed dependency sources and builds (including morph-markdown)
 exts/           Example exts (manifest.toml + entry script)
 vendor/         Third-party sources, assets and downstream patches (cJSON, stb, MathJax)
 ```

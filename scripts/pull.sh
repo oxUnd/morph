@@ -5,7 +5,6 @@ REPOS=(
   "$DIR/../"
   "$DIR/../fronts/ios"
   "$DIR/../fronts/android"
-  "$DIR/../fronts/morph-markdown"
   "$DIR/../vendor/mathjax-c"
 )
 

@@ -252,10 +252,7 @@ endif()
 
 set(MORPH_MATHJAX_DIR "${CMAKE_SOURCE_DIR}/vendor/mathjax-c" CACHE PATH
     "MathJax source used by morph and its Markdown renderer" FORCE)
-set(MORPH_MARKDOWN_BUILD_TESTS ${BUILD_TESTS} CACHE BOOL "" FORCE)
-set(MORPH_MARKDOWN_BUILD_KITTY ON CACHE BOOL "" FORCE)
-set(MORPH_MARKDOWN_BUILD_KITTY_DEMO OFF CACHE BOOL "" FORCE)
-add_subdirectory(fronts/morph-markdown)
+include(cmake/FetchMorphMarkdown.cmake)
 include(cmake/FixCmarkGfm.cmake)
 
 # Keep strict adapter warnings while treating upstream headers as external.

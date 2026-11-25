@@ -30,9 +30,9 @@ CONTENTS						*morph-contents*
 ==============================================================================
 QUICKSTART						*morph-quickstart*
 
-From a source checkout with dependencies installed, place the companion source
-trees at vendor/mathjax-c and fronts/morph-markdown as described in the root
-README, then build:
+From a source checkout with dependencies installed, place the MathJax source
+tree at vendor/mathjax-c as described in the root README, then build. CMake
+fetches the pinned morph-markdown dependency automatically:
 
 	cmake -S . -B build
 	cmake --build build
