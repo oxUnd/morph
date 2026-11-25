@@ -98,6 +98,10 @@ static void runtime_history_load_secrets(struct react_context *react, const stru
 
 	for (size_t i = 0; i < sizeof(models) / sizeof(models[0]); i++)
 		runtime_history_add_secret(react, runtime_api_key(models[i]));
+
+	if (config->database.url_env[0])
+		runtime_history_add_secret(react, getenv(config->database.url_env));
+
 	for (int i = 0; i < config->mcp.server_count; i++) {
 		const struct config_mcp_server *server = &config->mcp.servers[i];
 		const char *token =

@@ -30,7 +30,8 @@ static int fact_update(struct orm_scope *lease, int64_t id,
 	};
 
 	int rc = orm_status(lease->database,
-			    norm_update(lease->connection, &fact_model, &query, NULL, NULL, &error),
+			    norm_update(lease->connection, &fact_model, &query,
+					orm_scope_call(lease), NULL, &error),
 			    &error);
 
 	return rc == MORPH_ERR_DB ? NB_ERR_IO : rc;
@@ -74,9 +75,10 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 	};
 
 	if (rc == 0)
-		rc = orm_status(
-			db, norm_select(lease.connection, &fact_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(lease.connection, &fact_model, &query,
+					    orm_scope_call(&lease), &rows, &error),
+				&error);
 
 	if (rc != 0)
 		return rc;
@@ -128,9 +130,10 @@ int memory_store_write_fact(struct db *db, int64_t session_id, const char *key_n
 	};
 	struct norm_write_result result = {0};
 
-	rc = orm_status(
-		db, norm_insert(lease.connection, &fact_model, &row, NULL, NULL, &result, &error),
-		&error);
+	rc = orm_status(db,
+			norm_insert(lease.connection, &fact_model, &row, NULL,
+				    orm_scope_call(&lease), &result, &error),
+			&error);
 	if (rc == MORPH_ERR_DB)
 		rc = NB_ERR_IO;
 

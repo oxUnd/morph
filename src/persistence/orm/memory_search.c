@@ -18,6 +18,8 @@
 
 #define MEMORY_SEARCH_TERM_LIMIT 24
 #define MEMORY_SEARCH_QUERY_MAX_BYTES 2048
+#define MEMORY_SEARCH_RESULT_MAX_BYTES (64u * 1024u * 1024u)
+#define MEMORY_SEARCH_ROW_MAX_BYTES (8u * 1024u * 1024u)
 
 static void memory_terms_cleanup(nb_vec *terms)
 {
@@ -57,9 +59,15 @@ static int memory_terms_create(const char *query, nb_vec *terms)
 				nb_utf8_classify_codepoint(cp) == NB_UTF8_CLASS_SEPARATOR;
 
 		if (separator && position > start) {
-			char *word NB_CLEANUP(nb_charp_cleanup) =
-				strndup(query + start, position - start);
+			nb_buf folded NB_CLEANUP(nb_buf_cleanup) = {0};
+			char *word NB_CLEANUP(nb_charp_cleanup) = NULL;
 
+			rc = nb_utf8_casefold(nb_str_from_parts(query + start, position - start),
+					       &folded, NULL);
+			if (rc != NB_OK)
+				return rc;
+
+			word = orm_text_copy(nb_buf_str(&folded));
 			if (!word)
 				return NB_ERR_NOMEM;
 
@@ -235,8 +243,8 @@ static const struct norm_field search_query_fields[] = {
 };
 
 static int memory_search_read(struct orm_scope *scope, int64_t session_id,
-			      const struct memory_search_options *options, const nb_vec *terms,
-			      const nb_vec *visible, struct norm_rows **out)
+			      const struct memory_search_options *options, const nb_vec *visible,
+			      struct norm_cursor **out)
 {
 	const struct norm_model raw_model = {.table = NB_STR_LIT("raw"),
 					     .size = sizeof(struct search_query_row),
@@ -248,11 +256,6 @@ static int memory_search_read(struct orm_scope *scope, int64_t session_id,
 						.alignment = _Alignof(struct search_query_row),
 						.fields = search_query_fields,
 						.field_count = 12};
-	const struct norm_model ranked_model = {.table = NB_STR_LIT("ranked"),
-						.size = sizeof(struct search_query_row),
-						.alignment = _Alignof(struct search_query_row),
-						.fields = search_query_fields,
-						.field_count = 13};
 	const struct norm_table_ref facts = norm_table(&fact_model, NB_STR_LIT("f"));
 	const struct norm_table_ref candidates =
 		norm_table(&memory_candidate_model, NB_STR_LIT("c"));
@@ -271,7 +274,6 @@ static int memory_search_read(struct orm_scope *scope, int64_t session_id,
 	const struct norm_table_ref current =
 		norm_table(&memory_scope_model, NB_STR_LIT("current"));
 	const struct norm_table_ref scoped = norm_table(&scoped_model, NB_STR_LIT("s"));
-	const struct norm_table_ref ranked = norm_table(&ranked_model, NB_STR_LIT("r"));
 	const struct norm_term empty = norm_term_value(orm_string(""));
 	const struct norm_term half = norm_term_value(norm_f64(0.5));
 	const struct norm_term one = norm_term_value(norm_f64(1.0));
@@ -608,111 +610,210 @@ static int memory_search_read(struct orm_scope *scope, int64_t session_id,
 		.fields = scoped_fields,
 		.field_count = 12,
 		.where = norm_and(scoped_conditions, condition_count)};
-	struct norm_term arguments[MEMORY_SEARCH_TERM_LIMIT][4][2] = {0};
-	struct norm_term contains[MEMORY_SEARCH_TERM_LIMIT][4] = {0};
-	struct norm_term weighted[MEMORY_SEARCH_TERM_LIMIT][4] = {0};
-	struct norm_term sums[MEMORY_SEARCH_TERM_LIMIT * 4] = {0};
-	const struct norm_term zero_score = norm_term_value(norm_i32(0));
-	const struct norm_term *levels[MEMORY_SEARCH_TERM_LIMIT * 4 + 1] = {&zero_score};
-	const size_t scored_fields[] = {SEARCH_KEY, SEARCH_VALUE, SEARCH_DETAILS, SEARCH_SOURCE};
-	const struct norm_term weights[] = {
-		norm_term_value(norm_i32(4)), norm_term_value(norm_i32(2)),
-		norm_term_value(norm_i32(1)), norm_term_value(norm_i32(1))};
-	for (size_t i = 0; i < terms->len; i++) {
-		const char *const *word = nb_vec_at(terms, i);
-		for (size_t field = 0; field < 4; field++) {
-			arguments[i][field][0] =
-				norm_term_column(norm_table_col(&scoped, scored_fields[field]));
-			arguments[i][field][1] = norm_term_value(orm_string(*word));
-			contains[i][field] = norm_term_named_call(NB_STR_LIT("morph_text_contains"),
-								  arguments[i][field], 2);
-			weighted[i][field] = norm_term_binary(NORM_BINARY_MULTIPLY, &weights[field],
-							      &contains[i][field]);
-			size_t position = i * 4 + field;
-			levels[position + 1] = &weighted[i][field];
-		}
-	}
-
-	size_t level_count = terms->len * 4 + 1;
-	size_t sum_count = 0;
-	while (level_count > 1) {
-		size_t next = 0;
-
-		for (size_t i = 0; i + 1 < level_count; i += 2) {
-			sums[sum_count] =
-				norm_term_binary(NORM_BINARY_ADD, levels[i], levels[i + 1]);
-			levels[next++] = &sums[sum_count++];
-		}
-
-		if (level_count % 2)
-			levels[next++] = levels[level_count - 1];
-
-		level_count = next;
-	}
-
-	struct norm_query_field ranked_fields[13] = {0};
-	for (size_t i = 0; i < 12; i++)
-		ranked_fields[i] = (struct norm_query_field){
-			.value = norm_term_column(norm_table_col(&scoped, i)), .into = i};
-
-	ranked_fields[12] = (struct norm_query_field){.value = *levels[0], .into = 12};
-	const struct norm_query ranked_query = {
-		.from = &scoped,
-		.projection = &ranked_model,
-		.fields = ranked_fields,
-		.field_count = 13,
-		.where = norm_eq(norm_table_col(&scoped, SEARCH_REVISION), norm_i64(1))};
 	const struct norm_cte ctes[] = {{.model = &raw_model, .query = &raw_query},
-					{.model = &scoped_model, .query = &scoped_query},
-					{.model = &ranked_model, .query = &ranked_query}};
-	const size_t selected[] = {SEARCH_ID,	      SEARCH_SESSION_ID, SEARCH_UPDATED_AT,
-				   SEARCH_KIND,	      SEARCH_KEY,	 SEARCH_VALUE,
-				   SEARCH_SOURCE,     SEARCH_DETAILS,	 SEARCH_SESSION,
-				   SEARCH_IMPORTANCE, SEARCH_SCORE,	 SEARCH_MEMORY_VERSION};
+					{.model = &scoped_model, .query = &scoped_query}};
+	const size_t selected[] = {SEARCH_ID, SEARCH_SESSION_ID, SEARCH_UPDATED_AT,
+				   SEARCH_KIND, SEARCH_KEY, SEARCH_VALUE, SEARCH_SOURCE,
+				   SEARCH_DETAILS, SEARCH_SESSION, SEARCH_IMPORTANCE,
+				   SEARCH_KIND, SEARCH_MEMORY_VERSION};
 	struct norm_query_field fields[12] = {0};
-	for (size_t i = 0; i < 12; i++)
+
+	for (size_t i = 0; i < NB_ARRAY_SIZE(fields); i++)
 		fields[i] = (struct norm_query_field){
-			.value = norm_term_column(norm_table_col(&ranked, selected[i])), .into = i};
+			.value = norm_term_column(norm_table_col(&scoped, selected[i])), .into = i};
 
 	const struct norm_term session_final[] = {
-		norm_term_column(norm_table_col(&ranked, SEARCH_SESSION)), empty};
+		norm_term_column(norm_table_col(&scoped, SEARCH_SESSION)), empty};
 	fields[8].value = norm_term_call(NORM_FUNCTION_COALESCE, session_final, 2);
+	fields[10].value = norm_term_value(norm_i32(0));
 	const struct norm_query_order order[] = {
-		{.value = norm_term_column(norm_table_col(&ranked, SEARCH_SCORE)),
+		{.value = norm_term_column(norm_table_col(&scoped, SEARCH_UPDATED_AT)),
 		 .direction = NORM_DESC},
-		{.value = norm_term_column(norm_table_col(&ranked, SEARCH_UPDATED_AT)),
-		 .direction = NORM_DESC},
-		{.value = norm_term_column(norm_table_col(&ranked, SEARCH_IMPORTANCE)),
-		 .direction = NORM_DESC},
-		{.value = norm_term_column(norm_table_col(&ranked, SEARCH_ID)),
+		{.value = norm_term_column(norm_table_col(&scoped, SEARCH_IMPORTANCE)),
+		 .direction = NORM_DESC,
+		 .nulls = NORM_NULLS_LAST},
+		{.value = norm_term_column(norm_table_col(&scoped, SEARCH_ID)),
 		 .direction = NORM_DESC}};
+	const struct norm_result_options limits = {
+		.max_rows = SIZE_MAX, .max_row_bytes = MEMORY_SEARCH_ROW_MAX_BYTES};
 	const struct norm_query query = {
 		.with = ctes,
-		.with_count = 3,
-		.from = &ranked,
+		.with_count = NB_ARRAY_SIZE(ctes),
+		.from = &scoped,
 		.projection = &search_record_model,
 		.fields = fields,
-		.field_count = 12,
-		.where = terms->len && !options->include_unmatched
-				 ? norm_gt(norm_table_col(&ranked, SEARCH_SCORE), norm_i32(0))
-				 : (struct norm_expr){0},
+		.field_count = NB_ARRAY_SIZE(fields),
+		.where = norm_eq(norm_table_col(&scoped, SEARCH_REVISION), norm_i64(1)),
 		.order = order,
-		.order_count = 4,
-		.has_limit = options->limit > 0,
-		.limit = options->limit > 0 ? (uint64_t)options->limit : 0};
+		.order_count = NB_ARRAY_SIZE(order),
+		.result_options = &limits};
+	struct norm_error error = {0};
 
-	return orm_read(scope, &query, out);
+	return orm_status(scope->database,
+			  norm_query_cursor_open(scope->connection, &query, orm_scope_call(scope),
+						 out, &error),
+			  &error);
+}
+
+struct memory_search_match {
+	struct memory_record record;
+	bool importance_missing;
+	size_t bytes;
+};
+
+static void memory_search_match_cleanup(struct memory_search_match *match)
+{
+	memory_record_cleanup(&match->record);
+	memset(match, 0, sizeof(*match));
+}
+
+static struct memory_search_match memory_search_match_steal(struct memory_search_match *owner)
+{
+	struct memory_search_match value = *owner;
+
+	memset(owner, 0, sizeof(*owner));
+	return value;
+}
+
+static void memory_search_matches_cleanup(nb_vec *matches)
+{
+	for (size_t i = 0; i < matches->len; i++)
+		memory_search_match_cleanup(nb_vec_at(matches, i));
+
+	nb_vec_destroy(matches);
+}
+
+static void memory_search_cursor_cleanup(struct norm_cursor **owner)
+{
+	if (*owner)
+		norm_cursor_close(owner, NULL);
+}
+
+static int memory_search_compare(const void *left, const void *right)
+{
+	const struct memory_search_match *a = left;
+	const struct memory_search_match *b = right;
+
+	if (a->record.score != b->record.score)
+		return a->record.score > b->record.score ? -1 : 1;
+
+	if (a->record.updated_at != b->record.updated_at)
+		return a->record.updated_at > b->record.updated_at ? -1 : 1;
+
+	if (a->importance_missing != b->importance_missing)
+		return a->importance_missing ? 1 : -1;
+
+	if (a->record.importance != b->record.importance)
+		return a->record.importance > b->record.importance ? -1 : 1;
+
+	if (a->record.id != b->record.id)
+		return a->record.id > b->record.id ? -1 : 1;
+
+	return 0;
+}
+
+static void memory_search_match_swap(struct memory_search_match *left,
+				     struct memory_search_match *right)
+{
+	struct memory_search_match value = memory_search_match_steal(left);
+
+	*left = memory_search_match_steal(right);
+	*right = memory_search_match_steal(&value);
+}
+
+/* The root is the worst retained match, so a bounded result never needs to
+ * retain every candidate. Every visible candidate is still scored. */
+static void memory_search_heap_up(nb_vec *matches)
+{
+	size_t child = matches->len - 1;
+
+	while (child) {
+		size_t parent = (child - 1) / 2;
+		struct memory_search_match *a = nb_vec_at(matches, parent);
+		struct memory_search_match *b = nb_vec_at(matches, child);
+
+		if (memory_search_compare(a, b) >= 0)
+			return;
+
+		memory_search_match_swap(a, b);
+		child = parent;
+	}
+}
+
+static void memory_search_heap_down(nb_vec *matches)
+{
+	size_t parent = 0;
+
+	while (parent < matches->len / 2) {
+		size_t child = parent * 2 + 1;
+
+		if (child + 1 < matches->len &&
+		    memory_search_compare(nb_vec_at(matches, child),
+					  nb_vec_at(matches, child + 1)) < 0)
+			child++;
+
+		struct memory_search_match *a = nb_vec_at(matches, parent);
+		struct memory_search_match *b = nb_vec_at(matches, child);
+
+		if (memory_search_compare(a, b) >= 0)
+			return;
+
+		memory_search_match_swap(a, b);
+		parent = child;
+	}
+}
+
+static int memory_search_score(const struct search_record_row *row, const nb_vec *terms,
+			       int *out)
+{
+	const nb_str values[] = {row->key, row->value,
+				 row->details_missing ? NB_STR_NULL : row->details, row->source};
+	const int weights[] = {4, 2, 1, 1};
+	int score = 0;
+
+	for (size_t field = 0; field < NB_ARRAY_SIZE(values) && terms->len; field++) {
+		if (!values[field].len)
+			continue;
+
+		nb_buf folded NB_CLEANUP(nb_buf_cleanup) = {0};
+		int rc = nb_utf8_casefold(values[field], &folded, NULL);
+
+		if (rc != NB_OK)
+			return rc;
+
+		for (size_t i = 0; i < terms->len; i++) {
+			const char *const *term = nb_vec_at(terms, i);
+
+			if (strstr(nb_buf_cstr(&folded), *term))
+				score += weights[field];
+		}
+	}
+
+	*out = score;
+	return NB_OK;
+}
+
+static int memory_search_row_bytes(const struct search_record_row *row, size_t *out)
+{
+	const nb_str values[] = {row->kind, row->key, row->value, row->source,
+				 row->details_missing ? NB_STR_NULL : row->details, row->session};
+	/* Account for both growing vectors and the final result vector. */
+	size_t bytes = 2 * (sizeof(struct memory_search_match) + sizeof(struct memory_record));
+
+	for (size_t i = 0; i < NB_ARRAY_SIZE(values); i++) {
+		if (values[i].len >= MEMORY_SEARCH_RESULT_MAX_BYTES - bytes)
+			return NB_ERR_TOO_BIG;
+
+		bytes += values[i].len + 1;
+	}
+
+	*out = bytes;
+	return NB_OK;
 }
 
 static int memory_search_copy_record(const struct search_record_row *row,
-				     struct memory_search_result *out)
+				     struct memory_record *record)
 {
-	struct memory_record *record = nb_vec_push(&out->records);
-
-	if (!record)
-		return NB_ERR_NOMEM;
-
-	memset(record, 0, sizeof(*record));
 	record->id = row->id;
 	record->session_id = row->session_id;
 	record->updated_at = row->updated_at;
@@ -723,13 +824,77 @@ static int memory_search_copy_record(const struct search_record_row *row,
 	record->details = row->details_missing ? strdup("") : orm_text_copy(row->details);
 	record->session = orm_text_copy(row->session);
 	record->importance = row->importance;
-	record->score = row->score;
 	record->memory_version = row->memory_version;
 	if (!record->kind || !record->key || !record->value || !record->source ||
 	    !record->details || !record->session)
 		return NB_ERR_NOMEM;
 
-	return 0;
+	return NB_OK;
+}
+
+static int memory_search_collect(struct norm_cursor *cursor, const struct db *db,
+				 const struct memory_search_options *options, const nb_vec *terms,
+				 nb_vec *matches)
+{
+	struct norm_error error = {0};
+	size_t retained = 0;
+	bool present = false;
+	int rc = NB_OK;
+
+	nb_vec_init(matches, sizeof(struct memory_search_match));
+	while ((rc = orm_status(db, norm_cursor_next(cursor, &present, &error), &error)) == NB_OK &&
+	       present) {
+		const struct search_record_row *row = norm_cursor_row(cursor);
+		struct memory_search_match match NB_CLEANUP(memory_search_match_cleanup) = {
+			.record = {.id = row->id,
+				   .updated_at = row->updated_at,
+				   .importance = row->importance},
+			.importance_missing = row->importance_missing};
+
+		rc = memory_search_score(row, terms, &match.record.score);
+		if (rc != NB_OK)
+			return rc;
+
+		if (terms->len && !options->include_unmatched && !match.record.score)
+			continue;
+
+		bool replace = options->limit > 0 && matches->len >= (size_t)options->limit;
+		struct memory_search_match *worst = replace ? nb_vec_at(matches, 0) : NULL;
+
+		if (worst && memory_search_compare(&match, worst) >= 0)
+			continue;
+
+		rc = memory_search_row_bytes(row, &match.bytes);
+		if (rc != NB_OK)
+			return rc;
+
+		size_t released = worst ? worst->bytes : 0;
+
+		if (match.bytes > MEMORY_SEARCH_RESULT_MAX_BYTES - (retained - released))
+			return NB_ERR_TOO_BIG;
+
+		rc = memory_search_copy_record(row, &match.record);
+		if (rc != NB_OK)
+			return rc;
+
+		retained = retained - released + match.bytes;
+		if (worst) {
+			memory_search_match_cleanup(worst);
+			*worst = memory_search_match_steal(&match);
+			memory_search_heap_down(matches);
+		} else {
+			struct memory_search_match *slot = nb_vec_push(matches);
+
+			if (!slot)
+				return NB_ERR_NOMEM;
+
+			*slot = memory_search_match_steal(&match);
+			if (options->limit > 0)
+				memory_search_heap_up(matches);
+		}
+	}
+
+	return rc;
 }
 
 int memory_search_records(struct db *db, int64_t session_id,
@@ -739,41 +904,66 @@ int memory_search_records(struct db *db, int64_t session_id,
 	struct memory_search_result result NB_CLEANUP(memory_search_result_cleanup) = {0};
 	nb_vec terms NB_CLEANUP(memory_terms_cleanup) = {0};
 	nb_vec visibility NB_CLEANUP(nb_vec_cleanup) = {0};
+	nb_vec matches NB_CLEANUP(memory_search_matches_cleanup) = {0};
 	struct orm_scope lease NB_CLEANUP(orm_scope_cleanup) = {0};
-	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
-	struct memory_record record;
+	struct norm_cursor *cursor NB_CLEANUP(memory_search_cursor_cleanup) = NULL;
 	int rc;
 
 	if (!db_is_open(db) || !options || !out || session_id <= 0)
 		return NB_ERR_INVAL;
 
-	if (((void *)out->records.data))
+	if (out->records.data)
 		return NB_ERR_EXISTS;
 
 	rc = memory_terms_create(options->query, &terms);
-	if (rc == 0)
+	if (rc == NB_OK)
 		rc = memory_search_visible_sessions(db, options, &visibility);
 
-	if (rc == 0)
-		rc = (nb_vec_init(&result.records, sizeof(record)),
-		      nb_vec_reserve(&result.records, 16) ? 0 : NB_ERR_NOMEM);
-	if (rc != 0)
+	nb_vec_init(&result.records, sizeof(struct memory_record));
+	if (rc != NB_OK)
 		return rc;
 
 	if (options->query && *options->query && !terms.len && !options->include_unmatched) {
-		return (nb_vec_move(&out->records, &result.records), 0);
+		nb_vec_move(&out->records, &result.records);
+		return NB_OK;
 	}
 
 	rc = orm_scope_begin(db, &lease);
-	if (rc == 0)
-		rc = memory_search_read(&lease, session_id, options, &terms, &visibility, &rows);
+	if (rc == NB_OK)
+		rc = memory_search_read(&lease, session_id, options, &visibility, &cursor);
 
-	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++)
-		rc = memory_search_copy_record(norm_rows_at(rows, i), &result);
+	if (rc == NB_OK)
+		rc = memory_search_collect(cursor, db, options, &terms, &matches);
 
-	if (rc != 0)
+	if (cursor) {
+		struct norm_error error = {0};
+		int closed = orm_status(db, norm_cursor_close(&cursor, &error), &error);
+
+		if (rc == NB_OK)
+			rc = closed;
+	}
+
+	if (rc != NB_OK)
 		return rc;
 
+	if (matches.len > 1)
+		qsort(matches.data, matches.len, sizeof(struct memory_search_match),
+		      memory_search_compare);
+
+	if (!nb_vec_reserve(&result.records, matches.len))
+		return NB_ERR_NOMEM;
+
+	for (size_t i = 0; i < matches.len; i++) {
+		struct memory_search_match *match = nb_vec_at(&matches, i);
+		struct memory_record *record = nb_vec_push(&result.records);
+
+		if (!record)
+			return NB_ERR_NOMEM;
+
+		*record = match->record;
+		memset(&match->record, 0, sizeof(match->record));
+	}
+
 	nb_vec_move(&out->records, &result.records);
-	return 0;
+	return NB_OK;
 }

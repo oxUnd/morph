@@ -9,7 +9,10 @@ cannot connect to it directly; use nginx/Caddy/Apache in production, or the
 `cgi-fcgi` command for a local protocol-level smoke test. Docker is optional.
 
 Set `MORPH_FCGI_DB` to the CLI database path to share persisted sessions.
-The service defaults to `/var/lib/morph/morph.db`.
+The service defaults to SQLite at `/var/lib/morph/morph.db`. The `[database]`
+configuration selects PostgreSQL for both the session store and runtime workers;
+build with `-DENABLE_POSTGRESQL=ON` and provide the configured URL environment
+variable. See [PostgreSQL storage](../../../README.md#postgresql-storage).
 
 ## Build and verification
 
@@ -42,7 +45,7 @@ src/sapi/fastcgi/
 ├── auth.{c,h}          # session token + Basic Auth + X-Remote-User
 ├── security.{c,h}      # PBKDF2-SHA256, random ID, constant-time compare
 ├── fcgi_io.{c,h}       # request_t, JSON & SSE helpers
-├── session_store.{c,h} # one SQLite connection, schema and maintenance
+├── session_store.{c,h} # one serialized ORM connection, schema and maintenance
 ├── storage/            # users, tokens, quota, artifacts, sessions, events/actions, canvas
 ├── services/           # turn job submission, worker lifetime and runtime execution
 ├── adapters/           # runtime events and interaction protocol
@@ -68,7 +71,7 @@ storage. Adapters bridge runtime events and questions/approvals; media rendering
 stays separate from execution. All turns still enter `runtime_execute_turn`.
 
 Storage modules borrow the same `session_store` connection. The shared transaction
-helpers hold its SQLite connection mutex across the complete transaction. Artifact
+helpers hold its ORM connection mutex across the complete transaction. Artifact
 registration and quota updates remain atomic, and deleting a session still removes
 its frontend/core records in one cross-table transaction. Domain modules do not
 create independent connections. Login token files belong to `storage/tokens`.
@@ -367,7 +370,7 @@ events to the SSE names above for compatibility with existing GUI clients.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MORPH_FCGI_LISTEN` | `unix:/run/morph-fastcgi.sock` | Listen spec: `unix:/path`, `:port`, `host:port` |
-| `MORPH_FCGI_DB` | `/var/lib/morph/morph.db` | Path to SQLite database |
+| `MORPH_FCGI_DB` | `/var/lib/morph/morph.db` | SQLite database path; `[database]` selects the backend |
 | `MORPH_FCGI_WORKERS` | `128` | Request workers (1–512). SSE requests are handed to the stream pool. |
 | `MORPH_FCGI_STREAM_THREADS` | `32` | Workers serving long-lived streams (1–256) |
 | `MORPH_FCGI_STREAM_QUEUE` | `256` | Streams that may wait for a worker (1–65536) |

@@ -49,7 +49,8 @@ static int memory_store_delete(struct db *db, const struct norm_model *model, in
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_delete(scope.connection, model, &query, NULL, NULL, &error),
+				norm_delete(scope.connection, model, &query, orm_scope_call(&scope),
+					    NULL, &error),
 				&error);
 
 	return rc;

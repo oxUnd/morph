@@ -21,8 +21,9 @@
 #define MORPH_ERR_TOKEN_BUDGET NB_ERR_USER(16)
 #define MORPH_ERR_AGENT_BUDGET NB_ERR_USER(17)
 #define MORPH_ERR_REQUEST_BUDGET NB_ERR_USER(18)
+#define MORPH_ERR_DB_OUTCOME_UNKNOWN NB_ERR_USER(19)
 
-#define MORPH_ERROR_COUNT 15u
+#define MORPH_ERROR_COUNT 16u
 
 static inline const nb_err_desc *morph_error_descriptions(void)
 {
@@ -32,6 +33,8 @@ static inline const nb_err_desc *morph_error_descriptions(void)
 		{MORPH_ERR_API, "MORPH_ERR_API", "API error"},
 		{MORPH_ERR_NETWORK, "MORPH_ERR_NETWORK", "network error"},
 		{MORPH_ERR_DB, "MORPH_ERR_DB", "database error"},
+		{MORPH_ERR_DB_OUTCOME_UNKNOWN, "MORPH_ERR_DB_OUTCOME_UNKNOWN",
+		 "database write outcome is unknown; verify persisted state before retrying"},
 		{MORPH_ERR_PROCESSING, "MORPH_ERR_PROCESSING", "processing error"},
 		{MORPH_ERR_SANDBOX, "MORPH_ERR_SANDBOX", "sandbox violation"},
 		{MORPH_ERR_LOAD, "MORPH_ERR_LOAD", "load error"},

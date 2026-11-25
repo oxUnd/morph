@@ -56,13 +56,13 @@ int hook_store_init(struct db *db)
 	if (rc == 0)
 		rc = orm_status(db,
 				norm_schema_create(scope.connection, &hook_trust_model, &options,
-						   NULL, &error),
+						   orm_scope_call(&scope), &error),
 				&error);
 
 	if (rc == 0)
 		rc = orm_status(db,
 				norm_schema_create(scope.connection, &hook_workspace_model,
-						   &options, NULL, &error),
+						   &options, orm_scope_call(&scope), &error),
 				&error);
 
 	return rc;
@@ -81,8 +81,8 @@ int hook_store_trust_copy(struct db *db, const char *id, struct store_hook_trust
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &hook_trust_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &hook_trust_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -117,8 +117,8 @@ int hook_store_workspace_trusted(struct db *db, const char *path)
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &hook_workspace_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &hook_workspace_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	return rc == 0 ? (norm_rows_count(rows) ? 1 : 0) : rc;
@@ -140,17 +140,17 @@ int hook_store_workspace_set(struct db *db, const char *path, int trusted)
 
 		return orm_status(db,
 				  norm_insert(scope.connection, &hook_workspace_model, &row,
-					      &options, NULL, NULL, &error),
+					      &options, orm_scope_call(&scope), NULL, &error),
 				  &error);
 	}
 
 	const struct norm_delete_query query = {
 		.where = norm_eq(norm_col(&hook_workspace_model, 0), orm_string(path))};
 
-	return orm_status(
-		db,
-		norm_delete(scope.connection, &hook_workspace_model, &query, NULL, NULL, &error),
-		&error);
+	return orm_status(db,
+			  norm_delete(scope.connection, &hook_workspace_model, &query,
+				      orm_scope_call(&scope), NULL, &error),
+			  &error);
 }
 
 int hook_store_migrate_legacy(struct db *db, const char *id, const char *digest,
@@ -192,8 +192,8 @@ int hook_store_migrate_legacy(struct db *db, const char *id, const char *digest,
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert_select(scope.connection, &hook_trust_model, fields,
-						  NB_ARRAY_SIZE(fields), &query, &conflict, NULL,
-						  NULL, &error),
+						  NB_ARRAY_SIZE(fields), &query, &conflict,
+						  orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -225,8 +225,8 @@ int hook_store_action(struct db *db, const char *id, const char *action, const c
 		};
 
 		return orm_status(db,
-				  norm_update(scope.connection, &hook_trust_model, &query, NULL,
-					      NULL, &error),
+				  norm_update(scope.connection, &hook_trust_model, &query,
+					      orm_scope_call(&scope), NULL, &error),
 				  &error);
 	}
 
@@ -258,8 +258,8 @@ int hook_store_action(struct db *db, const char *id, const char *action, const c
 	const struct norm_insert_options options = {.conflict = &conflict};
 
 	return orm_status(db,
-			  norm_insert(scope.connection, &hook_trust_model, &row, &options, NULL,
-				      NULL, &error),
+			  norm_insert(scope.connection, &hook_trust_model, &row, &options,
+				      orm_scope_call(&scope), NULL, &error),
 			  &error);
 }
 

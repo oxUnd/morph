@@ -93,7 +93,7 @@ int preference_bind(struct db *db, int64_t session_id, const char *owner, const 
 	if (rc == 0)
 		rc = orm_status(db,
 				norm_insert(lease.connection, &memory_scope_model, &row, &options,
-					    NULL, &result, &error),
+					    orm_scope_call(&lease), &result, &error),
 				&error);
 
 	return rc ? rc : result.affected_rows ? 0 : NB_ERR_NOT_PERMITTED;
@@ -117,8 +117,8 @@ int preference_rebind_project(struct db *db, int64_t session_id, const char *exp
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(lease.connection, &memory_scope_model, &select, NULL,
-					    &rows, &error),
+				norm_select(lease.connection, &memory_scope_model, &select,
+					    orm_scope_call(&lease), &rows, &error),
 				&error);
 
 	if (rc != 0 || !norm_rows_count(rows))
@@ -144,10 +144,10 @@ int preference_rebind_project(struct db *db, int64_t session_id, const char *exp
 	};
 	const struct norm_update_query update = {
 		.set = set, .set_count = 1, .where = norm_and(conditions, 2)};
-	rc = orm_status(
-		db,
-		norm_update(lease.connection, &memory_scope_model, &update, NULL, &result, &error),
-		&error);
+	rc = orm_status(db,
+			norm_update(lease.connection, &memory_scope_model, &update,
+				    orm_scope_call(&lease), &result, &error),
+			&error);
 	return rc ? rc : result.affected_rows ? 0 : NB_ERR_STALE;
 }
 
@@ -295,8 +295,8 @@ int preference_set(struct db *db, int64_t session_id, const char *scope, const c
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(lease.connection, &memory_scope_model, &exists, NULL,
-					    &rows, &error),
+				norm_select(lease.connection, &memory_scope_model, &exists,
+					    orm_scope_call(&lease), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -346,7 +346,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope, const c
 			norm_insert_select(lease.connection, &memory_preference_model,
 					   preference_insert_targets,
 					   NB_ARRAY_SIZE(preference_insert_targets), &insert,
-					   &ignore, NULL, &result, &error),
+					   &ignore, orm_scope_call(&lease), &result, &error),
 			&error);
 	if (rc != 0 || result.affected_rows)
 		return rc;
@@ -388,8 +388,10 @@ int preference_set(struct db *db, int64_t session_id, const char *scope, const c
 					 .fields = checked,
 					 .field_count = 5,
 					 .where = norm_and(check, NB_ARRAY_SIZE(check))};
-	rc = orm_status(db, norm_query_select(lease.connection, &query, NULL, &rows, &error),
-			&error);
+	rc = orm_status(
+		db,
+		norm_query_select(lease.connection, &query, orm_scope_call(&lease), &rows, &error),
+		&error);
 	if (rc != 0)
 		return rc;
 
@@ -585,7 +587,9 @@ static int preference_read(struct db *db, int64_t session_id, int history, struc
 	int rc = orm_scope_begin(db, &lease);
 
 	return rc ? rc
-		  : orm_status(db, norm_query_select(lease.connection, &query, NULL, rows, &error),
+		  : orm_status(db,
+			       norm_query_select(lease.connection, &query, orm_scope_call(&lease),
+						 rows, &error),
 			       &error);
 }
 
@@ -652,16 +656,13 @@ int preference_clear_session(struct db *db, int64_t session_id)
 {
 	struct orm_scope lease NB_CLEANUP(orm_scope_cleanup) = {0};
 	struct norm_error error = {0};
+	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
 	const struct norm_table_ref preferences =
 		norm_table(&memory_preference_model, NB_STR_LIT("p"));
 	struct preference_order_query order = {0};
 	preference_order_query_init(&order, session_id, NULL);
 	const struct norm_term session = norm_term_value(norm_i64(session_id));
 	const struct norm_term target = norm_term_cast(&session, NORM_TYPE_TEXT);
-	const struct norm_term random_size = norm_term_value(norm_i64(16));
-	const struct norm_term random =
-		norm_term_named_call(NB_STR_LIT("randomblob"), &random_size, 1);
-	const struct norm_term hexadecimal = norm_term_named_call(NB_STR_LIT("hex"), &random, 1);
 	const struct norm_query_field fields[] = {
 		{.value = norm_term_column(norm_table_col(&preferences, PREFERENCE_OWNER)),
 		 .into = 0},
@@ -674,7 +675,7 @@ int preference_clear_session(struct db *db, int64_t session_id)
 		{.value = norm_term_value(norm_null()), .into = 4},
 		{.value = norm_term_value(orm_string("session memory cleared")), .into = 5},
 		{.value = session, .into = 6},
-		{.value = norm_term_call(NORM_FUNCTION_LOWER, &hexadecimal, 1), .into = 7},
+		{.value = norm_term_value(orm_string("")), .into = 7},
 		{.value = norm_term_scalar(&order.queries[1]), .into = 8},
 	};
 	const struct norm_term old_target =
@@ -696,11 +697,42 @@ int preference_clear_session(struct db *db, int64_t session_id)
 					 .group_count = 4};
 	int rc = orm_scope_begin(db, &lease);
 
-	return rc ? rc
-		  : orm_status(db,
-			       norm_insert_select(lease.connection, &memory_preference_model,
-						  preference_insert_targets,
-						  NB_ARRAY_SIZE(preference_insert_targets), &query,
-						  NULL, NULL, NULL, &error),
-			       &error);
+	if (rc != NB_OK)
+		return rc;
+
+	rc = orm_savepoint_begin(&lease, "preference_clear_session");
+	if (rc != NB_OK)
+		return rc;
+
+	rc = orm_read(&lease, &query, &rows);
+	const struct norm_insert_options insert = {
+		.fields = preference_insert_targets,
+		.field_count = NB_ARRAY_SIZE(preference_insert_targets)};
+
+	for (size_t i = 0; rc == NB_OK && i < norm_rows_count(rows); i++) {
+		nb_buf token NB_CLEANUP(nb_buf_cleanup) = {0};
+		const struct preference_insert_row *source = norm_rows_at(rows, i);
+
+		rc = nb_random_hex(&token, 16, NULL);
+		if (rc != NB_OK)
+			break;
+
+		const struct memory_preference_row row = {
+			.owner = source->owner,
+			.scope = source->scope,
+			.target = source->target,
+			.key = source->key,
+			.value_missing = true,
+			.source = source->source,
+			.session_id = source->session_id,
+			.event_token = nb_buf_str(&token),
+			.source_order = source->source_order};
+
+		rc = orm_status(db,
+				norm_insert(lease.connection, &memory_preference_model, &row,
+					    &insert, orm_scope_call(&lease), NULL, &error),
+				&error);
+	}
+
+	return orm_savepoint_finish(&lease, "preference_clear_session", rc);
 }

@@ -6,13 +6,14 @@
 #include <stdlib.h>
 #include <time.h>
 
-struct session_store *session_store_open(struct nb_log *logger, const char *db_path)
+struct session_store *session_store_open_options(struct nb_log *logger,
+						const struct db_options *options)
 {
 	struct session_store *s = calloc(1, sizeof(*s));
 	if (!s)
 		return NULL;
 
-	if (db_open(logger, &s->db, db_path) != 0) {
+	if (db_open_options(logger, &s->db, options) != 0) {
 		free(s);
 		return NULL;
 	}
@@ -38,6 +39,13 @@ struct session_store *session_store_open(struct nb_log *logger, const char *db_p
 		return NULL;
 	}
 	return s;
+}
+
+struct session_store *session_store_open(struct nb_log *logger, const char *db_path)
+{
+	const struct db_options options = {.path = db_path};
+
+	return session_store_open_options(logger, &options);
 }
 
 void session_store_close(struct session_store *s)

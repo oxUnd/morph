@@ -47,6 +47,8 @@ endif()
 option(BUILD_TESTS "Build tests" ON)
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(BUILD_FASTCGI "Build FastCGI front-end (morph-fastcgi)" OFF)
+option(ENABLE_POSTGRESQL "Build PostgreSQL database support" OFF)
+set(MORPH_TEST_POSTGRESQL_URL "" CACHE STRING "Isolated PostgreSQL integration test URL")
 
 if(ENABLE_ASAN)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer")

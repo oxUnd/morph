@@ -742,9 +742,10 @@ int orm_fcgi_schema(struct db *db)
 	int rc = orm_scope_begin(db, &scope);
 
 	for (size_t i = 0; rc == 0 && i < sizeof(models) / sizeof(models[0]); i++) {
-		rc = orm_status(
-			db, norm_schema_create(scope.connection, models[i], &options, NULL, &error),
-			&error);
+		rc = orm_status(db,
+				norm_schema_create(scope.connection, models[i], &options,
+						   orm_scope_call(&scope), &error),
+				&error);
 	}
 
 	const struct orm_fcgi_quota_profiles_row defaults[] = {
@@ -768,7 +769,8 @@ int orm_fcgi_schema(struct db *db)
 		rc = orm_status(db,
 				norm_insert_many(scope.connection, &orm_fcgi_quota_profiles,
 						 defaults, NB_ARRAY_SIZE(defaults),
-						 sizeof(defaults[0]), &insert, NULL, NULL, &error),
+						 sizeof(defaults[0]), &insert,
+						 orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	return rc;

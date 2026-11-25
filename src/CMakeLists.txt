@@ -21,7 +21,7 @@ target_include_directories(morph-session PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(morph-session PUBLIC nbase::nbase morph-cjson morph-db
-	PRIVATE nothing_orm::sqlite)
+	PRIVATE nothing_orm::core)
 
 add_library(morph-credits STATIC
 	credits.c

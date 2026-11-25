@@ -4,6 +4,10 @@
 #include "persistence/orm/database.h"
 #include <nb/thread.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct nb_log;
 struct event_subscriber;
 
@@ -16,7 +20,13 @@ struct session_store {
 };
 
 struct session_store *session_store_open(struct nb_log *logger, const char *db_path);
+struct session_store *session_store_open_options(struct nb_log *logger,
+						const struct db_options *options);
 void session_store_close(struct session_store *store);
 int store_maintenance(struct session_store *store);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

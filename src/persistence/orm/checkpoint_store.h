@@ -29,7 +29,7 @@ int checkpoint_store_create(struct db *db, int64_t session_id, const char *workd
  * Paths must remain inside the checkpoint workdir; links are rejected. Regular
  * files are limited to 16 MiB; captured before/after data to 128 MiB. Restore
  * plans allow another 128 MiB for current-state compensation copies.
- * Capture/seal pairs use one db connection; interrupted or failed attempts
+ * Capture/seal pairs use one database owner; interrupted or failed attempts
  * cannot be silently sealed by a later unrelated editing attempt. */
 int checkpoint_store_capture(struct db *db, int64_t id, const char *path);
 /* Call between capture and seal, before writing. removed_path is the source of

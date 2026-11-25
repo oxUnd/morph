@@ -36,7 +36,7 @@ struct runtime_title_job {
 	struct model *model;
 	struct session session;
 	struct config_credits credits;
-	char database[PATH_MAX];
+	struct db_connection_config *database;
 	char *prompt;
 	char *user_id;
 	morph_event_cb event_cb;
@@ -171,7 +171,8 @@ static void *title_worker(void *opaque)
 						 0, &response, NULL, NULL);
 	if (rc >= 0 && response.tool_call_count == 0)
 		title = runtime_title_parse(response.content);
-	if (db_open(job->model ? job->model->http.logger : NULL, &db, job->database) == 0) {
+	if (db_open_connection(job->model ? job->model->http.logger : NULL, &db, job->database) ==
+	    0) {
 		(void)runtime_record_model_usage_with_credits(
 			&db, &job->credits, job->user_id, job->session.display_id, &response.usage,
 			job->model->provider, job->model->model_id);
@@ -196,6 +197,7 @@ static void *title_worker(void *opaque)
 static void title_job_free(struct runtime_title_job *job)
 {
 	model_destroy(job->model);
+	db_connection_config_cleanup(&job->database);
 	free(job->prompt);
 	free(job->user_id);
 	(nb_mutex_free(job->lock), job->lock = NULL);
@@ -213,7 +215,7 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 	int rc;
 
 	if (!input || !input[0] || !source || !model_api_key_borrow(source)[0] ||
-	    strcmp(ctx->database.path, ":memory:") == 0)
+	    db_is_memory(&ctx->database))
 		return 0;
 	for (int i = 0; i < RUNTIME_TITLE_JOB_MAX; i++) {
 		job = runtime->title_jobs[i];
@@ -265,8 +267,9 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 		job->credits = ctx->config.credits;
 		job->event_cb = runtime->options.event_cb;
 		job->event_user_data = runtime->options.event_user_data;
-		memcpy(job->database, ctx->database.path, sizeof(job->database));
-		rc = nb_thread_create(&job->thread, title_worker, job, NULL);
+		rc = db_connection_config_copy(&ctx->database, &job->database);
+		if (rc == NB_OK)
+			rc = nb_thread_create(&job->thread, title_worker, job, NULL);
 	}
 	if (rc != 0) {
 		title_job_free(job);

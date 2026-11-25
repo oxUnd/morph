@@ -49,9 +49,9 @@ static void *runtime_task_worker_main(void *arg)
 	int opened = 0;
 
 	memset(&scheduler_db, 0, sizeof(scheduler_db));
-	if (!worker || !worker->db_path[0])
+	if (!worker || !worker->database)
 		return NULL;
-	if (db_open(worker ? worker->logger : NULL, &scheduler_db, worker->db_path) == 0 &&
+	if (db_open_connection(worker->logger, &scheduler_db, worker->database) == 0 &&
 	    db_init_schema(&scheduler_db) == 0) {
 		opened = 1;
 	} else {
@@ -104,16 +104,18 @@ int runtime_task_worker_start(struct runtime_task_worker *worker,
 {
 	int rc;
 
-	if (!worker || !db || !db->path[0] || !runner)
+	if (!worker || !db || !db_is_open(db) || !runner)
 		return NB_ERR_INVAL;
 	if (worker->started)
 		return 0;
 	memset(worker, 0, sizeof(*worker));
 	worker->logger = db->logger;
-	(void)nb_str_copy_to(
-		nb_str_from_parts(db->path,
-				  nb_utf8_clamp_bytes(db->path, sizeof(worker->db_path) - 1)),
-		worker->db_path, (sizeof(worker->db_path) - 1) + 1);
+	struct db_connection_config *connection NB_CLEANUP(db_connection_config_cleanup) = NULL;
+
+	rc = db_connection_config_copy(db, &connection);
+	if (rc != NB_OK)
+		return rc;
+
 	worker->runner = runner;
 	worker->runner_user_data = runner_user_data;
 	worker->notification_cb = notification_cb;
@@ -127,12 +129,15 @@ int runtime_task_worker_start(struct runtime_task_worker *worker,
 		(nb_mutex_free(worker->lock), worker->lock = NULL);
 		return rc;
 	}
+	worker->database = connection;
 	rc = nb_thread_create(&worker->thread, runtime_task_worker_main, worker, NULL);
 	if (rc != 0) {
+		worker->database = NULL;
 		(nb_cond_free(worker->cond), worker->cond = NULL);
 		(nb_mutex_free(worker->lock), worker->lock = NULL);
 		return rc;
 	}
+	connection = NULL;
 	worker->started = 1;
 	nb_log_write(worker ? worker->logger : NULL, NB_LOG_INFO, "runtime: task worker started");
 	return 0;
@@ -149,6 +154,7 @@ void runtime_task_worker_stop(struct runtime_task_worker *worker)
 	nb_thread_join_take(&worker->thread, NULL);
 	(nb_cond_free(worker->cond), worker->cond = NULL);
 	(nb_mutex_free(worker->lock), worker->lock = NULL);
+	db_connection_config_cleanup(&worker->database);
 	worker->started = 0;
 	worker->stop = 0;
 	nb_log_write(worker ? worker->logger : NULL, NB_LOG_INFO, "runtime: task worker stopped");

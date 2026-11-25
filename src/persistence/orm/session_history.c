@@ -8,95 +8,128 @@
 #include <stdio.h>
 #include <time.h>
 
-int model_history_add(struct db *db, const struct model_history_insert *item, int64_t *out_id)
+static int history_append(struct orm_scope *scope, const struct model_history_insert *item,
+			  int64_t *out_id)
 {
-	struct orm_scope lease NB_CLEANUP(orm_scope_cleanup) = {0};
 	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
 	struct norm_write_result result = {0};
-
-	if (!item || item->session_id <= 0 || !item->kind || !item->kind[0])
-		return NB_ERR_INVAL;
-
-	struct norm_error error = {0};
 	const struct norm_table_ref source = norm_table(&history_model, NB_STR_LIT("h"));
 	const struct norm_term sequence =
 		norm_term_column(norm_table_col(&source, HIST_SEQUENCE_NO));
 	const struct norm_term defaults[] = {norm_term_call(NORM_FUNCTION_MAX, &sequence, 1),
 					     norm_term_value(norm_i64(0))};
-	const struct norm_term last = norm_term_call(NORM_FUNCTION_COALESCE, defaults, 2);
-	const struct norm_term one = norm_term_value(norm_i64(1));
-	const struct norm_model projection = {.size = sizeof(struct history_row),
-					      .alignment = _Alignof(struct history_row),
-					      .fields = &history_model.fields[1],
-					      .field_count = 15};
-	const struct norm_query_field fields[] = {
-		{.value = norm_term_value(norm_i64(item->session_id)), .into = 0},
-		{.value = norm_term_binary(NORM_BINARY_ADD, &last, &one), .into = 1},
-		{.value = norm_term_value(orm_string(item->turn_id)), .into = 2},
-		{.value = norm_term_value(orm_string(item->kind)), .into = 3},
-		{.value = norm_term_value(orm_string(item->role)), .into = 4},
-		{.value = norm_term_value(orm_string(item->content)), .into = 5},
-		{.value = norm_term_value(orm_string(item->payload_json)), .into = 6},
-		{.value = norm_term_value(orm_string(item->tool_call_id)), .into = 7},
-		{.value = norm_term_value(orm_string(item->provider_call_id)), .into = 8},
-		{.value = norm_term_value(orm_string(item->tool_name)), .into = 9},
-		{.value = norm_term_value(orm_string(item->idempotency_key)), .into = 10},
-		{.value = norm_term_value(norm_i32(item->token_count)), .into = 11},
-		{.value = norm_term_value(norm_i32(!!item->truncated)), .into = 12},
-		{.value = norm_term_value(norm_i32(!!item->active)), .into = 13},
-		{.value = norm_term_value(norm_i64((int64_t)time(NULL))), .into = 14},
-	};
-	const struct norm_query query = {.from = &source,
-					 .projection = &projection,
-					 .fields = fields,
-					 .field_count = 15,
-					 .where = norm_eq(norm_table_col(&source, HIST_SESSION_ID),
-							  norm_i64(item->session_id))};
+	const struct norm_query_field selected = {
+		.value = norm_term_call(NORM_FUNCTION_COALESCE, defaults, 2), .into = 0};
+	const struct norm_query query = {
+		.from = &source, .projection = &orm_integer_model,
+		.fields = &selected, .field_count = 1,
+		.where = norm_eq(norm_table_col(&source, HIST_SESSION_ID),
+				 norm_i64(item->session_id))};
+	int rc = orm_read(scope, &query, &rows);
+
+	if (rc != NB_OK)
+		return rc;
+
+	const struct orm_integer *last = norm_rows_at(rows, 0);
+
+	if (!last || last->value == INT64_MAX)
+		return NB_ERR_RANGE;
+
+	const struct history_row row = {.session_id = item->session_id,
+					.sequence_no = last->value + 1,
+					.turn_id = nb_str_from_cstr(item->turn_id),
+					.turn_id_missing = !item->turn_id,
+					.kind = nb_str_from_cstr(item->kind),
+					.role = nb_str_from_cstr(item->role),
+					.role_missing = !item->role,
+					.content = nb_str_from_cstr(item->content),
+					.content_missing = !item->content,
+					.payload_json = nb_str_from_cstr(item->payload_json),
+					.payload_json_missing = !item->payload_json,
+					.tool_call_id = nb_str_from_cstr(item->tool_call_id),
+					.tool_call_id_missing = !item->tool_call_id,
+					.provider_call_id =
+						nb_str_from_cstr(item->provider_call_id),
+					.provider_call_id_missing = !item->provider_call_id,
+					.tool_name = nb_str_from_cstr(item->tool_name),
+					.tool_name_missing = !item->tool_name,
+					.idempotency_key = nb_str_from_cstr(item->idempotency_key),
+					.idempotency_key_missing = !item->idempotency_key,
+					.token_count = item->token_count,
+					.truncated = !!item->truncated,
+					.active = !!item->active,
+					.created_at = (int64_t)time(NULL)};
 	const struct norm_conflict ignore = {.action = NORM_CONFLICT_NOTHING};
-	int rc = orm_scope_begin(db, &lease);
+	const struct norm_insert_options options = {.conflict = &ignore};
 
-	if (rc == 0)
-		rc = orm_status(db,
-				norm_insert_select(lease.connection, &history_model, NULL, 0,
-						   &query, &ignore, NULL, &result, &error),
-				&error);
-
-	if (rc != 0)
+	rc = orm_insert_row(scope, &history_model, &row, &options, &result);
+	if (rc != NB_OK)
 		return rc;
 
 	if (result.affected_rows) {
+		if (!result.has_insert_id)
+			return MORPH_ERR_DB;
+
 		if (out_id)
 			*out_id = result.insert_id;
 
-		return result.has_insert_id ? 0 : MORPH_ERR_DB;
+		return NB_OK;
 	}
 
 	if (!item->idempotency_key)
 		return MORPH_ERR_DB;
 
+	orm_rows_cleanup(&rows);
 	const struct norm_expr conditions[] = {
 		norm_eq(norm_col(&history_model, HIST_SESSION_ID), norm_i64(item->session_id)),
 		norm_eq(norm_col(&history_model, HIST_IDEMPOTENCY_KEY),
 			orm_string(item->idempotency_key))};
-	const size_t selected[] = {HIST_ID};
+	const size_t field = HIST_ID;
 	const struct norm_select_query lookup = {
-		.where = norm_and(conditions, 2), .fields = selected, .field_count = 1};
+		.where = norm_and(conditions, 2), .fields = &field, .field_count = 1};
 
-	rc = orm_status(db,
-			norm_select(lease.connection, &history_model, &lookup, NULL, &rows, &error),
-			&error);
-	if (rc != 0)
+	rc = orm_select_rows(scope, &history_model, &lookup, &rows);
+	if (rc != NB_OK)
 		return rc;
 
-	if (!norm_rows_count(rows))
+	const struct history_row *existing = norm_rows_at(rows, 0);
+
+	if (!existing)
 		return MORPH_ERR_DB;
 
-	const struct history_row *row = norm_rows_at(rows, 0);
-
 	if (out_id)
-		*out_id = row->id;
+		*out_id = existing->id;
 
-	return 0;
+	return NB_OK;
+}
+
+int model_history_add(struct db *db, const struct model_history_insert *item, int64_t *out_id)
+{
+	struct orm_scope scope NB_CLEANUP(orm_scope_cleanup) = {0};
+
+	if (!item || item->session_id <= 0 || !item->kind || !item->kind[0])
+		return NB_ERR_INVAL;
+
+	int rc = orm_scope_begin(db, &scope);
+
+	if (rc != NB_OK)
+		return rc;
+
+	/* History includes cancellation observations and must survive the turn's
+	 * cancellation. Keep its deadline while committing this durable record. */
+	scope.call.cancel = NULL;
+	rc = orm_savepoint_begin(&scope, "history_append");
+	if (rc != NB_OK)
+		return rc;
+
+	int64_t inserted = 0;
+
+	rc = history_append(&scope, item, &inserted);
+	rc = orm_savepoint_finish(&scope, "history_append", rc);
+	if (rc == NB_OK && out_id)
+		*out_id = inserted;
+
+	return rc;
 }
 
 static void history_list_cleanup(struct model_history_item **owner)
@@ -142,10 +175,10 @@ struct model_history_item *model_history_list(struct db *db, int64_t session_id,
 	int rc = orm_scope_begin(db, &lease);
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(lease.connection, &history_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(lease.connection, &history_model, &query,
+					    orm_scope_call(&lease), &rows, &error),
+				&error);
 
 	if (rc != 0 || norm_rows_count(rows) > INT_MAX)
 		return NULL;
@@ -213,7 +246,8 @@ static int history_count(struct db *db, int64_t session_id, const struct norm_mo
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(lease.connection, &query, NULL, &rows, &error),
+				norm_query_select(lease.connection, &query, orm_scope_call(&lease),
+						  &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -254,8 +288,8 @@ static int history_deactivate(struct db *db, int64_t session_id, const char *tur
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_update(lease.connection, &history_model, &query, NULL, NULL,
-					   &error),
+			       norm_update(lease.connection, &history_model, &query,
+					   orm_scope_call(&lease), NULL, &error),
 			       &error);
 }
 
@@ -315,7 +349,7 @@ int model_history_compaction_attempt_add(struct db *db, int64_t session_id, cons
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert_select(lease.connection, target, targets, 9, &query,
-						  NULL, NULL, NULL, &error),
+						  NULL, orm_scope_call(&lease), NULL, &error),
 			       &error);
 }
 
@@ -331,10 +365,14 @@ int model_history_migrate_messages(struct db *db, int64_t session_id)
 	if (rc != 0)
 		return rc;
 
+	rc = orm_savepoint_begin(&lease, "history_migrate");
+	if (rc != NB_OK)
+		return rc;
+
 	int count = model_history_count(db, session_id, 0);
 
 	if (count != 0)
-		return count < 0 ? count : 0;
+		return orm_savepoint_finish(&lease, "history_migrate", count < 0 ? count : 0);
 
 	const struct norm_table_ref source = norm_table(&message_model, NB_STR_LIT("m"));
 	const struct norm_table_ref existing = norm_table(&history_model, NB_STR_LIT("h"));
@@ -399,10 +437,11 @@ int model_history_migrate_messages(struct db *db, int64_t session_id)
 					 .order_count = 2};
 	struct norm_error error = {0};
 
-	return orm_status(db,
-			  norm_insert_select(lease.connection, &history_model, selected, 11, &query,
-					     NULL, NULL, NULL, &error),
-			  &error);
+	rc = orm_status(db,
+			norm_insert_select(lease.connection, &history_model, selected, 11, &query,
+					   NULL, orm_scope_call(&lease), NULL, &error),
+			&error);
+	return orm_savepoint_finish(&lease, "history_migrate", rc);
 }
 
 static int64_t *history_preserved_add(nb_vec *preserved, int64_t id)
@@ -529,7 +568,8 @@ static int history_preserve_user_pairs(struct db *db, int64_t session_id, nb_vec
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(lease.connection, &query, NULL, &rows, &error),
+				norm_query_select(lease.connection, &query, orm_scope_call(&lease),
+						  &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -592,7 +632,8 @@ static int history_preserve_rounds(struct db *db, int64_t session_id, nb_vec *pr
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(lease.connection, &query, NULL, &turns, &error),
+				norm_query_select(lease.connection, &query, orm_scope_call(&lease),
+						  &turns, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(turns); i++) {
@@ -625,7 +666,8 @@ static int history_preserve_rounds(struct db *db, int64_t session_id, nb_vec *pr
 		int64_t cost = 0;
 
 		rc = orm_status(db,
-				norm_query_select(lease.connection, &selected, NULL, &rows, &error),
+				norm_query_select(lease.connection, &selected,
+						  orm_scope_call(&lease), &rows, &error),
 				&error);
 		if (rc != 0)
 			return rc;
@@ -694,7 +736,8 @@ static int history_select_retained_apply(struct db *db, int64_t session_id, int 
 						.max_bytes = SIZE_MAX};
 
 	rc = orm_status(db,
-			norm_select(lease.connection, &history_model, &query, NULL, &rows, &error),
+			norm_select(lease.connection, &history_model, &query,
+				    orm_scope_call(&lease), &rows, &error),
 			&error);
 	int need_tool_call = 0;
 	size_t group_start = preserved->len;
@@ -807,7 +850,8 @@ static int history_compact_apply(struct db *db, int64_t session_id, const char *
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(lease.connection, &query, NULL, &rows, &error),
+				norm_query_select(lease.connection, &query, orm_scope_call(&lease),
+						  &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -830,7 +874,8 @@ static int history_compact_apply(struct db *db, int64_t session_id, const char *
 	const struct norm_update_query clear = {
 		.set = deactivate, .set_count = 1, .where = norm_and(active, 2)};
 	rc = orm_status(db,
-			norm_update(lease.connection, &history_model, &clear, NULL, NULL, &error),
+			norm_update(lease.connection, &history_model, &clear,
+				    orm_scope_call(&lease), NULL, &error),
 			&error);
 	for (size_t i = 0; rc == 0 && i < preserved->len; i++) {
 		const int64_t *kept = nb_vec_at(preserved, i);
@@ -841,10 +886,10 @@ static int history_compact_apply(struct db *db, int64_t session_id, const char *
 			.set_count = 1,
 			.where = norm_eq(norm_col(&history_model, HIST_ID), norm_i64(*kept))};
 
-		rc = orm_status(
-			db,
-			norm_update(lease.connection, &history_model, &restore, NULL, NULL, &error),
-			&error);
+		rc = orm_status(db,
+				norm_update(lease.connection, &history_model, &restore,
+					    orm_scope_call(&lease), NULL, &error),
+				&error);
 	}
 
 	if (rc != 0)
@@ -896,7 +941,7 @@ static int history_compact_apply(struct db *db, int64_t session_id, const char *
 		.projection = &insert_projection, .fields = insert_columns, .field_count = 8};
 	rc = orm_status(db,
 			norm_insert_select(lease.connection, compactions, targets, 8, &inserted,
-					   NULL, NULL, NULL, &error),
+					   NULL, orm_scope_call(&lease), NULL, &error),
 			&error);
 	if (rc == 0 && summary_item_id)
 		*summary_item_id = new_id;

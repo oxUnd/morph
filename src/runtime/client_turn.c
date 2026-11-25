@@ -426,6 +426,10 @@ int runtime_client_lane_ensure_actor(struct runtime_client_lane *lane)
 		nb_mutex_unlock(service->lock);
 	}
 
+	struct db_connection_config *connection NB_CLEANUP(db_connection_config_cleanup) = NULL;
+	int connection_rc = db_connection_config_copy(&owner->context.database, &connection);
+
+	options.database = connection;
 	options.db_path = owner->context.database.path;
 	options.config_path = owner->context.config_path;
 	options.workdir = lane->session.workdir[0] ? lane->session.workdir : owner->context.workdir;
@@ -451,8 +455,9 @@ int runtime_client_lane_ensure_actor(struct runtime_client_lane *lane)
 	options.img_annotate_user_data = NULL;
 	options.enable_img_annotate = 0;
 	struct runtime *actor = NULL;
-	int rc = runtime_open_controlled(owner, &options, runtime_client_service_interrupted,
-		service, &actor);
+	int rc = connection_rc != NB_OK ? connection_rc :
+		runtime_open_controlled(owner, &options, runtime_client_service_interrupted,
+			service, &actor);
 
 	if (rc == 0)
 		agent_control_set_all_events(actor->context.agents, 1);

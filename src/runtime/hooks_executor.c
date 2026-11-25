@@ -476,6 +476,14 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 		return NB_ERR_EXISTS;
 	if (!manager->ready || !manager->enabled)
 		return 0;
+
+	if (strcmp(event, "Interrupt") == 0) {
+		/* Interrupt cleanup still checks persisted trust after turn cancellation. */
+		rc = db_set_cancel(manager->db, NULL);
+		if (rc != NB_OK)
+			return rc;
+	}
+
 	int matching = 0;
 	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
 			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));

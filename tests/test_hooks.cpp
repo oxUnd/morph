@@ -10,6 +10,7 @@
 #include <nb/file.h>
 #include <nb/hash.h>
 #include "errors.h"
+#include <nb/cancel.h>
 #include <nb/cleanup.h>
 #include "cJSON.h"
 
@@ -416,18 +417,28 @@ TEST_F(HooksTest, CompactionMatcherAndContinueFalseStopWithoutContext)
 
 TEST_F(HooksTest, InterruptRunsAfterCancellationAndExhaustedTurnBudget)
 {
-	Define("Interrupt", "cat > interrupted.json; printf '{\"continue\":false}'");
+	Define("Interrupt", "cat > interrupted.json; printf '{\"systemMessage\":\"Saved\"}'");
 	Init();
 	TrustAll();
 	nb_atomic_int cancelled = 1;
+	struct nb_cancel cancel{};
+	nb_cancel_init(&cancel);
+	nb_cancel_request(&cancel);
 	hooks.cancelled = &cancelled;
+	hooks.cancel_token = &cancel;
 	hooks.remaining_ms = 0;
-	cJSON *out = Dispatch("Interrupt");
+	ASSERT_EQ(db_set_cancel(&database, &cancel), NB_OK);
+	cJSON *out NB_CLEANUP(cJSON_DeleteOwner) = Dispatch("Interrupt");
 	EXPECT_TRUE(std::filesystem::exists(directory + "/interrupted.json"));
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(out, "blocked")));
 	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(out, "terminate")));
+	cJSON *rows NB_CLEANUP(cJSON_DeleteOwner) = hook_manager_list(&hooks);
+	const cJSON *last = cJSON_GetObjectItem(cJSON_GetArrayItem(rows, 0), "last_run");
+	EXPECT_EQ(field(last, "name"), "hook.completed");
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");
 	hooks.cancelled = nullptr;
-	cJSON_Delete(out);
+	hooks.cancel_token = nullptr;
+	EXPECT_EQ(db_set_cancel(&database, nullptr), NB_OK);
 }
 
 TEST_F(HooksTest, InterruptUsesShortTimeoutAndRejectsLongConfiguration)
@@ -574,11 +585,13 @@ TEST_F(HooksTest, TimeoutAndOutputOverflowAreReportedWithoutHanging)
 
 TEST_F(HooksTest, CancellationStopsChildren)
 {
-	Define("Stop", "sleep 10", "", 3);
+	Define("Stop", "sleep 10; touch should-not-run", "", 3);
 	Init();
 	TrustAll();
 	struct nb_cancel cancel{};
+	nb_cancel_init(&cancel);
 	hooks.cancel_token = &cancel;
+	ASSERT_EQ(db_set_cancel(&database, &cancel), NB_OK);
 	std::thread thread([&] {
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		nb_cancel_request(&cancel);
@@ -586,6 +599,13 @@ TEST_F(HooksTest, CancellationStopsChildren)
 	cJSON *out = nullptr;
 	EXPECT_EQ(hook_manager_dispatch(&hooks, "Stop", nullptr, &out), NB_ERR_CANCELLED);
 	thread.join();
+	EXPECT_EQ(db_set_cancel(&database, nullptr), NB_OK);
+	hooks.cancel_token = nullptr;
+	EXPECT_FALSE(std::filesystem::exists(directory + "/should-not-run"));
+	cJSON *rows NB_CLEANUP(cJSON_DeleteOwner) = hook_manager_list(&hooks);
+	const cJSON *last = cJSON_GetObjectItem(cJSON_GetArrayItem(rows, 0), "last_run");
+	EXPECT_EQ(field(last, "name"), "hook.failed");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(last, "error_code")), NB_ERR_CANCELLED);
 	cJSON_Delete(out);
 }
 

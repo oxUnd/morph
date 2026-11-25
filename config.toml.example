@@ -15,6 +15,18 @@ log_level = "info"
 # Log file path
 log_file = "~/.morph/log/agent.log"
 
+# PostgreSQL is optional; SQLite keeps using the frontend's database path.
+# [database]
+# driver = "postgresql"
+# Set MORPH_DATABASE_URL to a postgresql:// connection URL before launch.
+# url_env = "MORPH_DATABASE_URL"
+# tls_mode = "verify_full" # disable, require, verify_ca, verify_full
+# ca_file = "/path/to/root.crt"
+# cert_file = "/path/to/client.crt"
+# key_file = "/path/to/client.key"
+# connect_timeout_ms = 5000
+# query_timeout_ms = 30000
+
 # ──────────────────────────────────────────────
 # Text chat model
 # ──────────────────────────────────────────────

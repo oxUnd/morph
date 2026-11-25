@@ -66,9 +66,9 @@ int orm_table_has_column(struct orm_scope *scope, const char *schema, const char
 		return NB_ERR_INVAL;
 
 	*has = false;
-	int rc = norm_schema_read_table(scope->connection,
-					nb_str_from_cstr(schema ? schema : "main"),
-					nb_str_from_cstr(table), NULL, NULL, &metadata, &error);
+	int rc = norm_schema_read_table(scope->connection, nb_str_from_cstr(schema ? schema : ""),
+					nb_str_from_cstr(table), NULL, orm_scope_call(scope),
+					&metadata, &error);
 
 	if (rc == NB_ERR_NOT_FOUND)
 		return NB_OK;
@@ -139,11 +139,11 @@ static int schema_upgrade_columns(struct orm_scope *scope)
 
 		const struct norm_model *model = schema_model((enum schema_table)table);
 		struct norm_table_metadata *metadata NB_CLEANUP(metadata_cleanup) = NULL;
-		int rc = orm_status(scope->database,
-				    norm_schema_read_table(scope->connection, NB_STR_LIT("main"),
-							   model->table, NULL, NULL, &metadata,
-							   &error),
-				    &error);
+		int rc = orm_status(
+			scope->database,
+			norm_schema_read_table(scope->connection, NB_STR_NULL, model->table, NULL,
+					       orm_scope_call(scope), &metadata, &error),
+			&error);
 
 		if (rc != NB_OK)
 			return rc;
@@ -188,7 +188,7 @@ static int schema_upgrade_columns(struct orm_scope *scope)
 
 			rc = orm_status(scope->database,
 					norm_schema_add_column(scope->connection, upgrade, field,
-							       NULL, &error),
+							       orm_scope_call(scope), &error),
 					&error);
 			if (rc != NB_OK)
 				return rc;
@@ -248,6 +248,13 @@ int db_init_schema(struct db *db)
 	struct orm_scope scope NB_CLEANUP(orm_scope_cleanup) = {0};
 	int rc = orm_scope_begin(db, &scope);
 
+	if (rc != NB_OK)
+		return rc;
+
+	rc = orm_savepoint_begin(&scope, "morph_schema");
+	if (rc != NB_OK)
+		return rc;
+
 	if (rc == NB_OK)
 		rc = schema_create_tables(&scope);
 
@@ -269,5 +276,5 @@ int db_init_schema(struct db *db)
 	if (rc == NB_OK)
 		rc = schema_version_record(&scope, 1, "baseline");
 
-	return rc;
+	return orm_savepoint_finish(&scope, "morph_schema", rc);
 }

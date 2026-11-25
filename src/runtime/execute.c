@@ -75,8 +75,10 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 	memset(&turn, 0, sizeof(turn));
 	nb_atomic_int_store(&engine->react->cancelled, 0);
 	nb_cancel_reset(&engine->react->cancel_token);
-	rc = 0;
-	rc = runtime_turn_scope_start_hooks(engine, request);
+	rc = db_set_cancel(engine->db, &engine->react->cancel_token);
+	if (rc == 0)
+		rc = runtime_turn_scope_start_hooks(engine, request);
+
 	if (rc == 0) {
 		rc = agent_turn_begin(&turn, &session_runtime,
 				      &(struct agent_turn_input){
@@ -110,6 +112,13 @@ static int runtime_execute_locked(struct runtime_engine *engine,
 		(void)hook_manager_dispatch(engine->hooks, "Interrupt", NULL, &output);
 		cJSON_Delete(output);
 	}
+	/* Existing database operations retain their captured cancellation token.
+	 * New operations while draining include steering and shutdown bookkeeping. */
+	int cancel_rc = db_set_cancel(engine->db, NULL);
+
+	if (rc == NB_OK && cancel_rc != NB_OK)
+		rc = cancel_rc;
+
 	react_drain_tools(engine->react);
 	agent_control_set_interactions_blocked(engine->react->agents, 1);
 	if (engine->drain_turn)

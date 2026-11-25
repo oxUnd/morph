@@ -147,8 +147,9 @@ static int audit_prepare_copy(const char *path)
 
 	if (rc == 0)
 		rc = orm_status(&database,
-				norm_sqlite_set_journal_mode(
-					scope.connection, NORM_SQLITE_JOURNAL_DELETE, NULL, &error),
+				norm_sqlite_set_journal_mode(scope.connection,
+							     NORM_SQLITE_JOURNAL_DELETE,
+							     orm_scope_call(&scope), &error),
 				&error);
 
 	return rc;
@@ -160,7 +161,7 @@ static int audit_check(struct orm_scope *scope)
 	size_t issues = 0;
 	int rc = orm_status(scope->database,
 			    norm_sqlite_check(scope->connection, NORM_SQLITE_CHECK_QUICK, NULL,
-					      NULL, NULL, &issues, &error),
+					      NULL, orm_scope_call(scope), &issues, &error),
 			    &error);
 
 	return rc ? rc : issues ? NB_ERR_FORMAT : 0;
@@ -357,20 +358,20 @@ static int audit_collect(struct orm_scope *core, struct orm_scope *ui, const cha
 	nb_vec_init(&ordered, sizeof(struct audit_session *));
 	nb_map_set_value_dtor(session_map, audit_session_destroy, NULL);
 	int rc = orm_status(core->database,
-			    norm_select(core->connection, &audit_session_model, &query, NULL,
-					&sessions, &error),
+			    norm_select(core->connection, &audit_session_model, &query,
+					orm_scope_call(core), &sessions, &error),
 			    &error);
 
 	if (rc == 0)
 		rc = orm_status(core->database,
-				norm_select(core->connection, &audit_message_model, &query, NULL,
-					    &messages, &error),
+				norm_select(core->connection, &audit_message_model, &query,
+					    orm_scope_call(core), &messages, &error),
 				&error);
 
 	if (rc == 0)
 		rc = orm_status(ui->database,
-				norm_select(ui->connection, &audit_ui_model, &query, NULL, &ui_rows,
-					    &error),
+				norm_select(ui->connection, &audit_ui_model, &query,
+					    orm_scope_call(ui), &ui_rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(sessions); i++) {

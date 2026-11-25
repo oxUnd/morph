@@ -33,10 +33,10 @@ int store_setup_required(struct session_store *store)
 	int rc = store ? orm_scope_begin(&store->db, &scope) : NB_ERR_INVAL;
 
 	if (rc == 0)
-		rc = orm_status(
-			&store->db,
-			norm_select(scope.connection, &orm_fcgi_users, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(&store->db,
+				norm_select(scope.connection, &orm_fcgi_users, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	return rc != 0 || norm_rows_count(rows) == 0;
 }
@@ -72,8 +72,8 @@ int store_create_user(struct session_store *store, const char *username, const c
 		.created_at = now,
 		.updated_at = now,
 	};
-	nb_status status =
-		norm_insert(scope.connection, &orm_fcgi_users, &row, NULL, NULL, NULL, &error);
+	nb_status status = norm_insert(scope.connection, &orm_fcgi_users, &row, NULL,
+				       orm_scope_call(&scope), NULL, &error);
 
 	if (status == NORM_ERR_UNIQUE || status == NORM_ERR_CONSTRAINT)
 		return NB_ERR_EXISTS;
@@ -103,13 +103,13 @@ int store_create_user(struct session_store *store, const char *username, const c
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_insert(scope.connection, &orm_fcgi_user_quota, &quota,
-					    &quota_options, NULL, NULL, &error),
+					    &quota_options, orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_insert(scope.connection, &orm_fcgi_usage_storage, &storage,
-					    &storage_options, NULL, NULL, &error),
+					    &storage_options, orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	if (rc == 0 && out_user_id)
@@ -136,10 +136,10 @@ int store_verify_user(struct session_store *store, const char *username, const c
 	const struct norm_select_query query = {.where = norm_and(predicates, 2)};
 
 	if (rc == 0)
-		rc = orm_status(
-			&store->db,
-			norm_select(scope.connection, &orm_fcgi_users, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(&store->db,
+				norm_select(scope.connection, &orm_fcgi_users, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	const struct orm_fcgi_users_row *row = rc == 0 ? norm_rows_at(rows, 0) : NULL;
 

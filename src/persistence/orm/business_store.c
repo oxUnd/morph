@@ -3,6 +3,7 @@
 #include "session_models.h"
 #include "history_models.h"
 #include "memory_models.h"
+#include "cJSON.h"
 #include <norm/query.h>
 #include "errors.h"
 #include <limits.h>
@@ -180,10 +181,13 @@ struct recent_input_row {
 	nb_str content;
 	bool content_missing;
 	int64_t sequence_no;
+	nb_str payload;
+	bool payload_missing;
 };
 static const struct norm_field recent_input_fields[] = {
 	NORM_NULLABLE_FIELD(struct recent_input_row, content, content_missing, NORM_TYPE_TEXT, 0),
 	NORM_FIELD(struct recent_input_row, sequence_no, NORM_TYPE_I64, 0),
+	NORM_NULLABLE_FIELD(struct recent_input_row, payload, payload_missing, NORM_TYPE_TEXT, 0),
 };
 static const struct norm_model recent_input_model =
 	NORM_MODEL(struct recent_input_row, "morph_recent_inputs", recent_input_fields);
@@ -299,8 +303,8 @@ int plan_store_put(struct db *db, int64_t session_id, const char *state)
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_insert(scope.connection, &plan_model, &row, &options, NULL,
-					   NULL, &error),
+			       norm_insert(scope.connection, &plan_model, &row, &options,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -316,9 +320,10 @@ int plan_store_copy(struct db *db, int64_t session_id, char **state)
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(
-			db, norm_select(scope.connection, &plan_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &plan_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0)
 		return rc;
@@ -349,7 +354,7 @@ int activation_store_set(struct db *db, int64_t session_id, const char *name, in
 
 		return orm_status(db,
 				  norm_insert(scope.connection, &activation_model, &row, &options,
-					      NULL, NULL, &error),
+					      orm_scope_call(&scope), NULL, &error),
 				  &error);
 	}
 
@@ -360,9 +365,10 @@ int activation_store_set(struct db *db, int64_t session_id, const char *name, in
 	const struct norm_delete_query query = {
 		.where = norm_and(conditions, NB_ARRAY_SIZE(conditions))};
 
-	return orm_status(
-		db, norm_delete(scope.connection, &activation_model, &query, NULL, NULL, &error),
-		&error);
+	return orm_status(db,
+			  norm_delete(scope.connection, &activation_model, &query,
+				      orm_scope_call(&scope), NULL, &error),
+			  &error);
 }
 
 int activation_store_list_copy(struct db *db, int64_t session_id, nb_vec *names)
@@ -383,8 +389,8 @@ int activation_store_list_copy(struct db *db, int64_t session_id, nb_vec *names)
 	nb_vec_init(names, sizeof(char *));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &activation_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &activation_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -435,10 +441,10 @@ int evidence_store_latest_user_copy(struct db *db, int64_t session_id, int64_t *
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &history_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &history_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0)
 		return rc;
@@ -490,8 +496,8 @@ int request_snapshot_store_put(struct db *db, int64_t session_id, const char *tu
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert_select(scope.connection, &request_snapshot_model, fields,
-						  NB_ARRAY_SIZE(fields), &query, &conflict, NULL,
-						  NULL, &error),
+						  NB_ARRAY_SIZE(fields), &query, &conflict,
+						  orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -550,7 +556,8 @@ int history_body_store_list_copy(struct db *db, int64_t session_id, const char *
 	nb_vec_init(records, sizeof(struct store_history_body));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(scope.connection, &query, NULL, &rows, &error),
+				norm_query_select(scope.connection, &query, orm_scope_call(&scope),
+						  &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -593,8 +600,8 @@ int history_body_store_update(struct db *db, int64_t id, const char *payload_jso
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_update(scope.connection, &history_model, &query, NULL, NULL,
-					   &error),
+			       norm_update(scope.connection, &history_model, &query,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -635,7 +642,8 @@ int history_context_store_list_copy(struct db *db, int64_t session_id, nb_vec *r
 	nb_vec_init(records, sizeof(struct store_history_context));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(scope.connection, &query, NULL, &rows, &error),
+				norm_query_select(scope.connection, &query, orm_scope_call(&scope),
+						  &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -664,97 +672,128 @@ int history_context_store_list_copy(struct db *db, int64_t session_id, nb_vec *r
 	return rc;
 }
 
-static int text_records_copy(const struct norm_rows *rows, nb_vec *records)
+static void business_cursor_cleanup(struct norm_cursor **owner)
 {
-	int rc = 0;
+	if (*owner)
+		norm_cursor_close(owner, NULL);
+}
 
-	nb_vec_init(records, sizeof(char *));
-	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
-		const struct orm_text *row = norm_rows_at(rows, i);
-		char **entry = nb_vec_push(records);
+static int history_input_is_hook(const struct recent_input_row *row, bool *hook)
+{
+	cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	const char *end = NULL;
 
-		if (!entry) {
-			rc = NB_ERR_NOMEM;
-			break;
-		}
+	*hook = false;
+	if (row->payload_missing)
+		return NB_OK;
 
-		*entry = NULL;
-		rc = copy_text(row->value, row->missing, entry);
-	}
+	payload = cJSON_ParseWithLengthOpts(row->payload.ptr, row->payload.len, &end, false);
+	if (!payload)
+		return MORPH_ERR_DB;
 
-	if (rc != 0)
-		store_text_records_cleanup(records);
+	const char *limit = row->payload.ptr + row->payload.len;
 
-	return rc;
+	while (end < limit && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n'))
+		end++;
+
+	if (end != limit)
+		return MORPH_ERR_DB;
+
+	const cJSON *source = cJSON_GetObjectItemCaseSensitive(payload, "source");
+
+	*hook = cJSON_IsString(source) && strcmp(source->valuestring, "hook") == 0;
+	return NB_OK;
 }
 
 int history_user_inputs_store_copy(struct db *db, int64_t session_id, const char *turn_id,
 				   nb_vec *records)
 {
 	struct orm_scope scope NB_CLEANUP(orm_scope_cleanup) = {0};
-	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
+	struct norm_cursor *cursor NB_CLEANUP(business_cursor_cleanup) = NULL;
+	nb_vec inputs NB_CLEANUP(store_text_records_cleanup) = {0};
 	struct norm_error error = {0};
 	const struct norm_table_ref history = norm_table(&history_model, NB_STR_LIT("h"));
-	const struct norm_table_ref recent = norm_table(&recent_input_model, NB_STR_LIT("recent"));
-	const struct norm_term source_path[] = {
-		norm_term_column(norm_table_col(&history, HIST_PAYLOAD_JSON)),
-		norm_term_value(orm_string("$.source")),
-	};
-	const struct norm_term source_arguments[] = {
-		norm_term_call(NORM_FUNCTION_JSON_EXTRACT, source_path, NB_ARRAY_SIZE(source_path)),
-		norm_term_value(orm_string("")),
-	};
-	const struct norm_term source = norm_term_call(NORM_FUNCTION_COALESCE, source_arguments,
-						       NB_ARRAY_SIZE(source_arguments));
-	const struct norm_term hook = norm_term_value(orm_string("hook"));
 	const struct norm_expr conditions[] = {
 		norm_eq(norm_table_col(&history, HIST_SESSION_ID), norm_i64(session_id)),
 		norm_eq(norm_table_col(&history, HIST_TURN_ID), orm_string(turn_id)),
 		norm_eq(norm_table_col(&history, HIST_ROLE), orm_string("user")),
 		norm_eq(norm_table_col(&history, HIST_KIND), orm_string("user_message")),
 		norm_eq(norm_table_col(&history, HIST_ACTIVE), norm_i32(1)),
-		norm_compare_terms(&source, NORM_COMPARE_NE, &hook),
 	};
-	const struct norm_query_field recent_fields[] = {
+	const struct norm_query_field fields[] = {
 		{norm_term_column(norm_table_col(&history, HIST_CONTENT)), 0},
 		{norm_term_column(norm_table_col(&history, HIST_SEQUENCE_NO)), 1},
+		{norm_term_column(norm_table_col(&history, HIST_PAYLOAD_JSON)), 2},
 	};
 	const struct norm_query_order latest = {
 		.value = norm_term_column(norm_table_col(&history, HIST_SEQUENCE_NO)),
 		.direction = NORM_DESC};
-	const struct norm_query recent_query = {
+	const struct norm_result_options limits = {
+		.max_rows = SIZE_MAX, .max_bytes = SIZE_MAX, .max_row_bytes = SIZE_MAX};
+	const struct norm_query query = {
 		.from = &history,
 		.projection = &recent_input_model,
-		.fields = recent_fields,
-		.field_count = NB_ARRAY_SIZE(recent_fields),
+		.fields = fields,
+		.field_count = NB_ARRAY_SIZE(fields),
 		.where = norm_and(conditions, NB_ARRAY_SIZE(conditions)),
 		.order = &latest,
 		.order_count = 1,
-		.has_limit = true,
-		.limit = 4};
-	const struct norm_cte cte = {.model = &recent_input_model, .query = &recent_query};
-	const struct norm_query_field selected = {norm_term_column(norm_table_col(&recent, 0)), 0};
-	const struct norm_query_order chronological = {
-		.value = norm_term_column(norm_table_col(&recent, 1))};
-	const struct norm_result_options limits = {
-		.max_rows = SIZE_MAX, .max_bytes = SIZE_MAX, .max_row_bytes = SIZE_MAX};
-	const struct norm_query query = {.with = &cte,
-					 .with_count = 1,
-					 .from = &recent,
-					 .projection = &orm_text_model,
-					 .fields = &selected,
-					 .field_count = 1,
-					 .order = &chronological,
-					 .order_count = 1,
-					 .result_options = &limits};
+		.result_options = &limits};
 	int rc = orm_scope_begin(db, &scope);
 
-	if (rc == 0)
+	nb_vec_init(&inputs, sizeof(char *));
+	if (rc == NB_OK)
 		rc = orm_status(db,
-				norm_query_select(scope.connection, &query, NULL, &rows, &error),
+				norm_query_cursor_open(scope.connection, &query,
+						       orm_scope_call(&scope), &cursor, &error),
 				&error);
 
-	return rc == 0 ? text_records_copy(rows, records) : rc;
+	while (rc == NB_OK && inputs.len < 4) {
+		bool present = false;
+		bool hook = false;
+
+		rc = orm_status(db, norm_cursor_next(cursor, &present, &error), &error);
+		if (rc != NB_OK || !present)
+			break;
+
+		const struct recent_input_row *row = norm_cursor_row(cursor);
+
+		rc = history_input_is_hook(row, &hook);
+		if (rc != NB_OK || hook)
+			continue;
+
+		char **slot = nb_vec_push(&inputs);
+
+		if (!slot) {
+			rc = NB_ERR_NOMEM;
+			break;
+		}
+
+		*slot = NULL;
+		rc = copy_text(row->content, row->content_missing, slot);
+	}
+
+	if (cursor) {
+		int closed = orm_status(db, norm_cursor_close(&cursor, &error), &error);
+
+		if (rc == NB_OK)
+			rc = closed;
+	}
+
+	if (rc != NB_OK)
+		return rc;
+
+	for (size_t i = 0; i < inputs.len / 2; i++) {
+		char **first = nb_vec_at(&inputs, i);
+		char **last = nb_vec_at(&inputs, inputs.len - i - 1);
+		char *swap = *first;
+
+		*first = *last;
+		*last = swap;
+	}
+
+	nb_vec_move(records, &inputs);
+	return NB_OK;
 }
 
 int artifact_context_store_list_copy(struct db *db, int64_t session_id, nb_vec *records)
@@ -780,10 +819,10 @@ int artifact_context_store_list_copy(struct db *db, int64_t session_id, nb_vec *
 
 	nb_vec_init(records, sizeof(struct store_artifact));
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &artifact_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &artifact_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
 		const struct artifact_row *row = norm_rows_at(rows, i);
@@ -948,7 +987,8 @@ int memory_refresh_store_list_copy(struct db *db, int64_t session_id, nb_vec *re
 	nb_vec_init(records, sizeof(struct store_refresh_session));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(scope.connection, &query, NULL, &rows, &error),
+				norm_query_select(scope.connection, &query, orm_scope_call(&scope),
+						  &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -992,8 +1032,8 @@ int session_title_store_update(struct db *db, int64_t session_id, const char *di
 	if (rc != 0)
 		return rc;
 
-	nb_status status =
-		norm_update(scope.connection, &session_model, &query, NULL, NULL, &error);
+	nb_status status = norm_update(scope.connection, &session_model, &query,
+				       orm_scope_call(&scope), NULL, &error);
 
 	return status == NORM_ERR_UNIQUE || status == NORM_ERR_CONSTRAINT
 		       ? NB_ERR_EXISTS
@@ -1025,8 +1065,8 @@ int compaction_status_store_copy(struct db *db, int64_t session_id,
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &compaction_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &compaction_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -1061,7 +1101,7 @@ int process_job_store_init(struct db *db)
 	return rc ? rc
 		  : orm_status(db,
 			       norm_schema_create(scope.connection, &process_job_model, &options,
-						  NULL, &error),
+						  orm_scope_call(&scope), &error),
 			       &error);
 }
 
@@ -1104,8 +1144,8 @@ int process_job_store_put(struct db *db, const char *process_id, int64_t session
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert_select(scope.connection, &process_job_model, fields,
-						  NB_ARRAY_SIZE(fields), &query, &conflict, NULL,
-						  NULL, &error),
+						  NB_ARRAY_SIZE(fields), &query, &conflict,
+						  orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -1130,8 +1170,8 @@ int process_job_store_list_copy(struct db *db, int64_t session_id, nb_vec *recor
 	nb_vec_init(records, sizeof(char *));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &process_job_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &process_job_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -1169,8 +1209,8 @@ int process_job_store_copy(struct db *db, int64_t session_id, const char *proces
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &process_job_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &process_job_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)

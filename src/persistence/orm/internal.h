@@ -8,15 +8,22 @@
 #include <norm/query.h>
 #include <nb/cleanup.h>
 
-/* The database retains one lease and serializes its use across threads. This
- * preserves connection-local checkpoint state until database shutdown. */
+/* The database retains one lease and serializes its use across threads.
+ * Transactions retain their owner lock until completion. */
 struct orm_scope {
 	const struct db *database;
 	struct norm_conn *connection;
+	struct norm_call call;
 };
+
+bool orm_checkpoint_ready(const struct db *db);
+void orm_checkpoint_set_ready(const struct db *db, bool ready);
+const char *orm_checkpoint_token(const struct db *db);
+int orm_checkpoint_set_token(const struct db *db, const char *token);
 
 int orm_scope_begin(const struct db *db, struct orm_scope *scope);
 void orm_scope_cleanup(struct orm_scope *scope);
+const struct norm_call *orm_scope_call(const struct orm_scope *scope);
 int orm_status(const struct db *db, nb_status status, const struct norm_error *error);
 void orm_rows_cleanup(struct norm_rows **rows);
 int orm_table_has_column(struct orm_scope *scope, const char *schema, const char *table,

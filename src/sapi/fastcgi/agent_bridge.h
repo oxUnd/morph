@@ -2,6 +2,7 @@
 #define MORPH_FCGI_AGENT_BRIDGE_H
 
 struct config;
+struct db;
 struct fcgi_bridge;
 struct fcgi_turn_ticket;
 struct runtime;
@@ -18,6 +19,8 @@ struct fcgi_bridge_pool_status {
 };
 
 int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path);
+int fcgi_bridge_init_connection(struct fcgi_bridge **out, const char *db_path,
+				const struct db *database);
 void fcgi_bridge_shutdown(struct fcgi_bridge *pool);
 struct runtime *fcgi_bridge_runtime_borrow(struct fcgi_bridge *pool);
 /* Creates an empty-slot ticket owner. The pool waits for all tickets on shutdown. */

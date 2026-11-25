@@ -1,14 +1,17 @@
 #include <norm/query.h>
+#include <norm/postgresql.h>
 #include "persistence/orm/session_models.h"
 #include "persistence/orm/error_migration_models.h"
 #include "persistence/orm/session_import.h"
 #include "persistence/orm/internal.h"
 #include "persistence/orm/records.h"
 #include "persistence/orm/session.h"
+#include "persistence/orm/schema_models.h"
 #include "errors.h"
 #include "blake3.h"
 #include <nb/encoding.h>
 #include <nb/file.h>
+#include <nb/map.h>
 #include <nb/utf8.h>
 #include <limits.h>
 #include <stddef.h>
@@ -378,6 +381,22 @@ static size_t import_field(const struct norm_model *model, const char *name)
 
 static enum norm_type import_native_type(nb_str native)
 {
+	if (nb_str_eq_icase(native, NB_STR_LIT("integer")) ||
+	    nb_str_eq_icase(native, NB_STR_LIT("bigint")) ||
+	    nb_str_eq_icase(native, NB_STR_LIT("smallint")))
+		return NORM_TYPE_I64;
+
+	if (nb_str_eq_icase(native, NB_STR_LIT("text")) ||
+	    nb_str_eq_icase(native, NB_STR_LIT("character varying")))
+		return NORM_TYPE_TEXT;
+
+	if (nb_str_eq_icase(native, NB_STR_LIT("double precision")) ||
+	    nb_str_eq_icase(native, NB_STR_LIT("real")))
+		return NORM_TYPE_F64;
+
+	if (nb_str_eq_icase(native, NB_STR_LIT("bytea")))
+		return NORM_TYPE_BLOB;
+
 	if (nb_str_find(native, NB_STR_LIT("INT")) != SIZE_MAX)
 		return NORM_TYPE_I64;
 
@@ -392,6 +411,18 @@ static enum norm_type import_native_type(nb_str native)
 		return NORM_TYPE_F64;
 
 	return NORM_TYPE_BLOB;
+}
+
+static const struct norm_model *import_canonical_model(const char *table)
+{
+	for (size_t i = 0; i < SCHEMA_TABLE_COUNT; i++) {
+		const struct norm_model *model = schema_model((enum schema_table)i);
+
+		if (nb_str_eq_cstr(model->table, table))
+			return model;
+	}
+
+	return NULL;
 }
 
 static int import_model_read(struct orm_scope *scope, const char *schema, const char *table,
@@ -421,6 +452,14 @@ static int import_model_read(struct orm_scope *scope, const char *schema, const 
 		const struct norm_schema_column_info *column =
 			norm_table_metadata_column_at(out->metadata, i);
 		enum norm_type type = import_native_type(column->native_type);
+		const struct norm_model *canonical = import_canonical_model(table);
+		size_t field = canonical ? schema_field(canonical, column->name.ptr) : SIZE_MAX;
+
+		if (field != SIZE_MAX) {
+			type = canonical->fields[field].type;
+			if (type == NORM_TYPE_I32)
+				type = NORM_TYPE_I64;
+		}
 
 		out->fields[i] = (struct norm_field){
 			.column = column->name,
@@ -1771,6 +1810,648 @@ static int import_file_execute(struct db *database, struct orm_scope *scope, con
 	return rc;
 }
 
+struct import_postgresql_session {
+	int64_t target;
+	bool is_new;
+};
+
+struct import_postgresql_context {
+	struct orm_scope *source;
+	struct orm_scope *target;
+	nb_map *sessions;
+	nb_map *messages;
+	nb_map *tasks;
+	int64_t message_offset;
+	int64_t history_offset;
+};
+
+struct import_stage {
+	struct db database;
+	nb_buf directory;
+};
+
+static void import_stage_cleanup(struct import_stage *stage)
+{
+	db_close(&stage->database);
+	if (stage->directory.len)
+		nb_file_remove_all(nb_buf_cstr(&stage->directory), 16, NULL);
+
+	nb_buf_destroy(&stage->directory);
+}
+
+static void import_session_mapping_cleanup(struct import_postgresql_session **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
+static void import_cells_cleanup(struct import_value_cell **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
+static void import_indexes_cleanup(size_t **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
+static void import_map_value_free(void *value, void *context)
+{
+	(void)context;
+	free(value);
+}
+
+static void import_map_cleanup(nb_map **owner)
+{
+	nb_map_free(*owner);
+	*owner = NULL;
+}
+
+static nb_map *import_map_create(void)
+{
+	nb_map *map = nb_map_new();
+
+	if (map)
+		nb_map_set_value_dtor(map, import_map_value_free, NULL);
+
+	return map;
+}
+
+static struct import_postgresql_session *import_id_mapping(const nb_map *map, int64_t id)
+{
+	char key[32];
+	int length = snprintf(key, sizeof(key), "%lld", (long long)id);
+
+	if (length < 0 || (size_t)length >= sizeof(key))
+		return NULL;
+
+	return nb_map_get_cstr(map, key);
+}
+
+static int import_id_mapping_add(nb_map *map, int64_t source, int64_t target, bool is_new)
+{
+	struct import_postgresql_session *entry NB_CLEANUP(import_session_mapping_cleanup) = NULL;
+	char key[32];
+	int length = snprintf(key, sizeof(key), "%lld", (long long)source);
+
+	if (length < 0 || (size_t)length >= sizeof(key))
+		return NB_ERR_RANGE;
+
+	entry = calloc(1, sizeof(*entry));
+	if (!entry)
+		return NB_ERR_NOMEM;
+
+	*entry = (struct import_postgresql_session){.target = target, .is_new = is_new};
+	if (!nb_map_put_cstr(map, key, entry, NULL))
+		return NB_ERR_NOMEM;
+
+	entry = NULL;
+	return NB_OK;
+}
+
+static int import_stage_file(struct db *stage, const char *path, const char *origin,
+			     struct runtime_session_import_result *result)
+{
+	struct orm_scope scope NB_CLEANUP(orm_scope_cleanup) = {0};
+	struct norm_error error = {0};
+	int rc = db_init_schema(stage);
+
+	if (rc == NB_OK)
+		rc = orm_scope_begin(stage, &scope);
+
+	if (rc == NB_OK)
+		rc = import_file_execute(stage, &scope, path, origin, result);
+
+	if (rc == NB_OK)
+		rc = orm_transaction_commit(&scope);
+
+	if (scope.connection && rc != NB_OK && norm_tx_get_state(scope.connection) != NORM_TX_IDLE)
+		orm_transaction_rollback(&scope);
+
+	if (scope.connection) {
+		int detached = orm_status(stage,
+			norm_sqlite_detach(scope.connection, NB_STR_LIT("incoming"),
+					   orm_scope_call(&scope), &error), &error);
+
+		if (rc == NB_OK)
+			rc = detached;
+	}
+
+	return rc;
+}
+
+static int import_postgresql_schema(struct orm_scope *scope)
+{
+	const struct norm_model *const templates[] = {
+		&import_schema_sync_import_receipts_model,
+		&import_schema_sync_session_origins_model,
+		&import_schema_sync_ui_messages_model};
+	const struct norm_schema_options options = {.if_not_exists = true};
+	struct norm_error error = {0};
+
+	for (size_t i = 0; i < NB_ARRAY_SIZE(templates); i++) {
+		struct norm_model model = *templates[i];
+
+		model.schema = NB_STR_NULL;
+		int rc = orm_status(scope->database,
+			norm_schema_create(scope->connection, &model, &options,
+					   orm_scope_call(scope), &error), &error);
+
+		if (rc != NB_OK)
+			return rc;
+	}
+
+	return NB_OK;
+}
+
+static int import_postgresql_session(struct import_postgresql_context *context,
+	const struct import_schema_sync_import_receipts *receipt,
+	struct runtime_session_import_result *result)
+{
+	struct norm_model receipts = import_schema_sync_import_receipts_model;
+	struct norm_model origins = import_schema_sync_session_origins_model;
+	struct norm_rows *saved NB_CLEANUP(orm_rows_cleanup) = NULL;
+	struct norm_rows *incoming NB_CLEANUP(orm_rows_cleanup) = NULL;
+	struct session created = {0};
+
+	receipts.schema = NB_STR_NULL;
+	origins.schema = NB_STR_NULL;
+	const struct norm_expr predicates[] = {
+		norm_eq(norm_col(&receipts, 0), norm_text(receipt->origin)),
+		norm_eq(norm_col(&receipts, 1), norm_text(receipt->revision))};
+	const struct norm_select_query existing = {.where = norm_and(predicates, 2)};
+	int rc = orm_select_rows(context->target, &receipts, &existing, &saved);
+
+	if (rc != NB_OK)
+		return rc;
+
+	const struct import_schema_sync_import_receipts *same = norm_rows_at(saved, 0);
+
+	if (same) {
+		int64_t target = same->missing_session_id ? 0 : same->session_id;
+
+		if (target) {
+			rc = session_get_by_id(context->target->database, target, &created);
+			if (rc == NB_ERR_NOT_FOUND)
+				target = 0;
+			else if (rc != NB_OK)
+				return rc;
+		}
+
+		rc = import_id_mapping_add(context->sessions, receipt->session_id, target, false);
+		if (rc == NB_OK)
+			result->unchanged++;
+
+		return rc;
+	}
+
+	const struct norm_select_query select = {
+		.where = norm_eq(norm_col(&session_model, SESSION_ID),
+				 norm_i64(receipt->session_id))};
+
+	rc = orm_select_rows(context->source, &session_model, &select, &incoming);
+	if (rc != NB_OK)
+		return rc;
+
+	const struct session_row *source = norm_rows_at(incoming, 0);
+
+	if (!source)
+		return NB_ERR_FORMAT;
+
+	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
+	char *base NB_CLEANUP(nb_charp_cleanup) = nb_utf8_ellipsize_bytes(source->name.ptr, 180);
+
+	if (!base || !nb_buf_append_cstr(&title, base))
+		return NB_ERR_NOMEM;
+
+	for (int suffix = 1; session_get_by_name((struct db *)context->target->database,
+						 nb_buf_cstr(&title), &created) == NB_OK;
+	     suffix++) {
+		nb_buf_clear(&title);
+		if (!nb_buf_printf(&title, "%s [sync %d]", base, suffix))
+			return NB_ERR_NOMEM;
+	}
+
+	rc = session_create((struct db *)context->target->database, nb_buf_cstr(&title),
+			    source->model_missing ? NULL : source->model.ptr, &created);
+	if (rc != NB_OK)
+		return rc;
+
+	const struct norm_assignment metadata[] = {
+		{.column = norm_col(&session_model, SESSION_CREATED_AT),
+		 .value = norm_i64(source->created_at)},
+		{.column = norm_col(&session_model, SESSION_UPDATED_AT),
+		 .value = norm_i64(source->updated_at)},
+		{.column = norm_col(&session_model, SESSION_TOKEN_USED),
+		 .value = source->token_used_missing ? norm_null() : norm_i64(source->token_used)}};
+
+	rc = orm_update_rows(context->target, &session_model, metadata, NB_ARRAY_SIZE(metadata),
+		norm_eq(norm_col(&session_model, SESSION_ID), norm_i64(created.id)), NULL);
+	if (rc == NB_OK)
+		rc = import_id_mapping_add(context->sessions, receipt->session_id, created.id,
+					   true);
+
+	const struct import_schema_sync_import_receipts inserted = {
+		.origin = receipt->origin, .revision = receipt->revision, .session_id = created.id};
+	const struct import_schema_sync_session_origins origin = {
+		.session_id = created.id, .origin = receipt->origin};
+
+	if (rc == NB_OK)
+		rc = orm_insert_row(context->target, &receipts, &inserted, NULL, NULL);
+
+	if (rc == NB_OK)
+		rc = orm_insert_row(context->target, &origins, &origin, NULL, NULL);
+
+	if (rc == NB_OK)
+		result->imported++;
+
+	return rc;
+}
+
+static int import_postgresql_sessions(struct import_postgresql_context *context,
+				       struct runtime_session_import_result *result)
+{
+	struct norm_model receipts = import_schema_sync_import_receipts_model;
+	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
+
+	receipts.schema = NB_STR_NULL;
+	int rc = orm_select_rows(context->source, &receipts, NULL, &rows);
+
+	for (size_t i = 0; rc == NB_OK && i < norm_rows_count(rows); i++)
+		rc = import_postgresql_session(context, norm_rows_at(rows, i), result);
+
+	return rc;
+}
+
+static int import_postgresql_offset(struct orm_scope *scope, const struct norm_model *model,
+				     int64_t *out)
+{
+	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
+	size_t field = import_field(model, "id");
+
+	*out = 0;
+	if (field == SIZE_MAX)
+		return NB_OK;
+
+	const struct norm_table_ref table = norm_table(model, NB_STR_LIT("t"));
+	const struct norm_term id = norm_term_column(norm_table_col(&table, field));
+	const struct norm_term alternatives[] = {norm_term_call(NORM_FUNCTION_MAX, &id, 1),
+						 norm_term_value(norm_i64(0))};
+	const struct norm_query_field selected = {
+		norm_term_call(NORM_FUNCTION_COALESCE, alternatives, 2), 0};
+	const struct norm_query query = {.from = &table, .projection = &orm_integer_model,
+		.fields = &selected, .field_count = 1};
+	int rc = orm_read(scope, &query, &rows);
+
+	if (rc == NB_OK && norm_rows_count(rows))
+		*out = ((const struct orm_integer *)norm_rows_at(rows, 0))->value;
+
+	return rc;
+}
+
+static int import_postgresql_task(struct import_postgresql_context *context,
+				  const struct norm_model *model, nb_str old_id, int64_t parent,
+				  nb_str *out)
+{
+	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
+	nb_buf name NB_CLEANUP(nb_buf_cleanup) = {0};
+	size_t field = import_field(model, "task_id");
+	const struct norm_select_query collision = {
+		.where = norm_eq(norm_col(model, field), norm_text(old_id)),
+		.has_limit = true, .limit = 1};
+	int rc = orm_select_rows(context->target, model, &collision, &rows);
+
+	if (rc != NB_OK)
+		return rc;
+
+	if (!nb_buf_append_str(&name, old_id))
+		return NB_ERR_NOMEM;
+
+	if (norm_rows_count(rows) && !nb_buf_printf(&name, "@%lld", (long long)parent))
+		return NB_ERR_NOMEM;
+
+	char *copy NB_CLEANUP(nb_charp_cleanup) = orm_text_copy(nb_buf_str(&name));
+
+	if (!copy || !nb_map_put(context->tasks, old_id, copy, NULL))
+		return NB_ERR_NOMEM;
+
+	*out = nb_str_from_cstr(copy);
+	copy = NULL;
+	return NB_OK;
+}
+
+static int import_postgresql_rewrite(struct import_postgresql_context *context,
+	const struct norm_model *model, const struct import_value_cell *source,
+	struct import_value_cell *target, int64_t offset, bool *copy)
+{
+	const char *table = model->table.ptr;
+	size_t owner = import_field(model, "root_session_id");
+
+	if (owner == SIZE_MAX)
+		owner = import_field(model, "parent_session_id");
+
+	if (owner == SIZE_MAX)
+		owner = import_field(model, "session_id");
+
+	bool budget = nb_str_eq_cstr(model->table, "agent_budget_state");
+	*copy = true;
+	if (owner != SIZE_MAX) {
+		struct import_postgresql_session *mapping =
+			import_id_mapping(context->sessions, source[owner].value.integer);
+
+		if (!mapping || !mapping->target || (!mapping->is_new && !budget)) {
+			*copy = false;
+			return NB_OK;
+		}
+	} else if (strcmp(table, "message_attachments") == 0) {
+		size_t message = import_field(model, "message_id");
+		struct import_postgresql_session *mapping =
+			import_id_mapping(context->messages, source[message].value.integer);
+
+		if (!mapping) {
+			*copy = false;
+			return NB_OK;
+		}
+
+		target[message].value.integer = mapping->target;
+	} else if (strcmp(table, "sub_agent_events") == 0) {
+		size_t task = import_field(model, "task_id");
+		char *mapped = nb_map_get(context->tasks, source[task].value.text);
+
+		if (!mapped) {
+			*copy = false;
+			return NB_OK;
+		}
+
+		target[task].value.text = nb_str_from_cstr(mapped);
+	}
+
+	for (size_t i = 0; i < model->field_count; i++) {
+		if (source[i].missing)
+			continue;
+
+		nb_str name = model->fields[i].column;
+
+		if (nb_str_eq_cstr(name, "session_id") || nb_str_eq_cstr(name, "root_session_id") ||
+		    nb_str_eq_cstr(name, "parent_session_id") ||
+		    nb_str_eq_cstr(name, "child_session_id")) {
+			struct import_postgresql_session *mapping =
+				import_id_mapping(context->sessions, source[i].value.integer);
+
+			if (!mapping || !mapping->target) {
+				target[i].missing = true;
+				if (strcmp(table, "agent_threads") == 0)
+					*copy = false;
+			} else {
+				target[i].value.integer = mapping->target;
+			}
+		} else if (nb_str_eq_cstr(name, "id") || nb_str_eq_cstr(name, "superseded_by") ||
+			   nb_str_eq_cstr(name, "core_message_id") ||
+			   nb_str_eq_cstr(name, "summary_item_id")) {
+			int64_t add =
+				nb_str_eq_cstr(name, "core_message_id")	  ? context->message_offset
+				: nb_str_eq_cstr(name, "summary_item_id") ? context->history_offset
+									  : offset;
+
+			if (source[i].value.integer > INT64_MAX - add)
+				return NB_ERR_RANGE;
+
+			target[i].value.integer = source[i].value.integer + add;
+		}
+	}
+
+	if (*copy && strcmp(table, "sub_agent_tasks") == 0) {
+		size_t task = import_field(model, "task_id");
+		size_t parent = import_field(model, "parent_session_id");
+
+		return import_postgresql_task(context, model, source[task].value.text,
+					      target[parent].value.integer,
+					      &target[task].value.text);
+	}
+
+	return NB_OK;
+}
+
+static int import_postgresql_table(struct import_postgresql_context *context, const char *table)
+{
+	struct import_model source NB_CLEANUP(import_model_cleanup) = {0};
+	struct import_model destination NB_CLEANUP(import_model_cleanup) = {0};
+	struct norm_cursor *cursor NB_CLEANUP(import_cursor_cleanup) = NULL;
+	struct import_value_cell *values NB_CLEANUP(import_cells_cleanup) = NULL;
+	size_t *selected NB_CLEANUP(import_indexes_cleanup) = NULL;
+	struct norm_error error = {0};
+	int64_t offset = 0;
+	int rc = import_model_read(context->source, NULL, table, &source);
+
+	if (rc == NB_OK)
+		rc = import_model_read(context->target, NULL, table, &destination);
+
+	if (rc == NB_OK)
+		rc = import_postgresql_offset(context->target, &destination.model, &offset);
+
+	if (rc != NB_OK)
+		return rc;
+
+	if (strcmp(table, "messages") == 0)
+		context->message_offset = offset;
+	else if (strcmp(table, "model_history_items") == 0)
+		context->history_offset = offset;
+
+	values = calloc(destination.model.field_count, sizeof(*values));
+	selected = calloc(destination.model.field_count, sizeof(*selected));
+	if (!values || !selected)
+		return NB_ERR_NOMEM;
+
+	size_t selected_count = 0;
+
+	for (size_t i = 0; i < destination.model.field_count; i++) {
+		if (import_field(&source.model, destination.fields[i].column.ptr) != SIZE_MAX)
+			selected[selected_count++] = i;
+	}
+
+	const struct norm_result_options limits = {
+		.max_rows = SIZE_MAX, .max_row_bytes = 16u * 1024u * 1024u};
+	const struct norm_select_query query = {.result_options = &limits};
+
+	rc = orm_status(context->source->database,
+		norm_cursor_open(context->source->connection, &source.model, &query,
+				 orm_scope_call(context->source), &cursor, &error), &error);
+	bool present = false;
+	bool inserted = false;
+
+	while (rc == NB_OK) {
+		rc = orm_status(context->source->database,
+			norm_cursor_next(cursor, &present, &error), &error);
+		if (rc != NB_OK || !present)
+			break;
+
+		const struct import_value_cell *row = norm_cursor_row(cursor);
+
+		memset(values, 0, destination.model.size);
+		for (size_t i = 0; i < destination.model.field_count; i++) {
+			size_t field =
+				import_field(&source.model, destination.fields[i].column.ptr);
+
+			if (field == SIZE_MAX)
+				values[i].missing = true;
+			else
+				values[i] = row[field];
+		}
+
+		bool copy = false;
+		/* Source values use the destination layout during reference rewriting. */
+		struct import_value_cell *original NB_CLEANUP(import_cells_cleanup) =
+			malloc(destination.model.size);
+
+		if (!original) {
+			rc = NB_ERR_NOMEM;
+			break;
+		}
+
+		memcpy(original, values, destination.model.size);
+		rc = import_postgresql_rewrite(context, &destination.model, original, values,
+					       offset, &copy);
+		if (rc != NB_OK || !copy)
+			continue;
+
+		struct norm_insert_options options = {
+			.fields = selected, .field_count = selected_count};
+		struct norm_conflict conflict = {0};
+		struct norm_term arguments[5][2] = {0};
+		struct norm_term maxima[5] = {0};
+		struct norm_assignment assignments[5] = {0};
+		size_t key = import_field(&destination.model, "root_session_id");
+		static const char *const counters[] = {
+			"used", "input_tokens", "cached_tokens", "output_tokens", "reminder_level"};
+
+		if (strcmp(table, "agent_budget_state") == 0) {
+			for (size_t i = 0; i < NB_ARRAY_SIZE(counters); i++) {
+				size_t field = import_field(&destination.model, counters[i]);
+
+				arguments[i][0] =
+					norm_term_column(norm_col(&destination.model, field));
+				arguments[i][1] =
+					norm_term_excluded(norm_col(&destination.model, field));
+				maxima[i] = norm_term_call(NORM_FUNCTION_GREATEST, arguments[i], 2);
+				assignments[i] = (struct norm_assignment){
+					.column = norm_col(&destination.model, field),
+					.expression = &maxima[i]};
+			}
+
+			conflict = (struct norm_conflict){.action = NORM_CONFLICT_UPDATE,
+				.fields = &key, .field_count = 1, .set = assignments,
+				.set_count = NB_ARRAY_SIZE(assignments)};
+			options.conflict = &conflict;
+		}
+
+		rc = orm_insert_row(context->target, &destination.model, values, &options, NULL);
+		if (rc == NB_OK) {
+			inserted = true;
+			if (strcmp(table, "messages") == 0) {
+				size_t id = import_field(&destination.model, "id");
+
+				rc = import_id_mapping_add(context->messages,
+					original[id].value.integer, values[id].value.integer, true);
+			}
+		}
+	}
+
+	if (cursor) {
+		int closed = orm_status(context->source->database,
+			norm_cursor_close(&cursor, &error), &error);
+
+		if (rc == NB_OK)
+			rc = closed;
+	}
+
+	const struct norm_model *canonical = import_canonical_model(table);
+
+	if (rc == NB_OK && inserted && canonical) {
+		size_t id = schema_field(canonical, "id");
+
+		if (id != SIZE_MAX && canonical->fields[id].flags & NORM_FIELD_GENERATED)
+			rc = orm_status(context->target->database,
+					norm_postgresql_sync_identity(
+						context->target->connection, canonical, id,
+						orm_scope_call(context->target), &error),
+					&error);
+	}
+
+	return rc;
+}
+
+static int import_postgresql_file(struct db *target, const char *path, const char *origin,
+				   struct runtime_session_import_result *result)
+{
+	struct import_stage stage NB_CLEANUP(import_stage_cleanup) = {0};
+	nb_buf stage_path NB_CLEANUP(nb_buf_cleanup) = {0};
+	struct orm_scope from NB_CLEANUP(orm_scope_cleanup) = {0};
+	struct orm_scope to NB_CLEANUP(orm_scope_cleanup) = {0};
+	nb_map *sessions NB_CLEANUP(import_map_cleanup) = import_map_create();
+	nb_map *messages NB_CLEANUP(import_map_cleanup) = import_map_create();
+	nb_map *tasks NB_CLEANUP(import_map_cleanup) = import_map_create();
+	struct runtime_session_import_result imported = {0};
+	struct runtime_session_import_result staged = {0};
+
+	if (!sessions || !messages || !tasks)
+		return NB_ERR_NOMEM;
+
+	int rc = nb_file_temp_dir(&stage.directory, NULL, "morph-session-import-", NULL);
+
+	if (rc == NB_OK)
+		rc = nb_path_join(&stage_path, nb_buf_cstr(&stage.directory), "stage.db");
+
+	if (rc == NB_OK)
+		rc = db_open_plain(target->logger, &stage.database, nb_buf_cstr(&stage_path));
+
+	if (rc == NB_OK)
+		rc = import_stage_file(&stage.database, path, origin, &staged);
+
+	if (rc == NB_OK)
+		rc = orm_scope_begin(&stage.database, &from);
+
+	if (rc == NB_OK)
+		rc = orm_scope_begin(target, &to);
+
+	if (rc != NB_OK)
+		return rc;
+
+	rc = orm_savepoint_begin(&to, "postgresql_session_import");
+	if (rc != NB_OK)
+		return rc;
+
+	struct import_postgresql_context context = {
+		.source = &from, .target = &to, .sessions = sessions, .messages = messages,
+		.tasks = tasks};
+
+	imported.unchanged = staged.unchanged;
+	rc = import_postgresql_schema(&to);
+	if (rc == NB_OK)
+		rc = import_postgresql_sessions(&context, &imported);
+
+	for (size_t i = 0; rc == NB_OK && i < NB_ARRAY_SIZE(history_tables); i++) {
+		if (strcmp(history_tables[i], "message_attachments") == 0 ||
+		    strcmp(history_tables[i], "sub_agent_events") == 0)
+			continue;
+
+		rc = import_postgresql_table(&context, history_tables[i]);
+	}
+
+	const char *const dependent[] = {"message_attachments", "sub_agent_events",
+		"agent_budget_state"};
+
+	for (size_t i = 0; rc == NB_OK && i < NB_ARRAY_SIZE(dependent); i++)
+		rc = import_postgresql_table(&context, dependent[i]);
+
+	rc = orm_savepoint_finish(&to, "postgresql_session_import", rc);
+	if (rc == NB_OK)
+		*result = imported;
+
+	return rc;
+}
+
 int orm_session_import_file(struct db *target, const char *path, const char *origin,
 			    struct runtime_session_import_result *result)
 {
@@ -1784,6 +2465,9 @@ int orm_session_import_file(struct db *target, const char *path, const char *ori
 	memset(result, 0, sizeof(*result));
 	if (!nb_file_exists(path))
 		return NB_ERR_NOT_FOUND;
+
+	if (db_backend(target) == DB_BACKEND_POSTGRESQL)
+		return import_postgresql_file(target, path, origin, result);
 
 	int rc = db_open_plain(target->logger, &database, target->path);
 

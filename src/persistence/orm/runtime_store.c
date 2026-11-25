@@ -118,7 +118,7 @@ static const struct norm_field runtime_turn_fields[] = {
 	 .offset = offsetof(struct runtime_turn_row, updated_at),
 	 .size = sizeof(((struct runtime_turn_row *)0)->updated_at),
 	 .null_offset = SIZE_MAX,
-	 .default_sql = NB_STR_LIT("(strftime('%s','now'))")},
+	 .default_kind = NORM_DEFAULT_CURRENT_EPOCH},
 };
 static const struct norm_model runtime_turn_model;
 static const struct norm_expr runtime_turn_has_key = {
@@ -142,6 +142,70 @@ static const struct norm_foreign_key runtime_turn_foreign_keys[] = {
 static const struct norm_model runtime_turn_model = NORM_MODEL_WITH(
 	struct runtime_turn_row, "runtime_turns", runtime_turn_fields,
 	NORM_FOREIGN_KEYS(runtime_turn_foreign_keys), NORM_INDEXES(runtime_turn_indexes));
+
+struct runtime_turn_order_row {
+	int64_t order_id;
+	nb_str turn_id;
+};
+static const struct norm_field runtime_turn_order_fields[] = {
+	NORM_FIELD(struct runtime_turn_order_row, order_id, NORM_TYPE_I64,
+		   NORM_FIELD_PRIMARY_KEY | NORM_FIELD_GENERATED),
+	NORM_TEXT_FIELD(struct runtime_turn_order_row, turn_id, SIZE_MAX, NORM_FIELD_UNIQUE),
+};
+static const size_t runtime_turn_order_turn_id = 1;
+static const size_t runtime_turn_turn_id = 0;
+static const struct norm_foreign_key runtime_turn_order_foreign_keys[] = {
+	{.name = NB_STR_LIT("runtime_turn_order_turn_fk"),
+	 .fields = &runtime_turn_order_turn_id,
+	 .field_count = 1,
+	 .references = &runtime_turn_model,
+	 .reference_fields = &runtime_turn_turn_id,
+	 .on_delete = NORM_FK_CASCADE},
+};
+static const struct norm_model runtime_turn_order_model = NORM_MODEL_WITH(
+	struct runtime_turn_order_row, "runtime_turn_order", runtime_turn_order_fields,
+	NORM_FOREIGN_KEYS(runtime_turn_order_foreign_keys));
+
+static int runtime_turn_order_initialize(struct orm_scope *scope)
+{
+	const struct norm_table_ref turns = norm_table(&runtime_turn_model, NB_STR_LIT("t"));
+	const struct norm_table_ref orders =
+		norm_table(&runtime_turn_order_model, NB_STR_LIT("o"));
+	const struct norm_query_field present = {norm_term_value(norm_i32(1)), 0};
+	const struct norm_query existing = {
+		.from = &orders,
+		.projection = &orm_integer_model,
+		.fields = &present,
+		.field_count = 1,
+		.where = norm_columns_eq(norm_table_col(&orders, 1), norm_table_col(&turns, 0))};
+	const struct norm_expr has_order = norm_exists(&existing);
+	const struct norm_query_field selected = {
+		norm_term_column(norm_table_col(&turns, 0)), 1};
+	struct norm_query_order order[] = {
+		{.value = norm_term_column(norm_table_col(&turns, 11)), .direction = NORM_ASC},
+		{.value = norm_term_column(norm_table_col(&turns, 0)), .direction = NORM_ASC}};
+	size_t order_count = NB_ARRAY_SIZE(order);
+
+	/* Legacy SQLite rows recorded creation order only in rowid. Keep that
+	 * ordering during the one-time migration, then use persistent order IDs. */
+	if (norm_conn_driver(scope->connection) == NORM_DRIVER_SQLITE) {
+		order[0].value = norm_term_rowid(&turns);
+		order_count = 1;
+	}
+
+	const struct norm_query query = {
+		.from = &turns,
+		.projection = &runtime_turn_order_model,
+		.fields = &selected,
+		.field_count = 1,
+		.where = norm_not(&has_order),
+		.order = order,
+		.order_count = order_count};
+	const struct norm_conflict conflict = {.action = NORM_CONFLICT_NOTHING};
+
+	return orm_insert_from(scope, &runtime_turn_order_model, &runtime_turn_order_turn_id,
+			       1, &query, &conflict, NULL);
+}
 
 struct runtime_store_instance_buffer {
 	nb_vec entries;
@@ -175,16 +239,28 @@ int runtime_store_init(struct db *db)
 	struct orm_scope scope NB_CLEANUP(orm_scope_cleanup) = {0};
 	struct norm_error error = {0};
 	const struct norm_schema_options options = {.if_not_exists = true};
-	const struct norm_model *const models[] = {&runtime_turn_model, &runtime_instance_model,
-						   &runtime_settings_model};
+	const struct norm_model *const models[] = {
+		&runtime_turn_model, &runtime_instance_model, &runtime_settings_model,
+		&runtime_turn_order_model};
 	int rc = orm_scope_begin(db, &scope);
+
+	if (rc != NB_OK)
+		return rc;
+
+	rc = orm_savepoint_begin(&scope, "runtime_store_schema");
+	if (rc != NB_OK)
+		return rc;
 
 	for (size_t i = 0; rc == 0 && i < NB_ARRAY_SIZE(models); i++)
 		rc = orm_status(
-			db, norm_schema_create(scope.connection, models[i], &options, NULL, &error),
+			db, norm_schema_create(scope.connection, models[i], &options,
+					       orm_scope_call(&scope), &error),
 			&error);
 
-	return rc;
+	if (rc == NB_OK)
+		rc = runtime_turn_order_initialize(&scope);
+
+	return orm_savepoint_finish(&scope, "runtime_store_schema", rc);
 }
 
 int runtime_store_pending_instances_copy(struct db *db, struct runtime_store_instances *out)
@@ -233,7 +309,8 @@ int runtime_store_pending_instances_copy(struct db *db, struct runtime_store_ins
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(scope.connection, &query, NULL, &rows, &error),
+				norm_query_select(scope.connection, &query, orm_scope_call(&scope),
+						  &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -306,7 +383,7 @@ int runtime_store_instance_register(struct db *db, const char *epoch, int64_t pr
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert(scope.connection, &runtime_instance_model, &row,
-					   &options, NULL, NULL, &error),
+					   &options, orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -328,8 +405,8 @@ int runtime_store_instance_close(struct db *db, const char *epoch)
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_update(scope.connection, &runtime_instance_model, &query, NULL,
-					   NULL, &error),
+			       norm_update(scope.connection, &runtime_instance_model, &query,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -363,8 +440,8 @@ int runtime_store_recover_epoch(struct db *db, const char *epoch, int execution_
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_update(scope.connection, &runtime_turn_model, &query, NULL,
-					   NULL, &error),
+			       norm_update(scope.connection, &runtime_turn_model, &query,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -390,8 +467,8 @@ int runtime_store_session_settings_get(struct db *db, int64_t session_id,
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &runtime_settings_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &runtime_settings_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -455,7 +532,7 @@ int runtime_store_session_settings_put(struct db *db,
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert(scope.connection, &runtime_settings_model, &row,
-					   &options, NULL, NULL, &error),
+					   &options, orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -509,12 +586,28 @@ int runtime_store_turn_put(struct db *db, const struct runtime_store_turn_input 
 					 .field_count = NB_ARRAY_SIZE(selected)};
 	int rc = orm_scope_begin(db, &scope);
 
-	return rc ? rc
-		  : orm_status(db,
-			       norm_insert_select(scope.connection, &runtime_turn_model, fields,
-						  NB_ARRAY_SIZE(fields), &query, &conflict, NULL,
-						  NULL, &error),
-			       &error);
+	if (rc != NB_OK)
+		return rc;
+
+	rc = orm_savepoint_begin(&scope, "runtime_turn_put");
+	if (rc != NB_OK)
+		return rc;
+
+	rc = orm_insert_from(&scope, &runtime_turn_model, fields, NB_ARRAY_SIZE(fields),
+			     &query, &conflict, NULL);
+	if (rc == NB_OK) {
+		const struct runtime_turn_order_row order = {
+			.turn_id = nb_str_from_cstr(turn->turn_id)};
+		const struct norm_conflict keep_order = {.action = NORM_CONFLICT_NOTHING};
+		const struct norm_insert_options options = {.conflict = &keep_order};
+
+		rc = orm_status(db,
+				norm_insert(scope.connection, &runtime_turn_order_model, &order,
+					    &options, orm_scope_call(&scope), NULL, &error),
+				&error);
+	}
+
+	return orm_savepoint_finish(&scope, "runtime_turn_put", rc);
 }
 
 void runtime_store_turn_record_cleanup(struct runtime_store_turn_record *record)
@@ -574,6 +667,12 @@ static int runtime_store_turn_read(struct db *db, int64_t session_id, const char
 
 	struct norm_error error = {0};
 	const struct norm_table_ref turns = norm_table(&runtime_turn_model, NB_STR_LIT("t"));
+	const struct norm_table_ref orders =
+		norm_table(&runtime_turn_order_model, NB_STR_LIT("o"));
+	const struct norm_join join = {
+		.kind = NORM_JOIN_INNER,
+		.table = &orders,
+		.on = norm_columns_eq(norm_table_col(&orders, 1), norm_table_col(&turns, 0))};
 	struct norm_expr conditions[] = {
 		norm_eq(norm_table_col(&turns, 5), norm_i64(session_id)),
 		{0},
@@ -597,11 +696,13 @@ static int runtime_store_turn_read(struct db *db, int64_t session_id, const char
 		selected[i] =
 			(struct norm_query_field){norm_term_column(norm_table_col(&turns, i)), i};
 
-	const struct norm_query_order order = {.value = norm_term_rowid(&turns),
-					       .direction = NORM_DESC};
+	const struct norm_query_order order = {
+		.value = norm_term_column(norm_table_col(&orders, 0)), .direction = NORM_DESC};
 	const struct norm_result_options limits = {
 		.max_rows = SIZE_MAX, .max_bytes = SIZE_MAX, .max_row_bytes = SIZE_MAX};
 	const struct norm_query query = {.from = &turns,
+					 .joins = latest ? &join : NULL,
+					 .join_count = latest ? 1 : 0,
 					 .projection = &runtime_turn_model,
 					 .fields = selected,
 					 .field_count = NB_ARRAY_SIZE(selected),
@@ -612,8 +713,10 @@ static int runtime_store_turn_read(struct db *db, int64_t session_id, const char
 					 .limit = latest ? 1 : 0,
 					 .result_options = &limits};
 
-	rc = orm_status(db, norm_query_select(scope.connection, &query, NULL, &rows, &error),
-			&error);
+	rc = orm_status(
+		db,
+		norm_query_select(scope.connection, &query, orm_scope_call(&scope), &rows, &error),
+		&error);
 	if (rc != 0)
 		return rc;
 

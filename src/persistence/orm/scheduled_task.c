@@ -155,7 +155,8 @@ static int task_change_count(struct db *db, const struct norm_model *model,
 
 	if (rc == NB_OK)
 		rc = orm_status(db,
-				norm_update(scope.connection, model, query, NULL, &result, &error),
+				norm_update(scope.connection, model, query, orm_scope_call(&scope),
+					    &result, &error),
 				&error);
 
 	if (rc != NB_OK)
@@ -333,8 +334,8 @@ static int notification_get(struct db *db, int64_t id, struct notification *noti
 	rc = orm_scope_begin(db, &scope);
 	if (rc == NB_OK)
 		rc = orm_status(db,
-				norm_select(scope.connection, &notification_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &notification_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != NB_OK)
@@ -414,9 +415,10 @@ static int task_list_query(struct db *db, const struct norm_select_query *query,
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == NB_OK)
-		rc = orm_status(
-			db, norm_select(scope.connection, &task_model, query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &task_model, query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	for (size_t index = 0; rc == NB_OK && index < norm_rows_count(rows); index++) {
 		struct scheduled_task *task = nb_vec_push(&array);
@@ -495,8 +497,8 @@ int scheduled_task_create_with_events(struct db *db, const struct scheduled_task
 	rc = orm_scope_begin(db, &scope);
 	if (rc == NB_OK)
 		rc = orm_status(db,
-				norm_insert(scope.connection, &task_model, &row, NULL, NULL,
-					    &result, &error),
+				norm_insert(scope.connection, &task_model, &row, NULL,
+					    orm_scope_call(&scope), &result, &error),
 				&error);
 
 	if (rc == NB_OK)
@@ -541,9 +543,10 @@ int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 
 	rc = orm_scope_begin(db, &scope);
 	if (rc == NB_OK)
-		rc = orm_status(
-			db, norm_select(scope.connection, &task_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &task_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != NB_OK)
 		return rc;
@@ -1553,8 +1556,8 @@ int notification_create_for_session(struct db *db, int64_t task_id, int64_t sess
 	rc = orm_scope_begin(db, &scope);
 	if (rc == NB_OK)
 		rc = orm_status(db,
-				norm_insert(scope.connection, &notification_model, &row, NULL, NULL,
-					    &result, &error),
+				norm_insert(scope.connection, &notification_model, &row, NULL,
+					    orm_scope_call(&scope), &result, &error),
 				&error);
 
 	return rc == NB_OK && out ? notification_get(db, result.insert_id, out) : rc;
@@ -1603,8 +1606,8 @@ int notification_list_unread(struct db *db, int limit, struct notification **out
 	rc = orm_scope_begin(db, &scope);
 	if (rc == NB_OK)
 		rc = orm_status(db,
-				norm_select(scope.connection, &notification_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &notification_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	for (size_t index = 0; rc == NB_OK && index < norm_rows_count(rows); index++) {

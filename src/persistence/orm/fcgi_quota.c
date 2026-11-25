@@ -120,8 +120,10 @@ int orm_fcgi_quota_copy(struct orm_scope *scope, const char *user_id, struct nor
 		.select = {.where = norm_eq(norm_table_col(&quota, 0), orm_string(user_id))},
 	};
 
-	return orm_status(scope->database,
-			  norm_join_select(scope->connection, &query, NULL, rows, &error), &error);
+	return orm_status(
+		scope->database,
+		norm_join_select(scope->connection, &query, orm_scope_call(scope), rows, &error),
+		&error);
 }
 
 int orm_fcgi_usage_add(struct orm_scope *scope, const char *user_id, size_t counter, int64_t amount)
@@ -168,7 +170,7 @@ int orm_fcgi_usage_add(struct orm_scope *scope, const char *user_id, size_t coun
 
 	return orm_status(scope->database,
 			  norm_insert(scope->connection, &orm_fcgi_usage_daily, &row, &options,
-				      NULL, NULL, &error),
+				      orm_scope_call(scope), NULL, &error),
 			  &error);
 }
 
@@ -195,7 +197,7 @@ int orm_fcgi_storage_add(struct orm_scope *scope, const char *user_id, int64_t a
 
 	return orm_status(scope->database,
 			  norm_insert(scope->connection, &orm_fcgi_usage_storage, &row, &options,
-				      NULL, NULL, &error),
+				      orm_scope_call(scope), NULL, &error),
 			  &error);
 }
 
@@ -285,7 +287,8 @@ int store_user_quota_json(struct session_store *store, const char *user_id, char
 	struct norm_error error = {0};
 
 	rc = orm_status(&store->db,
-			norm_query_select(scope.connection, &query, NULL, &credit_rows, &error),
+			norm_query_select(scope.connection, &query, orm_scope_call(&scope),
+					  &credit_rows, &error),
 			&error);
 	const struct quota_credit_view *credit = rc == 0 ? norm_rows_at(credit_rows, 0) : NULL;
 
@@ -341,8 +344,8 @@ static int begin_turn_write(struct session_store *store, const char *user_id,
 	struct norm_error count_error = {0};
 
 	rc = orm_status(&store->db,
-			norm_query_select(scope.connection, &count_query, NULL, &running_rows,
-					  &count_error),
+			norm_query_select(scope.connection, &count_query, orm_scope_call(&scope),
+					  &running_rows, &count_error),
 			&count_error);
 	if (rc != 0)
 		return rc;
@@ -372,7 +375,7 @@ static int begin_turn_write(struct session_store *store, const char *user_id,
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_insert(scope.connection, &orm_fcgi_running_turns, &turn, NULL,
-					    NULL, NULL, &error),
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	return rc;
@@ -413,10 +416,10 @@ void store_quota_end_turn(struct session_store *store, const char *turn_id)
 	const struct norm_delete_query query = {
 		.where = norm_eq(norm_col(&orm_fcgi_running_turns, 0), orm_string(turn_id)),
 	};
-	int rc = orm_status(
-		&store->db,
-		norm_delete(scope.connection, &orm_fcgi_running_turns, &query, NULL, NULL, &error),
-		&error);
+	int rc = orm_status(&store->db,
+			    norm_delete(scope.connection, &orm_fcgi_running_turns, &query,
+					orm_scope_call(&scope), NULL, &error),
+			    &error);
 
 	(void)rc;
 }
@@ -438,10 +441,10 @@ void store_turn_heartbeat(struct session_store *store, const char *turn_id)
 		.set_count = 1,
 		.where = norm_eq(norm_col(&orm_fcgi_running_turns, 0), orm_string(turn_id)),
 	};
-	int rc = orm_status(
-		&store->db,
-		norm_update(scope.connection, &orm_fcgi_running_turns, &query, NULL, NULL, &error),
-		&error);
+	int rc = orm_status(&store->db,
+			    norm_update(scope.connection, &orm_fcgi_running_turns, &query,
+					orm_scope_call(&scope), NULL, &error),
+			    &error);
 
 	(void)rc;
 }

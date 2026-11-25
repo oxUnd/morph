@@ -140,6 +140,77 @@ TEST_F(CheckpointStoreTest, DirtyPreimageAndModeSurviveDatabaseReopen)
 	EXPECT_EQ(info.st_mode & 0777, 0600);
 }
 
+TEST_F(CheckpointStoreTest, AnotherDatabaseOwnerCannotSealPendingWrites)
+{
+	Write("file", "before");
+	const int64_t id = Create("an attempt belongs to its database owner");
+	ASSERT_EQ(checkpoint_store_capture(&database, id, "file"), 0);
+	Write("file", "after");
+	struct db other NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open(nullptr, &other, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&other), 0);
+	EXPECT_EQ(checkpoint_store_validate_write(&other, id, "file", 5, nullptr),
+		  NB_ERR_STALE);
+	ASSERT_EQ(checkpoint_store_seal(&other, id), 0);
+	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files WHERE sealed=0 "
+			 "AND pending_token IS NOT NULL"),
+		  1);
+	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
+	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files WHERE sealed=1 "
+			 "AND pending_token IS NULL"),
+		  1);
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
+					   &report),
+		  0);
+	EXPECT_EQ(Read("file"), "before");
+}
+
+TEST_F(CheckpointStoreTest, ReopenedDatabaseCannotAdoptInterruptedWrites)
+{
+	Write("file", "before");
+	const int64_t id = Create("interrupted capture");
+	ASSERT_EQ(checkpoint_store_capture(&database, id, "file"), 0);
+	Write("file", "unsealed edit");
+	db_close(&database);
+	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	Write("file", "manual change after restart");
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "file", 1, nullptr),
+		  NB_ERR_STALE);
+	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
+	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files WHERE sealed=0 "
+			 "AND pending_token IS NOT NULL"),
+		  1);
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	EXPECT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
+					   &report),
+		  NB_ERR_AGAIN);
+	EXPECT_EQ(Read("file"), "manual change after restart");
+}
+
+TEST_F(CheckpointStoreTest, BinaryFilesPreserveNulsAndUseByteBudgets)
+{
+	const std::string before("\0a\xc3\xa9\0z", 6);
+	const std::string after("\0\xff\0\xc3\xa9", 5);
+	Write("binary", before);
+	const int64_t id = Create("restore arbitrary file bytes");
+	ASSERT_EQ(checkpoint_store_capture(&database, id, "binary"), 0);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "binary", after.size(), nullptr),
+		  0);
+	Write("binary", after);
+	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(checkpoint_store_preview_copy(&database, session.id, id, &report), 0);
+	cJSON *files = cJSON_GetObjectItem(report, "files");
+	ASSERT_EQ(cJSON_GetArraySize(files), 1);
+	cJSON_DeleteOwner(&report);
+	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
+					   &report),
+		  0);
+	EXPECT_EQ(Read("binary"), before);
+}
+
 TEST_F(CheckpointStoreTest, LegacyCompactionSnapshotsMigrateWithErrorCodes)
 {
 	ASSERT_EQ(orm_fixture_execute(

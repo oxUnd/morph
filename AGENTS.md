@@ -201,6 +201,8 @@ Prefer these over hand-rolled equivalents.
   and definitions. Preserve header guards, required configuration macros,
   language linkage and platform-specific conditional includes.
 - No `//` comments — `/* */` only.
+- Do not prefix function calls with `(void)` to discard their return values.
+  Handle meaningful failures explicitly; best-effort cleanup uses a plain call.
 - Source strings in English for errors, logs, status, UI, model instructions; keep non-English only as input data/fixtures/examples. Localization lives in a shared i18n layer, not business logic.
 - Prefer `sizeof(var)` for an existing object and `sizeof(*ptr)` when allocating
   its pointee. Use `sizeof(type)` for type metadata, such as TUI `instance_size`,

@@ -146,8 +146,8 @@ int session_create_with_workdir(struct db *db, const char *name, const char *mod
 			.created_at = value.created_at,
 			.updated_at = value.updated_at,
 		};
-		nb_status status = norm_insert(scope.connection, &session_model, &row, NULL, NULL,
-					       &result, &error);
+		nb_status status = norm_insert(scope.connection, &session_model, &row, NULL,
+					       orm_scope_call(&scope), &result, &error);
 
 		if (status == NORM_ERR_UNIQUE || status == NORM_ERR_CONSTRAINT) {
 			rc = NB_ERR_EXISTS;
@@ -195,10 +195,10 @@ static int session_get(const struct db *db, enum session_field field, struct nor
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &session_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &session_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0)
 		return rc;
@@ -298,7 +298,9 @@ int session_list(struct db *db, struct session **out, int *count, int limit, con
 	};
 
 	if (rc == 0)
-		rc = orm_status(db, norm_join_select(scope.connection, &query, NULL, &rows, &error),
+		rc = orm_status(db,
+				norm_join_select(scope.connection, &query, orm_scope_call(&scope),
+						 &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -335,7 +337,9 @@ static int session_integer(const struct db *db, const struct norm_query *query)
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(db, norm_query_select(scope.connection, query, NULL, &rows, &error),
+		rc = orm_status(db,
+				norm_query_select(scope.connection, query, orm_scope_call(&scope),
+						  &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -376,8 +380,8 @@ static int session_assign(struct db *db, int64_t id, const struct norm_assignmen
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_update(scope.connection, &session_model, &query, NULL, &result,
-					    &error),
+				norm_update(scope.connection, &session_model, &query,
+					    orm_scope_call(&scope), &result, &error),
 				&error);
 
 	return rc == 0 && require_existing && result.affected_rows_known && !result.affected_rows
@@ -432,8 +436,8 @@ int session_delete(struct db *db, int64_t id)
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_delete(scope.connection, &session_model, &query, NULL, NULL,
-					   &error),
+			       norm_delete(scope.connection, &session_model, &query,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -480,8 +484,8 @@ int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens)
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_update(scope.connection, &session_model, &query, NULL, NULL,
-					   &error),
+			       norm_update(scope.connection, &session_model, &query,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -536,8 +540,8 @@ int message_add_with_turn_id(struct db *db, int64_t session_id, const char *role
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert_select(scope.connection, &message_model, fields,
-						  NB_ARRAY_SIZE(fields), &query, NULL, NULL, NULL,
-						  &error),
+						  NB_ARRAY_SIZE(fields), &query, NULL,
+						  orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -574,10 +578,10 @@ struct message *message_list(struct db *db, int64_t session_id, int *count)
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &message_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &message_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0 || norm_rows_count(rows) > INT_MAX)
 		return NULL;
@@ -657,8 +661,8 @@ int trace_save(struct db *db, int64_t session_id, int round_no, const char *step
 	int rc = orm_scope_begin(db, &scope);
 
 	return rc == 0 ? orm_status(db,
-				    norm_insert(scope.connection, &trace_model, &row, NULL, NULL,
-						NULL, &error),
+				    norm_insert(scope.connection, &trace_model, &row, NULL,
+						orm_scope_call(&scope), NULL, &error),
 				    &error)
 		       : rc;
 }
@@ -681,10 +685,10 @@ char *trace_load_latest(struct db *db, int64_t session_id, int *out_round_no, in
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &trace_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &trace_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0 || !norm_rows_count(rows))
 		return NULL;

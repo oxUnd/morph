@@ -11,6 +11,9 @@
 #include "persistence/orm/memory_repository.h"
 #include "persistence/orm/memory_search.h"
 #include "persistence/orm/memory_summary_store.h"
+#include "persistence/orm/business_store.h"
+#include "persistence/orm/session_history.h"
+#include "persistence/orm/preferences.h"
 #include "agent/memory_internal.h"
 #include "cJSON.h"
 #include "cJSON.h"
@@ -1223,6 +1226,121 @@ TEST_F(MemoryTest, SearchPreservesNullableLegacyImportance)
 
 		EXPECT_DOUBLE_EQ(record->importance, 0.0);
 	}
+}
+
+TEST_F(MemoryTest, SearchRanksAllCandidatesBeforeApplyingItsLimit)
+{
+	struct session session{};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_options search{};
+
+	ASSERT_EQ(session_create(&db, "rank-all-candidates", "mock", &session), 0);
+	ASSERT_EQ(memory_store_prepare_session(&db, session.id), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "needle.old", "unrelated",
+					   "evidence", "general", 0.8), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "middle", "needle",
+					   "needle", "general", 0.8), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "newest", "needle",
+					   "evidence", "general", 0.8), 0);
+	ASSERT_EQ(orm_fixture_execute(&db,
+		"UPDATE memory_facts SET updated_at=CASE key_name "
+		"WHEN 'needle.old' THEN 1 WHEN 'middle' THEN 2 ELSE 3 END"), 0);
+	search.query = "NEEDLE";
+	search.limit = 2;
+	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
+	ASSERT_EQ(matches.records.len, 2u);
+	const auto *first =
+		static_cast<const struct memory_record *>(nb_vec_at(&matches.records, 0));
+	const auto *second =
+		static_cast<const struct memory_record *>(nb_vec_at(&matches.records, 1));
+
+	EXPECT_STREQ(first->key, "needle.old");
+	EXPECT_EQ(first->score, 4);
+	EXPECT_STREQ(second->key, "middle");
+	EXPECT_EQ(second->score, 3);
+}
+
+TEST_F(MemoryTest, SearchPlacesMissingImportanceAfterNegativeLegacyImportance)
+{
+	struct session session{};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_options search{};
+
+	ASSERT_EQ(session_create(&db, "rank-null-importance", "mock", &session), 0);
+	ASSERT_EQ(memory_store_prepare_session(&db, session.id), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "numeric", "needle",
+					   "evidence", "general", 0.8), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "missing", "needle",
+					   "evidence", "general", 0.8), 0);
+	ASSERT_EQ(orm_fixture_execute(&db,
+		"UPDATE memory_facts SET updated_at=1,importance=CASE key_name "
+		"WHEN 'numeric' THEN -0.5 ELSE NULL END"), 0);
+	search.query = "needle";
+	search.limit = 1;
+	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
+	ASSERT_EQ(matches.records.len, 1u);
+	const auto *first =
+		static_cast<const struct memory_record *>(nb_vec_at(&matches.records, 0));
+
+	EXPECT_STREQ(first->key, "numeric");
+	EXPECT_DOUBLE_EQ(first->importance, -0.5);
+}
+
+TEST_F(MemoryTest, UserInputHistoryFiltersHooksBeforeSelectingFourRecentInputs)
+{
+	struct session session{};
+	nb_vec inputs NB_CLEANUP(store_text_records_cleanup) = {};
+
+	ASSERT_EQ(session_create(&db, "recent-input-filter", "mock", &session), 0);
+	for (int i = 0; i < 7; i++) {
+		struct model_history_insert item{};
+		std::string content = "input-" + std::to_string(i);
+
+		item.session_id = session.id;
+		item.turn_id = "recent-turn";
+		item.kind = "user_message";
+		item.role = "user";
+		item.content = content.c_str();
+		item.payload_json = i >= 5 ? "{\"source\":\"hook\"}" : "{}";
+		item.active = 1;
+		ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	}
+
+	ASSERT_EQ(history_user_inputs_store_copy(&db, session.id, "recent-turn", &inputs), 0);
+	ASSERT_EQ(inputs.len, 4u);
+	for (size_t i = 0; i < inputs.len; i++) {
+		std::string expected = "input-" + std::to_string(i + 1);
+
+		EXPECT_STREQ(*static_cast<char **>(nb_vec_at(&inputs, i)), expected.c_str());
+	}
+}
+
+TEST_F(MemoryTest, SessionPreferenceClearRollsBackEveryTombstoneOnFailure)
+{
+	struct session session{};
+	int64_t count = 0;
+
+	ASSERT_EQ(session_create(&db, "clear-preference-atomic", "mock", &session), 0);
+	ASSERT_EQ(preference_bind(&db, session.id, "clear-owner", "/clear"), 0);
+	ASSERT_EQ(preference_set(&db, session.id, "session", "first.key", "one", "test", nullptr),
+		  0);
+	ASSERT_EQ(preference_set(&db, session.id, "session", "second.key", "two", "test", nullptr),
+		  0);
+	ASSERT_EQ(orm_fixture_execute(&db,
+		"CREATE TRIGGER reject_second_tombstone BEFORE INSERT ON memory_preferences "
+		"WHEN NEW.value IS NULL AND NEW.key='second.key' BEGIN "
+		"SELECT RAISE(ABORT,'injected tombstone failure'); END"), 0);
+	EXPECT_NE(preference_clear_session(&db, session.id), 0);
+	EXPECT_TRUE(orm_fixture_transaction_idle(&db));
+	ASSERT_EQ(orm_fixture_integer(&db,
+		"SELECT COUNT(*) FROM memory_preferences WHERE value IS NULL", &count), 0);
+	EXPECT_EQ(count, 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "DROP TRIGGER reject_second_tombstone"), 0);
+	ASSERT_EQ(preference_clear_session(&db, session.id), 0);
+	ASSERT_EQ(orm_fixture_integer(&db,
+		"SELECT COUNT(DISTINCT event_token) FROM memory_preferences WHERE value IS NULL "
+		"AND length(event_token)=32", &count), 0);
+	EXPECT_EQ(count, 2);
 }
 
 TEST_F(MemoryTest, FactWriteFailuresKeepTheirPublicErrorAndRollback)

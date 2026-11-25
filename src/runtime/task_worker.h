@@ -16,7 +16,7 @@ struct runtime_task_worker {
 	nb_cond *cond;
 	int started;
 	int stop;
-	char db_path[PATH_MAX];
+	struct db_connection_config *database;
 	scheduled_task_runner_fn runner;
 	void *runner_user_data;
 	runtime_task_notification_fn notification_cb;

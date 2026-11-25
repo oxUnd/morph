@@ -203,7 +203,7 @@ int agent_store_thread_put(struct db *db, const struct store_agent_thread *recor
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert(scope.connection, &agent_thread_model, &row, &options,
-					   NULL, NULL, &error),
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -239,7 +239,8 @@ int agent_store_threads_copy(struct db *db, int64_t session_id, nb_vec *records)
 	nb_vec_init(records, sizeof(struct store_agent_thread));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(scope.connection, &query, NULL, &rows, &error),
+				norm_query_select(scope.connection, &query, orm_scope_call(&scope),
+						  &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -328,8 +329,8 @@ int agent_store_mail_send(struct db *db, int64_t root, const char *sender, const
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_insert(scope.connection, &agent_mail_model, &row, NULL, NULL,
-					   NULL, &error),
+			       norm_insert(scope.connection, &agent_mail_model, &row, NULL,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -354,8 +355,8 @@ int agent_store_finish_mail_clear(struct db *db, int64_t root, const char *recip
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_update(scope.connection, &agent_mail_model, &query, NULL, NULL,
-					   &error),
+			       norm_update(scope.connection, &agent_mail_model, &query,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -384,8 +385,8 @@ int agent_store_mail_pending(struct db *db, int64_t root, const char *recipient,
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &agent_mail_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &agent_mail_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	return rc ? rc : norm_rows_count(rows) ? 1 : 0;
@@ -419,8 +420,8 @@ int agent_store_mail_copy(struct db *db, int64_t root, const char *recipient, nb
 	nb_vec_init(records, sizeof(struct store_agent_mail));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &agent_mail_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &agent_mail_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {
@@ -467,8 +468,8 @@ int agent_store_mail_ack(struct db *db, int64_t root, const char *recipient, int
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_update(scope.connection, &agent_mail_model, &query, NULL, NULL,
-					   &error),
+			       norm_update(scope.connection, &agent_mail_model, &query,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -486,8 +487,8 @@ int agent_store_budget_copy(struct db *db, int64_t root, struct store_agent_budg
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &agent_budget_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &agent_budget_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -542,7 +543,7 @@ int agent_store_budget_put(struct db *db, int64_t root, const struct store_agent
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert(scope.connection, &agent_budget_model, &row, &options,
-					   NULL, NULL, &error),
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -611,8 +612,8 @@ int agent_store_history_fork(struct db *db, int64_t source, int64_t destination)
 	return rc ? rc
 		  : orm_status(db,
 			       norm_insert_select(scope.connection, &history_model, fields,
-						  NB_ARRAY_SIZE(fields), &query, NULL, NULL, NULL,
-						  &error),
+						  NB_ARRAY_SIZE(fields), &query, NULL,
+						  orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -629,8 +630,8 @@ int agent_store_event_put(struct db *db, int64_t root, const char *agent_id, con
 
 	return rc ? rc
 		  : orm_status(db,
-			       norm_insert(scope.connection, &agent_event_model, &row, NULL, NULL,
-					   NULL, &error),
+			       norm_insert(scope.connection, &agent_event_model, &row, NULL,
+					   orm_scope_call(&scope), NULL, &error),
 			       &error);
 }
 
@@ -661,8 +662,8 @@ int agent_store_event_latest_copy(struct db *db, int64_t root, const char *agent
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &agent_event_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &agent_event_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -703,8 +704,8 @@ int agent_store_events_copy(struct db *db, int64_t root, const char *agent_id, n
 	nb_vec_init(records, sizeof(char *));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &agent_event_model, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &agent_event_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	for (size_t i = 0; rc == 0 && i < norm_rows_count(rows); i++) {

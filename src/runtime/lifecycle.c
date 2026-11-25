@@ -286,6 +286,24 @@ static int runtime_open_database(struct runtime *runtime)
 	char *dir;
 	int rc;
 
+	if (runtime->options.database) {
+		rc = db_open_connection(runtime->options.logger, &ctx->database,
+					runtime->options.database);
+		runtime->options.database = NULL;
+		return rc == NB_OK ? db_init_schema(&ctx->database) : rc;
+	}
+
+	struct db_options connection = {0};
+
+	rc = config_database_options(&ctx->config.database, runtime->options.db_path, &connection);
+	if (rc != NB_OK)
+		return rc;
+
+	if (connection.backend == DB_BACKEND_POSTGRESQL) {
+		rc = db_open_options(runtime->options.logger, &ctx->database, &connection);
+		return rc == NB_OK ? db_init_schema(&ctx->database) : rc;
+	}
+
 	if (!runtime->options.db_path || !runtime->options.db_path[0])
 		return NB_ERR_INVAL;
 	expanded = ((expand_status_5 = nb_path_expand(&file_value_5, runtime->options.db_path,
@@ -634,7 +652,7 @@ int runtime_open_controlled(struct runtime *parent, const struct runtime_options
 	int rc;
 	struct config_file_error error = {0};
 
-	if (!options || !out || !options->db_path)
+	if (!options || !out)
 		return NB_ERR_INVAL;
 	if (*out)
 		return NB_ERR_EXISTS;
@@ -707,7 +725,7 @@ int runtime_open_controlled(struct runtime *parent, const struct runtime_options
 		if (rc != 0)
 			error = runtime->context.hooks.error;
 	}
-	if (rc == 0) {
+	if (rc == 0 && db_backend(&runtime->context.database) == DB_BACKEND_SQLITE) {
 		char source[PATH_MAX];
 		int cleanup_rc;
 

@@ -32,9 +32,10 @@ static int manifest_initialize(struct db *db)
 	int rc = orm_scope_begin(db, &scope);
 
 	for (size_t i = 0; rc == 0 && i < sizeof(models) / sizeof(models[0]); i++)
-		rc = orm_status(
-			db, norm_schema_create(scope.connection, models[i], &options, NULL, &error),
-			&error);
+		rc = orm_status(db,
+				norm_schema_create(scope.connection, models[i], &options,
+						   orm_scope_call(&scope), &error),
+				&error);
 
 	/* Historical manifest upgrades for databases predating file metadata and conflict
 	 * resolution. */
@@ -55,8 +56,8 @@ static int manifest_initialize(struct db *db)
 				return NB_ERR_STATE;
 
 			rc = orm_status(db,
-					norm_schema_add_column(scope.connection, model, field, NULL,
-							       &error),
+					norm_schema_add_column(scope.connection, model, field,
+							       orm_scope_call(&scope), &error),
 					&error);
 		}
 	}
@@ -124,8 +125,8 @@ int manifest_get(struct db *db, const char *path, struct manifest_entry *out)
 	memset(out, 0, sizeof(*out));
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_select(scope.connection, &orm_sync_entries, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &orm_sync_entries, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -209,7 +210,7 @@ int manifest_put(struct db *db, const struct sync_pair *pair, int tombstone)
 	return rc != 0 ? rc
 		       : orm_status(db,
 				    norm_insert(scope.connection, &orm_sync_entries, &row, &options,
-						NULL, NULL, &error),
+						orm_scope_call(&scope), NULL, &error),
 				    &error);
 }
 
@@ -228,7 +229,7 @@ int manifest_conflict(struct db *db, const struct sync_pair *pair)
 	return rc != 0 ? rc
 		       : orm_status(db,
 				    norm_insert(scope.connection, &orm_sync_conflicts, &row, NULL,
-						NULL, NULL, &error),
+						orm_scope_call(&scope), NULL, &error),
 				    &error);
 }
 
@@ -253,8 +254,8 @@ int manifest_resolve_db_conflicts(struct db *db, const char *path)
 
 	return rc != 0 ? rc
 		       : orm_status(db,
-				    norm_update(scope.connection, &orm_sync_conflicts, &query, NULL,
-						NULL, &error),
+				    norm_update(scope.connection, &orm_sync_conflicts, &query,
+						orm_scope_call(&scope), NULL, &error),
 				    &error);
 }
 
@@ -271,8 +272,8 @@ int manifest_trash(struct db *db, const char *path, const char *trash_path)
 
 	return rc != 0 ? rc
 		       : orm_status(db,
-				    norm_insert(scope.connection, &orm_sync_trash, &row, NULL, NULL,
-						NULL, &error),
+				    norm_insert(scope.connection, &orm_sync_trash, &row, NULL,
+						orm_scope_call(&scope), NULL, &error),
 				    &error);
 }
 
@@ -308,7 +309,7 @@ int manifest_tombstone(struct db *db, const char *path)
 	return rc != 0 ? rc
 		       : orm_status(db,
 				    norm_insert(scope.connection, &orm_sync_tombstones, &row,
-						&options, NULL, NULL, &error),
+						&options, orm_scope_call(&scope), NULL, &error),
 				    &error);
 }
 
@@ -324,7 +325,7 @@ int manifest_clear_tombstone(struct db *db, const char *path)
 	return rc != 0 ? rc
 		       : orm_status(db,
 				    norm_delete(scope.connection, &orm_sync_tombstones, &query,
-						NULL, NULL, &error),
+						orm_scope_call(&scope), NULL, &error),
 				    &error);
 }
 
@@ -339,8 +340,8 @@ int manifest_delete_trash(struct db *db, int64_t id)
 
 	return rc != 0 ? rc
 		       : orm_status(db,
-				    norm_delete(scope.connection, &orm_sync_trash, &query, NULL,
-						NULL, &error),
+				    norm_delete(scope.connection, &orm_sync_trash, &query,
+						orm_scope_call(&scope), NULL, &error),
 				    &error);
 }
 
@@ -365,7 +366,8 @@ static int manifest_count(struct db *db, const struct norm_model *model, bool un
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(scope.connection, &query, NULL, &rows, &error),
+				norm_query_select(scope.connection, &query, orm_scope_call(&scope),
+						  &rows, &error),
 				&error);
 
 	const struct orm_integer *row = rc == 0 ? norm_rows_at(rows, 0) : NULL;
@@ -426,10 +428,10 @@ int manifest_trash_expired_copy(struct db *db, int64_t cutoff, struct manifest_t
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &orm_sync_trash, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &orm_sync_trash, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0)
 		return rc;
@@ -467,10 +469,10 @@ int manifest_trash_get_copy(struct db *db, int64_t id, struct manifest_trash_rec
 	int rc = orm_scope_begin(db, &scope);
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &orm_sync_trash, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &orm_sync_trash, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0)
 		return rc;
@@ -521,8 +523,8 @@ int manifest_conflicts_copy(const char *path, struct runtime_sync_conflict **out
 
 	if (rc == 0)
 		rc = orm_status(&database,
-				norm_select(scope.connection, &orm_sync_conflicts, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &orm_sync_conflicts, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)

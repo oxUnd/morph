@@ -78,7 +78,7 @@ int store_create_session(struct session_store *store, const char *user_id, const
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_insert(scope.connection, &orm_fcgi_session_owner, &owner,
-					    &options, NULL, NULL, &error),
+					    &options, orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	return rc;
@@ -118,7 +118,8 @@ static int owned_session_id(struct session_store *store, const char *session_id,
 	*out = 0;
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_join_select(scope.connection, &query, NULL, &rows, &error),
+				norm_join_select(scope.connection, &query, orm_scope_call(&scope),
+						 &rows, &error),
 				&error);
 
 	const struct orm_integer *row = rc == 0 ? norm_rows_at(rows, 0) : NULL;
@@ -188,7 +189,8 @@ int store_list_sessions_page_json(struct session_store *store, const char *user_
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_join_select(scope.connection, &query, NULL, &rows, &error),
+				norm_join_select(scope.connection, &query, orm_scope_call(&scope),
+						 &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -272,8 +274,8 @@ static int update_session_write(struct session_store *store, const char *session
 	rc = orm_scope_begin(&store->db, &scope);
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_update(scope.connection, &session_model, &query, NULL, &result,
-					    &error),
+				norm_update(scope.connection, &session_model, &query,
+					    orm_scope_call(&scope), &result, &error),
 				&error);
 
 	return rc != 0 ? rc : result.affected_rows > 0 ? 0 : NB_ERR_NOT_FOUND;
@@ -401,7 +403,7 @@ static int delete_session_write(struct session_store *store, const char *session
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_select(scope.connection, &orm_fcgi_running_turns,
-					    &running_query, NULL, &rows, &error),
+					    &running_query, orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -416,8 +418,8 @@ static int delete_session_write(struct session_store *store, const char *session
 					 orm_string(session_id)),
 		};
 		rc = orm_status(&store->db,
-				norm_delete(scope.connection, deletions[i].model, &query, NULL,
-					    NULL, &error),
+				norm_delete(scope.connection, deletions[i].model, &query,
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 	}
 

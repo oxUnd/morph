@@ -33,8 +33,8 @@ static int event_insert(struct session_store *store, const char *session_id, con
 		};
 
 		return orm_status(&store->db,
-				  norm_insert(scope.connection, &orm_fcgi_actions, &row, NULL, NULL,
-					      NULL, &error),
+				  norm_insert(scope.connection, &orm_fcgi_actions, &row, NULL,
+					      orm_scope_call(&scope), NULL, &error),
 				  &error);
 	}
 
@@ -45,10 +45,10 @@ static int event_insert(struct session_store *store, const char *session_id, con
 		.ts = fcgi_store_now(),
 	};
 
-	return orm_status(
-		&store->db,
-		norm_insert(scope.connection, &orm_fcgi_events, &row, NULL, NULL, NULL, &error),
-		&error);
+	return orm_status(&store->db,
+			  norm_insert(scope.connection, &orm_fcgi_events, &row, NULL,
+				      orm_scope_call(&scope), NULL, &error),
+			  &error);
 }
 
 int events_publish(struct session_store *store, const char *session_id, const char *type,
@@ -98,8 +98,8 @@ static int events_fetch_batch(struct session_store *store, const char *session_i
 	*count = 0;
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_select(scope.connection, &orm_fcgi_events, &query, NULL, &rows,
-					    &error),
+				norm_select(scope.connection, &orm_fcgi_events, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -174,8 +174,8 @@ static int action_drain(struct session_store *store, const char *session_id,
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_select(scope.connection, &orm_fcgi_actions, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &orm_fcgi_actions, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -205,10 +205,10 @@ static int action_drain(struct session_store *store, const char *session_id,
 		.where = norm_eq(norm_col(&orm_fcgi_actions, 0), norm_i64(value.id)),
 	};
 
-	rc = orm_status(
-		&store->db,
-		norm_update(scope.connection, &orm_fcgi_actions, &consume, NULL, NULL, &error),
-		&error);
+	rc = orm_status(&store->db,
+			norm_update(scope.connection, &orm_fcgi_actions, &consume,
+				    orm_scope_call(&scope), NULL, &error),
+			&error);
 	if (rc != 0) {
 		free(value.payload_json);
 		return rc;

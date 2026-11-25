@@ -5,6 +5,7 @@
 #include "persistence/orm/error_migration_models.h"
 #include "schema_models.h"
 #include "session_models.h"
+#include <norm/postgresql.h>
 #include <ctype.h>
 #include <nb/vec.h>
 #include <nb/cleanup.h>
@@ -280,42 +281,6 @@ static const struct norm_model checkpoint_stored_model =
 	NORM_MODEL_WITH(struct checkpoint_stored_row, "code_checkpoint_files",
 			checkpoint_stored_fields, NORM_FOREIGN_KEYS(checkpoint_file_foreign_keys));
 
-struct checkpoint_token_row {
-	nb_str token;
-};
-static const struct norm_field checkpoint_token_fields[] = {
-	NORM_FIELD(struct checkpoint_token_row, token, NORM_TYPE_TEXT, 0),
-};
-static const struct norm_model checkpoint_token_model =
-	NORM_MODEL_WITH(struct checkpoint_token_row, "checkpoint_connection_token",
-			checkpoint_token_fields, NORM_SCHEMA("temp"));
-struct checkpoint_ready_row {
-	int64_t ready;
-};
-static const struct norm_field checkpoint_ready_fields[] = {
-	NORM_FIELD(struct checkpoint_ready_row, ready, NORM_TYPE_I64, 0),
-};
-static const struct norm_model checkpoint_ready_model =
-	NORM_MODEL_WITH(struct checkpoint_ready_row, "checkpoint_schema_ready",
-			checkpoint_ready_fields, NORM_SCHEMA("temp"));
-
-struct checkpoint_token_query {
-	struct norm_table_ref table;
-	struct norm_query_field field;
-	struct norm_query query;
-};
-
-static void checkpoint_token_query_init(struct checkpoint_token_query *value)
-{
-	value->table = norm_table(&checkpoint_token_model, NB_STR_LIT("connection_token"));
-	value->field =
-		(struct norm_query_field){norm_term_column(norm_table_col(&value->table, 0)), 0};
-	value->query = (struct norm_query){.from = &value->table,
-					   .projection = &orm_text_model,
-					   .fields = &value->field,
-					   .field_count = 1};
-}
-
 static void checkpoint_metadata_cleanup(struct norm_table_metadata **owner)
 {
 	norm_table_metadata_free(*owner);
@@ -353,8 +318,8 @@ static int checkpoint_has_table(struct orm_scope *scope, nb_str schema, nb_str t
 {
 	struct norm_table_metadata *metadata NB_CLEANUP(checkpoint_metadata_cleanup) = NULL;
 	struct norm_error error = {0};
-	int rc = norm_schema_read_table(scope->connection, schema, table, NULL, NULL, &metadata,
-					&error);
+	int rc = norm_schema_read_table(scope->connection, schema, table, NULL,
+					orm_scope_call(scope), &metadata, &error);
 
 	*present = rc == NB_OK;
 	return rc == NB_ERR_NOT_FOUND ? NB_OK : orm_status(scope->database, rc, &error);
@@ -427,8 +392,10 @@ static int checkpoint_column_type(nb_str name, nb_str native, const struct norm_
 		*type = NORM_TYPE_I64;
 	else if (strstr(text, "CHAR") || strstr(text, "CLOB") || strstr(text, "TEXT"))
 		*type = NORM_TYPE_TEXT;
-	else if (!text[0] || strstr(text, "BLOB"))
+	else if (!text[0] || strstr(text, "BLOB") || strcmp(text, "BYTEA") == 0)
 		*type = NORM_TYPE_BLOB;
+	else if (strcmp(text, "BOOLEAN") == 0 || strcmp(text, "BOOL") == 0)
+		*type = NORM_TYPE_BOOL;
 	else if (strstr(text, "REAL") || strstr(text, "FLOA") || strstr(text, "DOUB"))
 		*type = NORM_TYPE_F64;
 	else
@@ -494,7 +461,8 @@ static int checkpoint_live_model(struct orm_scope *scope, enum schema_table tabl
 							.max_bytes = SIZE_MAX};
 	int rc = orm_status(scope->database,
 			    norm_schema_read_table(scope->connection, NB_STR_NULL, canonical->table,
-						   &limits, NULL, &out->metadata, &error),
+						   &limits, orm_scope_call(scope), &out->metadata,
+						   &error),
 			    &error);
 
 	if (rc != NB_OK)
@@ -514,6 +482,9 @@ static int checkpoint_live_model(struct orm_scope *scope, enum schema_table tabl
 		if (column->has_default) {
 			nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 			char *copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+
+			if (!column->default_is_sql)
+				return NB_ERR_UNSUPPORTED;
 
 			if (!nb_buf_printf(&text, "(%.*s)", (int)column->default_value.len,
 					   column->default_value.ptr))
@@ -737,44 +708,19 @@ static bool checkpoint_transaction_active(struct db *db)
 	       norm_tx_get_state(scope.connection) != NORM_TX_IDLE;
 }
 
-/* Snapshot tables outlive the schema they copied. Extend them without losing
- * old rows; defaults give older snapshots the same additive migration values. */
-
+/* Pending rows retain the owner token of their editing attempt. Rotating the
+ * application-owned token prevents later attempts from adopting stale writes. */
 static int checkpoint_token_change(struct orm_scope *scope, bool seed)
 {
 	nb_buf token NB_CLEANUP(nb_buf_cleanup) = {0};
-	struct norm_error error = {0};
+
+	if (seed && orm_checkpoint_token(scope->database))
+		return NB_OK;
+
 	int rc = nb_random_hex(&token, 16, NULL);
 
-	if (rc != NB_OK)
-		return rc;
-
-	if (!seed) {
-		const struct norm_assignment change = {.column =
-							       norm_col(&checkpoint_token_model, 0),
-						       .value = norm_text(nb_buf_str(&token))};
-		const struct norm_update_query query = {
-			.set = &change, .set_count = 1, .allow_all_rows = true};
-
-		return orm_status(scope->database,
-				  norm_update(scope->connection, &checkpoint_token_model, &query,
-					      NULL, NULL, &error),
-				  &error);
-	}
-
-	struct checkpoint_token_query existing = {0};
-
-	checkpoint_token_query_init(&existing);
-	const struct norm_expr present = norm_exists(&existing.query);
-	const struct norm_query_field selected = {norm_term_value(norm_text(nb_buf_str(&token))),
-						  0};
-	const struct norm_query query = {.projection = &checkpoint_token_model,
-					 .fields = &selected,
-					 .field_count = 1,
-					 .where = norm_not(&present)};
-	const size_t field = 0;
-
-	return orm_insert_from(scope, &checkpoint_token_model, &field, 1, &query, NULL, NULL);
+	return rc != NB_OK ? rc
+			   : orm_checkpoint_set_token(scope->database, nb_buf_cstr(&token));
 }
 
 /* Snapshot tables retain old payload rows while live schemas gain columns. */
@@ -786,8 +732,8 @@ static int checkpoint_snapshot_upgrade(struct orm_scope *scope, enum schema_tabl
 	bool legacy_errors = false;
 	int rc = orm_status(scope->database,
 			    norm_schema_read_table(scope->connection, NB_STR_NULL,
-						   snapshot->model.table, NULL, NULL, &stored,
-						   &error),
+						   snapshot->model.table, NULL,
+						   orm_scope_call(scope), &stored, &error),
 			    &error);
 
 	for (size_t i = 1; rc == NB_OK && i < snapshot->model.field_count; i++) {
@@ -806,7 +752,7 @@ static int checkpoint_snapshot_upgrade(struct orm_scope *scope, enum schema_tabl
 		if (!found) {
 			rc = orm_status(scope->database,
 					norm_schema_add_column(scope->connection, &snapshot->model,
-							       i, NULL, &error),
+							       i, orm_scope_call(scope), &error),
 					&error);
 			if (table == SCHEMA_HISTORY_COMPACTION_ATTEMPTS &&
 			    nb_str_eq_cstr(field->column, "legacy_error_code"))
@@ -833,8 +779,8 @@ static int checkpoint_snapshot_upgrade(struct orm_scope *scope, enum schema_tabl
 							.allow_all_rows = true};
 
 		rc = orm_status(scope->database,
-				norm_update(scope->connection, &snapshot->model, &query, NULL, NULL,
-					    &error),
+				norm_update(scope->connection, &snapshot->model, &query,
+					    orm_scope_call(scope), NULL, &error),
 				&error);
 	}
 
@@ -847,12 +793,13 @@ static int checkpoint_schema_initialize(struct db *db)
 	struct norm_error error = {0};
 	const struct norm_schema_options options = {.if_not_exists = true};
 	const struct norm_model *const models[] = {
-		&checkpoint_header_model, &checkpoint_stored_model, &checkpoint_token_model};
+		&checkpoint_header_model, &checkpoint_stored_model};
 	int rc = orm_scope_begin(db, &scope);
 
 	for (size_t i = 0; rc == NB_OK && i < NB_ARRAY_SIZE(models); i++)
 		rc = orm_status(
-			db, norm_schema_create(scope.connection, models[i], &options, NULL, &error),
+			db, norm_schema_create(scope.connection, models[i], &options,
+					       orm_scope_call(&scope), &error),
 			&error);
 
 	if (rc == NB_OK)
@@ -877,18 +824,13 @@ static int checkpoint_schema_initialize(struct db *db)
 		if (rc == NB_OK)
 			rc = orm_status(db,
 					norm_schema_create(scope.connection, &shadow.model,
-							   &options, NULL, &error),
+							   &options, orm_scope_call(&scope),
+							   &error),
 					&error);
 
 		if (rc == NB_OK)
 			rc = checkpoint_snapshot_upgrade(&scope, tables[i].table, &shadow);
 	}
-
-	if (rc == NB_OK)
-		rc = orm_status(db,
-				norm_schema_create(scope.connection, &checkpoint_ready_model,
-						   &options, NULL, &error),
-				&error);
 
 	return rc;
 }
@@ -917,7 +859,11 @@ static int checkpoint_schema(struct db *db)
 	if (rc != NB_OK)
 		return rc;
 
-	return checkpoint_transaction_finish(db, checkpoint_schema_initialize(db));
+	rc = checkpoint_transaction_finish(db, checkpoint_schema_initialize(db));
+	if (rc == NB_OK)
+		orm_checkpoint_set_ready(db, true);
+
+	return rc;
 }
 
 static int checkpoint_enter(struct db *db, struct checkpoint_lock *lock)
@@ -933,11 +879,7 @@ static int checkpoint_enter(struct db *db, struct checkpoint_lock *lock)
 	if (norm_tx_get_state(lock->scope.connection) != NORM_TX_IDLE)
 		return NB_ERR_BUSY;
 
-	bool ready = false;
-
-	rc = checkpoint_has_table(&lock->scope, NB_STR_LIT("temp"), checkpoint_ready_model.table,
-				  &ready);
-	return rc != NB_OK ? rc : ready ? NB_OK : checkpoint_schema(db);
+	return orm_checkpoint_ready(db) ? NB_OK : checkpoint_schema(db);
 }
 
 static int checkpoint_info_assign(const struct checkpoint_header_row *row,
@@ -1422,7 +1364,7 @@ int checkpoint_store_create(struct db *db, int64_t session_id, const char *workd
 
 	rc = orm_status(db,
 			norm_insert(lock.scope.connection, &checkpoint_header_model, &row, NULL,
-				    NULL, &result, &error),
+				    orm_scope_call(&lock.scope), &result, &error),
 			&error);
 	if (rc == NB_OK)
 		rc = checkpoint_snapshot(db, result.insert_id, session_id);
@@ -1488,9 +1430,10 @@ static int checkpoint_budget_read(struct db *db, int64_t id, struct norm_rows **
 	const struct norm_term before = norm_term_column(norm_table_col(&files, CF_BEFORE_DATA));
 	const struct norm_term after = norm_term_column(norm_table_col(&files, CF_AFTER_DATA));
 	const struct norm_term before_arguments[] = {
-		norm_term_call(NORM_FUNCTION_LENGTH, &before, 1), norm_term_value(norm_i32(0))};
-	const struct norm_term after_arguments[] = {norm_term_call(NORM_FUNCTION_LENGTH, &after, 1),
-						    norm_term_value(norm_i32(0))};
+		norm_term_call(NORM_FUNCTION_BYTE_LENGTH, &before, 1),
+		norm_term_value(norm_i32(0))};
+	const struct norm_term after_arguments[] = {
+		norm_term_call(NORM_FUNCTION_BYTE_LENGTH, &after, 1), norm_term_value(norm_i32(0))};
 	const struct norm_term before_size =
 		norm_term_call(NORM_FUNCTION_COALESCE, before_arguments, 2);
 	const struct norm_term after_size =
@@ -1547,10 +1490,7 @@ static int checkpoint_capture_file(struct db *db, int64_t id, const char *path,
 				   const struct checkpoint_state *state)
 {
 	struct orm_scope scope NB_CLEANUP(orm_scope_cleanup) = {0};
-	struct checkpoint_token_query token = {0};
-
-	checkpoint_token_query_init(&token);
-	const struct norm_term pending = norm_term_scalar(&token.query);
+	const struct norm_term pending = norm_term_value(orm_string(orm_checkpoint_token(db)));
 	const size_t fields[] = {CF_CHECKPOINT_ID, CF_PATH,	   CF_BEFORE_EXISTS,
 				 CF_BEFORE_MODE,   CF_BEFORE_DATA, CF_AFTER_EXISTS,
 				 CF_AFTER_MODE,	   CF_AFTER_DATA,  CF_PENDING_TOKEN};
@@ -1662,17 +1602,16 @@ int checkpoint_store_capture(struct db *db, int64_t id, const char *path)
 static int checkpoint_write_rows(struct db *db, int64_t id, struct norm_rows **rows)
 {
 	const struct norm_table_ref files = norm_table(&checkpoint_stored_model, NB_STR_LIT("f"));
-	struct checkpoint_token_query token = {0};
-
-	checkpoint_token_query_init(&token);
 	const struct norm_term before = norm_term_column(norm_table_col(&files, CF_BEFORE_DATA));
 	const struct norm_term after = norm_term_column(norm_table_col(&files, CF_AFTER_DATA));
 	const struct norm_term before_arguments[] = {
-		norm_term_call(NORM_FUNCTION_LENGTH, &before, 1), norm_term_value(norm_i32(0))};
-	const struct norm_term after_arguments[] = {norm_term_call(NORM_FUNCTION_LENGTH, &after, 1),
-						    norm_term_value(norm_i32(0))};
+		norm_term_call(NORM_FUNCTION_BYTE_LENGTH, &before, 1),
+		norm_term_value(norm_i32(0))};
+	const struct norm_term after_arguments[] = {
+		norm_term_call(NORM_FUNCTION_BYTE_LENGTH, &after, 1), norm_term_value(norm_i32(0))};
 	const struct norm_term pending = norm_term_column(norm_table_col(&files, CF_PENDING_TOKEN));
-	const struct norm_term current_token = norm_term_scalar(&token.query);
+	const struct norm_term current_token =
+		norm_term_value(orm_string(orm_checkpoint_token(db)));
 	const struct norm_term one = norm_term_value(norm_i32(1));
 	const struct norm_term zero = norm_term_value(norm_i32(0));
 	const struct norm_case pending_case = {
@@ -1700,11 +1639,8 @@ static int checkpoint_write_rows(struct db *db, int64_t id, struct norm_rows **r
 static int checkpoint_pending_paths(struct db *db, int64_t id, struct norm_rows **rows)
 {
 	const struct norm_table_ref files = norm_table(&checkpoint_stored_model, NB_STR_LIT("f"));
-	struct checkpoint_token_query token = {0};
-
-	checkpoint_token_query_init(&token);
 	const struct norm_term pending = norm_term_column(norm_table_col(&files, CF_PENDING_TOKEN));
-	const struct norm_term current = norm_term_scalar(&token.query);
+	const struct norm_term current = norm_term_value(orm_string(orm_checkpoint_token(db)));
 	const struct norm_expr conditions[] = {
 		norm_eq(norm_table_col(&files, CF_CHECKPOINT_ID), norm_i64(id)),
 		norm_compare_terms(&pending, NORM_COMPARE_EQ, &current),
@@ -2015,7 +1951,8 @@ static int checkpoint_plan_load(struct db *db, int64_t session_id, int64_t id,
 		return rc;
 
 	/* Stream repeated large file versions into the bounded merged restore plan. */
-	rc = orm_status(db, norm_query_cursor_open(scope.connection, &query, NULL, &cursor, &error),
+	rc = orm_status(db, norm_query_cursor_open(scope.connection, &query, orm_scope_call(&scope),
+						  &cursor, &error),
 			&error);
 	if (rc != NB_OK)
 		return rc;
@@ -2529,6 +2466,30 @@ static int checkpoint_conversation_restore(struct db *db, const struct checkpoin
 		rc = orm_insert_from(&scope, &live.model, NULL, 0, &query, NULL, NULL);
 	}
 
+	if (rc != NB_OK || db_backend(db) != DB_BACKEND_POSTGRESQL)
+		return rc;
+
+	for (int index = 0; rc == NB_OK && index < count; index++) {
+		const struct norm_model *model = schema_model(tables[index].table);
+		struct norm_error error = {0};
+		bool present = false;
+
+		rc = checkpoint_has_table(&scope, NB_STR_NULL, model->table, &present);
+		if (rc != NB_OK || !present)
+			continue;
+
+		for (size_t field = 0; rc == NB_OK && field < model->field_count; field++) {
+			if (!(model->fields[field].flags & NORM_FIELD_GENERATED))
+				continue;
+
+			rc = orm_status(db,
+					norm_postgresql_sync_identity(scope.connection, model,
+								      field, orm_scope_call(&scope),
+								      &error),
+					&error);
+		}
+	}
+
 	return rc;
 }
 
@@ -2613,6 +2574,7 @@ static int checkpoint_effects_prepare(struct checkpoint_plan *plan, cJSON *repor
 	    !cJSON_AddBoolToObject(report, "compensated", 0) ||
 	    !cJSON_AddBoolToObject(report, "rollback_incomplete", 0) ||
 	    !cJSON_AddBoolToObject(report, "database_rollback_failed", 0) ||
+	    !cJSON_AddBoolToObject(report, "database_outcome_unknown", 0) ||
 	    !cJSON_AddBoolToObject(report, "cleanup_incomplete", 0) ||
 	    !cJSON_AddNumberToObject(report, "error_code", 0))
 		return NB_ERR_NOMEM;
@@ -2864,7 +2826,19 @@ int checkpoint_store_restore(struct db *db, int64_t session_id, int64_t id,
 					}
 				}
 			}
-			if (rc != 0) {
+			if (rc == MORPH_ERR_DB_OUTCOME_UNKNOWN) {
+				/* The server may have committed. Keep restored files and their
+				 * pre-restore backups until the database outcome is reconciled. */
+				checkpoint_json_bool(report, "database_outcome_unknown", 1);
+				for (size_t i = 0; i < plan.files.len; i++) {
+					const struct checkpoint_file *file =
+						nb_vec_at(&plan.files, i);
+					cJSON *effect = cJSON_GetArrayItem(effects, (int)i);
+
+					checkpoint_json_bool(effect, "recovery_available",
+							     file->applied && file->current.exists);
+				}
+			} else if (rc != 0) {
 				int compensation = checkpoint_compensate(&plan, report);
 				int rollback = !checkpoint_transaction_active(db)
 						       ? 0

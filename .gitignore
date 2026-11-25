@@ -1,6 +1,7 @@
 # Build
 build/
 build-asan/
+build-postgresql/
 build-asan-xcode/
 build-fcgi/
 cmake-build-*/

@@ -13,6 +13,7 @@ set(TEST_SOURCES
 	test_state_ownership.cpp
 	test_file.cpp
 	test_database.cpp
+	test_database_options.cpp
 	test_scheduled_task.cpp
 	test_cli_setup.cpp
 	test_prompt_template.cpp
@@ -203,6 +204,28 @@ if(APPLE)
 endif()
 
 gtest_discover_tests(morph-tests)
+
+if(MORPH_TEST_POSTGRESQL_URL)
+	if(NOT ENABLE_POSTGRESQL)
+		message(FATAL_ERROR "MORPH_TEST_POSTGRESQL_URL requires ENABLE_POSTGRESQL=ON")
+	endif()
+
+	set(postgresql_support_sources ${TEST_SOURCES})
+	list(FILTER postgresql_support_sources INCLUDE REGEX
+		"/src/sapi/fastcgi/|/src/persistence/orm/fcgi_")
+	add_executable(morph-postgresql-tests test_postgresql.cpp test_postgresql_import.cpp
+		test_postgresql_outcome.cpp
+		${postgresql_support_sources})
+	target_include_directories(morph-postgresql-tests PRIVATE
+		${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/sapi/fastcgi)
+	target_link_libraries(morph-postgresql-tests PRIVATE morph-cli
+		morph-orm-fixtures nothing_orm::core GTest::gtest_main)
+	set_target_properties(morph-postgresql-tests PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
+	add_test(NAME postgresql_integration COMMAND morph-postgresql-tests)
+	set_tests_properties(postgresql_integration PROPERTIES TIMEOUT 300
+		ENVIRONMENT "MORPH_TEST_POSTGRESQL_URL=${MORPH_TEST_POSTGRESQL_URL}")
+endif()
 
 # PTY integration driver uses the production CLI with a disposable database.
 add_executable(morph-cli-pty-driver cli_pty_driver.c cli_agents_browser_fixture.c)

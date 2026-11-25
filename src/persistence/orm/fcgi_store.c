@@ -69,26 +69,26 @@ int store_maintenance(struct session_store *store)
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_delete(scope.connection, &orm_fcgi_events, &events_query, NULL,
-					    NULL, &error),
+				norm_delete(scope.connection, &orm_fcgi_events, &events_query,
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_delete(scope.connection, &orm_fcgi_actions, &actions_query,
-					    NULL, NULL, &error),
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_delete(scope.connection, &orm_fcgi_running_turns, &turns_query,
-					    NULL, NULL, &error),
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
 				norm_delete(scope.connection, &orm_fcgi_artifacts, &artifacts_query,
-					    NULL, NULL, &error),
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	return rc;

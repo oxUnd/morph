@@ -50,6 +50,8 @@ struct runtime_options {
 	struct nb_log *logger;
 	const char *config_path;
 	const char *db_path;
+	/* Borrowed during runtime_open; its connection parameters are copied. */
+	const struct db_connection_config *database;
 	const char *workdir;
 	const char *output_dir_override;
 	const char *default_dynamic_tools_mode;

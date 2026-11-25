@@ -17,7 +17,7 @@ target_include_directories(morph-db PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(morph-db PUBLIC nbase::nbase morph-cjson
-	PRIVATE nothing_orm::sqlite)
+	PRIVATE nothing_orm::core)
 
 add_executable(morph-session-sync-audit
 	${CMAKE_SOURCE_DIR}/src/diagnostics/session_sync_audit_main.c)

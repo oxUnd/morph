@@ -98,8 +98,8 @@ int credit_store_record_event(struct db *db, const struct credit_store_event *ev
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_insert(scope.connection, &credit_event_model, &row, NULL, NULL,
-					    NULL, &error),
+				norm_insert(scope.connection, &credit_event_model, &row, NULL,
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	return rc;
@@ -129,11 +129,7 @@ static int credit_store_summary_query(struct db *db, size_t identity, const char
 		 .into = 1},
 		{.value = norm_term_call(NORM_FUNCTION_COUNT, NULL, 0), .into = 2},
 	};
-	const struct norm_term day_parts[] = {norm_term_value(orm_string("%s")),
-					      norm_term_value(orm_string("now")),
-					      norm_term_value(orm_string("start of day"))};
-	const struct norm_term day =
-		norm_term_named_call(NB_STR_LIT("strftime"), day_parts, NB_ARRAY_SIZE(day_parts));
+	const struct norm_term day = norm_term_call(NORM_FUNCTION_UTC_DAY, NULL, 0);
 	const struct norm_term created = norm_term_column(norm_table_col(&events, 13));
 	const struct norm_expr conditions[] = {
 		norm_eq(norm_table_col(&events, identity), orm_string(value)),

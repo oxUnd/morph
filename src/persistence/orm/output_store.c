@@ -212,10 +212,10 @@ int output_store_copy(struct db *db, const char *path, struct output_record *out
 	};
 
 	if (rc == 0)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &output_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &output_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	if (rc != 0)
 		return rc;

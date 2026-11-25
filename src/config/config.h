@@ -20,6 +20,19 @@ extern "C" {
 
 struct nb_log;
 
+struct db_options;
+
+struct config_database {
+	char driver[16];
+	char url_env[64];
+	char tls_mode[16];
+	char ca_file[PATH_MAX];
+	char cert_file[PATH_MAX];
+	char key_file[PATH_MAX];
+	int connect_timeout_ms;
+	int query_timeout_ms;
+};
+
 struct config_general {
 	int auto_recap;
 	char default_session[256];
@@ -326,6 +339,7 @@ struct config {
 	int hooks_enabled;
 	char hooks_json[CONFIG_HOOKS_JSON_MAX];
 	struct config_general general;
+	struct config_database database;
 	struct config_models models;
 	struct config_credits credits;
 	struct config_exec exec;
@@ -372,6 +386,8 @@ struct config_file_error {
 typedef void (*config_validation_warning_fn)(
 	const struct config_validation_error *warning, void *user_data);
 
+int config_database_options(const struct config_database *config, const char *path,
+			    struct db_options *out);
 int config_load(struct nb_log *logger, struct config *cfg, const char *path);
 
 /* Validate without applying configuration. Returns 0 or a negative error. */

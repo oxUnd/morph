@@ -1282,8 +1282,8 @@ static int agent_execute(struct controlled_agent *agent)
 		model_llm_clone(control->model, control->db->logger);
 	struct react_context *react NB_CLEANUP(react_context_clear) = NULL;
 	int rc = model ? 0 : NB_ERR_NOMEM;
-	if (rc == 0 && strcmp(control->db->path, ":memory:")) {
-		rc = db_open(control->db->logger, &worker_db, control->db->path);
+	if (rc == 0 && !db_is_memory(control->db)) {
+		rc = db_reopen(control->db->logger, &worker_db, control->db);
 		if (rc == 0)
 			db = &worker_db;
 	}
@@ -1356,6 +1356,13 @@ static int agent_execute(struct controlled_agent *agent)
 			.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_TRACE |
 				 AGENT_TURN_SAVE_MESSAGES | AGENT_TURN_UPDATE_TOKENS,
 		};
+		bool cancel_bound = false;
+
+		if (rc == NB_OK && db == &worker_db) {
+			rc = db_set_cancel(db, &react->cancel_token);
+			cancel_bound = rc == NB_OK;
+		}
+
 		rc = rc != 0	   ? rc
 		     : interrupted ? NB_ERR_CANCELLED
 				   : agent_turn_begin(&turn, &session,
@@ -1364,6 +1371,14 @@ static int agent_execute(struct controlled_agent *agent)
 							      .stored_user_input = agent->input});
 		if (rc == 0)
 			rc = react_run(react, agent->input, NULL, NULL);
+
+		if (cancel_bound) {
+			int cancel_rc = db_set_cancel(db, NULL);
+
+			if (rc == NB_OK)
+				rc = cancel_rc;
+		}
+
 		react_drain_tools(react);
 		if (turn.begun) {
 			int finish_rc = agent_turn_finish(&turn, NULL);

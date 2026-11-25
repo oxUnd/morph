@@ -79,16 +79,16 @@ static int error_migration_table(struct orm_scope *scope, const struct norm_mode
 	size_t legacy = schema_field(model, "legacy_error_code");
 	size_t current = schema_field(model, "error_code");
 	struct norm_error error = {0};
-	int rc = orm_table_has_column(scope, "main", model->table.ptr, "legacy_error_code", &has);
+	int rc = orm_table_has_column(scope, "", model->table.ptr, "legacy_error_code", &has);
 
 	if (rc != NB_OK)
 		return rc;
 
 	if (!has) {
-		rc = orm_status(
-			scope->database,
-			norm_schema_add_column(scope->connection, model, legacy, NULL, &error),
-			&error);
+		rc = orm_status(scope->database,
+				norm_schema_add_column(scope->connection, model, legacy,
+						       orm_scope_call(scope), &error),
+				&error);
 		if (rc != NB_OK)
 			return rc;
 	}
@@ -105,9 +105,10 @@ static int error_migration_table(struct orm_scope *scope, const struct norm_mode
 						.set_count = NB_ARRAY_SIZE(assignments),
 						.allow_all_rows = true};
 
-	return orm_status(scope->database,
-			  norm_update(scope->connection, model, &query, NULL, NULL, &error),
-			  &error);
+	return orm_status(
+		scope->database,
+		norm_update(scope->connection, model, &query, orm_scope_call(scope), NULL, &error),
+		&error);
 }
 
 int db_migrate_error_codes(struct db *db)

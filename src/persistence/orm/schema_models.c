@@ -1453,7 +1453,7 @@ static const struct norm_field memory_preferences_fields[] = {
 		.size = sizeof(((struct schema_memory_preferences_row *)0)->created_at),
 		.null_offset = SIZE_MAX,
 		.flags = 0,
-		.default_sql = NB_STR_LIT("(CAST(strftime('%s','now') AS INTEGER))"),
+		.default_kind = NORM_DEFAULT_CURRENT_EPOCH,
 	},
 };
 
@@ -1560,7 +1560,7 @@ static const struct norm_field memory_candidates_fields[] = {
 		.size = sizeof(((struct schema_memory_candidates_row *)0)->created_at),
 		.null_offset = SIZE_MAX,
 		.flags = 0,
-		.default_sql = NB_STR_LIT("(CAST(strftime('%s','now') AS INTEGER))"),
+		.default_kind = NORM_DEFAULT_CURRENT_EPOCH,
 	},
 };
 
@@ -1689,7 +1689,7 @@ static const struct norm_field memory_jobs_fields[] = {
 		.size = sizeof(((struct schema_memory_jobs_row *)0)->updated_at),
 		.null_offset = SIZE_MAX,
 		.flags = 0,
-		.default_sql = NB_STR_LIT("(CAST(strftime('%s','now') AS INTEGER))"),
+		.default_kind = NORM_DEFAULT_CURRENT_EPOCH,
 	},
 	{
 		.column = NB_STR_LIT("content_revision"),
@@ -3735,7 +3735,7 @@ static const struct norm_field memory_notes_fields[] = {
 		.size = sizeof(((struct schema_memory_notes_row *)0)->created_at),
 		.null_offset = SIZE_MAX,
 		.flags = 0,
-		.default_sql = NB_STR_LIT("(CAST(strftime('%s','now') AS INTEGER))"),
+		.default_kind = NORM_DEFAULT_CURRENT_EPOCH,
 	},
 	{
 		.column = NB_STR_LIT("updated_at"),
@@ -3744,7 +3744,7 @@ static const struct norm_field memory_notes_fields[] = {
 		.size = sizeof(((struct schema_memory_notes_row *)0)->updated_at),
 		.null_offset = SIZE_MAX,
 		.flags = 0,
-		.default_sql = NB_STR_LIT("(CAST(strftime('%s','now') AS INTEGER))"),
+		.default_kind = NORM_DEFAULT_CURRENT_EPOCH,
 	},
 };
 
@@ -3859,7 +3859,7 @@ static const struct norm_field memory_summaries_fields[] = {
 		.size = sizeof(((struct schema_memory_summaries_row *)0)->updated_at),
 		.null_offset = SIZE_MAX,
 		.flags = 0,
-		.default_sql = NB_STR_LIT("(CAST(strftime('%s','now') AS INTEGER))"),
+		.default_kind = NORM_DEFAULT_CURRENT_EPOCH,
 	},
 };
 
@@ -4087,10 +4087,10 @@ int schema_create_tables(struct orm_scope *scope)
 	struct norm_error error = {0};
 
 	for (size_t i = 0; i < SCHEMA_TABLE_COUNT; i++) {
-		int rc = orm_status(
-			scope->database,
-			norm_schema_create(scope->connection, &tables[i], &options, NULL, &error),
-			&error);
+		int rc = orm_status(scope->database,
+				    norm_schema_create(scope->connection, &tables[i], &options,
+						       orm_scope_call(scope), &error),
+				    &error);
 
 		if (rc != NB_OK)
 			return rc;
@@ -4132,7 +4132,9 @@ static bool schema_index_matches(const struct norm_table_metadata *metadata,
 
 			matches &= column->column_available && column->descending_available &&
 				   column->descending == descending &&
-				   nb_str_eq_cstr(column->collation, "BINARY") &&
+				   (!column->collation_available || !column->collation.len ||
+				    nb_str_eq_cstr(column->collation, "BINARY") ||
+				    nb_str_eq_cstr(column->collation, "default")) &&
 				   nb_str_eq(column->column,
 					     model->fields[index->fields[position]].column);
 		}
@@ -4160,11 +4162,11 @@ static int schema_indexes(struct orm_scope *scope, enum schema_table table)
 		if (index_groups[group].table != table)
 			continue;
 
-		int rc = orm_status(scope->database,
-				    norm_schema_read_table(scope->connection, NB_STR_LIT("main"),
-							   model->table, NULL, NULL, &metadata,
-							   &error),
-				    &error);
+		int rc = orm_status(
+			scope->database,
+			norm_schema_read_table(scope->connection, NB_STR_NULL, model->table, NULL,
+					       orm_scope_call(scope), &metadata, &error),
+			&error);
 
 		if (rc != NB_OK)
 			return rc;
@@ -4178,7 +4180,7 @@ static int schema_indexes(struct orm_scope *scope, enum schema_table table)
 
 			rc = orm_status(scope->database,
 					norm_index_create(scope->connection, model, index, true,
-							  NULL, &error),
+							  orm_scope_call(scope), &error),
 					&error);
 
 			if (rc != NB_OK)
@@ -4207,7 +4209,7 @@ int schema_create_credit(struct orm_scope *scope)
 	struct norm_error error = {0};
 	int rc = orm_status(scope->database,
 			    norm_schema_create(scope->connection, &tables[SCHEMA_CREDIT_EVENTS],
-					       &options, NULL, &error),
+					       &options, orm_scope_call(scope), &error),
 			    &error);
 
 	return rc ? rc : schema_indexes(scope, SCHEMA_CREDIT_EVENTS);
@@ -4222,15 +4224,27 @@ int schema_create_revision_triggers(struct orm_scope *scope)
 		NORM_TRIGGER("", NORM_TRIGGER_AFTER, NORM_TRIGGER_INSERT,
 			     NORM_TRIGGER_SQLITE_BODY(
 				     "UPDATE memory_scopes SET content_revision=content_revision+1 "
-				     "WHERE session_id=NEW.session_id;")),
+				     "WHERE session_id=NEW.session_id;"),
+			     NORM_TRIGGER_PG_BODY(
+				     "BEGIN UPDATE memory_scopes SET "
+				     "content_revision=content_revision+1 "
+				     "WHERE session_id=NEW.session_id; RETURN NULL; END;")),
 		NORM_TRIGGER("", NORM_TRIGGER_AFTER, NORM_TRIGGER_UPDATE,
 			     NORM_TRIGGER_SQLITE_BODY(
 				     "UPDATE memory_scopes SET content_revision=content_revision+1 "
-				     "WHERE session_id=NEW.session_id;")),
+				     "WHERE session_id=NEW.session_id;"),
+			     NORM_TRIGGER_PG_BODY(
+				     "BEGIN UPDATE memory_scopes SET "
+				     "content_revision=content_revision+1 "
+				     "WHERE session_id=NEW.session_id; RETURN NULL; END;")),
 		NORM_TRIGGER("", NORM_TRIGGER_AFTER, NORM_TRIGGER_DELETE,
 			     NORM_TRIGGER_SQLITE_BODY(
 				     "UPDATE memory_scopes SET content_revision=content_revision+1 "
-				     "WHERE session_id=OLD.session_id;")),
+				     "WHERE session_id=OLD.session_id;"),
+			     NORM_TRIGGER_PG_BODY(
+				     "BEGIN UPDATE memory_scopes SET "
+				     "content_revision=content_revision+1 "
+				     "WHERE session_id=OLD.session_id; RETURN NULL; END;")),
 	};
 	struct norm_error error = {0};
 
@@ -4247,10 +4261,11 @@ int schema_create_revision_triggers(struct orm_scope *scope)
 			struct norm_trigger trigger = templates[event];
 
 			trigger.name = nb_buf_str(&name);
-			int rc = orm_status(scope->database,
-					    norm_trigger_create(scope->connection, model, &trigger,
-								true, NULL, &error),
-					    &error);
+			int rc =
+				orm_status(scope->database,
+					   norm_trigger_create(scope->connection, model, &trigger,
+							       true, orm_scope_call(scope), &error),
+					   &error);
 
 			if (rc != NB_OK)
 				return rc;

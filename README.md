@@ -59,12 +59,12 @@ Terminal Sixel cell geometry. Use
 `-DMORPH_NOTHING_TUI_SOURCE_DIR=/path/to/nothing-tui` to build with a local checkout
 of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/src/commit/0df8e4a6980b1f648e2032c51b5ba147e95ba76b)
 
-CMake also fetches [nothing-orm](https://codeberg.org/oxund/nothing-orm/src/commit/243633b2deb3550b7fb091950bf88d8e781b37d5)
-from Codeberg at a pinned revision. The database library links its SQLite
-extension target; dependency tests, examples and network drivers are disabled.
-The checked-in patch in `vendor/patches` adds structured computed queries,
-subqueries, CTEs, conflict handling and schema extensions, plus controlled SQLite
-attachment APIs. Regression hooks are built only when `BUILD_TESTS` is enabled.
+CMake also fetches [nothing-orm](https://codeberg.org/oxund/nothing-orm/src/commit/46115ce4b1cae9e1a9b68f52b1f8ebd85c4779a3)
+from Codeberg at a pinned revision. SQLite is enabled by default. PostgreSQL
+support is optional (`-DENABLE_POSTGRESQL=ON`) and requires libpq development
+files. The pinned ORM provides typed Unix-time defaults and controlled
+PostgreSQL identity maintenance. Dependency tests and examples are
+disabled; regression hooks are built only when `BUILD_TESTS` is enabled.
 All persistent models, schema changes, queries, transactions, imports and online
 backups live in `src/persistence/orm/`. Runtime, agents, sync and frontends call
 these model APIs; they do not use driver handles or execute SQL. Production
@@ -142,6 +142,58 @@ export OPENAI_API_KEY=sk-...
 ```
 
 Setup offers OpenAI, Volcengine, DeepSeek and custom endpoints. Adapter support varies by model role. See [setup model defaults](docs/setup-model-defaults.md).
+
+### PostgreSQL storage
+
+Build with `cmake -S . -B build-postgresql -DENABLE_POSTGRESQL=ON`, then
+`cmake --build build-postgresql`. SQLite remains available for local databases
+and sync metadata. Configure the business database in the same TOML used by the
+CLI or FastCGI service:
+
+```toml
+[database]
+driver = "postgresql"
+url_env = "MORPH_DATABASE_URL"
+tls_mode = "verify_full"
+connect_timeout_ms = 5000
+query_timeout_ms = 30000
+```
+
+Set `MORPH_DATABASE_URL` in the process environment to a PostgreSQL URL. Credentials
+are resolved once and retained by an owned connection configuration; background
+workers and child runtimes inherit that configuration. Database URLs are not
+expanded as file paths or printed in logs. TLS modes are `verify_full` (default),
+`verify_ca`, `require`, and `disable`; `ca_file`, `cert_file`, and `key_file` accept
+certificate paths. Use `disable` only for a local isolated test server.
+
+The configured database role must own its application schema or have the permissions
+needed to create and migrate tables, indexes, trigger functions, and identity
+sequences. Startup applies migrations transactionally. Each database owner retains
+one serialized connection; PostgreSQL write transactions update a shared guard
+row so existing read/modify/write operations retain their single-writer guarantees.
+The execution runtime and workspaces currently belong to one host. Adding a second
+execution host requires instance heartbeats and workspace routing.
+
+File sync continues to synchronize configured files and attachments; it omits the
+legacy `data.db` primary database entry when PostgreSQL is selected. PostgreSQL
+backup and restore use database administration tools rather than the SQLite file
+snapshot mechanism. Existing SQLite conversation snapshots can be imported into
+PostgreSQL through the normal conversation import service, with ID mapping,
+transactional rollback, and revision-based duplicate detection.
+
+Run real PostgreSQL regressions against a dedicated disposable database:
+
+```sh
+cmake -S . -B build-postgresql -DENABLE_POSTGRESQL=ON \
+  -DMORPH_TEST_POSTGRESQL_URL="$MORPH_TEST_POSTGRESQL_URL"
+cmake --build build-postgresql
+ctest --test-dir build-postgresql -R postgresql_integration --output-on-failure
+```
+
+The PostgreSQL suite is registered only when that URL is configured. It requires a
+reachable test database and fails on connection errors; it does not skip tests.
+Its local test connection disables TLS. The normal SQLite suite remains registered
+in the same build.
 
 ## Usage
 

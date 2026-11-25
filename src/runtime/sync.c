@@ -41,6 +41,25 @@ int runtime_sync_config_instance(
 		source, default_sync_dir, backend, out);
 	if (rc == 0)
 		out->logger = runtime->options.logger;
+
+	if (rc == 0 && db_backend(&runtime->context.database) == DB_BACKEND_POSTGRESQL) {
+		int retained = 0;
+
+		for (int i = 0; i < out->include_count; i++) {
+			if (strcmp(out->include[i], "data.db") == 0 ||
+			    strcmp(out->include[i], ".morph/data.db") == 0)
+				continue;
+
+			if (retained != i)
+				memcpy(out->include[retained], out->include[i],
+				       sizeof(out->include[retained]));
+
+			retained++;
+		}
+
+		out->include_count = retained;
+	}
+
 	if (rc == 0 && runtime->context.tctx) {
 		const char *output = tool_context_output_dir_borrow(runtime->context.tctx);
 		if (output && output[0] == '/')

@@ -32,8 +32,8 @@ int canvas_list_json(struct session_store *store, const char *session_id, char *
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_select(scope.connection, &orm_fcgi_canvas_nodes, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &orm_fcgi_canvas_nodes, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -132,8 +132,8 @@ int canvas_add_node(struct session_store *store, const char *session_id, const c
 	};
 
 	return orm_status(&store->db,
-			  norm_insert(scope.connection, &orm_fcgi_canvas_nodes, &row, NULL, NULL,
-				      NULL, &error),
+			  norm_insert(scope.connection, &orm_fcgi_canvas_nodes, &row, NULL,
+				      orm_scope_call(&scope), NULL, &error),
 			  &error);
 }
 
@@ -166,8 +166,8 @@ int canvas_patch_node(struct session_store *store, const char *session_id, const
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_update(scope.connection, &orm_fcgi_canvas_nodes, &query, NULL,
-					    &result, &error),
+				norm_update(scope.connection, &orm_fcgi_canvas_nodes, &query,
+					    orm_scope_call(&scope), &result, &error),
 				&error);
 
 	return rc != 0 ? rc : result.affected_rows > 0 ? 0 : NB_ERR_NOT_FOUND;

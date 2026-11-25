@@ -28,8 +28,8 @@
  *   stalls the readline prompt right after the assistant finishes.
  *
  * Design:
- *   A single long-lived worker thread owns its own SQLite connection
- *   (opened against the same db->path) and drains a FIFO queue of jobs
+ *   A single long-lived worker thread owns an independent database connection
+ *   (opened from a copied connection configuration) and drains a FIFO queue of jobs
  *   posted by memory_save_turn_async(). The caller deep-copies
  *   user_input / assistant_output / react_step list into the job, so
  *   the foreground may free or reuse those buffers immediately.
@@ -44,7 +44,7 @@
  * ---------------------------------------------------------------------- */
 
 struct memory_job {
-	char *db_path;
+	struct db_connection_config *database;
 	int64_t session_id;
 	char *user_input;
 	char *assistant_output;
@@ -188,7 +188,7 @@ static void memory_job_free(struct memory_job *j)
 {
 	if (!j)
 		return;
-	free(j->db_path);
+	db_connection_config_cleanup(&j->database);
 	free(j->user_input);
 	free(j->assistant_output);
 	memory_steps_free(j->steps);
@@ -303,7 +303,8 @@ static void *memory_async_worker(void *arg)
 		 * with the foreground db on the main thread. WAL keeps
 		 * concurrent reads/writes consistent. */
 		struct db worker_db = {0};
-		int rc = db_open(worker ? worker->logger : NULL, &worker_db, job->db_path);
+		int rc = db_open_connection(worker ? worker->logger : NULL, &worker_db,
+					    job->database);
 		if (rc == 0) {
 			int claimed = memory_job_store_claim(
 				&worker_db, job->opts.background_job_id, (int64_t)getpid());
@@ -361,16 +362,22 @@ int memory_save_turn_async(struct db *db, int64_t session_id, const char *user_i
 	struct memory_job *job;
 	struct memory_worker *worker = opts ? opts->worker : NULL;
 
-	if (!db || !db->path[0] || !opts || !opts->enabled || !user_input)
+	if (!db_is_open(db) || !opts || !opts->enabled || !user_input)
 		return 0;
 
-	if (!worker || !strcmp(db->path, ":memory:"))
+	if (!worker || db_is_memory(db))
 		return NB_ERR_UNSUPPORTED;
 
 	job = calloc(1, sizeof(*job));
 	if (!job)
 		return NB_ERR_NOMEM;
-	job->db_path = strdup(db->path);
+	int connection_rc = db_connection_config_copy(db, &job->database);
+
+	if (connection_rc != NB_OK) {
+		memory_job_free(job);
+		return connection_rc;
+	}
+
 	job->user_input = strdup(user_input);
 	if (assistant_output)
 		job->assistant_output = strdup(assistant_output);
@@ -385,7 +392,7 @@ int memory_save_turn_async(struct db *db, int64_t session_id, const char *user_i
 		return MORPH_ERR_DB;
 	}
 	job->opts.check_version = 1;
-	if (!job->db_path || !job->user_input || (assistant_output && !job->assistant_output) ||
+	if (!job->database || !job->user_input || (assistant_output && !job->assistant_output) ||
 	    (steps && !job->steps)) {
 		memory_job_free(job);
 		return NB_ERR_NOMEM;
@@ -467,7 +474,12 @@ static struct memory_job *memory_job_restore(struct db *db, const struct memory_
 		cJSON_Delete(payload);
 		return NULL;
 	}
-	job->db_path = strdup(db->path);
+	if (db_connection_config_copy(db, &job->database) != NB_OK) {
+		cJSON_Delete(payload);
+		memory_job_free(job);
+		return NULL;
+	}
+
 	job->user_input = strdup(input->valuestring);
 	job->assistant_output = strdup(answer->valuestring);
 	job->session_id = row->session_id;
@@ -490,7 +502,7 @@ static struct memory_job *memory_job_restore(struct db *db, const struct memory_
 	job->opts.check_version = 1;
 	job->opts.memory_version = row->memory_version;
 	job->opts.background_job_id = row->id;
-	if (!job->db_path || !job->user_input || !job->assistant_output) {
+	if (!job->database || !job->user_input || !job->assistant_output) {
 		cJSON_Delete(payload);
 		memory_job_free(job);
 		return NULL;
@@ -559,7 +571,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 	int rc;
 
 	/* A private in-memory connection cannot be reopened by the worker. */
-	if (!worker || !db_is_open(db) || !strcmp(db->path, ":memory:"))
+	if (!worker || !db_is_open(db) || db_is_memory(db))
 		return 0;
 	rc = memory_job_store_recoverable(db, &records);
 	if (rc)
@@ -609,7 +621,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 				struct memory_job *queued =
 					NB_QUEUE_DATA(link, struct memory_job, link);
 				if (queued->opts.background_job_id == id &&
-				    !strcmp(queued->db_path, db->path)) {
+				    db_connection_config_matches(queued->database, db)) {
 					exists = 1;
 					break;
 				}
@@ -635,7 +647,7 @@ int memory_refresh_summaries_async(struct db *db, int64_t session_id,
 
 	if (!options->enabled || !options->learn_from_chats_enabled || !options->worker ||
 	    !options->llm || !options->llm->chat || !model_api_key_borrow(options->llm)[0] ||
-	    !strcmp(db->path, ":memory:"))
+	    db_is_memory(db))
 		return 0;
 	int rc = memory_refresh_store_list_copy(db, session_id, &records);
 

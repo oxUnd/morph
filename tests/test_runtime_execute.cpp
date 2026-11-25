@@ -23,6 +23,7 @@ extern "C" {
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -541,6 +542,21 @@ TEST_F(RuntimeExecuteTest, CancelledToolExecutionKeepsRequestWithoutReplayingToo
 	struct runtime_result cancelled{};
 	EXPECT_EQ(runtime_execute_turn(instance, &request, &cancelled), NB_ERR_CANCELLED);
 	EXPECT_EQ(cancelled.outcome, RUNTIME_OUTCOME_CANCELLED);
+	EXPECT_EQ(cancelled.persistence_rc, NB_OK);
+	int stored_count = 0;
+	auto stored =
+		std::unique_ptr<struct model_history_item, decltype(&model_history_free_list)>(
+			runtime_session_model_history_current_copy(instance, 0, &stored_count),
+			model_history_free_list);
+	ASSERT_NE(stored, nullptr);
+	bool recorded_cancellation = false;
+	for (auto *item = stored.get(); item; item = item->next) {
+		if (strcmp(item->kind, "tool_result") == 0 && item->payload_json &&
+		    strstr(item->payload_json, "cancelled"))
+			recorded_cancellation = true;
+	}
+
+	EXPECT_TRUE(recorded_cancellation);
 	EXPECT_EQ(state.executions.load(), 1);
 	EXPECT_TRUE(steering.delivered);
 	ASSERT_EQ(runtime_session_reload_current(instance), 0);

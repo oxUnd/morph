@@ -114,10 +114,10 @@ static int artifact_register_write(struct session_store *store, const char *user
 		.missing_expires_at = true,
 	};
 
-	rc = orm_status(
-		&store->db,
-		norm_insert(scope.connection, &orm_fcgi_artifacts, &row, NULL, NULL, NULL, &error),
-		&error);
+	rc = orm_status(&store->db,
+			norm_insert(scope.connection, &orm_fcgi_artifacts, &row, NULL,
+				    orm_scope_call(&scope), NULL, &error),
+			&error);
 	if (rc == 0)
 		rc = orm_fcgi_storage_add(&scope, user_id, size_bytes);
 
@@ -173,8 +173,8 @@ int store_artifact_get(struct session_store *store, const char *artifact_id, con
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_select(scope.connection, &orm_fcgi_artifacts, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &orm_fcgi_artifacts, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)
@@ -243,8 +243,8 @@ int store_artifact_list_json(struct session_store *store, const char *user_id,
 
 	if (rc == 0)
 		rc = orm_status(&store->db,
-				norm_select(scope.connection, &orm_fcgi_artifacts, &query, NULL,
-					    &rows, &error),
+				norm_select(scope.connection, &orm_fcgi_artifacts, &query,
+					    orm_scope_call(&scope), &rows, &error),
 				&error);
 
 	if (rc != 0)

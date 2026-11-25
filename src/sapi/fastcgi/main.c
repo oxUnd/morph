@@ -11,6 +11,7 @@
  */
 #define _GNU_SOURCE
 #include <nb/cleanup.h>
+#include <nb/file.h>
 #include <fcgiapp.h>
 #include "persistence/orm/fcgi_events.h"
 #include "sapi/fastcgi/storage/tokens.h"
@@ -35,6 +36,9 @@
 #include "agent_bridge.h"
 #include "stream_pool.h"
 #include "errors.h"
+#include "config/config.h"
+#include <nb/buf.h>
+#include <nb/file.h>
 #include <nb/log.h>
 #include <nb/str.h>
 #include <nb/signal.h>
@@ -299,6 +303,12 @@ static void *maintenance_main(void *arg)
 	return NULL;
 }
 
+static void server_config_cleanup(struct config **owner)
+{
+	free(*owner);
+	*owner = NULL;
+}
+
 static int server_run_workers(struct fcgi_server *server, const char *database,
 			      const char *trust_header, int stream_threads, int stream_queue,
 			      int workers, const char *listen_spec, nb_thread ***thread_storage)
@@ -308,12 +318,32 @@ static int server_run_workers(struct fcgi_server *server, const char *database,
 	int started = 0;
 	int result = 0;
 
-	server->store = session_store_open(NULL, database);
+	struct config *config NB_CLEANUP(server_config_cleanup) = calloc(1, sizeof(*config));
+	nb_buf config_path NB_CLEANUP(nb_buf_cleanup) = {0};
+	struct db_options connection = {0};
+	const char *configured_path = getenv_or("MORPH_FCGI_CONFIG", "~/.morph/config.toml");
+
+	if (!config)
+		return 3;
+
+	config_set_defaults(NULL, config);
+	result = nb_path_expand(&config_path, configured_path, NULL);
+	if (result == NB_OK && (getenv("MORPH_FCGI_CONFIG") ||
+				nb_file_exists(nb_buf_cstr(&config_path))))
+		result = config_load(NULL, config, nb_buf_cstr(&config_path));
+
+	if (result == NB_OK)
+		result = config_database_options(&config->database, database, &connection);
+
+	if (result != NB_OK)
+		return 3;
+
+	server->store = session_store_open_options(NULL, &connection);
 	if (!server->store) {
 		result = 3;
 		return result;
 	}
-	if (fcgi_bridge_init(&server->bridge, database) != 0) {
+	if (fcgi_bridge_init_connection(&server->bridge, database, &server->store->db) != 0) {
 		result = 5;
 		return result;
 	}
@@ -328,7 +358,7 @@ static int server_run_workers(struct fcgi_server *server, const char *database,
 	if (nb_thread_create(&server->maintenance_thread, maintenance_main, server, NULL) == 0)
 		server->maintenance_started = 1;
 	fprintf(stderr, "morph-fastcgi: listening on %s, %d workers, db=%s\n", listen_spec, workers,
-		database);
+		db_backend(&server->store->db) == DB_BACKEND_POSTGRESQL ? "postgresql" : database);
 	for (; started < workers && !nb_atomic_int_load(&server->shutdown); started++) {
 		int error = nb_thread_create(&threads[started], worker_main, server, &options);
 

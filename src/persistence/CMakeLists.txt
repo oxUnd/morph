@@ -8,4 +8,4 @@ target_include_directories(morph-persistence PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(morph-persistence PUBLIC nbase::nbase morph-cjson morph-db morph-session blake3
-	PRIVATE nothing_orm::sqlite)
+	PRIVATE nothing_orm::core)

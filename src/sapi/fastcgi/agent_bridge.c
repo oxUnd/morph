@@ -67,6 +67,7 @@ struct fcgi_bridge {
 	nb_cond *changed;
 	char config_path[PATH_MAX];
 	char db_path[PATH_MAX];
+	struct db_connection_config *database;
 	char output_dir[PATH_MAX];
 };
 
@@ -109,6 +110,7 @@ static void bridge_runtime_options(struct fcgi_bridge *pool, struct runtime_opti
 	options->logger = pool->logger;
 	options->config_path = pool->config_path;
 	options->db_path = pool->db_path;
+	options->database = pool->database;
 	options->output_dir_override = pool->output_dir[0] ? pool->output_dir : NULL;
 	options->default_dynamic_tools_mode = "server";
 	options->front_name = "fastcgi";
@@ -697,7 +699,8 @@ const char *fcgi_artifact_output_dir_borrow(struct fcgi_bridge *pool)
 	return "/var/lib/morph/output";
 }
 
-int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
+int fcgi_bridge_init_connection(struct fcgi_bridge **out, const char *db_path,
+				const struct db *database)
 {
 	struct fcgi_bridge *pool;
 	int error;
@@ -721,6 +724,14 @@ int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
 		free(pool);
 		return error;
 	}
+	if (database) {
+		error = db_connection_config_copy(database, &pool->database);
+		if (error) {
+			fcgi_bridge_shutdown(pool);
+			return error;
+		}
+	}
+
 	error = bridge_initialize(pool, db_path);
 	if (error) {
 		fcgi_bridge_shutdown(pool);
@@ -730,11 +741,17 @@ int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
 	return 0;
 }
 
+int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
+{
+	return fcgi_bridge_init_connection(out, db_path, NULL);
+}
+
 void fcgi_bridge_shutdown(struct fcgi_bridge *pool)
 {
 	if (!pool)
 		return;
 	bridge_shutdown(pool);
+	db_connection_config_cleanup(&pool->database);
 	nb_log_free(pool->logger);
 	pool->logger = NULL;
 	(nb_cond_free(pool->changed), pool->changed = NULL);

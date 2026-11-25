@@ -38,7 +38,7 @@ int orm_database_quick_check(const char *path)
 	if (rc == 0)
 		rc = orm_status(&database,
 				norm_sqlite_check(scope.connection, NORM_SQLITE_CHECK_QUICK, NULL,
-						  NULL, NULL, &issues, &error),
+						  NULL, orm_scope_call(&scope), &issues, &error),
 				&error);
 
 	return rc == 0 && issues == 0;
@@ -72,7 +72,8 @@ int orm_database_is_sqlite(const char *path)
 
 	if (rc == 0)
 		rc = orm_status(&database,
-				norm_sqlite_get_info(scope.connection, NULL, &info, &error),
+				norm_sqlite_get_info(scope.connection, orm_scope_call(&scope),
+						     &info, &error),
 				&error);
 
 	return rc == 0;
@@ -101,8 +102,8 @@ int orm_database_snapshot(const char *source, const char *destination, int *page
 
 	if (rc == 0)
 		rc = orm_status(&output,
-				norm_sqlite_backup_open(from.connection, to.connection, NULL,
-							&backup, &error),
+				norm_sqlite_backup_open(from.connection, to.connection,
+							orm_scope_call(&from), &backup, &error),
 				&error);
 
 	while (rc == 0 && !progress.done)
@@ -115,13 +116,16 @@ int orm_database_snapshot(const char *source, const char *destination, int *page
 
 	if (rc == 0)
 		rc = orm_status(&output,
-				norm_sqlite_set_journal_mode(
-					to.connection, NORM_SQLITE_JOURNAL_DELETE, NULL, &error),
+				norm_sqlite_set_journal_mode(to.connection,
+							     NORM_SQLITE_JOURNAL_DELETE,
+							     orm_scope_call(&to), &error),
 				&error);
 
 	if (rc == 0 && page_size) {
-		rc = orm_status(&output, norm_sqlite_get_info(to.connection, NULL, &info, &error),
-				&error);
+		rc = orm_status(
+			&output,
+			norm_sqlite_get_info(to.connection, orm_scope_call(&to), &info, &error),
+			&error);
 		if (rc == 0)
 			*page_size = info.page_size;
 	}
@@ -177,7 +181,7 @@ static int snapshot_copy_display(struct orm_scope *scope, const struct norm_mode
 
 	return orm_status(scope->database,
 			  norm_insert_select(scope->connection, target_model, NULL, 0, &query, NULL,
-					     NULL, NULL, &error),
+					     orm_scope_call(scope), NULL, &error),
 			  &error);
 }
 
@@ -200,11 +204,11 @@ int orm_database_merge_display(const char *snapshot, const char *display_snapsho
 		rc = orm_scope_begin(&database, &scope);
 
 	if (rc == 0)
-		rc = orm_status(&database,
-				norm_sqlite_attach(scope.connection,
-						   nb_str_from_cstr(display_snapshot),
-						   NB_STR_LIT("display"), NULL, &error),
-				&error);
+		rc = orm_status(
+			&database,
+			norm_sqlite_attach(scope.connection, nb_str_from_cstr(display_snapshot),
+					   NB_STR_LIT("display"), orm_scope_call(&scope), &error),
+			&error);
 
 	if (rc != 0)
 		return rc;
@@ -219,15 +223,15 @@ int orm_database_merge_display(const char *snapshot, const char *display_snapsho
 
 	rc = orm_transaction_begin(&scope, NORM_SQLITE_IMMEDIATE);
 	if (rc == 0)
-		rc = orm_status(
-			&database,
-			norm_schema_create(scope.connection, &local_model, &create, NULL, &error),
-			&error);
+		rc = orm_status(&database,
+				norm_schema_create(scope.connection, &local_model, &create,
+						   orm_scope_call(&scope), &error),
+				&error);
 
 	if (rc == 0)
 		rc = orm_status(&database,
 				norm_schema_create(scope.connection, &sync_display_model, &create,
-						   NULL, &error),
+						   orm_scope_call(&scope), &error),
 				&error);
 
 	if (rc == 0)
@@ -263,10 +267,10 @@ int orm_database_merge_display(const char *snapshot, const char *display_snapsho
 		const struct norm_delete_query remove = {
 			.where = norm_in_query(&local_id, &mismatched, false)};
 
-		rc = orm_status(
-			&database,
-			norm_delete(scope.connection, &local_model, &remove, NULL, NULL, &error),
-			&error);
+		rc = orm_status(&database,
+				norm_delete(scope.connection, &local_model, &remove,
+					    orm_scope_call(&scope), NULL, &error),
+				&error);
 	}
 
 	const struct norm_query_field session_ids[] = {
@@ -284,8 +288,8 @@ int orm_database_merge_display(const char *snapshot, const char *display_snapsho
 
 	if (rc == 0)
 		rc = orm_status(&database,
-				norm_delete(scope.connection, &sync_display_model, &replace, NULL,
-					    NULL, &error),
+				norm_delete(scope.connection, &sync_display_model, &replace,
+					    orm_scope_call(&scope), NULL, &error),
 				&error);
 
 	if (rc == 0)
@@ -297,7 +301,7 @@ int orm_database_merge_display(const char *snapshot, const char *display_snapsho
 	if (rc == 0)
 		rc = orm_status(&database,
 				norm_index_create(scope.connection, &sync_display_model, &index,
-						  true, NULL, &error),
+						  true, orm_scope_call(&scope), &error),
 				&error);
 
 	if (rc == 0)
@@ -306,9 +310,10 @@ int orm_database_merge_display(const char *snapshot, const char *display_snapsho
 	if (rc != 0)
 		(void)orm_transaction_rollback(&scope);
 
-	int detached = orm_status(
-		&database,
-		norm_sqlite_detach(scope.connection, NB_STR_LIT("display"), NULL, &error), &error);
+	int detached = orm_status(&database,
+				  norm_sqlite_detach(scope.connection, NB_STR_LIT("display"),
+						     orm_scope_call(&scope), &error),
+				  &error);
 
 	return rc != 0 ? rc : detached;
 }

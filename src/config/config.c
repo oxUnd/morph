@@ -1,4 +1,5 @@
 #include "config.h"
+#include "persistence/orm/database.h"
 #include <nb/cleanup.h>
 #include <nb/log.h>
 #include <nb/file.h>
@@ -269,6 +270,11 @@ void config_set_defaults(struct nb_log *logger, struct config *cfg)
 	if (!cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
+	strcpy(cfg->database.driver, "sqlite");
+	strcpy(cfg->database.url_env, "MORPH_DATABASE_URL");
+	strcpy(cfg->database.tls_mode, "verify_full");
+	cfg->database.connect_timeout_ms = 5000;
+	cfg->database.query_timeout_ms = 30000;
 	cfg->agents.enabled = 1;
 	cfg->agents.max_threads = 6;
 	cfg->agents.max_depth = 2;
@@ -747,6 +753,42 @@ static void config_log_warning(
 		     warning->code == CONFIG_VALIDATION_UNKNOWN_KEY ? "; key ignored" : "");
 }
 
+int config_database_options(const struct config_database *config, const char *path,
+			    struct db_options *out)
+{
+	if (!config || !out)
+		return NB_ERR_INVAL;
+
+	memset(out, 0, sizeof(*out));
+	out->path = path;
+	out->url_env = config->url_env;
+	out->connect_timeout_ms = config->connect_timeout_ms;
+	out->query_timeout_ms = config->query_timeout_ms;
+	if (strcmp(config->driver, "postgresql") == 0)
+		out->backend = DB_BACKEND_POSTGRESQL;
+	else if (config->driver[0] && strcmp(config->driver, "sqlite") != 0)
+		return MORPH_ERR_CONFIG;
+
+	if (out->backend == DB_BACKEND_SQLITE)
+		return NB_OK;
+
+	out->ca_file = config->ca_file;
+	out->cert_file = config->cert_file;
+	out->key_file = config->key_file;
+	if (strcmp(config->tls_mode, "disable") == 0)
+		out->tls_mode = DB_TLS_DISABLE;
+	else if (strcmp(config->tls_mode, "require") == 0)
+		out->tls_mode = DB_TLS_REQUIRE;
+	else if (strcmp(config->tls_mode, "verify_ca") == 0)
+		out->tls_mode = DB_TLS_VERIFY_CA;
+	else if (strcmp(config->tls_mode, "verify_full") == 0 || !config->tls_mode[0])
+		out->tls_mode = DB_TLS_VERIFY_FULL;
+	else
+		return MORPH_ERR_CONFIG;
+
+	return NB_OK;
+}
+
 int config_load(struct nb_log *logger, struct config *cfg, const char *path)
 {
 	nb_err parse_error = {0};
@@ -806,6 +848,18 @@ int config_load(struct nb_log *logger, struct config *cfg, const char *path)
 		CFG_STR(general, "output_dir", cfg->general.output_dir);
 		CFG_STR(general, "log_level", cfg->general.log_level);
 		CFG_STR(general, "log_file", cfg->general.log_file);
+	}
+
+	const nb_toml_value *database = table_path(tbl, "database");
+	if (database) {
+		CFG_STR(database, "driver", cfg->database.driver);
+		CFG_STR(database, "url_env", cfg->database.url_env);
+		CFG_STR(database, "tls_mode", cfg->database.tls_mode);
+		CFG_STR(database, "ca_file", cfg->database.ca_file);
+		CFG_STR(database, "cert_file", cfg->database.cert_file);
+		CFG_STR(database, "key_file", cfg->database.key_file);
+		CFG_INT(database, "connect_timeout_ms", cfg->database.connect_timeout_ms);
+		CFG_INT(database, "query_timeout_ms", cfg->database.query_timeout_ms);
 	}
 
 	const nb_toml_value *model_tbl = table_path(tbl, "model");

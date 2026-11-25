@@ -42,7 +42,7 @@ struct runtime_recap_job {
 	struct runtime_recap_progress progress;
 	struct model *model;
 	struct config_credits credits;
-	char database[PATH_MAX];
+	struct db_connection_config *database;
 	char identity[16];
 	char *prompt;
 	morph_event_cb event_cb;
@@ -260,8 +260,9 @@ static void recap_event(struct runtime_recap_job *job, const char *phase, cJSON 
 static void recap_bill(struct runtime_recap_job *job, const struct model_usage *usage)
 {
 	struct db db = {0};
-	if (!runtime_model_usage_is_billable(usage) || strcmp(job->database, ":memory:") == 0 ||
-	    db_open(job->model ? job->model->http.logger : NULL, &db, job->database) != 0)
+	if (!runtime_model_usage_is_billable(usage) || !job->database ||
+	    db_open_connection(job->model ? job->model->http.logger : NULL, &db, job->database) !=
+		    0)
 		return;
 	(void)runtime_record_model_usage_with_credits(&db, &job->credits, "local", job->identity,
 						      usage, job->model->provider,
@@ -300,6 +301,7 @@ static void *recap_worker(void *opaque)
 static void recap_job_free(struct runtime_recap_job *job)
 {
 	model_destroy(job->model);
+	db_connection_config_cleanup(&job->database);
 	free(job->prompt);
 	(nb_mutex_free(job->lock), job->lock = NULL);
 	free(job);
@@ -366,10 +368,13 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 		job->automatic = automatic;
 		job->event_cb = runtime->options.event_cb;
 		job->event_user_data = runtime->options.event_user_data;
-		memcpy(job->database, ctx->database.path, sizeof(job->database));
+		if (!db_is_memory(&ctx->database))
+			rc = db_connection_config_copy(&ctx->database, &job->database);
+
 		memcpy(job->identity, session.display_id, sizeof(job->identity));
 		job->progress.revision = runtime->recap_revision + 1;
-		rc = nb_thread_create(&job->thread, recap_worker, job, NULL);
+		if (rc == NB_OK)
+			rc = nb_thread_create(&job->thread, recap_worker, job, NULL);
 	}
 	if (rc != 0) {
 		recap_job_free(job);

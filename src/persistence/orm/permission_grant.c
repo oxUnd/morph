@@ -47,7 +47,8 @@ int permission_grant_save(struct db *db, const struct permission_grant *grant)
 	if (rc != NB_OK)
 		return rc;
 
-	rc = norm_insert(scope.connection, &grant_model, &row, NULL, NULL, NULL, &error);
+	rc = norm_insert(scope.connection, &grant_model, &row, NULL, orm_scope_call(&scope), NULL,
+			 &error);
 	return rc == NORM_ERR_UNIQUE ? NB_OK : orm_status(db, rc, &error);
 }
 
@@ -93,10 +94,10 @@ int permission_grant_each(struct db *db, const char *project_root, permission_gr
 
 	rc = orm_scope_begin(db, &scope);
 	if (rc == NB_OK)
-		rc = orm_status(
-			db,
-			norm_select(scope.connection, &grant_model, &query, NULL, &rows, &error),
-			&error);
+		rc = orm_status(db,
+				norm_select(scope.connection, &grant_model, &query,
+					    orm_scope_call(&scope), &rows, &error),
+				&error);
 
 	for (size_t index = 0; rc == NB_OK && index < norm_rows_count(rows); index++) {
 		struct permission_grant grant;
@@ -139,10 +140,10 @@ static int delete_grants(struct db *db, const char *project_root, const char *su
 
 	rc = orm_scope_begin(db, &scope);
 	if (rc == NB_OK)
-		rc = orm_status(
-			db,
-			norm_delete(scope.connection, &grant_model, &query, NULL, &result, &error),
-			&error);
+		rc = orm_status(db,
+				norm_delete(scope.connection, &grant_model, &query,
+					    orm_scope_call(&scope), &result, &error),
+				&error);
 
 	if (rc == NB_OK) {
 		if (result.affected_rows > INT_MAX)

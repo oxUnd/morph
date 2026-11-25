@@ -25,7 +25,9 @@ static int snapshot_select(struct db *db, const struct norm_model *model,
 	int rc = orm_scope_begin(db, &lease);
 
 	return rc ? rc
-		  : orm_status(db, norm_select(lease.connection, model, query, NULL, rows, &error),
+		  : orm_status(db,
+			       norm_select(lease.connection, model, query, orm_scope_call(&lease),
+					   rows, &error),
 			       &error);
 }
 
@@ -182,7 +184,8 @@ static int snapshot_tasks(struct db *db, int64_t session_id, int limit,
 	rc = orm_scope_begin(db, &lease);
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(lease.connection, &count, NULL, &rows, &failure),
+				norm_query_select(lease.connection, &count, orm_scope_call(&lease),
+						  &rows, &failure),
 				&failure);
 
 	if (rc == 0 && norm_rows_count(rows))
@@ -265,7 +268,8 @@ static int snapshot_changes(struct db *db, int64_t session_id, int limit,
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_join_select(lease.connection, &query, NULL, &rows, &failure),
+				norm_join_select(lease.connection, &query, orm_scope_call(&lease),
+						 &rows, &failure),
 				&failure);
 
 	int error = 0;
@@ -444,7 +448,8 @@ int memory_store_session_has_rows(struct db *db, int64_t session_id)
 
 	if (rc == 0)
 		rc = orm_status(db,
-				norm_query_select(lease.connection, &query, NULL, &rows, &failure),
+				norm_query_select(lease.connection, &query, orm_scope_call(&lease),
+						  &rows, &failure),
 				&failure);
 
 	return rc == 0 && norm_rows_count(rows) > 0;

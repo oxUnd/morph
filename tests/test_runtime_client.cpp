@@ -1882,6 +1882,45 @@ TEST_F(RuntimeStoreTest, ReturnedRecordsOwnTextAndRejectOccupiedOutputs)
 	EXPECT_EQ(missing.final_text, nullptr);
 }
 
+TEST_F(RuntimeStoreTest, LatestTurnKeepsCreationOrderAcrossUpdatesAndLegacyMigration)
+{
+	auto first = Turn("z-first-created", "store-epoch");
+	auto second = Turn("a-second-created", "store-epoch");
+
+	ASSERT_EQ(runtime_store_turn_put(&storage, &first), 0);
+	ASSERT_EQ(runtime_store_turn_put(&storage, &second), 0);
+	first.final_text = "Updated after the second turn";
+	ASSERT_EQ(runtime_store_turn_put(&storage, &first), 0);
+	struct runtime_store_turn_record latest NB_CLEANUP(runtime_store_turn_record_cleanup) = {};
+
+	ASSERT_EQ(runtime_store_turn_copy(&storage, session_id, nullptr, &latest), 0);
+	EXPECT_STREQ(latest.turn_id, second.turn_id);
+	runtime_store_turn_record_cleanup(&latest);
+	ASSERT_EQ(orm_fixture_execute(&storage,
+		"DROP TABLE runtime_turn_order;"
+		"UPDATE runtime_turns SET updated_at=9999 WHERE turn_id='z-first-created';"
+		"UPDATE runtime_turns SET updated_at=1 WHERE turn_id='a-second-created'"), 0);
+	ASSERT_EQ(runtime_store_init(&storage), 0);
+	ASSERT_EQ(runtime_store_init(&storage), 0);
+	ASSERT_EQ(runtime_store_turn_copy(&storage, session_id, nullptr, &latest), 0);
+	EXPECT_STREQ(latest.turn_id, second.turn_id);
+}
+
+TEST_F(RuntimeStoreTest, TurnAndCreationOrderAreCommittedAtomically)
+{
+	ASSERT_EQ(orm_fixture_execute(&storage,
+		"CREATE TRIGGER reject_turn_order BEFORE INSERT ON runtime_turn_order BEGIN "
+		"SELECT RAISE(ABORT,'injected order failure'); END"), 0);
+	auto turn = Turn("failed-order-turn", "store-epoch");
+
+	EXPECT_NE(runtime_store_turn_put(&storage, &turn), 0);
+	EXPECT_TRUE(orm_fixture_transaction_idle(&storage));
+	struct runtime_store_turn_record missing NB_CLEANUP(runtime_store_turn_record_cleanup) = {};
+
+	EXPECT_EQ(runtime_store_turn_copy(&storage, session_id, turn.turn_id, &missing),
+		NB_ERR_NOT_FOUND);
+}
+
 TEST_F(RuntimeStoreTest, SettingsRoundTripKeepsAbsentOverridesDistinct)
 {
 	struct runtime_store_session_settings settings{};
