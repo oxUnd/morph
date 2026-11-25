@@ -82,27 +82,8 @@ static int cli_file_viewer_render(struct cli_file_viewer *viewer, int width)
 		return rc;
 
 	if (preview->status) {
-		const char *message = preview->status == NB_ERR_NOT_FOUND
-			? "The file no longer exists."
-			: preview->status == NB_ERR_FORMAT
-				? "Binary or non-UTF-8 file. Text preview is unavailable."
-			: preview->status == NB_ERR_UNSUPPORTED
-				? "Only regular files and supported images can be previewed."
-			: preview->status == NB_ERR_TOO_BIG
-				? "This file exceeds the 32 MiB preview limit."
-				: nb_status_str(preview->status);
-		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
-		int unavailable = preview->status == NB_ERR_FORMAT ||
-			preview->status == NB_ERR_UNSUPPORTED;
-		if (!nb_buf_printf(&text, "%s%s%s %s\n\nR retry · Esc files",
-			viewer->styled && !unavailable ? CLI_FEED_FAILED_STYLE : "",
-			unavailable ? CLI_FEED_SYSTEM : CLI_FEED_FAILED,
-			viewer->styled ? ANSI_RESET : "", message))
-			return nb_buf_status(&text);
-
 		cli_messages_links_cleanup(&viewer->links);
-		rc = cli_messages_set_rendered_shortcuts_view(viewer->document, nb_buf_cstr(&text),
-			viewer->styled);
+		rc = nt_text_view_set_text(viewer->document, "");
 	} else if (preview->markdown && !viewer->source) {
 		nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 		rc = cli_markdown_render_document(&rendered,
@@ -227,13 +208,12 @@ static int cli_file_viewer_metadata(struct cli_file_viewer *viewer)
 				lines++;
 		}
 
-		nb_buf_printf(&text, " · %s · %zu %s · %.1f KiB%s",
+		nb_buf_printf(&text, " · %s · %zu %s · %.1f KiB",
 			preview->markdown && !viewer->source ? "Markdown" : "Source", lines,
 			lines == 1 ? "line" : "lines",
-			(double)preview->content.len / 1024.0,
-			preview->truncated ? " · preview limited to 1 MiB" : "");
-	} else if (preview)
-		nb_buf_append_cstr(&text, preview->image ? " · Image" : " · Preview unavailable");
+			(double)preview->content.len / 1024.0);
+	} else if (preview && preview->image)
+		nb_buf_append_cstr(&text, " · Image");
 
 	return nb_buf_ok(&text)
 		? nt_label_set_text(viewer->metadata, nb_buf_cstr(&text)) : nb_buf_status(&text);
@@ -381,6 +361,27 @@ const char *cli_file_viewer_hint(const struct nt_view *view)
 			: "Ctrl+F search · R reload · M source\nCtrl+W close · Esc files · Ctrl+O chat";
 
 	return "Ctrl+F search · R reload\nCtrl+W close · Esc files · Ctrl+O chat";
+}
+
+const char *cli_file_viewer_notice(const struct nt_view *view)
+{
+	const struct cli_file_viewer *viewer = (const struct cli_file_viewer *)view;
+	const struct cli_file_preview *preview = viewer->preview;
+	if (!preview || viewer->job)
+		return "";
+
+	if (preview->status) {
+		return preview->status == NB_ERR_NOT_FOUND ? "The file no longer exists."
+			: preview->status == NB_ERR_FORMAT
+				? "Binary or non-UTF-8 file. Text preview is unavailable."
+			: preview->status == NB_ERR_UNSUPPORTED
+				? "Only regular files and supported images can be previewed."
+			: preview->status == NB_ERR_TOO_BIG
+				? "This file exceeds the 32 MiB preview limit."
+				: nb_status_str(preview->status);
+	}
+
+	return preview->truncated ? "File preview limited to 1 MiB." : "";
 }
 
 int cli_file_viewer_open(struct nt_view *view, int line, int reload)

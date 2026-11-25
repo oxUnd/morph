@@ -1,6 +1,7 @@
 #include "sapi/cli/components/file_browser.h"
 
 #include "sapi/cli/components/shortcut_hint.h"
+#include "sapi/cli/components/sidebar_notice.h"
 
 #include "sapi/cli/components/file_viewer.h"
 #include "sapi/cli/models/files.h"
@@ -28,7 +29,7 @@ struct cli_file_browser {
 	struct cli_files_model *model;
 	const char *workdir;
 	struct nt_view *toolbar, *back, *heading, *open, *tab_scroll, *tabs;
-	struct nt_view *body, *list, *empty, *pages, *footer;
+	struct nt_view *body, *list, *pages, *notice, *footer;
 	nb_vec viewers, tab_widths;
 	size_t selected, open_count;
 	uint64_t revision;
@@ -494,11 +495,9 @@ struct nt_view *cli_file_browser_add(struct nt_builder *builder, struct nt_view 
 		&(struct nt_view_options){.height = NT_FILL, .padding = {.left = 1, .right = 1}});
 	browser->list = nt_list_view_add(builder, browser->body, NULL, 0, 0,
 		&(struct nt_view_options){.width = NT_FILL, .height = NT_FILL, .margin.top = 1});
-	browser->empty = nt_label_add(builder, browser->body,
-		"Files referenced, modified or generated in this conversation appear here.",
-		&(struct nt_view_options){.width = NT_FILL, .margin.top = 1});
 	browser->pages = nt_view_add(builder, browser->body, &nt_view_base_class,
 		&(struct nt_view_options){.width = NT_FILL, .height = NT_FILL});
+	browser->notice = cli_sidebar_notice_add(builder, root, "", styled);
 	cli_file_browser_add_rule(browser);
 	struct nt_view_options footer = toolbar;
 	footer.height = NT_AUTO;
@@ -506,10 +505,11 @@ struct nt_view *cli_file_browser_add(struct nt_builder *builder, struct nt_view 
 	browser->footer = cli_shortcut_hint_add(builder, root,
 		"Up/Down select · Enter open\nCtrl+O chat · Esc close", &footer);
 	if (!nt_builder_error(builder)) {
+		nt_builder_fail(builder, cli_shortcut_hint_set_wrap_mode(browser->footer,
+			NT_TEXT_WRAP_WORD));
 		nt_builder_fail(builder, nt_label_set_wrap_mode(browser->heading, NT_TEXT_WRAP_NONE));
 		nt_builder_fail(builder, nt_view_set_selectable(browser->heading, 0));
 		nt_builder_fail(builder, nt_view_set_selectable(browser->footer, 0));
-		nt_builder_fail(builder, nt_view_set_selectable(browser->empty, 0));
 		nt_builder_fail(builder, nt_view_set_focusable(browser->tab_scroll, 0));
 		nt_builder_fail(builder, nt_scroll_view_set_scrollbars(browser->tab_scroll, 0));
 		nt_builder_fail(builder, nt_list_view_set_row_renderer(browser->list,
@@ -556,12 +556,9 @@ int cli_file_browser_sync(struct nt_view *view)
 	struct nt_view *current = cli_file_browser_current(browser);
 	nb_buf title NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (!browser->viewing)
-		nb_buf_printf(&title, "Files (%zu)%s", browser->model->entries.len,
-			browser->model->truncated ? " · limit reached" : "");
-	else if (browser->viewers.len > 1)
+		nb_buf_printf(&title, "Files (%zu)", browser->model->entries.len);
+	else
 		nb_buf_printf(&title, "%zu open", browser->viewers.len);
-	else if (current)
-		nb_buf_append_cstr(&title, nb_path_basename(cli_file_viewer_path(current)));
 
 	if (!nb_buf_ok(&title))
 		return nb_buf_status(&title);
@@ -582,12 +579,18 @@ int cli_file_browser_sync(struct nt_view *view)
 			? cli_file_viewer_hint(current)
 			: "Up/Down select · Enter open\nCtrl+O chat · Esc close");
 
+	if (!rc)
+		rc = cli_sidebar_notice_set_text(browser->notice,
+			browser->viewing && current ? cli_file_viewer_notice(current)
+			: !browser->model->entries.len
+				? "Files referenced, modified or generated in this conversation appear here."
+			: browser->model->truncated ? "File inventory limit reached." : "");
+
 	struct { struct nt_view *view; int hidden; } visibility[] = {
 		{browser->back, !browser->viewing},
 		{browser->open, browser->viewing || !browser->viewers.len},
-		{browser->tab_scroll, !browser->viewing || browser->viewers.len < 2},
+		{browser->tab_scroll, !browser->viewing || !browser->viewers.len},
 		{browser->list, browser->viewing},
-		{browser->empty, browser->viewing || browser->model->entries.len != 0},
 		{browser->pages, !browser->viewing},
 	};
 	for (size_t i = 0; !rc && i < sizeof(visibility) / sizeof(visibility[0]); i++)

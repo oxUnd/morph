@@ -33,6 +33,14 @@ def check_chat(driver):
             terminal.stream = pyte.Stream(terminal.screen)
             try:
                 terminal.wait_for_composer()
+                row = next(i for i, line in enumerate(terminal.screen.display)
+                           if 'Workspace' in line)
+                column = terminal.screen.display[row].index('Workspace')
+                terminal.send(f'\x1b[<0;{column + 1};{row + 1}M'
+                              f'\x1b[<0;{column + 1};{row + 1}m')
+                terminal.send('Z_FOCUS中文🙂')
+                assert display(terminal).count('Z_FOCUS中文🙂') == 1, display(terminal)
+                terminal.send('\x15')
                 terminal.send('shortcut draft中文🙂 tail\x1b[D')
                 cursor = (terminal.screen.cursor.x, terminal.screen.cursor.y)
                 shortcut(terminal, 'Ctrl+T', 'Ctrl+T', 'Toggle turn details')

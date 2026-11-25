@@ -82,6 +82,12 @@ def run_case(binary, modern, plain):
             terminal.send('\x06SPLIT')
             wait_for(terminal, lambda text: 'Find: SPLIT' in text, 'drag retains viewer focus')
             terminal.send('\x1b')
+            terminal.send('Z_AUTO_FOCUS中文🙂')
+            wait_for(terminal, lambda text: 'Z_AUTO_FOCUS中文🙂' in text,
+                     'typing from a read-only pane focuses the sole editor')
+            assert display(terminal).count('Z_AUTO_FOCUS中文🙂') == 1, display(terminal)
+            assert 'SPLIT_CONTENT' in display(terminal), display(terminal)
+            terminal.send('\x15\x0f')
             terminal.send('\x0fUNSENT_SPLIT_DRAFT ' + 'keep ' * 16)
             wait_for(terminal, lambda text: 'UNSENT_SPLIT_DRAFT' in text, 'chat draft')
             main_pane = '\n'.join(line.split('│', 1)[0] for line in terminal.screen.display)

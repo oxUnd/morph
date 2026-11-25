@@ -7,6 +7,7 @@
 #include "runtime/runtime.h"
 #include "sapi/cli/adapters/clipboard/clipboard.h"
 #include "sapi/cli/adapters/input/cancel.h"
+#include "sapi/cli/adapters/input/focus.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/commands/media.h"
@@ -2102,44 +2103,41 @@ static int cli_chat_capture_input(struct nt_view *view, const struct nt_event *e
 		}
 	}
 
-	if (page->panel || nt_view_is_focused(page->editor))
+	if (page->panel || nt_view_is_focused(page->editor) ||
+	    event->type == NT_EVENT_TEXT || event->type == NT_EVENT_PASTE)
 		return 0;
 
 	struct nt_event input = *event;
-	if (event->type != NT_EVENT_TEXT && event->type != NT_EVENT_PASTE) {
-		unsigned shortcuts = NT_MOD_CTRL | NT_MOD_ALT | NT_MOD_SUPER | NT_MOD_HYPER |
-				     NT_MOD_META;
-		if (event->type != NT_EVENT_KEY || event->pasting ||
-		    event->action == NT_KEY_ACTION_RELEASE || (event->modifiers & shortcuts))
-			return 0;
+	unsigned shortcuts = NT_MOD_CTRL | NT_MOD_ALT | NT_MOD_SUPER | NT_MOD_HYPER | NT_MOD_META;
+	if (event->type != NT_EVENT_KEY || event->pasting ||
+	    event->action == NT_KEY_ACTION_RELEASE || (event->modifiers & shortcuts))
+		return 0;
 
-		switch (event->key) {
-		case ' ':
-		case 8:
-		case 0x7F:
-		case NT_KEY_BACKSPACE:
-		case NT_KEY_DELETE:
-		case NT_KEY_LEFT:
-		case NT_KEY_RIGHT:
-		case NT_KEY_HOME:
-		case NT_KEY_END:
-			break;
-		default:
-			return 0;
-		}
-
-		/* Space must edit before a focused button can consume its KEY.
-		 * Consuming that KEY suppresses the following TEXT event. */
-		input.flags &= ~(unsigned)NT_EVENT_TEXT_FOLLOWS;
+	switch (event->key) {
+	case ' ':
+	case 8:
+	case 0x7F:
+	case NT_KEY_BACKSPACE:
+	case NT_KEY_DELETE:
+	case NT_KEY_LEFT:
+	case NT_KEY_RIGHT:
+	case NT_KEY_HOME:
+	case NT_KEY_END:
+		break;
+	default:
+		return 0;
 	}
 
-	int rc = nt_view_focus(page->editor);
-	if (rc)
-		return rc;
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	struct nt_view *focused = nt_window_focused_view(nt_application_window(&ctx->base));
+	const struct nt_view_class *methods = focused ? nt_view_class_methods(focused) : NULL;
+	if (methods && methods->consumes_key &&
+	    methods->consumes_key(focused, event->key, event->modifiers))
+		return 0;
 
-	/* Preserve native selection, undo, paste sanitization and change actions. */
-	rc = nt_view_class_methods(page->editor)->handle_event(page->editor, &input);
-	return rc < 0 ? rc : 1;
+	/* Space edits before a chat button can consume its KEY. */
+	input.flags &= ~(unsigned)NT_EVENT_TEXT_FOLLOWS;
+	return cli_input_focus_forward(&ctx->base, &input);
 }
 
 static struct nt_text_style cli_chat_bottom_style(int hovered)

@@ -41,6 +41,7 @@ add_library(morph-cli STATIC
 	components/composer.c
 	components/status_bar.c
 	components/shortcut_hint.c
+	components/sidebar_notice.c
 	components/command.c
 	components/message.c
 	components/mcp_tree.c
@@ -110,6 +111,7 @@ add_library(morph-cli STATIC
 	adapters/clipboard/clipboard.c
 	adapters/input/callbacks.c
 	adapters/input/cancel.c
+	adapters/input/focus.c
 	adapters/input/reader.c
 	adapters/input/state.c
 	adapters/media/asset.c

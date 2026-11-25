@@ -32,6 +32,7 @@ cli/
     command                    submitted slash commands, result spacing and outer margins
     status_bar, mcp_status     native footer controls and aligned connection state rows
     shortcut_hint             native TextView spans for accent and bold shortcut keys
+    sidebar_notice            shared warning labels above sidebar footer separators
     setup_form                native setup tabs, editable fields and validation
     page_layout                full-screen breadcrumb navigation, content and shortcut footer
   commands/                    options, slash actions, registry and management entry points
@@ -103,9 +104,14 @@ reconstructs a past patch from the current workspace. Streaming messages keep th
 source and remeasure Markdown at the current content width. PgUp/PgDn and wheel
 scroll within the feed; reaching the bottom resumes following.
 
-Typing, pasting or editing from another chat control returns focus to the composer
-at its saved caret and applies the first input. Shortcuts and modal or inline
-panel input retain their own routing.
+Unhandled typing or pasting focuses the sole visible, enabled, editable input on
+the current page. When several inputs are available, the focused split pane owns
+the destination; nested splits use the innermost pane. Ambiguous fields in one
+pane keep explicit focus navigation. The input keeps its saved caret and receives
+the first character once, using native selection, undo and paste behavior.
+`adapters/input/focus` installs this policy on the application window. Native
+shortcuts, document search, popups and modal scopes retain their own routing.
+Chat controls also forward explicit editing keys to their available input.
 
 MCP connections run in the background without writing lifecycle messages to the
 feed. Click the footer's MCP summary to inspect live connection progress and
@@ -302,15 +308,19 @@ The retained feed receives geometry from the framework. Legacy output adapters
 use the shared terminal-size helper, including row fallback.
 
 `/side` opens a sidebar beside the conversation with **Files** and **Diff** tabs.
-Click the tabs or use `Alt+1` / `Alt+2`. Diff defaults to **Session**, showing
+Click the tabs or use `Alt+1` / `Alt+2`. The active tab is emphasized and underlined;
+tab labels keep fixed positions without brackets. Diff uses a native **Source**
+drop-down beside its count and Refresh action. It defaults to **Session**, showing
 actual recorded `apply_patch` changes in the current session, newest first.
+Open Source with Enter or a click; arrows move, Enter applies and Esc cancels.
 This works without Git and survives restoring saved history. Each list entry is
 one file in one tool patch; repeated edits remain separate historical patches,
 not a net directory diff. Shell commands, external edits and old results without
 recorded diff metadata are not reconstructed from today's files.
 
-Choose **Git** (`Alt+G`) for the current repository's unstaged, staged and untracked
-changes, or **Session** (`Alt+S`) to return. Git reads run on cancellable workers;
+Choose **Git** in Source (`Alt+G`) for the current repository's unstaged, staged
+and untracked changes, or **Session** (`Alt+S`) to return. Git reads run on
+cancellable workers;
 `R` or Refresh reloads the list or current file. New files show additions, deleted
 files show removals, renames retain their original path and binary changes show a
 summary. A missing Git repository has an explicit empty state. Preview output is
@@ -319,8 +329,12 @@ bounded and marks truncation. Native text views provide selection, copy, search
 numbers and addition/removal signs, with theme colors when enabled. The two sources
 and top-level tabs retain independent view state. `Esc` dismisses search, returns
 to the change list, then closes the sidebar. `components/workspace_sidebar` owns
-the top-level tabs, `components/diff_browser` owns the two sources,
+the top-level tabs, `components/diff_browser` owns the source selector and two sources,
 `services/git_diff` owns Git workers and `presentation/diff` formats stored patches.
+Sidebar empty states, Git diagnostics, unavailable file previews and truncation
+notices wrap above the bottom separator, prefixed with the shared warning symbol.
+They clear when the source, file or refreshed result changes; document views contain
+only preview content.
 
 The Files
 inventory comes from local Markdown references, successful patch receipts and
@@ -334,9 +348,10 @@ its native text/search and media controls and owns its preview worker. Workers
 never access views and are cancelled when their tab or session closes.
 
 The first page lists `- filename (directory/)`, with bright names and muted
-directories. Enter or click opens the viewer page. A single file has no tab bar;
-multiple files use horizontally scrolling tabs, with a purple active tab. Opening
-the same path reuses its tab. Each tab preserves scrolling, source mode and search.
+directories. Enter or click opens the viewer page. Every open file has a tab and
+close button, including a single file. Tabs scroll horizontally, with a purple
+active tab. Opening the same path reuses its tab. Each tab preserves scrolling,
+source mode and search.
 Both pages have shaded top/bottom toolbars and exactly two horizontal separators.
 On wide terminals, the native split divider resizes the chat and file panes by
 dragging. Its hover highlight and `ew-resize` mouse pointer come from NT; terminals

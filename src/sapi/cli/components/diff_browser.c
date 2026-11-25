@@ -1,6 +1,7 @@
 #include "sapi/cli/components/diff_browser.h"
 
 #include "sapi/cli/components/shortcut_hint.h"
+#include "sapi/cli/components/sidebar_notice.h"
 #include "sapi/cli/models/files.h"
 #include "sapi/cli/presentation/diff.h"
 #include "sapi/cli/services/git_diff.h"
@@ -8,8 +9,8 @@
 #include <nb/cleanup.h>
 #include <nb/err.h>
 #include <nothing/tui/controls/button.h>
+#include <nothing/tui/controls/drop_down.h>
 #include <nothing/tui/controls/list_view.h>
-#include <nothing/tui/controls/tab_bar.h>
 #include <nothing/tui/input.h>
 #include <nothing/tui/keymap.h>
 #include <nothing/tui/shortcut.h>
@@ -22,8 +23,8 @@
 #include <string.h>
 
 struct cli_diff_browser_source {
-	struct nt_view *page, *back, *heading, *metadata, *previous, *next;
-	struct nt_view *list, *empty, *document, *footer;
+	struct nt_view *page, *toolbar, *back, *heading, *metadata, *previous, *next;
+	struct nt_view *list, *document, *list_notice, *detail_notice, *footer;
 	struct cli_git_diff_result *inventory;
 	struct cli_git_diff_job *job;
 	struct nt_list_groups groups;
@@ -87,7 +88,7 @@ static void cli_diff_browser_add_rule(struct nt_builder *builder, struct nt_view
 						  .instance_size = sizeof(struct nt_view),
 						  .kind = "cli_diff_browser_rule",
 						  .draw = cli_diff_browser_rule};
-	(void)nt_view_add(builder, parent, &type, &(struct nt_view_options){.height = 1});
+	nt_view_add(builder, parent, &type, &(struct nt_view_options){.height = 1});
 }
 
 static int cli_diff_browser_visibility(struct cli_diff_browser *browser)
@@ -98,11 +99,16 @@ static int cli_diff_browser_visibility(struct cli_diff_browser *browser)
 			struct nt_view *view;
 			int hidden;
 		} changes[] = {{source->page, browser->active != (int)i},
+			       {source->metadata, browser->active != (int)i},
+			       {source->toolbar, !source->viewing},
 			       {source->back, !source->viewing},
 			       {source->previous, !source->viewing},
 			       {source->next, !source->viewing},
 			       {source->list, source->viewing || !source->labels.len},
-			       {source->empty, source->viewing || source->labels.len != 0},
+			       {source->list_notice, source->viewing ||
+						 !*nt_label_text(source->list_notice)},
+			       {source->detail_notice, !source->viewing ||
+						   !*nt_label_text(source->detail_notice)},
 			       {source->document, !source->viewing}};
 		for (size_t j = 0; j < sizeof(changes) / sizeof(changes[0]); j++) {
 			int rc = nt_view_set_hidden(changes[j].view, changes[j].hidden);
@@ -115,7 +121,7 @@ static int cli_diff_browser_visibility(struct cli_diff_browser *browser)
 						? "PgUp/PgDn scroll · N/P hunk · Ctrl+F find\nR "
 						  "refresh · Esc back · Ctrl+O chat"
 						: "Up/Down select · Enter view · R refresh\nAlt+S "
-						  "Session · Alt+G Git · Esc close");
+						  "Session · Alt+G Git · Ctrl+O chat · Esc close");
 		if (rc)
 			return rc;
 	}
@@ -152,13 +158,18 @@ static int cli_diff_browser_session(struct cli_diff_browser *browser)
 
 	int rc = nt_list_view_set_source(source->list, source->labels.len, cli_diff_browser_row,
 					 source);
-	nb_buf heading NB_CLEANUP(nb_buf_cleanup) = {0};
-	if (!nb_buf_printf(&heading, "Session patches (%zu)%s", source->labels.len,
-			   browser->model->truncated ? " · limit reached" : ""))
+	nb_buf metadata NB_CLEANUP(nb_buf_cleanup) = {0};
+	if (!nb_buf_printf(&metadata, "%zu patch%s", source->labels.len,
+			   source->labels.len == 1 ? "" : "es"))
 		return NB_ERR_NOMEM;
 
-	if (!rc && !source->viewing)
-		rc = nt_label_set_text(source->heading, nb_buf_cstr(&heading));
+	if (!rc)
+		rc = nt_label_set_text(source->metadata, nb_buf_cstr(&metadata));
+
+	if (!rc)
+		rc = cli_sidebar_notice_set_text(source->list_notice,
+			!source->labels.len ? "No recorded patches in this session."
+			: browser->model->truncated ? "Session patch history limit reached." : "");
 
 	if (!rc)
 		browser->revision = browser->model->revision;
@@ -182,7 +193,7 @@ static int cli_diff_browser_refresh(struct cli_diff_browser *browser)
 	source->previewing = entry != NULL;
 	const char *directory = entry ? nb_buf_cstr(&source->inventory->root) : browser->workdir;
 	int rc = cli_git_diff_start(directory, entry, &source->job);
-	if (!rc)
+	if (!rc && !source->previewing)
 		rc = nt_label_set_text(source->metadata, "Loading Git changes...");
 
 	return rc;
@@ -200,7 +211,16 @@ static int cli_diff_browser_open(struct cli_diff_browser *browser, size_t index)
 	if (browser->active) {
 		const struct cli_git_diff_entry *entry =
 			nb_vec_at(&source->inventory->entries, index);
-		rc = nt_label_set_text(source->heading, nb_buf_cstr(&entry->label));
+		static const char *const kinds[] = {"Unstaged", "Staged", "Untracked"};
+		nb_buf heading NB_CLEANUP(nb_buf_cleanup) = {0};
+		if (!nb_buf_printf(&heading, "%s · %s", kinds[entry->kind],
+				   nb_buf_cstr(&entry->label)))
+			return nb_buf_status(&heading);
+
+		rc = nt_label_set_text(source->heading, nb_buf_cstr(&heading));
+		if (!rc)
+			rc = cli_sidebar_notice_set_text(source->detail_notice, "");
+
 		if (!rc)
 			rc = nt_text_view_set_text(source->document, "Loading diff...");
 
@@ -267,10 +287,10 @@ static int cli_diff_browser_inventory(struct cli_diff_browser *browser,
 
 	nb_buf metadata NB_CLEANUP(nb_buf_cleanup) = {0};
 	if (result->status) {
-		nb_buf_printf(&metadata, "Git unavailable: %s", nb_status_str(result->status));
+		nb_buf_printf(&metadata, "0 changes");
 		rc = rc ? rc
-			: nt_label_set_text(
-				  source->empty,
+			: cli_sidebar_notice_set_text(
+				  source->list_notice,
 				  result->error.len
 					  ? nb_buf_cstr(&result->error)
 					  : "No Git repository is available for this directory.");
@@ -281,8 +301,10 @@ static int cli_diff_browser_inventory(struct cli_diff_browser *browser,
 		if (!safe)
 			return NB_ERR_NOMEM;
 
-		nb_buf_printf(&metadata, "%s · %zu changes", safe, source->labels.len);
-		rc = rc ? rc : nt_label_set_text(source->empty, "Working tree clean.");
+		nb_buf_printf(&metadata, "%zu changes · %s", source->labels.len, safe);
+		rc = rc ? rc : cli_sidebar_notice_set_text(source->list_notice,
+			!source->labels.len ? "Working tree clean."
+			: result->truncated ? "Git change list truncated." : "");
 	}
 
 	if (!nb_buf_ok(&metadata))
@@ -291,9 +313,6 @@ static int cli_diff_browser_inventory(struct cli_diff_browser *browser,
 	if (!rc)
 		rc = nt_label_set_text(source->metadata, nb_buf_cstr(&metadata));
 
-	if (!rc)
-		rc = nt_label_set_text(source->heading, "Git changes");
-
 	return rc;
 }
 
@@ -301,7 +320,7 @@ int cli_diff_browser_sync(struct nt_view *view)
 {
 	struct cli_diff_browser *browser = (struct cli_diff_browser *)view;
 	int rc = cli_diff_browser_session(browser);
-	int focus_list = 0;
+	int focus_source = 0;
 	struct cli_diff_browser_source *source = &browser->source[1];
 	if (!rc && source->job) {
 		struct cli_git_diff_result *result NB_CLEANUP(cli_git_diff_result_cleanup) = NULL;
@@ -309,32 +328,22 @@ int cli_diff_browser_sync(struct nt_view *view)
 		if (rc == NB_ERR_AGAIN)
 			rc = NB_OK;
 		else if (!rc && source->previewing) {
-			if (result->truncated)
-				nb_buf_append_cstr(&result->patch,
-						   "\nDiff output truncated at 1 MiB.\n");
-
-			const char *text =
+			const char *message =
 				result->status ? (result->error.len ? nb_buf_cstr(&result->error)
 								    : nb_status_str(result->status))
-				: result->patch.len
-					? nb_buf_cstr(&result->patch)
-					: "This change is no longer present. Refresh the list.";
-			rc = cli_diff_present(source->document, text, &source->hunks,
-					      browser->styled);
-			const struct cli_git_diff_entry *entry =
-				source->inventory
-					? nb_vec_at(&source->inventory->entries, source->selected)
-					: NULL;
+				: !result->patch.len
+					? "This change is no longer present. Refresh the list."
+				: result->truncated ? "Diff output truncated at 1 MiB." : "";
+			rc = cli_sidebar_notice_set_text(source->detail_notice, message);
 			if (!rc)
-				rc = nt_label_set_text(
-					source->metadata,
-					entry && entry->kind == CLI_GIT_DIFF_STAGED
-						? "Staged · index vs HEAD"
-					: entry && entry->kind == CLI_GIT_DIFF_UNTRACKED
-						? "Untracked · new file"
-						: "Unstaged · working tree vs index");
+				rc = cli_diff_present(source->document,
+					result->status ? "" : nb_buf_cstr(&result->patch),
+					&source->hunks, browser->styled);
 		} else if (!rc) {
-			focus_list = browser->active == 1 && nt_view_is_focused(browser->sources);
+			focus_source = browser->active == 1 &&
+				(nt_view_is_focused(source->list) ||
+				 (nt_view_is_focused(browser->sources) &&
+				  !nt_drop_down_is_open(browser->sources)));
 			rc = cli_diff_browser_inventory(browser, &result);
 		}
 	}
@@ -342,8 +351,8 @@ int cli_diff_browser_sync(struct nt_view *view)
 	if (!rc)
 		rc = cli_diff_browser_visibility(browser);
 
-	if (!rc && focus_list && source->labels.len)
-		rc = nt_view_focus(source->list);
+	if (!rc && focus_source)
+		rc = cli_diff_browser_focus(view);
 
 	return rc;
 }
@@ -378,7 +387,7 @@ static int cli_diff_browser_action(void *data, const struct nt_view_event *event
 
 	if (event->target == browser->sources && event->type == NT_VIEW_EVENT_CHANGED) {
 		int rc = cli_diff_browser_source_select(browser,
-							(int)nt_tab_bar_selected(browser->sources));
+							(int)nt_drop_down_selected(browser->sources));
 		return rc ? rc : NT_VIEW_EVENT_HANDLED;
 	}
 
@@ -393,9 +402,6 @@ static int cli_diff_browser_action(void *data, const struct nt_view_event *event
 		rc = cli_diff_browser_refresh(browser);
 	else if (event->target == source->back) {
 		source->viewing = 0;
-		if (browser->active)
-			(void)nt_label_set_text(source->heading, "Git changes");
-
 		browser->revision = UINT64_MAX;
 		rc = cli_diff_browser_sync(&browser->base.base);
 		if (!rc)
@@ -422,7 +428,7 @@ static int cli_diff_browser_capture(struct nt_view *view, const struct nt_event 
 
 	unsigned mods = event->modifiers & ~(unsigned)(NT_MOD_CAPS_LOCK | NT_MOD_NUM_LOCK);
 	if (mods == NT_MOD_ALT && (event->key == 's' || event->key == 'g')) {
-		int rc = nt_tab_bar_select(browser->sources, event->key == 'g' ? 1u : 0u);
+		int rc = nt_drop_down_select(browser->sources, event->key == 'g' ? 1u : 0u);
 		return rc < 0 ? rc : 1;
 	}
 
@@ -477,9 +483,6 @@ static int cli_diff_browser_key(struct nt_view *view, const struct nt_event *eve
 		rc = nt_text_view_set_cursor(source->document, target);
 	} else if ((key == 27 || key == NT_KEY_ESCAPE) && source->viewing) {
 		source->viewing = 0;
-		if (browser->active)
-			(void)nt_label_set_text(source->heading, "Git changes");
-
 		browser->revision = UINT64_MAX;
 		rc = cli_diff_browser_sync(view);
 		if (!rc)
@@ -553,31 +556,33 @@ struct nt_view *cli_diff_browser_add(struct nt_builder *builder, struct nt_view 
 	browser->revision = UINT64_MAX;
 	struct nt_view *root = &browser->base.base;
 	nt_builder_fail(builder, nt_view_set_help_label(root, "Diff"));
-	struct nt_view *bar = nt_row_add(builder, root, 1, &(struct nt_view_options){.height = 1});
+	struct nt_view *bar = nt_row_add(builder, root, 1,
+		&(struct nt_view_options){.height = 1, .margin.top = 1,
+					 .padding = {.left = 1, .right = 1}});
 	static const char *const sources[] = {"Session", "Git"};
-	browser->sources = nt_tab_bar_add(builder, bar, sources, 2, 0, 0,
-					  &(struct nt_view_options){.width = NT_FILL});
-	browser->refresh = nt_button_add(builder, bar, "Refresh", 0, NULL);
+	nt_label_add(builder, bar, "Source:", NULL);
+	browser->sources = nt_drop_down_add(builder, bar,
+		&(struct nt_drop_down_options){.items = sources, .count = NT_ARRAY_SIZE(sources),
+					      .selected = 0, .minimum = 1, .placeholder = ""},
+		NULL);
 	for (size_t i = 0; i < 2; i++) {
 		struct cli_diff_browser_source *source = &browser->source[i];
 		nb_vec_init(&source->labels, sizeof(char *));
 		nb_vec_init(&source->hunks, sizeof(size_t));
+		source->metadata = nt_label_add(builder, bar, i ? "" : "0 patches",
+			&(struct nt_view_options){.width = NT_FILL, .height = 1});
 		source->page = nt_column_add(
 			builder, root, 0,
 			&(struct nt_view_options){.width = NT_FILL, .height = NT_FILL});
-		struct nt_view *toolbar = nt_row_add(builder, source->page, 1,
-						     &(struct nt_view_options){.height = 1});
-		source->back = nt_button_add(builder, toolbar, "< Changes", 0, NULL);
+		source->toolbar = nt_row_add(builder, source->page, 1,
+			&(struct nt_view_options){.height = 1,
+						 .padding = {.left = 1, .right = 1}});
+		source->back = nt_button_add(builder, source->toolbar, "< Back", 0, NULL);
 		source->heading =
-			nt_label_add(builder, toolbar, i ? "Git changes" : "Session patches",
+			nt_label_add(builder, source->toolbar, "",
 				     &(struct nt_view_options){.width = NT_FILL});
-		source->previous = nt_button_add(builder, toolbar, "Prev", 0, NULL);
-		source->next = nt_button_add(builder, toolbar, "Next", 0, NULL);
-		source->metadata =
-			nt_label_add(builder, source->page,
-				     i ? "Select Git to load changes."
-				       : "Recorded tool patches · current session · newest first",
-				     &(struct nt_view_options){.height = 1});
+		source->previous = nt_button_add(builder, source->toolbar, "Prev", 0, NULL);
+		source->next = nt_button_add(builder, source->toolbar, "Next", 0, NULL);
 		cli_diff_browser_add_rule(builder, source->page);
 		struct nt_view *body =
 			nt_view_add(builder, source->page, &nt_view_base_class,
@@ -590,17 +595,16 @@ struct nt_view *cli_diff_browser_add(struct nt_builder *builder, struct nt_view 
 		source->document = nt_text_view_add(
 			builder, body, "",
 			&(struct nt_view_options){.width = NT_FILL, .height = NT_FILL});
-		source->empty =
-			nt_label_add(builder, body,
-				     i ? "Select Git to load changes."
-				       : "No recorded patches in this session.\n\nShell commands "
-					 "and external edits are not tracked here.",
-				     &(struct nt_view_options){.width = NT_FILL});
+		source->list_notice = cli_sidebar_notice_add(builder, source->page, "", styled);
+		source->detail_notice = cli_sidebar_notice_add(builder, source->page, "", styled);
 		cli_diff_browser_add_rule(builder, source->page);
 		source->footer = cli_shortcut_hint_add(
 			builder, source->page, "",
-			&(struct nt_view_options){.width = NT_FILL, .height = NT_AUTO});
+			&(struct nt_view_options){.width = NT_FILL, .height = NT_AUTO,
+						 .padding = {.left = 1, .right = 1}});
 		if (!nt_builder_error(builder)) {
+			nt_builder_fail(builder, cli_shortcut_hint_set_wrap_mode(source->footer,
+				NT_TEXT_WRAP_WORD));
 			nt_builder_fail(builder, nt_text_view_set_wrap_mode(source->document,
 									    NT_TEXT_WRAP_NONE));
 			nt_builder_fail(builder,
@@ -610,7 +614,6 @@ struct nt_view *cli_diff_browser_add(struct nt_builder *builder, struct nt_view 
 			nt_builder_fail(builder, nt_label_set_wrap_mode(source->metadata,
 									NT_TEXT_WRAP_NONE));
 			nt_builder_fail(builder, nt_view_set_selectable(source->metadata, 0));
-			nt_builder_fail(builder, nt_view_set_selectable(source->empty, 0));
 			if (i)
 				nt_builder_fail(
 					builder,
@@ -619,7 +622,9 @@ struct nt_view *cli_diff_browser_add(struct nt_builder *builder, struct nt_view 
 		}
 	}
 
+	browser->refresh = nt_button_add(builder, bar, "Refresh", 0, NULL);
 	if (!nt_builder_error(builder)) {
+		nt_builder_fail(builder, nt_view_set_help_label(browser->sources, "Diff source"));
 		nt_builder_fail(builder, cli_diff_browser_sync(root));
 		if (!nt_view_on(root, NT_VIEW_EVENT_ACTION, cli_diff_browser_action, browser))
 			nt_builder_fail(builder, NB_ERR_NOMEM);
@@ -642,13 +647,16 @@ void cli_diff_browser_reset(struct nt_view *view)
 		cli_diff_browser_labels_clear(source);
 		nb_vec_clear(&source->hunks);
 		(void)nt_text_view_set_text(source->document, "");
+		cli_sidebar_notice_set_text(source->list_notice, "");
+		cli_sidebar_notice_set_text(source->detail_notice, "");
 		source->selected = 0;
 		source->viewing = source->loaded = source->previewing = 0;
 	}
 
 	browser->active = 0;
 	browser->revision = UINT64_MAX;
-	(void)nt_tab_bar_select(browser->sources, 0);
+	nt_drop_down_close(browser->sources);
+	nt_drop_down_select(browser->sources, 0);
 	browser->syncing = 0;
 	(void)cli_diff_browser_sync(view);
 }

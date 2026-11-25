@@ -44,6 +44,25 @@ def check_rules(terminal):
     assert count == 2, display(terminal)
 
 
+def check_notice(terminal, message, plain=False):
+    lines = panel_lines(terminal)
+    rules = [i for i, line in enumerate(lines)
+             if line.strip() and set(line.strip()) == {'─'}]
+    assert len(rules) == 2, display(terminal)
+    notices = [i for i, line in enumerate(lines) if line.lstrip().startswith('⚠ ')]
+    assert len(notices) == 1, display(terminal)
+    start = notices[0]
+    assert rules[0] < start < rules[1], display(terminal)
+    assert lines[start].index('⚠') == 1, display(terminal)
+    content = ' '.join(line.strip() for line in lines[start:rules[1]])
+    assert ' '.join(message.split()) in content, display(terminal)
+    assert all(line.strip() for line in lines[start:rules[1]]), display(terminal)
+    assert any('Esc' in line for line in lines[rules[1] + 1:]), display(terminal)
+    column = terminal.screen.display[start].rindex('⚠')
+    style = terminal.screen.buffer[start][column]
+    assert (style.fg == 'default') if plain else (style.fg != 'default'), display(terminal)
+
+
 def click_close(terminal, label):
     for row, line in enumerate(terminal.screen.display):
         if label in line:
@@ -71,6 +90,7 @@ def plain_case(driver, directory, port):
         terminal.wait_for_composer()
         terminal.send('/side 文件.txt\r')
         wait_for(terminal, lambda text: 'PLAIN_FILE_CONTENT' in text, 'plain viewer')
+        assert '文件.txt ×' in display(terminal), display(terminal)
         for columns in (120, 80, 60):
             resize(terminal, columns)
             lines = panel_lines(terminal)
@@ -146,7 +166,8 @@ def main():
         (directory / 'unrelated.txt').write_text('not part of this conversation')
         (directory / 'missing.txt').write_text('removed after the answer')
         (directory / 'extra.txt').write_text('extra content')
-        terminal = Terminal(driver, directory, server.server_port, hooks_enabled=False)
+        terminal = Terminal(driver, directory, server.server_port, hooks_enabled=False,
+                            extra_env={'NO_COLOR': ''})
         release = None
         try:
             resize(terminal, 120)
@@ -165,9 +186,21 @@ def main():
             opened = wait_for(terminal, lambda text: 'SIDEBAR_HEADING' in text,
                               'file link opens sidebar')
             assert '< Files' in opened and 'unrelated.txt' not in opened, opened
-            assert 'notes.md ×' not in opened, 'one file must not show a tab bar'
+            assert 'notes.md ×' in opened and '1 open' in opened, opened
             check_rules(terminal)
             assert 'Inspect Notes' in opened, 'main conversation must remain visible'
+            for columns in (120, 80, 60):
+                resize(terminal, columns)
+                assert 'notes.md ×' in display(terminal), display(terminal)
+                check_rules(terminal)
+            click_close(terminal, 'notes.md ×')
+            listed = wait_for(terminal, lambda text: 'Files (3)' in text,
+                              'mouse closes the only file tab')
+            assert 'notes.md ×' not in listed and 'Open:' not in listed, listed
+            resize(terminal, 120)
+            click_text(terminal, '- notes.md')
+            wait_for(terminal, lambda text: 'SIDEBAR_HEADING' in text,
+                     'reopen after closing the only file tab')
             terminal.send('m')
             wait_for(terminal, lambda text: '# SIDEBAR_HEADING' in text, 'Markdown source')
             terminal.send('m')
@@ -260,14 +293,18 @@ def main():
             terminal.send('\x17')
             single = wait_for(terminal, lambda text: '2 open' not in text and 'SIDEBAR_HEADING' in text,
                               'close tab with Ctrl+W')
-            assert 'notes.md ×' not in single, single
+            assert 'notes.md ×' in single and '1 open' in single, single
             terminal.send('\x1b')
             wait_for(terminal, lambda text: 'Files (3)' in text, 'list after tab close')
             click_text(terminal, '- missing.txt')
             wait_for(terminal, lambda text: 'The file no longer exists.' in text, 'missing preview')
+            for columns in (120, 80, 60, 120):
+                resize(terminal, columns)
+                check_notice(terminal, 'The file no longer exists.')
             (directory / 'missing.txt').write_text('RELOADED_FILE')
             terminal.send('r')
             wait_for(terminal, lambda text: 'RELOADED_FILE' in text, 'retry missing file')
+            assert '⚠' not in '\n'.join(panel_lines(terminal)), display(terminal)
             click_close(terminal, 'missing.txt ×')
             wait_for(terminal, lambda text: 'SIDEBAR_HEADING' in text and '2 open' not in text,
                      'close native tab with mouse')
@@ -301,6 +338,8 @@ def main():
             wait_for(terminal, lambda text: 'Files (4)' not in text, 'return to main')
             terminal.send('/new empty-files\r/side\r')
             wait_for(terminal, lambda text: 'Files (0)' in text, 'session inventory isolation')
+            check_notice(terminal,
+                         'Files referenced, modified or generated in this conversation appear here.')
             terminal.send('\x1b')
             wait_for(terminal, lambda text: 'Files (0)' not in text, 'close empty sidebar')
             terminal.send('/switch files-test\r')
@@ -317,10 +356,7 @@ def main():
                 terminal.send('/side ' + name + '\r')
                 frame = wait_for(terminal, lambda text: f'TAB_CONTENT_{index}' in text,
                                  'overflowing native tabs')
-                if index:
-                    assert name + ' ×' in frame, 'active tab must remain visible\n' + frame
-                else:
-                    assert name + ' ×' not in frame, 'a single file hides the tab bar'
+                assert name + ' ×' in frame, 'active tab must remain visible\n' + frame
                 check_rules(terminal)
                 if index < 3:
                     terminal.send('\x1b\x1b')

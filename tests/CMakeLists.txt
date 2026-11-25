@@ -91,6 +91,7 @@ set(TEST_SOURCES
 	test_cli_mcp_tree.cpp
 	test_cli_presentation.cpp
 	test_cli_retained_widgets.cpp
+	test_cli_input_focus.cpp
 	test_cli_retained_media.cpp
 	test_cli_subagents.cpp
 	cli_agents_browser_fixture.c

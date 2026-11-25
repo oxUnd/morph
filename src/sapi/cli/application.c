@@ -17,6 +17,7 @@
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/adapters/input/callbacks.h"
 #include "sapi/cli/adapters/input/cancel.h"
+#include "sapi/cli/adapters/input/focus.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/commands/media.h"
@@ -92,6 +93,8 @@ int cli_application_show_page(struct cli_application *ctx, struct nt_view_contro
 		rc = nt_application_set_color_profile(
 			&ctx->base, cli_output_color_enabled(ctx) ? NT_COLOR_PROFILE_TRUECOLOR
 								  : NT_COLOR_PROFILE_NONE);
+		if (!rc)
+			rc = cli_input_focus_install(&ctx->base);
 	}
 
 	if (!rc) {
@@ -132,6 +135,9 @@ int cli_application_run_page(struct cli_application *ctx, struct nt_view_control
 	rc = nt_application_set_color_profile(&ctx->base, cli_output_color_enabled(ctx)
 								  ? NT_COLOR_PROFILE_TRUECOLOR
 								  : NT_COLOR_PROFILE_NONE);
+	if (!rc)
+		rc = cli_input_focus_install(&ctx->base);
+
 	if (!rc) {
 		rc = nt_application_present_view_controller(&ctx->base, owner);
 		if (!rc)
@@ -235,6 +241,9 @@ static void cli_application_run_session(struct cli_application *ctx)
 		cli_event_queue_attach_app(ctx, &ctx->base);
 		app_rc = nt_application_set_color_profile(&ctx->base, cli_output_color_enabled(ctx)
 			? NT_COLOR_PROFILE_TRUECOLOR : NT_COLOR_PROFILE_NONE);
+		if (!app_rc)
+			app_rc = cli_input_focus_install(&ctx->base);
+
 		if (!app_rc)
 			app_rc = nt_window_set_selection_handler(nt_application_window(&ctx->base),
 			cli_application_copy_selection, ctx);

@@ -34,6 +34,7 @@ extern "C" {
 #include <nothing/tui/views/label.h>
 #include <nothing/tui/views/text_view.h>
 #include <nothing/tui/controls/text_field.h>
+#include <nothing/tui/controls/drop_down.h>
 #include <nothing/tui/controls/tab_bar.h>
 #include <nothing/tui/models/text_editor.h>
 #include <nothing/tui/models/list_navigation.h>
@@ -1169,7 +1170,7 @@ TEST_F(CliRetainedWidgetsTest, DiffSidebarDefaultsToSessionAndRetainsItsNativeDo
 	ASSERT_NE(tabs, nullptr);
 	ASSERT_GE(nt_tab_bar_select(tabs, 1), 0);
 	ASSERT_EQ(nt_application_step(app, 0), 0);
-	EXPECT_NE(retained_normalized(frame.c_str()).find("Session patches (1)"), std::string::npos);
+	EXPECT_NE(retained_normalized(frame.c_str()).find("1 patch"), std::string::npos);
 	auto *browser = FindKind(component, "cli_diff_browser");
 	ASSERT_NE(browser, nullptr);
 	ASSERT_EQ(cli_diff_browser_focus(browser), 0);
@@ -1218,14 +1219,16 @@ TEST_F(CliRetainedWidgetsTest, DiffSidebarDefaultsToSessionAndRetainsItsNativeDo
 	ASSERT_EQ(cli_diff_present(document, "@@ -1 +1 @@\n-removed\n+added\n", &hunks, 0), 0);
 	EXPECT_EQ(hunks.len, 1u);
 	EXPECT_EQ(std::string(nt_text_view_text(document)).find("\033"), std::string::npos);
-	auto *sources = FindKind(browser, "tab_bar");
+	auto *sources = FindKind(browser, "drop_down");
 	ASSERT_NE(sources, nullptr);
-	ASSERT_GE(nt_tab_bar_select(sources, 1), 0);
+	ASSERT_EQ(nt_drop_down_selected(sources), 0u);
+	ASSERT_EQ(FindKind(browser, "tab_bar"), nullptr);
+	ASSERT_GE(nt_drop_down_select(sources, 1), 0);
 	ASSERT_EQ(nt_view_set_hidden(component, 1), 0);
 	cli_workspace_sidebar_reset(component);
 	ASSERT_EQ(nt_application_step(app, 0), 0);
 	EXPECT_EQ(nt_tab_bar_selected(tabs), 0u);
-	EXPECT_EQ(nt_tab_bar_selected(sources), 0u);
+	EXPECT_EQ(nt_drop_down_selected(sources), 0u);
 }
 
 TEST_F(CliRetainedWidgetsTest, FileSidebarCodePreservesWhitespaceSelectionAndNoColor)

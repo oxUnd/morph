@@ -9,6 +9,7 @@ struct nt_view *cli_file_viewer_add(struct nt_builder *, struct nt_view *parent,
 	const char *path, const char *workdir, int styled);
 const char *cli_file_viewer_path(const struct nt_view *);
 const char *cli_file_viewer_hint(const struct nt_view *);
+const char *cli_file_viewer_notice(const struct nt_view *);
 int cli_file_viewer_open(struct nt_view *, int line, int reload);
 int cli_file_viewer_sync(struct nt_view *);
 int cli_file_viewer_focus(struct nt_view *);

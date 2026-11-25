@@ -9,7 +9,7 @@ import threading
 from loopback_http import LoopbackHTTPServer
 from test_cli_pty import Terminal
 from test_cli_transcript_pty import PacedMarkdownModel, AlternateScreen
-from test_cli_files_pty import display, panel_lines, resize, wait_for, check_rules
+from test_cli_files_pty import display, panel_lines, resize, wait_for, check_rules, check_notice
 from test_cli_shortcuts_pty import shortcut
 import pyte
 
@@ -25,11 +25,29 @@ def click_side(terminal, label):
     raise AssertionError(f'missing sidebar target {label}\n{display(terminal)}')
 
 
+def check_header(terminal, count):
+    lines = panel_lines(terminal)
+    navigation = next(i for i, line in enumerate(lines) if 'Files   Diff' in line)
+    toolbar = lines[navigation + 2]
+    assert lines[navigation].index('Files') == toolbar.index('Source:') == 1, display(terminal)
+    assert count in toolbar and 'Refresh' in toolbar, display(terminal)
+    assert set(lines[navigation + 3].strip()) == {'─'}, display(terminal)
+    assert '[Files]' not in lines[navigation] and '[Diff]' not in lines[navigation], display(terminal)
+    assert 'Session patches' not in '\n'.join(lines), display(terminal)
+    assert 'Recorded tool patches' not in '\n'.join(lines), display(terminal)
+    column = terminal.screen.display[navigation].rindex('Diff')
+    active = terminal.screen.buffer[navigation][column]
+    assert active.bold and active.underscore, display(terminal)
+    check_rules(terminal)
+    return lines[navigation].index('Diff')
+
+
 def session_case(binary, port):
     with tempfile.TemporaryDirectory(prefix='morph-session-diff-') as temp:
         directory = Path(temp)
         (directory / 'example.txt').write_text('OLD_SESSION_LINE\n')
         terminal = Terminal(binary, directory, port, production=True, hooks_enabled=False,
+                            extra_env={'NO_COLOR': ''},
                             extra_config='[permissions]\naccess="full"\napproval="never"\n'
                                          'reviewer="user"\n')
         terminal.screen = AlternateScreen(80, 24)
@@ -56,7 +74,8 @@ def session_case(binary, port):
             chunks = None
             terminal.send('/side\r')
             click_side(terminal, 'Diff')
-            wait_for(terminal, lambda text: 'Session patches (1)' in text, 'default session source')
+            wait_for(terminal, lambda text: '1 patch' in text, 'default session source')
+            check_header(terminal, '1 patch')
             click_side(terminal, 'example.txt')
             wait_for(terminal, lambda text: 'OLD_SESSION_LINE' in '\n'.join(panel_lines(terminal)),
                      'recorded non-Git diff')
@@ -70,14 +89,18 @@ def session_case(binary, port):
                 assert 'OLD_SESSION_LINE' in frame and 'NEW_SESSION_LINE' in frame, frame
                 check_rules(terminal)
             terminal.send('\x1bg')
-            wait_for(terminal, lambda text: 'Git unavailable:' in text, 'explicit non-repository state')
+            wait_for(terminal, lambda text: 'not a git repository' in text,
+                     'explicit non-repository state')
+            for width in (120, 80, 60, 120):
+                resize(terminal, width)
+                check_notice(terminal, 'not a git repository')
             terminal.send('\x1bs')
             wait_for(terminal, lambda text: 'OLD_SESSION_LINE' in '\n'.join(panel_lines(terminal)),
                      'retained session preview')
             terminal.send('\x0fUNSENT_DIFF_DRAFT')
             wait_for(terminal, lambda text: 'UNSENT_DIFF_DRAFT' in text, 'draft while inspecting')
             terminal.send('\x0f\x1b\x1b')
-            wait_for(terminal, lambda text: 'Session patches' not in text and 'Files (' not in text,
+            wait_for(terminal, lambda text: 'Source:' not in text and 'Files (' not in text,
                      'close sidebar')
             terminal.send('\x15/new empty-diff\r/side\r')
             wait_for(terminal, lambda text: 'Files (0)' in text, 'empty session')
@@ -89,7 +112,7 @@ def session_case(binary, port):
             wait_for(terminal, lambda text: 'switched to session: session-diff' in text, 'restore history')
             terminal.send('/side\r')
             click_side(terminal, 'Diff')
-            wait_for(terminal, lambda text: 'Session patches (1)' in text, 'restored patch inventory')
+            wait_for(terminal, lambda text: '1 patch' in text, 'restored patch inventory')
             click_side(terminal, 'example.txt')
             wait_for(terminal, lambda text: 'OLD_SESSION_LINE' in '\n'.join(panel_lines(terminal)),
                      'restored actual patch')
@@ -127,9 +150,31 @@ def git_case(binary, plain):
             terminal.send('/side\r')
             click_side(terminal, 'Diff')
             wait_for(terminal, lambda text: 'No recorded patches' in text, 'Session default in Git repo')
-            terminal.send('\x1bg')
+            for width in (120, 80, 60):
+                resize(terminal, width)
+                position = check_header(terminal, '0 patches')
+                check_notice(terminal, 'No recorded patches in this session.', plain)
+                terminal.send('\x1b1')
+                wait_for(terminal, lambda text: 'Files (0)' in text, 'Files tab')
+                navigation = next(line for line in panel_lines(terminal) if 'Files   Diff' in line)
+                assert navigation.index('Diff') == position, display(terminal)
+                terminal.send('\x1b2')
+                wait_for(terminal, lambda text: 'No recorded patches' in text, 'Diff tab')
+                click_side(terminal, 'Session')
+                wait_for(terminal, lambda text: 'Choose one' in text, 'native source drop-down')
+                terminal.send('\x1b[B\x1b')
+                wait_for(terminal, lambda text: 'Choose one' not in text, 'cancel source selection')
+                check_header(terminal, '0 patches')
+                assert 'No recorded patches' in display(terminal), display(terminal)
+            click_side(terminal, 'Session')
+            wait_for(terminal, lambda text: 'Choose one' in text, 'select Git source')
+            if plain:
+                click_side(terminal, 'Git')
+            else:
+                terminal.send('\x1b[B\r')
             wait_for(terminal, lambda text: 'Unstaged' in text and 'Staged' in text and 'Untracked' in text,
                      'Git groups')
+            check_header(terminal, '3 changes')
             click_side(terminal, 'tracked.txt')
             wait_for(terminal, lambda text: 'WORKTREE_GIT_LINE' in '\n'.join(panel_lines(terminal)),
                      'unstaged diff')
@@ -151,6 +196,17 @@ def git_case(binary, plain):
             terminal.send('r')
             wait_for(terminal, lambda text: 'LATEST_GIT_LINE' in '\n'.join(panel_lines(terminal)),
                      'refresh diff')
+            target.write_text('INDEX_GIT_LINE\n')
+            terminal.send('r')
+            wait_for(terminal, lambda text: 'This change is no longer present.' in text,
+                     'removed change notice')
+            check_notice(terminal, 'This change is no longer present. Refresh the list.', plain)
+            assert 'LATEST_GIT_LINE' not in '\n'.join(panel_lines(terminal)), display(terminal)
+            target.write_text('LATEST_GIT_LINE\n')
+            terminal.send('r')
+            wait_for(terminal, lambda text: 'LATEST_GIT_LINE' in '\n'.join(panel_lines(terminal)),
+                     'refresh clears notice')
+            assert '⚠' not in '\n'.join(panel_lines(terminal)), display(terminal)
             terminal.send('\x1bs\x1bg')
             wait_for(terminal, lambda text: 'LATEST_GIT_LINE' in '\n'.join(panel_lines(terminal)),
                      'retained Git document')
@@ -167,6 +223,18 @@ def git_case(binary, plain):
                 row = next(i for i, line in enumerate(terminal.screen.display) if 'UNTRACKED_GIT_LINE' in line)
                 assert all(cell.fg == 'default' and cell.bg == 'default'
                            for cell in terminal.screen.buffer[row].values()), display(terminal)
+            git('reset', '--hard', 'HEAD')
+            (directory / 'new.txt').unlink()
+            terminal.send('\x1b')
+            terminal.send('r')
+            wait_for(terminal, lambda text: 'Working tree clean.' in text, 'clean repository notice')
+            for width in (120, 80, 60):
+                resize(terminal, width)
+                check_notice(terminal, 'Working tree clean.', plain)
+            target.write_text('AFTER_CLEAN_LINE\n')
+            terminal.send('r')
+            wait_for(terminal, lambda text: 'Unstaged' in text, 'changes replace clean notice')
+            assert '⚠' not in '\n'.join(panel_lines(terminal)), display(terminal)
         finally:
             terminal.child.close(force=True)
 

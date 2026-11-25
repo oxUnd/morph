@@ -7,6 +7,7 @@
 #include <nothing/tui/controls/tab_bar.h>
 #include <nothing/tui/input.h>
 #include <nothing/tui/keymap.h>
+#include <nothing/tui/theme.h>
 #include <nothing/tui/views/stack_view.h>
 
 struct cli_workspace_sidebar {
@@ -106,7 +107,8 @@ struct nt_view *cli_workspace_sidebar_add(struct nt_builder *builder, struct nt_
 		return NULL;
 
 	struct nt_view *root = &sidebar->base.base;
-	struct nt_view *bar = nt_row_add(builder, root, 1, &(struct nt_view_options){.height = 1});
+	struct nt_view *bar = nt_row_add(builder, root, 1,
+		&(struct nt_view_options){.height = 1, .padding = {.left = 1, .right = 1}});
 	static const char *const tabs[] = {"Files", "Diff"};
 	sidebar->tabs = nt_tab_bar_add(builder, bar, tabs, 2, 0, 0,
 				       &(struct nt_view_options){.width = NT_FILL});
@@ -118,6 +120,11 @@ struct nt_view *cli_workspace_sidebar_add(struct nt_builder *builder, struct nt_
 		{.key = '2', .modifiers = NT_MOD_ALT, .description = "Diff sidebar tab"}};
 	static const struct nt_keymap map = {bindings, NT_ARRAY_SIZE(bindings)};
 	if (!nt_builder_error(builder)) {
+		struct nt_text_style selected = styled
+			? nt_theme_style(nt_view_theme(root), NT_THEME_ACCENT, NT_VISUAL_SELECTED)
+			: (struct nt_text_style){0};
+		selected.attributes |= NT_STYLE_BOLD | NT_STYLE_UNDERLINE;
+		nt_builder_fail(builder, nt_tab_bar_set_appearance(sidebar->tabs, 3, 0, selected));
 		nt_builder_fail(builder, nt_view_set_help_label(root, "Sidebar"));
 		nt_builder_fail(builder, nt_view_set_keymap(root, &map));
 		nt_builder_fail(builder, cli_workspace_sidebar_sync(root));
