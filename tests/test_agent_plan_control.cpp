@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include "agent_http_test_support.hpp"
 
 extern "C" {
@@ -8,7 +9,7 @@ extern "C" {
 #include "agent/tools/plan.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include "errors.h"
 }
 
@@ -288,11 +289,11 @@ TEST_F(UpdatePlanToolTest, InvalidInputsNeverReplaceTheSavedPlanOrEmitUpdates)
 TEST_F(UpdatePlanToolTest, PersistenceFailureRollsBackMemoryAndDoesNotPublishAnEvent)
 {
 	ASSERT_EQ(Update(R"({"plan":[{"step":"Original","status":"pending"}]})"), 0);
-	ASSERT_EQ(sqlite3_exec(database.handle,
-			       "CREATE TRIGGER reject_plan_update BEFORE UPDATE ON session_plans "
-			       "BEGIN SELECT RAISE(ABORT,'test persistence failure'); END;",
-			       nullptr, nullptr, nullptr),
-		  SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
+			  "CREATE TRIGGER reject_plan_update BEFORE UPDATE ON session_plans "
+			  "BEGIN SELECT RAISE(ABORT,'test persistence failure'); END;"),
+		  0);
 	EXPECT_EQ(Update(R"({"plan":[{"step":"Replacement","status":"in_progress"}]})"),
 		  MORPH_ERR_DB);
 	EXPECT_STREQ(plans->plans[0].steps[0].description, "Original");

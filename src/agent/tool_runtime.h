@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include "config/config.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "event/event.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>

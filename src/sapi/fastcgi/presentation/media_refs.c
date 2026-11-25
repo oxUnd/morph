@@ -4,8 +4,8 @@
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/agent_bridge.h"
 #include "sapi/fastcgi/session_store.h"
-#include "sapi/fastcgi/storage/events.h"
-#include "sapi/fastcgi/storage/artifacts.h"
+#include "persistence/orm/fcgi_events.h"
+#include "persistence/orm/fcgi_artifacts.h"
 #include "cJSON.h"
 #include "errors.h"
 

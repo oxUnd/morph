@@ -12,7 +12,7 @@
 #define _GNU_SOURCE
 #include <nb/cleanup.h>
 #include <fcgiapp.h>
-#include "sapi/fastcgi/storage/events.h"
+#include "persistence/orm/fcgi_events.h"
 #include "sapi/fastcgi/storage/tokens.h"
 #include <nb/time.h>
 #include <ctype.h>

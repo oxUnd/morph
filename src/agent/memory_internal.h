@@ -1,7 +1,7 @@
 #ifndef MORPH_MEMORY_INTERNAL_H
 #define MORPH_MEMORY_INTERNAL_H
 
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 

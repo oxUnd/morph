@@ -8,4 +8,4 @@ file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_PERMISSION_SOURCES
 add_library(morph-permission STATIC ${MORPH_PERMISSION_SOURCES})
 target_include_directories(morph-permission PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(morph-permission PUBLIC
-	morph-ext-sdk nbase::nbase morph-cjson morph-command-analysis morph-db Threads::Threads)
+	morph-ext-sdk nbase::nbase morph-cjson morph-command-analysis morph-db morph-persistence Threads::Threads)

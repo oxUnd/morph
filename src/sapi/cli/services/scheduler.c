@@ -3,7 +3,7 @@
 #include "runtime/runtime.h"
 #include "sapi/cli/application.h"
 #include <nb/cleanup.h>
-#include "db/scheduled_task.h"
+#include "persistence/orm/scheduled_task.h"
 #include "agent/turn.h"
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/application_internal.h"

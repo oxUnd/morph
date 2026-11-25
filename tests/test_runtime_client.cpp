@@ -1,4 +1,5 @@
 #include "runtime/client.h"
+#include "persistence/orm/test_fixture.h"
 
 #ifdef REACT_H
 #error "The runtime client protocol must not expose the ReAct implementation"
@@ -9,8 +10,8 @@
 extern "C" {
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
-#include "db/scheduled_task.h"
-#include "persistence/runtime_store.h"
+#include "persistence/orm/scheduled_task.h"
+#include "persistence/orm/runtime_store.h"
 #include <nb/err.h>
 }
 
@@ -26,7 +27,6 @@ extern "C" {
 #include <mutex>
 #include <poll.h>
 #include <set>
-#include <sqlite3.h>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
@@ -1613,13 +1613,13 @@ TEST_F(RuntimeClientTest, RestartMarksAbandonedPersistedTurnInterruptedWithoutRe
 	pending.clear();
 	runtime_close(instance);
 	instance = nullptr;
-	sqlite3 *storage = nullptr;
-	ASSERT_EQ(sqlite3_open(database.c_str(), &storage), SQLITE_OK);
+	struct db storage NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open(nullptr, &storage, database.c_str()), 0);
 	std::string sql = "UPDATE runtime_turns SET status='running',owner_epoch='abandoned',"
 		"execution_rc=0 WHERE turn_id='" + turn + "'";
-	int updated = sqlite3_exec(storage, sql.c_str(), nullptr, nullptr, nullptr);
-	sqlite3_close(storage);
-	ASSERT_EQ(updated, SQLITE_OK);
+	int updated = orm_fixture_execute(&storage, sql.c_str());
+	db_close(&storage);
+	ASSERT_EQ(updated, 0);
 	struct runtime_options options{};
 	options.config_path = config_path.c_str();
 	Open(&options);

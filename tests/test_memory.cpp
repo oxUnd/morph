@@ -1,19 +1,20 @@
 #include "errors.h"
+#include "persistence/orm/test_fixture.h"
 #include <gtest/gtest.h>
 #include <nb/err.h>
 #include <nb/cleanup.h>
 
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "agent/memory.h"
-#include "persistence/memory_snapshot.h"
-#include "persistence/memory_job_store.h"
-#include "persistence/memory_repository.h"
-#include "persistence/memory_search.h"
-#include "persistence/memory_summary_store.h"
+#include "persistence/orm/memory_snapshot.h"
+#include "persistence/orm/memory_job_store.h"
+#include "persistence/orm/memory_repository.h"
+#include "persistence/orm/memory_search.h"
+#include "persistence/orm/memory_summary_store.h"
 #include "agent/memory_internal.h"
 #include "cJSON.h"
 #include "cJSON.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 
 #include <cstdio>
 #include <cstring>
@@ -221,18 +222,20 @@ TEST_F(MemoryTest, ClearAllRemovesEverything)
 
 static int memory_count_fact(struct db *db, int64_t session_id, const char *key_name)
 {
-	sqlite3_stmt *stmt = nullptr;
-	const char *sql = "SELECT COUNT(*) FROM memory_facts "
-			  "WHERE session_id=? AND key_name=? AND is_current=1";
-	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return -1;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	sqlite3_bind_text(stmt, 2, key_name, -1, SQLITE_TRANSIENT);
-	int count = -1;
-	if (sqlite3_step(stmt) == SQLITE_ROW)
-		count = sqlite3_column_int(stmt, 0);
-	sqlite3_finalize(stmt);
-	return count;
+	std::string quoted_key;
+	for (const char *part = key_name; *part; part++) {
+		quoted_key += *part;
+		if (*part == '\'')
+			quoted_key += '\'';
+	}
+
+	const std::string sql =
+		"SELECT COUNT(*) FROM memory_facts WHERE session_id=" + std::to_string(session_id) +
+		" AND key_name='" + quoted_key + "' AND is_current=1";
+	int64_t count = -1;
+
+	EXPECT_EQ(orm_fixture_integer(db, sql.c_str(), &count), 0);
+	return static_cast<int>(count);
 }
 
 TEST_F(MemoryTest, InputPreparationDoesNotInferFactsOrPreferencesInAnyLanguage)
@@ -268,16 +271,7 @@ TEST_F(MemoryTest, LanguageMentionsComplaintsAndNegationsDoNotChangePreference)
 	ASSERT_EQ(save_accepted_turn(&db, s.id, "你现在回答为啥过程中都是英文？", "我会检查",
 				     nullptr, 1, &opts),
 		  0);
-	sqlite3_stmt *check = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-				     "SELECT COUNT(*) FROM memory_facts WHERE session_id=? "
-				     "AND key_name='preferred_language' AND is_current=1",
-				     -1, &check, nullptr),
-		  SQLITE_OK);
-	sqlite3_bind_int64(check, 1, s.id);
-	ASSERT_EQ(sqlite3_step(check), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(check, 0), 0);
-	sqlite3_finalize(check);
+	EXPECT_EQ(memory_count_fact(&db, s.id, "preferred_language"), 0);
 	ASSERT_EQ(save_accepted_turn(&db, s.id, "后续回答我的语言改成中文", "好的", nullptr, 1,
 				     &opts),
 		  0);
@@ -433,7 +427,8 @@ TEST_F(MemoryTest, OldProfilesAndRulesCannotCompeteWithEffectivePreference)
 	struct session session;
 	ASSERT_EQ(session_create(&db, "legacy", "mock", &session), 0);
 	ASSERT_EQ(
-		db_exec(&db,
+		orm_fixture_execute(
+			&db,
 			"INSERT INTO memory_profiles VALUES(1,'Respond in English',1);"
 			"INSERT INTO "
 			"memory_procedures(session_id,rule_text,trigger_text,updated_at) "
@@ -459,7 +454,8 @@ TEST_F(MemoryTest, LegacyMigrationIsIdempotentAndCannotOverrideNewExplicitSettin
 	struct session session;
 	ASSERT_EQ(session_create(&db, "legacy_good", "mock", &session), 0);
 	ASSERT_EQ(
-		db_exec(&db,
+		orm_fixture_execute(
+			&db,
 			"INSERT INTO "
 			"memory_facts(session_id,key_name,value_text,source_text,category,"
 			"valid_from,created_at,updated_at) VALUES(1,'preferred_language','English',"
@@ -480,7 +476,8 @@ TEST_F(MemoryTest, DurableJobsRecoverAndDoNotDuplicatePastTasks)
 	struct session session;
 	ASSERT_EQ(session_create(&db, "recovery", "mock", &session), 0);
 	ASSERT_EQ(preference_bind(&db, session.id, "local", "/project"), 0);
-	ASSERT_EQ(db_exec(&db, "INSERT INTO memory_jobs(session_id,generation,payload) VALUES(1,0,"
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "INSERT INTO memory_jobs(session_id,generation,payload) VALUES(1,0,"
 			       "'{\"input\":\"old task\",\"answer\":\"done\",\"success\":true,"
 			       "\"episodes\":true,\"llm\":false,\"tools\":[\"file_read\"]}');"),
 		  0);
@@ -491,16 +488,13 @@ TEST_F(MemoryTest, DurableJobsRecoverAndDoNotDuplicatePastTasks)
 	EXPECT_NE(strstr(jobs, "completed"), nullptr);
 	free(jobs);
 	/* Simulate a crash after episode commit but before the completion marker. */
-	ASSERT_EQ(db_exec(&db, "UPDATE memory_jobs SET state='queued'"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "UPDATE memory_jobs SET state='queued'"), 0);
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT COUNT(*) FROM memory_episodes", -1, &stmt,
-				     nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
-	sqlite3_finalize(stmt);
+	int64_t episode_count = -1;
+	ASSERT_EQ(orm_fixture_integer(&db, "SELECT COUNT(*) FROM memory_episodes", &episode_count),
+		  0);
+	EXPECT_EQ(episode_count, 1);
 	ASSERT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
@@ -632,7 +626,7 @@ TEST_F(MemoryTest, PreferenceReadFailureIsNotTreatedAsEmptyMemory)
 	struct session session;
 	ASSERT_EQ(session_create(&db, "read-failure", "mock", &session), 0);
 	ASSERT_EQ(explicit_preference(&db, session.id, "Chinese", "以后都用中文", "input"), 0);
-	ASSERT_EQ(db_exec(&db, "DROP TABLE memory_preferences"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "DROP TABLE memory_preferences"), 0);
 	char *context = nullptr;
 	EXPECT_EQ(memory_reply_text_create(&db, session.id, "hello", &opts, &context),
 		  MORPH_ERR_DB);
@@ -860,7 +854,7 @@ TEST_F(MemoryTest, SnapshotReadFailureReleasesPreviouslyCopiedSections)
 	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "location", "London", "first",
 					   "context", .5),
 		  0);
-	ASSERT_EQ(db_exec(&db, "DROP TABLE memory_episodes"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "DROP TABLE memory_episodes"), 0);
 	struct memory_snapshot_options read{};
 	read.facts_limit = -1;
 	read.tasks_limit = -1;
@@ -886,7 +880,7 @@ TEST_F(MemoryTest, JobSnapshotsOwnPayloadAndStateChangesRequireTheExpectedState)
 	ASSERT_NE(record, nullptr);
 	EXPECT_EQ(record->id, id);
 	EXPECT_EQ(record->memory_version, 7);
-	ASSERT_EQ(db_exec(&db, "UPDATE memory_jobs SET payload='replacement'"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "UPDATE memory_jobs SET payload='replacement'"), 0);
 	EXPECT_STREQ(record->payload_json, "original payload");
 	EXPECT_STREQ(record->state, "queued");
 	EXPECT_EQ(memory_job_store_claim(&db, id, getpid()), 1);
@@ -919,17 +913,17 @@ TEST_F(MemoryTest, MemoryVersionWriteRollbackKeepsFactsAndTheVersionConsistent)
 					  "general", .5),
 		  0);
 	EXPECT_EQ(memory_store_finish_write(&db, NB_ERR_CANCELLED), NB_ERR_CANCELLED);
-	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+	EXPECT_NE(orm_fixture_transaction_idle(&db), 0);
 	EXPECT_EQ(memory_count_fact(&db, session.id, "project"), 0);
 	ASSERT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
 	EXPECT_EQ(memory_store_begin_versioned_write(&db, session.id, memory_version),
 		  NB_ERR_STALE);
-	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+	EXPECT_NE(orm_fixture_transaction_idle(&db), 0);
 	ASSERT_EQ(memory_store_begin_write(&db), 0);
 	EXPECT_NE(memory_store_begin_versioned_write(&db, session.id, memory_version), 0);
-	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
+	EXPECT_EQ(orm_fixture_transaction_idle(&db), 0);
 	EXPECT_EQ(memory_store_finish_write(&db, NB_ERR_CANCELLED), NB_ERR_CANCELLED);
-	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+	EXPECT_NE(orm_fixture_transaction_idle(&db), 0);
 }
 
 TEST_F(MemoryTest, WriteTransactionsExcludeUnrelatedSharedConnectionWriters)
@@ -1169,6 +1163,98 @@ TEST_F(MemoryTest, ChineseSearchAndUpdatedFactsPreserveSources)
 	search.query = "unrelated absent terms";
 	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
 	EXPECT_EQ(matches.records.len, 0u);
+}
+
+TEST_F(MemoryTest, SearchScoresEveryBoundedTermAndAppliesTheResultLimit)
+{
+	struct session session{};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_options search{};
+	std::string query;
+
+	ASSERT_EQ(session_create(&db, "many-search-terms", "mock", &session), 0);
+	ASSERT_EQ(memory_store_prepare_session(&db, session.id), 0);
+	for (int i = 0; i < 24; i++) {
+		if (!query.empty())
+			query += " ";
+
+		query += "term" + std::to_string(i);
+	}
+
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "term0", query.c_str(), "term0",
+					   "general", 0.8), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "secondary", query.c_str(),
+					   "evidence", "general", 0.8), 0);
+	query += " secondary";
+	search.query = query.c_str();
+	search.limit = 1;
+	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
+	ASSERT_EQ(matches.records.len, 1u);
+	const auto *record = static_cast<const struct memory_record *>(nb_vec_at(&matches.records, 0));
+
+	EXPECT_STREQ(record->key, "term0");
+	EXPECT_EQ(record->score, 53);
+}
+
+TEST_F(MemoryTest, SearchPreservesNullableLegacyImportance)
+{
+	struct session session{};
+	struct memory_task_input task{};
+	struct memory_search_result matches NB_CLEANUP(memory_search_result_cleanup) = {};
+	struct memory_search_options search{};
+
+	ASSERT_EQ(session_create(&db, "legacy-importance", "mock", &session), 0);
+	ASSERT_EQ(memory_store_prepare_session(&db, session.id), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "legacy_fact", "saved value",
+					   "evidence", "general", 0.5),
+		  0);
+	task.task_type = "task";
+	task.summary = "legacy task";
+	task.outcome = "done";
+	ASSERT_EQ(memory_store_add_task(&db, session.id, &task), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "UPDATE memory_facts SET importance=NULL;"
+					   "UPDATE memory_episodes SET importance=NULL;"),
+		  0);
+	ASSERT_EQ(memory_search_records(&db, session.id, &search, &matches), 0);
+	ASSERT_EQ(matches.records.len, 2u);
+	for (size_t i = 0; i < matches.records.len; i++) {
+		const auto *record =
+			static_cast<const struct memory_record *>(nb_vec_at(&matches.records, i));
+
+		EXPECT_DOUBLE_EQ(record->importance, 0.0);
+	}
+}
+
+TEST_F(MemoryTest, FactWriteFailuresKeepTheirPublicErrorAndRollback)
+{
+	struct session session{};
+	int64_t count = 0;
+
+	ASSERT_EQ(session_create(&db, "fact-write-failure", "mock", &session), 0);
+	ASSERT_EQ(memory_store_upsert_fact(&db, session.id, "saved", "original", "evidence",
+					   "general", 0.5),
+		  0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db,
+			  "CREATE TRIGGER reject_fact_update BEFORE UPDATE ON memory_facts BEGIN "
+			  "SELECT RAISE(ABORT,'injected update failure'); END;"
+			  "CREATE TRIGGER reject_fact_insert BEFORE INSERT ON memory_facts BEGIN "
+			  "SELECT RAISE(ABORT,'injected insert failure'); END;"),
+		  0);
+	EXPECT_EQ(memory_store_upsert_fact(&db, session.id, "saved", "original", "changed",
+					   "general", 0.5),
+		  NB_ERR_IO);
+	EXPECT_TRUE(orm_fixture_transaction_idle(&db));
+	EXPECT_EQ(memory_store_upsert_fact(&db, session.id, "new", "new value", "evidence",
+					   "general", 0.5),
+		  NB_ERR_IO);
+	EXPECT_TRUE(orm_fixture_transaction_idle(&db));
+	ASSERT_EQ(orm_fixture_integer(&db,
+				      "SELECT COUNT(*) FROM memory_facts WHERE key_name='saved' "
+				      "AND value_text='original' AND source_text='evidence'",
+				      &count),
+		  0);
+	EXPECT_EQ(count, 1);
 }
 
 static int memory_hide_session(const char *display, const char *, void *hidden)
@@ -1445,7 +1531,7 @@ TEST_F(MemoryTest, OrganizationRetryDoesNotRepeatCommittedExtractionOrTask)
 	EXPECT_STREQ(job->state, "failed");
 	EXPECT_STREQ(job->stage, "organize");
 	state.fail_organization = false;
-	ASSERT_EQ(db_exec(&db, "UPDATE memory_jobs SET updated_at=updated_at-60"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "UPDATE memory_jobs SET updated_at=updated_at-60"), 0);
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
 	EXPECT_EQ(state.extracted, 1);
@@ -1465,9 +1551,10 @@ TEST_F(MemoryTest, ExtractionAndResumeStageCommitTogether)
 	SummaryMemoryModel state;
 	struct model model = {};
 	configure_summary_model(&opts, &model, &state);
-	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER reject_memory_stage BEFORE UPDATE OF stage "
-			       "ON memory_jobs WHEN NEW.stage='organize' BEGIN "
-			       "SELECT RAISE(ABORT,'injected failure'); END"),
+	ASSERT_EQ(orm_fixture_execute(&db,
+				      "CREATE TRIGGER reject_memory_stage BEFORE UPDATE OF stage "
+				      "ON memory_jobs WHEN NEW.stage='organize' BEGIN "
+				      "SELECT RAISE(ABORT,'injected failure'); END"),
 		  0);
 	ASSERT_EQ(memory_save_turn_async(&db, session.id, "Check staging", "Verified", nullptr, 1,
 					 &opts),
@@ -1486,8 +1573,8 @@ TEST_F(MemoryTest, ExtractionAndResumeStageCommitTogether)
 	auto *job = static_cast<struct memory_job_record *>(nb_vec_at(&jobs.rows, 0));
 	EXPECT_STREQ(job->state, "failed");
 	EXPECT_STREQ(job->stage, "extract");
-	ASSERT_EQ(db_exec(&db, "DROP TRIGGER reject_memory_stage"), 0);
-	ASSERT_EQ(db_exec(&db, "UPDATE memory_jobs SET updated_at=updated_at-60"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "DROP TRIGGER reject_memory_stage"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "UPDATE memory_jobs SET updated_at=updated_at-60"), 0);
 	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
 	memory_async_shutdown(opts.worker);
 	EXPECT_EQ(state.extracted, 2);
@@ -1712,7 +1799,7 @@ TEST_F(MemoryTest, ParallelEditsOnOneConnectionHaveOneWinnerAndNoMixedTransactio
 	EXPECT_EQ(successes, 1);
 	EXPECT_EQ(stale, 1);
 	EXPECT_EQ(failures, 0);
-	EXPECT_NE(sqlite3_get_autocommit(db.handle), 0);
+	EXPECT_NE(orm_fixture_transaction_idle(&db), 0);
 }
 
 TEST_F(MemoryTest, ExistingProjectBindingCannotMoveSavedMemoryToAnotherProject)

@@ -1,3 +1,5 @@
+add_subdirectory(persistence/orm)
+
 add_library(morph-config STATIC
 	config/config.c
 	config/edit.c
@@ -11,14 +13,15 @@ target_include_directories(morph-config PUBLIC
 target_link_libraries(morph-config PUBLIC nbase::nbase morph-cjson morph-permission)
 
 add_library(morph-session STATIC
-	session.c
-	session_history.c
+	persistence/orm/session.c
+	persistence/orm/session_history.c
 )
 target_include_directories(morph-session PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-session PUBLIC nbase::nbase morph-cjson morph-db)
+target_link_libraries(morph-session PUBLIC nbase::nbase morph-cjson morph-db
+	PRIVATE nothing_orm::sqlite)
 
 add_library(morph-credits STATIC
 	credits.c
@@ -47,7 +50,6 @@ add_subdirectory(ipc)
 add_subdirectory(js_runner)
 add_subdirectory(models)
 add_subdirectory(http)
-add_subdirectory(db)
 add_subdirectory(persistence)
 add_subdirectory(event)
 add_subdirectory(agent_ui)

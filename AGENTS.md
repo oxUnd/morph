@@ -42,7 +42,18 @@
   - multi-agent: spawn_agent, send_message, followup_task, interrupt_agent, list_agents, read_agent, wait_agent. Runtime owns `agent_control`; Ultra enables proactive delegation. Child skills/guardrails and billing are independently bound; optional weighted budgets account for usage across the session tree. CLI `/subagents` switches independent transcripts, follow-up and interruption; interactive `/agents` opens the agent browser; noninteractive mode prints snapshots. Scoped child builds use `MORPH_AGENT_SCRATCH`. See `docs/multi-agent.md`.
   - img_inpaint = bbox+label region i2i; img_compose = arrow+label cross-image fusion; both consume the img_annotate JSON verbatim.
 - **Plan** `src/agent/plan.c` → `plan` and lightweight `update_plan` tools; child registries are session-local.
-- **Checkpoints** `src/runtime/checkpoint.c`, `src/persistence/checkpoint_store.c`: each primary turn saves a persistent checkpoint before its prompt enters history. `apply_patch` captures preimages after authorization and seals actual results even on partial failure. `/rewind` restores code, conversation, or both; the model's `checkpoint` tool restores code only. Preserve external changes through conflict checks, never infer undo scope from a Git diff. Shell, other tools, and sub-agents are outside file tracking. See `docs/checkpointing.md`.
+- **Persistence** `src/persistence/orm/`: all persistent models and all database
+  operations live here, using nothing-orm. Other directories call public model
+  APIs and own application orchestration only. Keep SQL, ORM descriptors,
+  connection leases, migrations, transactions, imports and backup operations
+  inside this directory. Use structured ORM CRUD/query/schema/index/trigger
+  APIs throughout production code, including this directory; do not assemble
+  SQL or call raw query/statement/script entry points. Native trigger bodies
+  and default expressions are immutable ORM metadata. Raw fixtures are test-only.
+  Never expose native database handles or include
+  `norm/*` outside the model implementation. Test fixtures also use this boundary;
+  `orm_boundary_conventions` enforces it.
+- **Checkpoints** `src/runtime/checkpoint.c`, `src/persistence/orm/checkpoint_store.c`: each primary turn saves a persistent checkpoint before its prompt enters history. `apply_patch` captures preimages after authorization and seals actual results even on partial failure. `/rewind` restores code, conversation, or both; the model's `checkpoint` tool restores code only. Preserve external changes through conflict checks, never infer undo scope from a Git diff. Shell, other tools, and sub-agents are outside file tracking. See `docs/checkpointing.md`.
 - **MCP** `src/mcp/`: stdio + Streamable HTTP; auto-registers remote tools/resources/prompts. Config `[[mcp.servers]]`.
 - **Skills** `src/skill/`: startup discovery and on-demand activation of `SKILL.md` files with YAML frontmatter. Project skills in `.agents/skills/` take precedence over user and bundled skills. See [skill management](docs/cli-management.md).
 - **Exts** `src/ext/`, `src/ipc/`: executable extensions use sandboxed subprocesses and JSON-RPC; native extensions use an in-process ABI. TOML manifests declare `entry`, `type`, capabilities and `input_schema`; examples in `exts/`. Read [extension development](docs/extension-development.md) and use the bundled `morph-ext-development` skill when creating or debugging an extension. Native extensions may resolve nbase functions from a compatible host instead of linking another copy; verify the target host's exports and follow the platform-specific link instructions in that guide.

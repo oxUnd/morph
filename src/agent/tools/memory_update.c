@@ -4,9 +4,9 @@
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
 #include "agent/history_internal.h"
-#include "persistence/memory_repository.h"
-#include "persistence/memory_search.h"
-#include "persistence/memory_summary_store.h"
+#include "persistence/orm/memory_repository.h"
+#include "persistence/orm/memory_search.h"
+#include "persistence/orm/memory_summary_store.h"
 #include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"

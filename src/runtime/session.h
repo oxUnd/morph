@@ -1,7 +1,7 @@
 #ifndef MORPH_RUNTIME_SESSION_H
 #define MORPH_RUNTIME_SESSION_H
 
-#include "../session.h"
+#include "persistence/orm/session.h"
 
 struct runtime_engine;
 struct react_context;

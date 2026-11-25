@@ -1,9 +1,10 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 
 extern "C" {
-#include "persistence/checkpoint_store.h"
-#include "persistence/credit_store.h"
-#include "session.h"
+#include "persistence/orm/checkpoint_store.h"
+#include "persistence/orm/credit_store.h"
+#include "persistence/orm/session.h"
 #include <nb/cleanup.h>
 #include "errors.h"
 #include <nb/file.h>
@@ -90,15 +91,9 @@ class CheckpointStoreTest : public ::testing::Test
 
 	int64_t Scalar(const std::string &sql)
 	{
-		sqlite3_stmt *stmt = nullptr;
-		EXPECT_EQ(sqlite3_prepare_v2(database.handle, sql.c_str(), -1, &stmt, nullptr),
-			  SQLITE_OK);
-		if (!stmt)
-			return -1;
-		int step = sqlite3_step(stmt);
-		EXPECT_EQ(step, SQLITE_ROW);
-		int64_t value = step == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : -1;
-		sqlite3_finalize(stmt);
+		int64_t value = -1;
+
+		EXPECT_EQ(orm_fixture_integer(&database, sql.c_str(), &value), 0);
 		return value;
 	}
 
@@ -147,7 +142,8 @@ TEST_F(CheckpointStoreTest, DirtyPreimageAndModeSurviveDatabaseReopen)
 
 TEST_F(CheckpointStoreTest, LegacyCompactionSnapshotsMigrateWithErrorCodes)
 {
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  "DELETE FROM schema_migrations WHERE version=3;"
 			  "ALTER TABLE history_compaction_attempts DROP COLUMN legacy_error_code;"
 			  "INSERT INTO history_compaction_attempts(session_id,trigger_kind,status,"
@@ -160,13 +156,14 @@ TEST_F(CheckpointStoreTest, LegacyCompactionSnapshotsMigrateWithErrorCodes)
 	int64_t current = Create("after the error code migration");
 	ASSERT_GT(current, legacy);
 	EXPECT_EQ(Scalar("SELECT error_code FROM checkpoint_rows_history_compaction_attempts "
-			 "WHERE checkpoint_id=" + std::to_string(legacy)),
+			 "WHERE checkpoint_id=" +
+			 std::to_string(legacy)),
 		  NB_ERR_PARSE);
 	EXPECT_EQ(Scalar("SELECT legacy_error_code FROM "
 			 "checkpoint_rows_history_compaction_attempts WHERE checkpoint_id=" +
 			 std::to_string(legacy)),
 		  -261);
-	ASSERT_EQ(db_exec(&database, "DELETE FROM history_compaction_attempts"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "DELETE FROM history_compaction_attempts"), 0);
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, legacy,
 					   CHECKPOINT_RESTORE_CONVERSATION, &report),
@@ -184,11 +181,13 @@ TEST_F(CheckpointStoreTest, AddedSnapshotColumnsPreserveDefaultsAndMapByName)
 {
 	ASSERT_EQ(message_add(&database, session.id, "user", "before upgrade", 7), 0);
 	int64_t legacy = Create("before schema upgrade");
-	ASSERT_EQ(db_exec(&database,
-			  "ALTER TABLE messages ADD COLUMN upgrade_count INTEGER NOT NULL DEFAULT 9;"
-			  "ALTER TABLE checkpoint_rows_messages ADD COLUMN snapshot_only TEXT;"
-			  "UPDATE messages SET upgrade_count=23;"),
-		  0);
+	ASSERT_EQ(
+		orm_fixture_execute(
+			&database,
+			"ALTER TABLE messages ADD COLUMN upgrade_count INTEGER NOT NULL DEFAULT 9;"
+			"ALTER TABLE checkpoint_rows_messages ADD COLUMN snapshot_only TEXT;"
+			"UPDATE messages SET upgrade_count=23;"),
+		0);
 	db_close(&database);
 	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
@@ -200,7 +199,7 @@ TEST_F(CheckpointStoreTest, AddedSnapshotColumnsPreserveDefaultsAndMapByName)
 	EXPECT_EQ(Scalar("SELECT upgrade_count FROM checkpoint_rows_messages WHERE checkpoint_id=" +
 			 std::to_string(current)),
 		  23);
-	ASSERT_EQ(db_exec(&database, "DELETE FROM messages"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "DELETE FROM messages"), 0);
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, legacy,
 					   CHECKPOINT_RESTORE_CONVERSATION, &report),
@@ -209,9 +208,34 @@ TEST_F(CheckpointStoreTest, AddedSnapshotColumnsPreserveDefaultsAndMapByName)
 	EXPECT_EQ(message_count(&database, session.id), 1);
 }
 
+TEST_F(CheckpointStoreTest, SnapshotSchemasPreserveExpressionDefaults)
+{
+	ASSERT_EQ(orm_fixture_execute(&database,
+				      "ALTER TABLE messages ADD COLUMN expression_count INTEGER "
+				      "NOT NULL DEFAULT (CAST(9 AS INTEGER));"),
+		  0);
+	ASSERT_EQ(message_add(&database, session.id, "user", "expression default", 7), 0);
+	const int64_t checkpoint = Create("preserve a schema expression default");
+
+	db_close(&database);
+	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "UPDATE messages SET expression_count=23"), 0);
+	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
+	ASSERT_EQ(checkpoint_store_restore(&database, session.id, checkpoint,
+					   CHECKPOINT_RESTORE_CONVERSATION, &report),
+		  0);
+	EXPECT_EQ(Scalar("SELECT expression_count FROM messages"), 9);
+	EXPECT_EQ(Scalar("SELECT expression_count FROM checkpoint_rows_messages WHERE "
+			 "checkpoint_id=" +
+			 std::to_string(checkpoint)),
+		  9);
+}
+
 TEST_F(CheckpointStoreTest, FailedSnapshotMigrationRollsBackAndCanRetry)
 {
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  "DELETE FROM schema_migrations WHERE version=3;"
 			  "ALTER TABLE history_compaction_attempts DROP COLUMN legacy_error_code;"
 			  "INSERT INTO history_compaction_attempts(session_id,trigger_kind,status,"
@@ -221,7 +245,8 @@ TEST_F(CheckpointStoreTest, FailedSnapshotMigrationRollsBackAndCanRetry)
 	db_close(&database);
 	ASSERT_EQ(db_open(nullptr, &database, database_path.c_str()), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  "CREATE TRIGGER reject_snapshot_migration BEFORE UPDATE ON "
 			  "checkpoint_rows_history_compaction_attempts "
 			  "BEGIN SELECT RAISE(ABORT,'injected snapshot migration failure'); END;"),
@@ -231,7 +256,7 @@ TEST_F(CheckpointStoreTest, FailedSnapshotMigrationRollsBackAndCanRetry)
 					  "schema upgrade should roll back", &failed),
 		  MORPH_ERR_DB);
 	EXPECT_EQ(failed, 0);
-	EXPECT_EQ(sqlite3_get_autocommit(database.handle), 1);
+	EXPECT_EQ(orm_fixture_transaction_idle(&database), 1);
 	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoints"), 1);
 	EXPECT_EQ(Scalar("SELECT count(*) FROM "
 			 "pragma_table_info('checkpoint_rows_history_compaction_attempts') "
@@ -239,7 +264,7 @@ TEST_F(CheckpointStoreTest, FailedSnapshotMigrationRollsBackAndCanRetry)
 		  0);
 	EXPECT_EQ(Scalar("SELECT error_code FROM checkpoint_rows_history_compaction_attempts"),
 		  -261);
-	ASSERT_EQ(db_exec(&database, "DROP TRIGGER reject_snapshot_migration"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "DROP TRIGGER reject_snapshot_migration"), 0);
 	Create("retry schema upgrade on the same connection");
 	EXPECT_EQ(Scalar("SELECT count(*) FROM checkpoint_rows_history_compaction_attempts "
 			 "WHERE legacy_error_code=-261"),
@@ -389,37 +414,41 @@ TEST_F(CheckpointStoreTest,
 	int64_t original = History("user_message", "earlier model input");
 	ASSERT_EQ(trace_save(&database, session.id, 1, "[]", 0), 0);
 	std::string sid = std::to_string(session.id);
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  ("INSERT INTO session_plans VALUES(" + sid + ",'old plan')").c_str()),
 		  0);
 	int64_t id = Create();
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  ("UPDATE model_history_items SET active=0 WHERE session_id=" + sid)
 				  .c_str()),
 		  0);
 	int64_t summary = History("compaction_summary", "future summary");
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  ("INSERT INTO "
 			   "history_compactions(session_id,cutoff_sequence_no,summary_item_id,"
 			   "input_tokens,output_tokens,trigger_kind,created_at) VALUES(" +
 			   sid + ",1," + std::to_string(summary) + ",7,1,'auto',0)")
 				  .c_str()),
 		  0);
-	ASSERT_EQ(
-		db_exec(&database, ("INSERT INTO history_summary_sources VALUES(" +
-				    std::to_string(summary) + "," + std::to_string(original) + ")")
-					   .c_str()),
-		0);
+	ASSERT_EQ(orm_fixture_execute(&database, ("INSERT INTO history_summary_sources VALUES(" +
+						  std::to_string(summary) + "," +
+						  std::to_string(original) + ")")
+							 .c_str()),
+		  0);
 	ASSERT_EQ(message_add(&database, session.id, "assistant", "future answer", 1), 0);
 	ASSERT_EQ(trace_save(&database, session.id, 2, "[]", 0), 0);
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  ("UPDATE session_plans SET state_json='future plan' WHERE session_id=" +
 			   sid)
 				  .c_str()),
 		  0);
-	ASSERT_EQ(db_exec(&database,
-			  ("INSERT INTO memory_profiles VALUES(" + sid + ",'remember this',0)")
-				  .c_str()),
+	ASSERT_EQ(orm_fixture_execute(&database, ("INSERT INTO memory_profiles VALUES(" + sid +
+						  ",'remember this',0)")
+							 .c_str()),
 		  0);
 	ASSERT_EQ(session_update_tokens(&database, session.id, 99), 0);
 	ASSERT_EQ(credit_store_init_schema(&database), 0);
@@ -452,7 +481,7 @@ TEST_F(CheckpointStoreTest,
 
 TEST_F(CheckpointStoreTest, LegacyCheckpointWithoutSkillSnapshotsRestoresNoActivations)
 {
-	ASSERT_EQ(db_exec(&database, "DROP TABLE session_skill_activations"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "DROP TABLE session_skill_activations"), 0);
 	const int64_t id = Create("legacy checkpoint without skill persistence");
 	EXPECT_EQ(Scalar("SELECT count(*) FROM sqlite_master WHERE "
 			 "name='checkpoint_rows_session_skill_activations'"),
@@ -462,7 +491,7 @@ TEST_F(CheckpointStoreTest, LegacyCheckpointWithoutSkillSnapshotsRestoresNoActiv
 	ASSERT_EQ(db_init_schema(&database), 0);
 	const std::string sql = "INSERT INTO session_skill_activations VALUES(" +
 				std::to_string(session.id) + ",'future-skill')";
-	ASSERT_EQ(db_exec(&database, sql.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, sql.c_str()), 0);
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id,
 					   CHECKPOINT_RESTORE_CONVERSATION, &report),
@@ -480,7 +509,8 @@ TEST_F(CheckpointStoreTest, DatabaseFailureCompensatesCodeAndRollsBackConversati
 	Write("file", "after");
 	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
 	ASSERT_EQ(message_add(&database, session.id, "assistant", "after", 1), 0);
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  "CREATE TRIGGER reject_checkpoint_update BEFORE UPDATE OF code_active "
 			  "ON code_checkpoints WHEN NEW.code_active=0 BEGIN SELECT "
 			  "RAISE(FAIL,'injected'); END"),
@@ -540,17 +570,20 @@ TEST_F(CheckpointStoreTest, LargeCapturedDataRestoresWithBoundedCompensationCopi
 	int64_t id = Create("restore ninety MiB of captured before and after data");
 	for (int i = 0; i < 3; i++)
 		ASSERT_EQ(checkpoint_store_capture(&database, id,
-			("large-" + std::to_string(i)).c_str()), 0);
+						   ("large-" + std::to_string(i)).c_str()),
+			  0);
 	contents[0] = 'b';
 	for (int i = 0; i < 3; i++)
 		Write("large-" + std::to_string(i), contents);
 	ASSERT_EQ(checkpoint_store_seal(&database, id), 0);
 	EXPECT_EQ(Scalar("SELECT sum(length(before_data)+length(after_data)) FROM "
-		"code_checkpoint_files WHERE checkpoint_id=" + std::to_string(id)),
-		static_cast<int64_t>(file_bytes * 6));
+			 "code_checkpoint_files WHERE checkpoint_id=" +
+			 std::to_string(id)),
+		  static_cast<int64_t>(file_bytes * 6));
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_CODE,
-		&report), 0);
+					   &report),
+		  0);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(report, "code_restored")));
 	for (int i = 0; i < 3; i++) {
 		std::string path = workspace + "/large-" + std::to_string(i);
@@ -572,18 +605,20 @@ TEST_F(CheckpointStoreTest, ValidatesProspectiveAggregateAndRejectsAnOversizedSe
 	int64_t id = Create("validate aggregate growth before writing");
 	for (int i = 0; i < 6; i++)
 		ASSERT_EQ(checkpoint_store_capture(&database, id,
-			("large-" + std::to_string(i)).c_str()), 0);
+						   ("large-" + std::to_string(i)).c_str()),
+			  0);
 	ASSERT_EQ(checkpoint_store_capture(&database, id, "moved"), 0);
 	ASSERT_EQ(checkpoint_store_validate_write(&database, id, "large-0",
-		CHECKPOINT_FILE_MAX_BYTES, nullptr), 0);
+						  CHECKPOINT_FILE_MAX_BYTES, nullptr),
+		  0);
 	contents.resize(CHECKPOINT_FILE_MAX_BYTES, 'a');
 	Write("large-0", contents);
 	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-1", 13u * 1024u * 1024u,
 						  nullptr),
 		  NB_ERR_TOO_BIG);
 	EXPECT_EQ(std::filesystem::file_size(workspace + "/large-1"), file_bytes);
-	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "moved", file_bytes,
-		"large-1"), 0);
+	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "moved", file_bytes, "large-1"),
+		  0);
 	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "uncaptured", 1, nullptr),
 		  NB_ERR_STALE);
 	contents.resize(13u * 1024u * 1024u);
@@ -592,15 +627,15 @@ TEST_F(CheckpointStoreTest, ValidatesProspectiveAggregateAndRejectsAnOversizedSe
 	contents[0] = 'b';
 	for (int i = 2; i < 6; i++)
 		Write("large-" + std::to_string(i), contents);
-	EXPECT_GT(60u * 1024u * 1024u +
-		std::filesystem::file_size(workspace + "/large-0") +
-		std::filesystem::file_size(workspace + "/large-1") + file_bytes * 4,
-		CHECKPOINT_DATA_MAX_BYTES);
+	EXPECT_GT(60u * 1024u * 1024u + std::filesystem::file_size(workspace + "/large-0") +
+			  std::filesystem::file_size(workspace + "/large-1") + file_bytes * 4,
+		  CHECKPOINT_DATA_MAX_BYTES);
 	EXPECT_EQ(checkpoint_store_seal(&database, id), NB_ERR_TOO_BIG);
-	EXPECT_EQ(Scalar("SELECT code_active FROM code_checkpoints WHERE id=" +
-		std::to_string(id)), 0);
+	EXPECT_EQ(Scalar("SELECT code_active FROM code_checkpoints WHERE id=" + std::to_string(id)),
+		  0);
 	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files WHERE checkpoint_id=" +
-		std::to_string(id) + " AND sealed=1"), 0);
+			 std::to_string(id) + " AND sealed=1"),
+		  0);
 	EXPECT_EQ(checkpoint_store_validate_write(&database, id, "large-0", 1, nullptr),
 		  NB_ERR_STALE);
 }
@@ -618,9 +653,10 @@ TEST_F(CheckpointStoreTest, RetentionExpirySessionIsolationAndDeletionCleanSnaps
 	EXPECT_EQ(checkpoint_store_info_copy(&database, session.id, first, &report),
 		  NB_ERR_NOT_FOUND);
 	int64_t expired = Scalar("SELECT min(id) FROM code_checkpoints");
-	ASSERT_EQ(db_exec(&database, ("UPDATE code_checkpoints SET created_at=0 WHERE id=" +
-				      std::to_string(expired))
-					     .c_str()),
+	ASSERT_EQ(orm_fixture_execute(&database,
+				      ("UPDATE code_checkpoints SET created_at=0 WHERE id=" +
+				       std::to_string(expired))
+					      .c_str()),
 		  0);
 	EXPECT_EQ(checkpoint_store_info_copy(&database, session.id, expired, &report),
 		  NB_ERR_NOT_FOUND);
@@ -655,10 +691,10 @@ TEST_F(CheckpointStoreTest, FilesystemFailureAfterTheFirstWriteCompensatesWithou
 		std::string outside;
 		int calls = 0;
 	} fault{workspace, directory + "/outside"};
-	ASSERT_EQ(sqlite3_create_function_v2(
-			  database.handle, "checkpoint_parent_fault", 0, SQLITE_UTF8, &fault,
-			  [](sqlite3_context *context, int, sqlite3_value **) {
-				  auto *state = static_cast<Fault *>(sqlite3_user_data(context));
+	ASSERT_EQ(orm_fixture_scalar_hook(
+			  &database, "checkpoint_parent_fault",
+			  [](void *context) -> int {
+				  auto *state = static_cast<Fault *>(context);
 				  if (state->calls++ == 0) {
 					  std::error_code error;
 					  std::filesystem::rename(state->root + "/z",
@@ -667,17 +703,17 @@ TEST_F(CheckpointStoreTest, FilesystemFailureAfterTheFirstWriteCompensatesWithou
 						  std::filesystem::create_directory_symlink(
 							  state->outside, state->root + "/z",
 							  error);
-					  if (error) {
-						  sqlite3_result_error(
-							  context, "fault injection failed", -1);
-						  return;
-					  }
+
+					  if (error)
+						  return NB_ERR_IO;
 				  }
-				  sqlite3_result_int(context, 0);
+
+				  return 0;
 			  },
-			  nullptr, nullptr, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(db_exec(&database,
+			  &fault),
+		  0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  "CREATE TRIGGER checkpoint_filesystem_fault BEFORE DELETE ON messages "
 			  "BEGIN SELECT checkpoint_parent_fault(); END"),
 		  0);

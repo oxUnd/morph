@@ -5,7 +5,7 @@
  * Morph API surface.
  */
 #include "router.h"
-#include "sapi/fastcgi/storage/users.h"
+#include "persistence/orm/fcgi_users.h"
 #include "auth.h"
 #include "handlers/handlers.h"
 

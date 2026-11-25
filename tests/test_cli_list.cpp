@@ -18,7 +18,7 @@ extern "C" {
 #include "event/event.h"
 #include <nb/utf8.h>
 #include "cJSON.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 
 }
 

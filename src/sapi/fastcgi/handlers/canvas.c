@@ -1,9 +1,9 @@
 /* canvas.c — canvas node CRUD */
 #define _GNU_SOURCE
 #include "handlers.h"
-#include "sapi/fastcgi/storage/sessions.h"
-#include "sapi/fastcgi/storage/events.h"
-#include "sapi/fastcgi/storage/canvas.h"
+#include "persistence/orm/fcgi_sessions.h"
+#include "persistence/orm/fcgi_events.h"
+#include "persistence/orm/fcgi_canvas.h"
 #include "../session_store.h"
 
 #include <stdio.h>

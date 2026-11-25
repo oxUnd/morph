@@ -1,4 +1,5 @@
 #include "runtime_test_support.hpp"
+#include "persistence/orm/test_fixture.h"
 
 #include <vector>
 
@@ -9,7 +10,7 @@ extern "C" {
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include "errors.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/history_store.h"
 #include "agent/history_internal.h"
 }
 
@@ -68,7 +69,7 @@ TEST_F(HistoryInspectionTest, DistinguishesExactSummaryAncestryAndInactiveRecord
 	std::string sql = "INSERT INTO history_summary_sources VALUES(" + std::to_string(first) +
 			  "," + std::to_string(old) + "),(" + std::to_string(current) + "," +
 			  std::to_string(first) + ")";
-	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
 	cJSON *entries = cJSON_GetObjectItem(report, "entries");
@@ -110,12 +111,12 @@ TEST_F(HistoryInspectionTest, InternalMemoryReceiptsStayOutEvenAfterImportOrSumm
 	int64_t summary = Add("compaction_summary", "retained summary");
 	std::string sql = "INSERT INTO history_summary_sources VALUES(" + std::to_string(summary) +
 			  "," + std::to_string(receipt) + ")";
-	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
 	for (bool active : {true, false}) {
-		ASSERT_EQ(db_exec(&db, ("UPDATE model_history_items SET active=" +
-					std::string(active ? "1" : "0") +
-					" WHERE id=" + std::to_string(receipt))
-					       .c_str()),
+		ASSERT_EQ(orm_fixture_execute(&db, ("UPDATE model_history_items SET active=" +
+						    std::string(active ? "1" : "0") +
+						    " WHERE id=" + std::to_string(receipt))
+							   .c_str()),
 			  0);
 		cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 		ASSERT_EQ(runtime_session_history_inspect_copy(instance, &report), 0);
@@ -273,7 +274,8 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 TEST_F(HistoryInspectionTest, SourceRecordingFailureRollsBackTheEntireCompaction)
 {
 	Add("user_message", "source must survive");
-	ASSERT_EQ(db_exec(&db,
+	ASSERT_EQ(orm_fixture_execute(
+			  &db,
 			  "CREATE TRIGGER fail_summary_sources BEFORE INSERT ON "
 			  "history_summary_sources BEGIN SELECT RAISE(ABORT,'test failure'); END"),
 		  0);
@@ -417,7 +419,8 @@ TEST_F(HistoryInspectionTest, RecentVisibleRecordsAndProgressUseTheSameRows)
 	ASSERT_EQ(message_add(&db, session.id, "assistant", "answer", 1), 0);
 	ASSERT_EQ(message_add(&db, session.id, "tool", "private tool result", 1), 0);
 	ASSERT_EQ(message_add(&db, session.id, "user", "latest", 1), 0);
-	int64_t latest = sqlite3_last_insert_rowid(db.handle);
+	int64_t latest = 0;
+	ASSERT_EQ(orm_fixture_integer(&db, "SELECT last_insert_rowid()", &latest), 0);
 	ASSERT_EQ(message_add(&db, session.id, "assistant", "  ", 1), 0);
 	struct history_message_progress progress{};
 	ASSERT_EQ(history_store_visible_progress(&db, session.id, &progress), 0);

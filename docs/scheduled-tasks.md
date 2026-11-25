@@ -580,4 +580,4 @@ CLI 为每次到期的 agent 任务创建独立会话，用共享 runtime 执行
 
 调度器按 Unix 时间和间隔秒数判断到期。周期性任务只有在宿主继续处理到期任务时才会运行。
 退出 CLI 后任务和通知仍保存在数据库中，可以在下次启动后查看。
-[任务存储](../src/db/scheduled_task.c) · [调度线程](../src/runtime/task_worker.c)
+[任务存储](../src/persistence/orm/scheduled_task.c) · [调度线程](../src/runtime/task_worker.c)

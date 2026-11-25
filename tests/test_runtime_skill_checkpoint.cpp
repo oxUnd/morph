@@ -3,7 +3,7 @@
 extern "C" {
 #include "runtime/checkpoint.h"
 #include "runtime/runtime_internal.h"
-#include "persistence/checkpoint_store.h"
+#include "persistence/orm/checkpoint_store.h"
 #include "skill/skill.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"

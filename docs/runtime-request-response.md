@@ -306,7 +306,7 @@ A negative timeout waits until a message or shutdown.
 
 ## Persistent execution records
 
-[`persistence/runtime_store.h`](../src/persistence/runtime_store.h) owns typed
+[`persistence/orm/runtime_store.h`](../src/persistence/orm/runtime_store.h) owns typed
 turn records, runtime instance ownership and session setting overrides. The
 repository owns SQL and row mapping. Runtime code decides PID liveness, orphan
 recovery, permission enum validation and protocol serialization.

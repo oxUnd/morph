@@ -7,7 +7,7 @@
 #include "agent/tools/img_annotate.h"
 #include "agent/tools/scheduled_tasks.h"
 #include "config/config.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "event/event.h"
 #include "models/llm.h"
 #include "runtime/runtime.h"

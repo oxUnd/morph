@@ -1,4 +1,7 @@
 #include "agent_control.h"
+#include "persistence/orm/unit_of_work.h"
+#include "persistence/orm/business_store.h"
+#include "persistence/orm/agent_store.h"
 #include <nb/time.h>
 
 #include "agent/react.h"
@@ -6,7 +9,7 @@
 #include "agent/plan.h"
 #include "agent/system_prompt.h"
 #include "models/llm.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include <nb/cleanup.h>
 #include <nb/random.h>
 #include <nb/encoding.h>
@@ -104,25 +107,8 @@ struct agent_control {
 	void *event_user;
 };
 
-static void statement_cleanup(sqlite3_stmt **statement)
-{
-	if (statement && *statement)
-		sqlite3_finalize(*statement);
-}
-
 /* Controller mutex serializes metadata and mail. Connection guards keep SQL
  * transactions independent from other runtime users of the same connection. */
-static int prepare(struct db *db, const char *sql, sqlite3_stmt **out)
-{
-	if (!db || !db->handle)
-		return NB_ERR_INVAL;
-	return sqlite3_prepare_v2(db->handle, sql, -1, out, NULL) == SQLITE_OK ? 0 : MORPH_ERR_DB;
-}
-
-static int step_done(sqlite3_stmt *statement)
-{
-	return sqlite3_step(statement) == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
 
 static const char *status_name(enum agent_status status)
 {
@@ -160,8 +146,7 @@ static struct controlled_agent *find_agent(struct agent_control *control, int64_
 		target = nb_buf_cstr(&path);
 	}
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id == root && !strcmp(agent->info.id, target))
 			return agent;
@@ -191,8 +176,7 @@ static int agent_dispatch_closed_locked(struct agent_control *control, const cha
 	if (control->finishing)
 		return 1;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id == control->session_id && agent_active(agent) &&
 		    agent_path_matches(sender, agent->info.id, 1) &&
@@ -214,85 +198,44 @@ static int save_agent(struct controlled_agent *agent)
 {
 	char *assignment NB_CLEANUP(cJSON_FreeTextOwner) =
 		agent->assignment ? cJSON_PrintUnformatted(agent->assignment) : NULL;
+
 	if (agent->assignment && !assignment)
 		return NB_ERR_NOMEM;
-	struct db *db = agent->control->db;
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = db_lock_acquire(db, &lock);
-	if (rc == 0)
-		rc = prepare(db,
-			     "INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,"
-			     "session_id,model,effort,depth,description,status,result,error_code,"
-			     "iterations,"
-			     "started_at,ended_at,assignment_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-			     "ON CONFLICT(root_session_id,agent_id) DO UPDATE SET "
-			     "description=excluded.description,status=excluded.status,result="
-			     "excluded.result,"
-			     "error_code=excluded.error_code,iterations=excluded.iterations,"
-			     "started_at=excluded.started_at,ended_at=excluded.ended_at,"
-			     "assignment_json=excluded.assignment_json",
-			     &stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, agent->info.parent_session_id);
-	sqlite3_bind_text(stmt, 2, agent->info.id, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, agent->parent, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 4, agent->info.child_session_id);
-	sqlite3_bind_text(stmt, 5, agent->model, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 6, agent->effort, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 7, agent->depth);
-	sqlite3_bind_text(stmt, 8, agent->info.description, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 9, (int)agent->info.status);
-	sqlite3_bind_text(stmt, 10, agent->info.result, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 11, agent->info.error_code);
-	sqlite3_bind_int(stmt, 12, agent->info.iteration_count);
-	sqlite3_bind_int64(stmt, 13, agent->info.started_at_ms);
-	sqlite3_bind_int64(stmt, 14, agent->info.ended_at_ms);
-	sqlite3_bind_text(stmt, 15, assignment, -1, SQLITE_TRANSIENT);
-	return step_done(stmt);
+
+	struct store_agent_thread record = {
+		.root_session_id = agent->info.parent_session_id,
+		.agent_id = agent->info.id,
+		.parent_agent_id = agent->parent,
+		.session_id = agent->info.child_session_id,
+		.model = agent->model,
+		.effort = agent->effort,
+		.depth = agent->depth,
+		.description = agent->info.description,
+		.status = (int)agent->info.status,
+		.result = agent->info.result,
+		.error_code = agent->info.error_code,
+		.iterations = agent->info.iteration_count,
+		.started_at = agent->info.started_at_ms,
+		.ended_at = agent->info.ended_at_ms,
+		.assignment_json = assignment,
+	};
+
+	return agent_store_thread_put(agent->control->db, &record);
 }
 
 static int send_mail(struct agent_control *control, int64_t root, const char *sender,
 		     const char *target, const char *kind, const char *body)
 {
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = db_lock_acquire(control->db, &lock);
-	if (rc == 0)
-		rc = prepare(control->db,
-			     "INSERT INTO agent_mailbox(root_session_id,sender,recipient,"
-			     "kind,body,consumed) VALUES(?,?,?,?,?,0)",
-			     &stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, root);
-	sqlite3_bind_text(stmt, 2, sender, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, target, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, kind, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 5, body, -1, SQLITE_TRANSIENT);
-	rc = step_done(stmt);
+	int rc = agent_store_mail_send(control->db, root, sender, target, kind, body);
+
 	nb_cond_broadcast(control->changed);
 	return rc;
 }
 
 static int agent_finish_mail_clear(struct controlled_agent *agent)
 {
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *statement NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = db_lock_acquire(agent->control->db, &lock);
-	if (rc == 0)
-		rc = prepare(agent->control->db,
-			     "UPDATE agent_mailbox SET consumed=1 WHERE root_session_id=? AND "
-			     "recipient=? "
-			     "AND kind='FINISH_REQUEST' AND consumed=0",
-			     &statement);
-	if (rc == 0) {
-		sqlite3_bind_int64(statement, 1, agent->info.parent_session_id);
-		sqlite3_bind_text(statement, 2, agent->info.id, -1, SQLITE_TRANSIENT);
-		rc = step_done(statement);
-	}
-	return rc;
+	return agent_store_finish_mail_clear(agent->control->db, agent->info.parent_session_id,
+					     agent->info.id);
 }
 
 static int agent_request_finish_locked(struct agent_control *control, const char *id)
@@ -305,8 +248,7 @@ static int agent_request_finish_locked(struct agent_control *control, const char
 	else
 		control->finishing = 1;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id != control->session_id || !agent_active(agent) ||
 		    !agent_path_matches(agent->info.id, id, 0) || agent->finish_requested)
@@ -352,8 +294,7 @@ static int agent_interrupt_locked(struct agent_control *control, const char *id,
 {
 	int count = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id != control->session_id || !agent_active(agent) ||
 		    !agent_path_matches(agent->info.id, id, include_self))
@@ -416,8 +357,7 @@ static void budget_cancel_locked(struct agent_control *control)
 	if (control->root)
 		react_cancel(control->root);
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->react)
 			react_cancel(agent->react);
@@ -481,28 +421,20 @@ static int budget_level_locked(const struct agent_control *control)
 
 static int budget_load_locked(struct agent_control *control)
 {
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = db_lock_acquire(control->db, &lock);
-	if (rc == 0)
-		rc = prepare(control->db,
-			     "SELECT used,input_tokens,cached_tokens,output_tokens,"
-			     "reminder_level FROM agent_budget_state WHERE root_session_id=?",
-			     &stmt);
+	struct store_agent_budget record;
+	int rc = agent_store_budget_copy(control->db, control->session_id, &record);
+
 	if (rc != 0)
 		return rc;
-	struct agent_budget loaded = {0};
-	sqlite3_bind_int64(stmt, 1, control->session_id);
-	int step = sqlite3_step(stmt);
-	if (step == SQLITE_ROW) {
-		loaded.used = sqlite3_column_int64(stmt, 0);
-		loaded.input_tokens = sqlite3_column_int64(stmt, 1);
-		loaded.cached_tokens = sqlite3_column_int64(stmt, 2);
-		loaded.output_tokens = sqlite3_column_int64(stmt, 3);
-		loaded.reminder_level = sqlite3_column_int(stmt, 4);
-	} else if (step != SQLITE_DONE) {
-		return MORPH_ERR_DB;
-	}
+
+	struct agent_budget loaded = {
+		.used = record.used,
+		.input_tokens = record.input_tokens,
+		.cached_tokens = record.cached_tokens,
+		.output_tokens = record.output_tokens,
+		.reminder_level = record.reminder_level,
+	};
+
 	if (loaded.used < 0 || loaded.input_tokens < 0 || loaded.cached_tokens < 0 ||
 	    loaded.output_tokens < 0 || loaded.cached_tokens > loaded.input_tokens ||
 	    loaded.reminder_level < 0 || loaded.reminder_level > ROLLOUT_BUDGET_REMINDER_MAX + 1)
@@ -518,24 +450,15 @@ static int budget_load_locked(struct agent_control *control)
 
 static int budget_store_locked(struct agent_control *control)
 {
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = prepare(
-		control->db,
-		"INSERT INTO agent_budget_state(root_session_id,used,"
-		"input_tokens,cached_tokens,output_tokens,reminder_level) VALUES(?,?,?,?,?,?) "
-		"ON CONFLICT(root_session_id) DO UPDATE SET used=excluded.used,"
-		"input_tokens=excluded.input_tokens,cached_tokens=excluded.cached_tokens,"
-		"output_tokens=excluded.output_tokens,reminder_level=excluded.reminder_level",
-		&stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, control->session_id);
-	sqlite3_bind_int64(stmt, 2, control->budget.used);
-	sqlite3_bind_int64(stmt, 3, control->budget.input_tokens);
-	sqlite3_bind_int64(stmt, 4, control->budget.cached_tokens);
-	sqlite3_bind_int64(stmt, 5, control->budget.output_tokens);
-	sqlite3_bind_int(stmt, 6, control->budget.reminder_level);
-	return step_done(stmt);
+	const struct store_agent_budget record = {
+		.used = control->budget.used,
+		.input_tokens = control->budget.input_tokens,
+		.cached_tokens = control->budget.cached_tokens,
+		.output_tokens = control->budget.output_tokens,
+		.reminder_level = control->budget.reminder_level,
+	};
+
+	return agent_store_budget_put(control->db, control->session_id, &record);
 }
 
 /* Usage and its reminders commit together. Existing mailbox/history ack semantics
@@ -545,7 +468,7 @@ static int budget_commit_locked(struct agent_control *control)
 	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int rc = db_lock_acquire(control->db, &lock);
 	if (rc == 0)
-		rc = db_exec(control->db, "SAVEPOINT agent_budget_commit");
+		rc = store_savepoint_begin(control->db, "agent_budget_commit");
 	if (rc != 0)
 		return rc;
 	int previous = control->budget.reminder_level;
@@ -588,8 +511,7 @@ static int budget_commit_locked(struct agent_control *control)
 			rc = send_mail(control, control->session_id, "/runtime", "/root",
 				       "BUDGET_REMINDER", nb_buf_cstr(&reminder));
 		nb_queue *item;
-		NB_QUEUE_FOREACH(item, &control->agents)
-		{
+		NB_QUEUE_FOREACH (item, &control->agents) {
 			struct controlled_agent *agent =
 				NB_QUEUE_DATA(item, struct controlled_agent, link);
 			if (rc == 0 && agent->info.parent_session_id == control->session_id &&
@@ -604,13 +526,10 @@ static int budget_commit_locked(struct agent_control *control)
 		control->budget.reminder_level = next;
 		rc = budget_store_locked(control);
 	}
-	if (rc == 0)
-		rc = db_exec(control->db, "RELEASE agent_budget_commit");
-	if (rc != 0) {
+	rc = store_savepoint_finish(control->db, "agent_budget_commit", rc);
+	if (rc != 0)
 		control->budget.reminder_level = previous;
-		(void)db_exec(control->db, "ROLLBACK TO agent_budget_commit");
-		(void)db_exec(control->db, "RELEASE agent_budget_commit");
-	}
+
 	return rc;
 }
 
@@ -643,8 +562,7 @@ static int budget_running_locked(struct agent_control *control)
 	if (control->budget_active)
 		return 1;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id == control->session_id &&
 		    (agent->info.status == AGENT_RUNNING || agent->info.status == AGENT_PENDING))
@@ -874,7 +792,7 @@ struct agent_control *agent_control_create(struct tool_registry *tools, struct m
 					   const struct compress_config *compress,
 					   const struct config_agents *config, struct db *db)
 {
-	if (!tools || !model || !config || !db || !db->handle || config->max_threads < 1 ||
+	if (!tools || !model || !config || !db_is_open(db) || config->max_threads < 1 ||
 	    config->max_threads > 64 || config->max_depth < 1 || config->task_timeout_seconds < 0 ||
 	    config->task_timeout_seconds > 86400 || config->finalize_wait_seconds < 0 ||
 	    config->finalize_wait_seconds > 3600 || config->finalize_grace_seconds < 0 ||
@@ -916,8 +834,7 @@ void agent_control_cancel(struct agent_control *control)
 		return;
 	nb_mutex_lock(control->mutex);
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.status == AGENT_RUNNING || agent->info.status == AGENT_PENDING) {
 			agent->interrupted = 1;
@@ -940,8 +857,7 @@ void agent_control_join(struct agent_control *control)
 		int found = 0;
 		nb_mutex_lock(control->mutex);
 		nb_queue *item;
-		NB_QUEUE_FOREACH(item, &control->agents)
-		{
+		NB_QUEUE_FOREACH (item, &control->agents) {
 			struct controlled_agent *agent =
 				NB_QUEUE_DATA(item, struct controlled_agent, link);
 			if (agent->joinable) {
@@ -970,8 +886,7 @@ void agent_control_destroy(struct agent_control *control)
 	agent_control_join(control);
 	agent_control_end_turn(control);
 	nb_queue *item, *next;
-	NB_QUEUE_FOREACH_SAFE(item, next, &control->agents)
-	{
+	NB_QUEUE_FOREACH_SAFE (item, next, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		nb_queue_remove(item);
 		agent_cleanup(&agent);
@@ -1005,60 +920,32 @@ void agent_control_set_all_events(struct agent_control *control, int enabled)
 /* SQL text is internal; all external values use bound parameters. */
 static int fork_history(struct agent_control *control, int64_t source, int64_t destination)
 {
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = db_lock_acquire(control->db, &lock);
-	if (rc == 0)
-		rc = prepare(
-			control->db,
-			"INSERT INTO model_history_items(session_id,sequence_no,turn_id,kind,role,"
-			"content,payload_json,tool_call_id,provider_call_id,tool_name,token_count,"
-			"truncated,active,created_at) SELECT "
-			"?,sequence_no,turn_id,kind,role,content,"
-			"payload_json,tool_call_id,provider_call_id,tool_name,token_count,"
-			"truncated,"
-			"active,created_at FROM model_history_items WHERE session_id=? AND "
-			"active=1 "
-			"AND sequence_no < COALESCE((SELECT MAX(sequence_no) FROM "
-			"model_history_items "
-			"WHERE session_id=? AND active=1 AND kind='assistant_tool_calls'),"
-			"9223372036854775807) ORDER BY sequence_no",
-			&stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, destination);
-	sqlite3_bind_int64(stmt, 2, source);
-	sqlite3_bind_int64(stmt, 3, source);
-	return step_done(stmt);
+	return agent_store_history_fork(control->db, source, destination);
 }
 
 static void emit_activity(struct controlled_agent *agent, int phase);
 
 static int agent_event_sequence_load(struct controlled_agent *agent)
 {
-	struct agent_control *control = agent->control;
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = db_lock_acquire(control->db, &lock);
-	if (rc == 0)
-		rc = prepare(control->db,
-			     "SELECT event_json FROM agent_events WHERE "
-			     "root_session_id=? AND agent_id=? ORDER BY id DESC LIMIT 1",
-			     &stmt);
+	char *json NB_CLEANUP(nb_charp_cleanup) = NULL;
+	cJSON *record NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+	int rc = agent_store_event_latest_copy(agent->control->db, agent->info.parent_session_id,
+					       agent->info.id, &json);
+
+	if (rc == NB_ERR_NOT_FOUND)
+		return 0;
+
 	if (rc != 0)
 		return rc;
-	sqlite3_bind_int64(stmt, 1, agent->info.parent_session_id);
-	sqlite3_bind_text(stmt, 2, agent->info.id, -1, SQLITE_TRANSIENT);
-	int step = sqlite3_step(stmt);
-	if (step == SQLITE_ROW) {
-		cJSON *record NB_CLEANUP(cJSON_DeleteOwner) =
-			cJSON_Parse((const char *)sqlite3_column_text(stmt, 0));
-		const cJSON *sequence = cJSON_GetObjectItemCaseSensitive(
-			cJSON_GetObjectItemCaseSensitive(record, "data"), "agent_event_sequence");
-		if (cJSON_IsNumber(sequence) && sequence->valuedouble > 0)
-			agent->event_sequence = (int64_t)sequence->valuedouble;
-	}
-	return step == SQLITE_ROW || step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+
+	record = json ? cJSON_Parse(json) : NULL;
+	const cJSON *sequence = cJSON_GetObjectItemCaseSensitive(
+		cJSON_GetObjectItemCaseSensitive(record, "data"), "agent_event_sequence");
+
+	if (cJSON_IsNumber(sequence) && sequence->valuedouble > 0)
+		agent->event_sequence = (int64_t)sequence->valuedouble;
+
+	return 0;
 }
 
 static int agent_events_init(struct controlled_agent *agent)
@@ -1089,25 +976,13 @@ static int agent_events_init(struct controlled_agent *agent)
 
 static int agent_event_store(struct controlled_agent *agent, const cJSON *record)
 {
-	struct agent_control *control = agent->control;
 	char *json NB_CLEANUP(cJSON_FreeTextOwner) = cJSON_PrintUnformatted(record);
+
 	if (!json)
 		return NB_ERR_NOMEM;
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	int rc = db_lock_acquire(control->db, &lock);
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	if (rc == 0)
-		rc = prepare(control->db,
-			     "INSERT INTO agent_events(root_session_id,agent_id,event_json) "
-			     "VALUES(?,?,?)",
-			     &stmt);
-	if (rc == 0) {
-		sqlite3_bind_int64(stmt, 1, agent->info.parent_session_id);
-		sqlite3_bind_text(stmt, 2, agent->info.id, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 3, json, -1, SQLITE_TRANSIENT);
-		rc = step_done(stmt);
-	}
-	return rc;
+
+	return agent_store_event_put(agent->control->db, agent->info.parent_session_id,
+				     agent->info.id, json);
 }
 
 /* Caller holds the per-agent event lock; preserve metadata and bytes on failure. */
@@ -1321,8 +1196,7 @@ int agent_control_set_plan_initializer(struct agent_control *control,
 	nb_mutex_lock(control->mutex);
 	int busy = control->budget_active;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		busy |= agent->info.status == AGENT_RUNNING || agent->info.status == AGENT_PENDING;
 	}
@@ -1340,8 +1214,7 @@ int agent_control_set_child_initializer(struct agent_control *control,
 	nb_mutex_lock(control->mutex);
 	int busy = control->budget_active;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		busy |= agent->info.status == AGENT_RUNNING || agent->info.status == AGENT_PENDING;
 	}
@@ -1514,18 +1387,8 @@ static int agent_execute(struct controlled_agent *agent)
 
 static int pending_task(struct controlled_agent *agent)
 {
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = prepare(
-		agent->control->db,
-		"SELECT 1 FROM agent_mailbox WHERE "
-		"root_session_id=? AND recipient=? AND kind='NEW_TASK' AND consumed=0 LIMIT 1",
-		&stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, agent->info.parent_session_id);
-	sqlite3_bind_text(stmt, 2, agent->info.id, -1, SQLITE_TRANSIENT);
-	int step = sqlite3_step(stmt);
-	return step == SQLITE_ROW ? 1 : step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+	return agent_store_mail_pending(agent->control->db, agent->info.parent_session_id,
+					agent->info.id, 1);
 }
 
 static cJSON *activity_data_locked(struct controlled_agent *agent)
@@ -1575,7 +1438,7 @@ static int publish_completion(struct controlled_agent *agent)
 	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	int rc = db_lock_acquire(control->db, &lock);
 	if (rc == 0)
-		rc = db_exec(control->db, "SAVEPOINT agent_completion");
+		rc = store_savepoint_begin(control->db, "agent_completion");
 	if (rc != 0)
 		return rc;
 	rc = save_agent(agent);
@@ -1583,13 +1446,7 @@ static int publish_completion(struct controlled_agent *agent)
 		rc = send_mail(control, agent->info.parent_session_id, agent->info.id,
 			       agent->parent, "FINAL_ANSWER",
 			       agent->info.result ? agent->info.result : "Result unavailable");
-	if (rc == 0)
-		rc = db_exec(control->db, "RELEASE agent_completion");
-	if (rc != 0) {
-		(void)db_exec(control->db, "ROLLBACK TO agent_completion");
-		(void)db_exec(control->db, "RELEASE agent_completion");
-	}
-	return rc;
+	return store_savepoint_finish(control->db, "agent_completion", rc);
 }
 
 static void *agent_worker(void *opaque)
@@ -1644,8 +1501,7 @@ static int execution_slots_used(struct agent_control *control, int64_t session)
 {
 	int used = 1;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id == session &&
 		    (agent->info.status == AGENT_RUNNING || agent->info.status == AGENT_PENDING))
@@ -1841,8 +1697,7 @@ static int scope_conflict(struct agent_control *control, const char *id, const c
 	if (control->active_patches && cJSON_GetArraySize(paths))
 		return NB_ERR_BUSY;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (!agent_active(agent) || !strcmp(agent->info.id, id) ||
 		    agent_is_ancestor(agent->info.id, id))
@@ -1933,8 +1788,7 @@ int agent_control_write_check(struct agent_control *control, const char *id, con
 	    (!source || !scope_contains(source->write_paths, canonical)))
 		rc = NB_ERR_PERMISSION;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent != source && !agent_is_ancestor(agent->info.id, actor) &&
 		    agent_active(agent) && agent->info.parent_session_id == control->session_id &&
@@ -1954,8 +1808,7 @@ int agent_control_shell_readonly(struct agent_control *control, const char *id)
 	nb_mutex_lock(control->mutex);
 	int readonly = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id == control->session_id && agent_active(agent) &&
 		    cJSON_GetArraySize(agent->write_paths))
@@ -2001,8 +1854,7 @@ static int shell_scope_path_available(struct agent_control *control, const char 
 				      const char *path)
 {
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *other = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (other->info.parent_session_id != control->session_id || !agent_active(other) ||
 		    !strcmp(other->info.id, actor) || agent_is_ancestor(other->info.id, actor))
@@ -2136,9 +1988,11 @@ static int spawn_agent(struct agent_control *control, const cJSON *args,
 	if (!cJSON_AddStringToObject(out, "agent_id", agent->info.id) ||
 	    (assignment && agent_assignment_add_copy(out, "assignment", assignment) != 0) ||
 	    !cJSON_AddStringToObject(out, "parent_next_action",
-		assignment ? (parent_task && *parent_task ? "work_on_reserved_parent_task"
-							: "wait_for_findings_or_blockers")
-			   : "identify_unassigned_work_or_wait; do_not_repeat_the_delegated_review"))
+				     assignment ? (parent_task && *parent_task
+							   ? "work_on_reserved_parent_task"
+							   : "wait_for_findings_or_blockers")
+						: "identify_unassigned_work_or_wait; "
+						  "do_not_repeat_the_delegated_review"))
 		return NB_ERR_NOMEM;
 	struct session session = {0};
 	char session_name[96];
@@ -2153,9 +2007,8 @@ static int spawn_agent(struct agent_control *control, const cJSON *args,
 			  ? NB_ERR_NO_SPACE
 			  : file_status_3);
 	if (rc == 0)
-		rc = session_create_with_workdir(control->db, session_name,
-						 agent->model, runtime->workdir,
-						 &session);
+		rc = session_create_with_workdir(control->db, session_name, agent->model,
+						 runtime->workdir, &session);
 	if (rc != 0)
 		return rc;
 	agent->info.child_session_id = session.id;
@@ -2174,17 +2027,7 @@ static int spawn_agent(struct agent_control *control, const cJSON *args,
 
 static int has_mail(struct agent_control *control, int64_t root, const char *recipient)
 {
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = prepare(control->db,
-			 "SELECT 1 FROM agent_mailbox WHERE root_session_id=? "
-			 "AND recipient=? AND consumed=0 LIMIT 1",
-			 &stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, root);
-	sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_TRANSIENT);
-	int step = sqlite3_step(stmt);
-	return step == SQLITE_ROW ? 1 : step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+	return agent_store_mail_pending(control->db, root, recipient, 0);
 }
 
 static int agent_positive_integer(const cJSON *args, const char *key, int fallback, int maximum,
@@ -2206,8 +2049,7 @@ static int agent_children_active_locked(struct agent_control *control, const cha
 {
 	int count = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id == control->session_id && agent_active(agent) &&
 		    !strcmp(agent->parent, id))
@@ -2220,8 +2062,7 @@ static int agent_descendants_active_locked(struct agent_control *control, const 
 {
 	int count = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id == control->session_id && agent_active(agent) &&
 		    agent_path_matches(agent->info.id, id, 0))
@@ -2284,8 +2125,7 @@ static int agent_list_json_locked(struct agent_control *control, const cJSON *ar
 	size_t bytes = 0;
 	int full = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (agent->info.parent_session_id != control->session_id ||
 		    !agent_path_matches(agent->info.id, prefix, 1))
@@ -2508,7 +2348,7 @@ int agent_control_call(struct agent_control *control, const char *operation, con
 		rc = budget_load_locked(control);
 	if (rc == 0 && !strcmp(operation, "spawn_agent")) {
 		rc = agent_dispatch_closed_locked(control, sender) ? NB_ERR_CLOSED
-		     : control->interactions_blocked		   ? NB_ERR_BUSY
+		     : control->interactions_blocked ? NB_ERR_BUSY
 						     : budget_dispatch_locked(control);
 		if (rc == 0)
 			rc = spawn_agent(control, args, runtime, sender, root, result);
@@ -2592,30 +2432,25 @@ int agent_control_receive(struct agent_control *control, const char *id, int64_t
 	if (rc != 0)
 		return rc;
 	nb_mutex_lock(control->mutex);
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	rc = prepare(control->db,
-		     "SELECT id,sender,kind,body FROM agent_mailbox WHERE "
-		     "root_session_id=? AND recipient=? AND consumed=0 ORDER BY id LIMIT 32",
-		     &stmt);
+	nb_vec records NB_CLEANUP(agent_store_mail_cleanup) = {0};
+
+	rc = agent_store_mail_copy(control->db, root, id, &records);
 	int64_t last = 0;
 	if (rc == 0) {
-		sqlite3_bind_int64(stmt, 1, root);
-		sqlite3_bind_text(stmt, 2, id, -1, SQLITE_TRANSIENT);
-		int step;
-		while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-			last = sqlite3_column_int64(stmt, 0);
+		for (size_t i = 0; i < records.len; i++) {
+			const struct store_agent_mail *record = nb_vec_at(&records, i);
+
+			last = record->id;
 			rc = (nb_buf_printf(&text,
 					    "Message Type: %s\nSender: %s\nRecipient: "
 					    "%s\nPayload:\n%s\n\n",
-					    (const char *)sqlite3_column_text(stmt, 2),
-					    (const char *)sqlite3_column_text(stmt, 1), id,
-					    (const char *)sqlite3_column_text(stmt, 3))
+					    record->kind, record->sender, id, record->body)
 				      ? 0
 				      : NB_ERR_NOMEM);
 			if (rc != 0)
 				break;
-			const char *sender = (const char *)sqlite3_column_text(stmt, 1);
-			const char *kind = (const char *)sqlite3_column_text(stmt, 2);
+			const char *sender = record->sender;
+			const char *kind = record->kind;
 			struct controlled_agent *child = find_agent(control, root, sender, "/root");
 			if (!strcmp(kind, "NEW_TASK") ||
 			    (child && !strcmp(child->parent, id) &&
@@ -2628,8 +2463,6 @@ int agent_control_receive(struct agent_control *control, const char *id, int64_t
 					control->evidence_received = 1;
 			}
 		}
-		if (rc == 0 && step != SQLITE_DONE)
-			rc = MORPH_ERR_DB;
 	}
 	nb_mutex_unlock(control->mutex);
 	if (rc == 0 && last) {
@@ -2659,8 +2492,7 @@ int agent_control_active(struct agent_control *control, int64_t session_id)
 	int count = 0;
 	nb_mutex_lock(control->mutex);
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if ((!session_id || agent->info.parent_session_id == session_id) &&
 		    (agent->info.status == AGENT_RUNNING || agent->info.status == AGENT_PENDING))
@@ -2677,8 +2509,7 @@ static int coordination_pending_locked(struct agent_control *control, const char
 		return 0;
 	int active = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *child = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (child->info.parent_session_id != control->session_id ||
 		    strcmp(child->parent, id) || !agent_active(child) || child->interrupted)
@@ -2695,9 +2526,10 @@ int agent_control_tool_allowed(struct agent_control *control, const char *id, co
 {
 	if (!control || !tool)
 		return 1;
-	const char *coordination[] = {"spawn_agent", "send_message", "followup_task",
-		"interrupt_agent", "list_agents", "read_agent", "wait_agent", "plan",
-		"update_plan", "tasks", "ask_user", "background"};
+	const char *coordination[] = {"spawn_agent",	 "send_message", "followup_task",
+				      "interrupt_agent", "list_agents",	 "read_agent",
+				      "wait_agent",	 "plan",	 "update_plan",
+				      "tasks",		 "ask_user",	 "background"};
 	for (size_t i = 0; i < sizeof(coordination) / sizeof(coordination[0]); i++) {
 		if (!strcmp(coordination[i], tool))
 			return 1;
@@ -2742,8 +2574,7 @@ int agent_control_checkpoint(struct agent_control *control, const char *id, nb_b
 		rc = NB_ERR_NOMEM;
 	int total = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *child = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (child->info.parent_session_id != control->session_id ||
 		    strcmp(child->parent, actor) || !agent_active(child))
@@ -2783,7 +2614,8 @@ int agent_control_checkpoint(struct agent_control *control, const char *id, nb_b
 		if (!cJSON_AddNumberToObject(state, "total_active_children", total) ||
 		    !cJSON_AddBoolToObject(state, "has_more", total > AGENT_LIST_PAGE_MAX) ||
 		    !cJSON_AddStringToObject(state, "next_action",
-			pending ? "wait_for_findings_or_blockers" : "reserved_work_or_focused_verification"))
+					     pending ? "wait_for_findings_or_blockers"
+						     : "reserved_work_or_focused_verification"))
 			rc = NB_ERR_NOMEM;
 	}
 	nb_mutex_unlock(control->mutex);
@@ -3049,8 +2881,7 @@ int agent_control_set_parent_session(struct agent_control *control, int64_t sess
 			return NB_ERR_BUSY;
 		}
 		nb_queue *item;
-		NB_QUEUE_FOREACH(item, &control->agents)
-		{
+		NB_QUEUE_FOREACH (item, &control->agents) {
 			struct controlled_agent *agent =
 				NB_QUEUE_DATA(item, struct controlled_agent, link);
 			if (agent->info.status == AGENT_RUNNING ||
@@ -3068,19 +2899,14 @@ int agent_control_set_parent_session(struct agent_control *control, int64_t sess
 		nb_mutex_unlock(control->mutex);
 		return budget_rc;
 	}
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc =
-		prepare(control->db,
-			"SELECT agent_id,parent_agent_id,session_id,model,effort,"
-			"depth,description,status,result,error_code,iterations,started_at,ended_at,"
-			"assignment_json "
-			"FROM agent_threads WHERE root_session_id=? ORDER BY length(agent_id)",
-			&stmt);
+	nb_vec records NB_CLEANUP(agent_store_threads_cleanup) = {0};
+	int rc = agent_store_threads_copy(control->db, session_id, &records);
+
 	if (rc == 0) {
-		sqlite3_bind_int64(stmt, 1, session_id);
-		int step;
-		while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-			const char *id = (const char *)sqlite3_column_text(stmt, 0);
+		for (size_t i = 0; i < records.len; i++) {
+			const struct store_agent_thread *record = nb_vec_at(&records, i);
+			const char *id = record->agent_id;
+
 			if (find_agent(control, session_id, id, "/root"))
 				continue;
 			struct controlled_agent *agent NB_CLEANUP(agent_cleanup) =
@@ -3094,25 +2920,22 @@ int agent_control_set_parent_session(struct agent_control *control, int64_t sess
 			strcpy(agent->info.agent_name, agent->info.id);
 			strcpy(agent->info.mode, "agent");
 			snprintf(agent->parent, sizeof(agent->parent), "%s",
-				 sqlite3_column_text(stmt, 1));
-			agent->info.child_session_id = sqlite3_column_int64(stmt, 2);
+				 record->parent_agent_id);
+			agent->info.child_session_id = record->session_id;
 			agent->info.parent_session_id = session_id;
-			snprintf(agent->model, sizeof(agent->model), "%s",
-				 sqlite3_column_text(stmt, 3));
-			snprintf(agent->effort, sizeof(agent->effort), "%s",
-				 sqlite3_column_text(stmt, 4));
-			agent->depth = sqlite3_column_int(stmt, 5);
-			agent->info.description =
-				strdup((const char *)sqlite3_column_text(stmt, 6));
-			agent->info.status = (enum agent_status)sqlite3_column_int(stmt, 7);
-			const char *result = (const char *)sqlite3_column_text(stmt, 8);
+			snprintf(agent->model, sizeof(agent->model), "%s", record->model);
+			snprintf(agent->effort, sizeof(agent->effort), "%s", record->effort);
+			agent->depth = record->depth;
+			agent->info.description = strdup(record->description);
+			agent->info.status = (enum agent_status)record->status;
+			const char *result = record->result;
 			if (result)
 				agent->info.result = strdup(result);
-			agent->info.error_code = sqlite3_column_int(stmt, 9);
-			agent->info.iteration_count = sqlite3_column_int(stmt, 10);
-			agent->info.started_at_ms = sqlite3_column_int64(stmt, 11);
-			agent->info.ended_at_ms = sqlite3_column_int64(stmt, 12);
-			const char *assignment = (const char *)sqlite3_column_text(stmt, 13);
+			agent->info.error_code = record->error_code;
+			agent->info.iteration_count = record->iterations;
+			agent->info.started_at_ms = record->started_at;
+			agent->info.ended_at_ms = record->ended_at;
+			const char *assignment = record->assignment_json;
 			if (assignment) {
 				agent->assignment = cJSON_Parse(assignment);
 				if (validate_assignment(agent->assignment) != 0) {
@@ -3136,8 +2959,6 @@ int agent_control_set_parent_session(struct agent_control *control, int64_t sess
 			nb_queue_insert_tail(&control->agents, &agent->link);
 			agent = NULL;
 		}
-		if (rc == 0 && step != SQLITE_DONE)
-			rc = MORPH_ERR_DB;
 	}
 	nb_mutex_unlock(control->mutex);
 	return rc;
@@ -3152,8 +2973,7 @@ static int agent_list_copy(struct agent_control *control, int64_t session_id,
 	nb_mutex_lock(control->mutex);
 	int n = 0;
 	nb_queue *item;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (!session_id || agent->info.parent_session_id == session_id)
 			n++;
@@ -3165,8 +2985,7 @@ static int agent_list_copy(struct agent_control *control, int64_t session_id,
 	}
 	int index = 0;
 	int rc = 0;
-	NB_QUEUE_FOREACH(item, &control->agents)
-	{
+	NB_QUEUE_FOREACH (item, &control->agents) {
 		struct controlled_agent *agent = NB_QUEUE_DATA(item, struct controlled_agent, link);
 		if (session_id && agent->info.parent_session_id != session_id)
 			continue;
@@ -3281,57 +3100,30 @@ int agent_control_select(struct agent_control *control, const char *id)
 int agent_control_events_copy(struct agent_control *control, const char *id, char ***out,
 			      int *count)
 {
+	nb_vec records NB_CLEANUP(store_text_records_cleanup) = {0};
+
 	if (!control || !id || !out || *out || !count)
 		return NB_ERR_INVAL;
+
 	*count = 0;
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	int rc = db_lock_acquire(control->db, &lock);
+	int rc = agent_store_events_copy(control->db, control->session_id, id, &records);
+
 	if (rc != 0)
 		return rc;
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	rc = prepare(control->db,
-		     "SELECT event_json FROM agent_events WHERE "
-		     "root_session_id=? AND agent_id=? ORDER BY id",
-		     &stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, control->session_id);
-	sqlite3_bind_text(stmt, 2, id, -1, SQLITE_TRANSIENT);
-	nb_vec items NB_CLEANUP(nb_vec_cleanup) = {0};
-	char *entry = NULL;
-	rc = (nb_vec_init(&items, sizeof(entry)), nb_vec_reserve(&items, 16) ? 0 : NB_ERR_NOMEM);
-	if (rc != 0)
-		return rc;
-	int step;
-	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		char *copy NB_CLEANUP(nb_charp_cleanup) =
-			strdup((const char *)sqlite3_column_text(stmt, 0));
-		if (!copy || !(entry = nb_vec_push(&items))) {
-			rc = NB_ERR_NOMEM;
-			break;
-		}
-		*(char **)entry = nb_charp_steal(&copy);
-	}
-	if (rc == 0 && step != SQLITE_DONE)
-		rc = MORPH_ERR_DB;
-	if (rc != 0) {
-		for (size_t i = 0; i < items.len; i++)
-			free(((char **)((void *)items.data))[i]);
-		return rc;
-	}
-	*out = items.len ? malloc(items.len * items.elem_size) : NULL;
-	if (items.len && !*out) {
-		for (size_t i = 0; i < items.len; i++)
-			free(((char **)items.data)[i]);
-		nb_vec_cleanup(&items);
+
+	if (records.len > INT_MAX)
+		return NB_ERR_RANGE;
+
+	char **items = records.len ? calloc(records.len, sizeof(*items)) : NULL;
+
+	if (records.len && !items)
 		return NB_ERR_NOMEM;
-	}
-	if (items.len)
-		memcpy(*out, items.data, items.len * items.elem_size);
-	*count = (int)items.len;
-	items.len = 0;
-	nb_vec_cleanup(&items);
-	items.len = 0;
+
+	for (size_t i = 0; i < records.len; i++)
+		items[i] = nb_charp_steal(nb_vec_at(&records, i));
+
+	*out = items;
+	*count = (int)records.len;
 	return 0;
 }
 
@@ -3358,7 +3150,7 @@ int agent_control_subscribe(struct agent_control *control, const char *id, char 
 		nb_mutex_lock(control->mutex);
 		if (!control->forward_all_events)
 			snprintf(control->selected, sizeof(control->selected), "%s",
-				agent->info.id);
+				 agent->info.id);
 
 		nb_mutex_unlock(control->mutex);
 		*sequence = agent->event_sequence;
@@ -3385,17 +3177,7 @@ int agent_control_ack(struct agent_control *control, const char *id, int64_t roo
 		root = control->session_id;
 	if (!id || !*id)
 		id = "/root";
-	sqlite3_stmt *stmt NB_CLEANUP(statement_cleanup) = NULL;
-	int rc = prepare(db,
-			 "UPDATE agent_mailbox SET consumed=1 WHERE "
-			 "root_session_id=? AND recipient=? AND id<=?",
-			 &stmt);
-	if (rc != 0)
-		return rc;
-	sqlite3_bind_int64(stmt, 1, root);
-	sqlite3_bind_text(stmt, 2, id, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 3, cursor);
-	return step_done(stmt);
+	return agent_store_mail_ack(db, root, id, cursor);
 }
 
 int agent_control_interrupted(struct agent_control *control, const char *id)

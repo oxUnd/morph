@@ -1,8 +1,10 @@
 #include "agent/turn.h"
+#include "persistence/orm/unit_of_work.h"
+#include "persistence/orm/business_store.h"
 
 #include "agent/history.h"
 #include "agent/tokenizer.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include <nb/cleanup.h>
 #include "errors.h"
 #include <nb/random.h>
@@ -46,21 +48,18 @@ static void turn_set_first_error(int *rc, int err)
 		*rc = (err);
 }
 
-static int turn_emit_background(const struct agent_session_runtime *runtime,
-				const char *name, const char *phase,
-				const char *message, int error_code)
+static int turn_emit_background(const struct agent_session_runtime *runtime, const char *name,
+				const char *phase, const char *message, int error_code)
 {
 	if (!runtime->background_cb)
 		return 0;
-	return runtime->background_cb(runtime->background_user_data, name,
-				      phase, message, "memory_consolidation",
-				      -1, error_code);
+	return runtime->background_cb(runtime->background_user_data, name, phase, message,
+				      "memory_consolidation", -1, error_code);
 }
 
 static int turn_validate_runtime(const struct agent_session_runtime *runtime)
 {
-	if (!runtime || !runtime->db || !runtime->db->handle ||
-	    runtime->session_id <= 0 || !runtime->react)
+	if (!runtime || !db_is_open(runtime->db) || runtime->session_id <= 0 || !runtime->react)
 		return NB_ERR_INVAL;
 	return 0;
 }
@@ -101,12 +100,12 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 	rc = model_history_migrate_messages(runtime->db, runtime->session_id);
 	if (rc != 0)
 		return rc;
-	rc = agent_history_repair(runtime->db, runtime->session_id,
-		runtime->react->tokenizer, NULL, NULL);
+	rc = agent_history_repair(runtime->db, runtime->session_id, runtime->react->tokenizer, NULL,
+				  NULL);
 	if (rc != 0)
 		return rc;
-	runtime->react->history_items = model_history_list(
-		runtime->db, runtime->session_id, 1, &count);
+	runtime->react->history_items =
+		model_history_list(runtime->db, runtime->session_id, 1, &count);
 	if (!runtime->react->history_items && count != 0)
 		return MORPH_ERR_DB;
 
@@ -169,8 +168,7 @@ int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime
 	flags = turn_flags(&turn->runtime);
 	turn->runtime.react->history_db = turn->runtime.db;
 	turn->runtime.react->history_session_id = turn->runtime.session_id;
-	turn->runtime.react->history_enabled =
-		(flags & AGENT_TURN_SAVE_MESSAGES) ? 1 : 0;
+	turn->runtime.react->history_enabled = (flags & AGENT_TURN_SAVE_MESSAGES) ? 1 : 0;
 	turn->runtime.react->history_error = 0;
 
 	if (flags & AGENT_TURN_LOAD_HISTORY) {
@@ -220,29 +218,28 @@ int agent_turn_begin(struct agent_turn *turn, const struct agent_session_runtime
 
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
 		struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-		const char *stored = turn->input.stored_user_input ?
-			turn->input.stored_user_input : turn->input.model_input;
-		int tokens = tokenizer_count(turn->runtime.react->tokenizer,
-			stored);
+		const char *stored = turn->input.stored_user_input ? turn->input.stored_user_input
+								   : turn->input.model_input;
+		int tokens = tokenizer_count(turn->runtime.react->tokenizer, stored);
 
 		int began = 0;
 		rc = db_lock_acquire(turn->runtime.db, &lock);
 		if (rc == 0) {
-			rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+			rc = store_transaction_begin(turn->runtime.db);
 			began = rc == 0;
 		}
 		if (rc == 0)
-			rc = message_add_with_turn_id(turn->runtime.db,
-				turn->runtime.session_id, "user", stored, tokens,
-				turn->runtime.react->turn_id);
+			rc = message_add_with_turn_id(turn->runtime.db, turn->runtime.session_id,
+						      "user", stored, tokens,
+						      turn->runtime.react->turn_id);
 		if (rc == 0)
 			rc = agent_history_record_user(turn->runtime.react,
-				turn->input.model_input);
+						       turn->input.model_input);
 		if (rc == 0)
-			rc = db_exec(turn->runtime.db, "COMMIT;");
+			rc = store_transaction_commit(turn->runtime.db);
 		if (rc != 0) {
 			if (began)
-				(void)db_exec(turn->runtime.db, "ROLLBACK;");
+				(void)store_transaction_rollback(turn->runtime.db);
 			turn_unbind_history(turn->runtime.react);
 			return rc;
 		}
@@ -285,48 +282,39 @@ static int turn_save_trace(struct agent_turn *turn)
 			cJSON_Delete(arr);
 			return NB_ERR_NOMEM;
 		}
-		if (!cJSON_AddStringToObject(obj, "type",
-					     react_step_type_name(cur->type))) {
+		if (!cJSON_AddStringToObject(obj, "type", react_step_type_name(cur->type))) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
 			return NB_ERR_NOMEM;
 		}
-		if (cur->content &&
-		    !cJSON_AddStringToObject(obj, "content", cur->content)) {
+		if (cur->content && !cJSON_AddStringToObject(obj, "content", cur->content)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
 			return NB_ERR_NOMEM;
 		}
-		if (cur->tool_name &&
-		    !cJSON_AddStringToObject(obj, "tool_name",
-					     cur->tool_name)) {
+		if (cur->tool_name && !cJSON_AddStringToObject(obj, "tool_name", cur->tool_name)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
 			return NB_ERR_NOMEM;
 		}
-		if (cur->tool_args &&
-		    !cJSON_AddStringToObject(obj, "tool_args",
-					     cur->tool_args)) {
+		if (cur->tool_args && !cJSON_AddStringToObject(obj, "tool_args", cur->tool_args)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
 			return NB_ERR_NOMEM;
 		}
 		if (cur->tool_call_id &&
-		    !cJSON_AddStringToObject(obj, "tool_call_id",
-					     cur->tool_call_id)) {
+		    !cJSON_AddStringToObject(obj, "tool_call_id", cur->tool_call_id)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
 			return NB_ERR_NOMEM;
 		}
 		if (cur->error_code < 0)
-			cJSON_AddNumberToObject(obj, "error_code",
-						cur->error_code);
+			cJSON_AddNumberToObject(obj, "error_code", cur->error_code);
 		if (cur->artifact_count > 0) {
 			cJSON *artifacts =
 				tool_artifacts_json_create(cur->artifacts, cur->artifact_count);
 			if (artifacts)
-				cJSON_AddItemToObject(obj, "artifacts",
-						      artifacts);
+				cJSON_AddItemToObject(obj, "artifacts", artifacts);
 		}
 		cJSON_AddItemToArray(arr, obj);
 		cur = cur->next;
@@ -337,41 +325,33 @@ static int turn_save_trace(struct agent_turn *turn)
 	if (!json)
 		return NB_ERR_NOMEM;
 
-	round_no = trace_get_next_round_no(turn->runtime.db,
-					   turn->runtime.session_id);
+	round_no = trace_get_next_round_no(turn->runtime.db, turn->runtime.session_id);
 	aborted = turn->runtime.react->state == REACT_STATE_ABORT ? 1 : 0;
-	rc = trace_save(turn->runtime.db, turn->runtime.session_id, round_no,
-			json, aborted);
+	rc = trace_save(turn->runtime.db, turn->runtime.session_id, round_no, json, aborted);
 	free(json);
 	return rc;
 }
 
-static int turn_persist_message(struct agent_turn *turn,
-				const char *role, const char *content,
+static int turn_persist_message(struct agent_turn *turn, const char *role, const char *content,
 				int token_count)
 {
 	const char *tid = turn_id_value(turn);
 
 	if (tid && tid[0])
-		return message_add_with_turn_id(
-			turn->runtime.db, turn->runtime.session_id, role,
-			content, token_count, tid);
-	return message_add(turn->runtime.db, turn->runtime.session_id, role,
-			   content, token_count);
+		return message_add_with_turn_id(turn->runtime.db, turn->runtime.session_id, role,
+						content, token_count, tid);
+	return message_add(turn->runtime.db, turn->runtime.session_id, role, content, token_count);
 }
 
-static int turn_persist_user(struct agent_turn *turn,
-			     struct agent_turn_result *result)
+static int turn_persist_user(struct agent_turn *turn, struct agent_turn_result *result)
 {
 	const char *input = turn_stored_user_input(turn);
 	int rc;
 
-	if (!(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_EMPTY_USER) &&
-	    input[0] == '\0')
+	if (!(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_EMPTY_USER) && input[0] == '\0')
 		return 0;
 
-	result->user_tokens =
-		tokenizer_count(turn->runtime.react->tokenizer, input);
+	result->user_tokens = tokenizer_count(turn->runtime.react->tokenizer, input);
 	rc = turn_persist_message(turn, "user", input, result->user_tokens);
 	if (rc < 0)
 		return rc;
@@ -386,7 +366,8 @@ static int turn_persist_user(struct agent_turn *turn,
 static int turn_assistant_text_create(struct agent_turn *turn, char **out)
 {
 	const char *answer = turn->runtime.react->final_answer;
-	if (!answer || (!(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_EMPTY_ASSISTANT) && !*answer))
+	if (!answer ||
+	    (!(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_EMPTY_ASSISTANT) && !*answer))
 		return 0;
 	char *rendered NB_CLEANUP(nb_charp_cleanup) = NULL;
 	if (turn->runtime.render_assistant)
@@ -415,33 +396,22 @@ static int turn_persist_assistant(struct agent_turn *turn, struct agent_turn_res
 	return 0;
 }
 
-static void turn_memory_statement_cleanup(sqlite3_stmt **statement)
-{
-	sqlite3_finalize(*statement);
-}
-
 static int turn_memory_input_create(struct agent_turn *turn, char **out)
 {
-	sqlite3_stmt *stmt NB_CLEANUP(turn_memory_statement_cleanup) = NULL;
+	nb_vec records NB_CLEANUP(store_text_records_cleanup) = {0};
 	nb_buf input NB_CLEANUP(nb_buf_cleanup) = {0};
-	int step;
-
-	if (sqlite3_prepare_v2(
-		    turn->runtime.db->handle,
-		    "SELECT content FROM (SELECT content,sequence_no FROM model_history_items "
-		    "WHERE session_id=? AND turn_id=? AND role='user' AND kind='user_message' "
-		    "AND COALESCE(json_extract(payload_json,'$.source'),'') != 'hook' "
-		    "AND active=1 ORDER BY sequence_no DESC LIMIT 4) ORDER BY sequence_no",
-		    -1, &stmt, NULL) != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, turn->runtime.session_id);
-	sqlite3_bind_text(stmt, 2, turn_id_value(turn), -1, SQLITE_TRANSIENT);
-	int rc = (nb_buf_init(&input), nb_buf_reserve(&input, 2048) ? 0 : NB_ERR_NOMEM);
+	int rc = history_user_inputs_store_copy(turn->runtime.db, turn->runtime.session_id,
+						turn_id_value(turn), &records);
 
 	if (rc != 0)
 		return rc;
-	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		const char *text = (const char *)sqlite3_column_text(stmt, 0);
+
+	rc = (nb_buf_init(&input), nb_buf_reserve(&input, 2048) ? 0 : NB_ERR_NOMEM);
+
+	if (rc != 0)
+		return rc;
+	for (size_t i = 0; i < records.len; i++) {
+		const char *text = *(char **)nb_vec_at(&records, i);
 
 		if (!text)
 			continue;
@@ -455,8 +425,6 @@ static int turn_memory_input_create(struct agent_turn *turn, char **out)
 		if (rc != 0)
 			return rc;
 	}
-	if (step != SQLITE_DONE)
-		return MORPH_ERR_DB;
 	if (!input.len)
 		rc = (nb_buf_append_cstr(&input, turn_stored_user_input(turn)) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0) {
@@ -481,10 +449,9 @@ static int turn_save_memory(struct agent_turn *turn, struct agent_turn_result *r
 
 	if (!background.enabled || !(turn_flags(&turn->runtime) & AGENT_TURN_SAVE_MEMORY))
 		return 0;
-	success = turn->runtime.react &&
-		turn->runtime.react->state == REACT_STATE_DONE &&
-		(turn->runtime.react->outcome == REACT_OUTCOME_SUCCESS ||
-		 turn->runtime.react->outcome == REACT_OUTCOME_NONE);
+	success = turn->runtime.react && turn->runtime.react->state == REACT_STATE_DONE &&
+		  (turn->runtime.react->outcome == REACT_OUTCOME_SUCCESS ||
+		   turn->runtime.react->outcome == REACT_OUTCOME_NONE);
 	if (!success || (!background.save_tasks_enabled && !background.learn_from_chats_enabled))
 		return 0;
 	rc = turn_memory_input_create(turn, &memory_input);
@@ -532,8 +499,7 @@ static int turn_model_history_succeeded(const struct agent_turn *turn)
 		return 0;
 	react = turn->runtime.react;
 	return react->state == REACT_STATE_DONE &&
-		(react->outcome == REACT_OUTCOME_SUCCESS ||
-		 react->outcome == REACT_OUTCOME_NONE);
+	       (react->outcome == REACT_OUTCOME_SUCCESS || react->outcome == REACT_OUTCOME_NONE);
 }
 
 static int turn_has_error_code(const struct agent_turn *turn, int error_code)
@@ -561,9 +527,8 @@ static int turn_should_keep_user_history(const struct agent_turn *turn)
 		return 0;
 	react = turn->runtime.react;
 	return react->outcome == REACT_OUTCOME_CANCELLED ||
-		react->outcome == REACT_OUTCOME_LLM_ERROR ||
-		react->outcome == REACT_OUTCOME_MAX_ITERATIONS ||
-		react->terminal_tool_error < 0;
+	       react->outcome == REACT_OUTCOME_LLM_ERROR ||
+	       react->outcome == REACT_OUTCOME_MAX_ITERATIONS || react->terminal_tool_error < 0;
 }
 
 static int turn_should_keep_complete_history(const struct agent_turn *turn)
@@ -579,9 +544,9 @@ static int turn_should_keep_complete_history(const struct agent_turn *turn)
 	if (!turn_has_error_code(turn, MORPH_ERR_NOT_CONFIGURED))
 		return 0;
 	return react->outcome == REACT_OUTCOME_LLM_ERROR ||
-		react->outcome == REACT_OUTCOME_MAX_ITERATIONS ||
-		react->outcome == REACT_OUTCOME_TOOL_ERROR ||
-		react->outcome == REACT_OUTCOME_TIMEOUT;
+	       react->outcome == REACT_OUTCOME_MAX_ITERATIONS ||
+	       react->outcome == REACT_OUTCOME_TOOL_ERROR ||
+	       react->outcome == REACT_OUTCOME_TIMEOUT;
 }
 
 int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
@@ -603,16 +568,14 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 
 	memset(&local_result, 0, sizeof(local_result));
 	flags = turn_flags(&turn->runtime);
-	local_result.history_loaded =
-		(flags & AGENT_TURN_LOAD_HISTORY) ? 1 : 0;
+	local_result.history_loaded = (flags & AGENT_TURN_LOAD_HISTORY) ? 1 : 0;
 	local_result.memory_reply_prepared = (flags & AGENT_TURN_PREPARE_MEMORY_REPLY) ? 1 : 0;
 
 	if (flags & AGENT_TURN_SAVE_TRACE) {
 		step_rc = turn_save_trace(turn);
 		local_result.trace_rc = step_rc;
 		if (step_rc == 0)
-			local_result.trace_saved =
-				turn->runtime.react->steps ? 1 : 0;
+			local_result.trace_saved = turn->runtime.react->steps ? 1 : 0;
 	}
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
 		struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
@@ -621,7 +584,7 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 		if (step_rc == 0)
 			step_rc = db_lock_acquire(turn->runtime.db, &lock);
 		if (step_rc == 0) {
-			step_rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+			step_rc = store_transaction_begin(turn->runtime.db);
 			began = step_rc == 0;
 		}
 		if (step_rc == 0 && !turn_model_history_succeeded(turn) &&
@@ -644,21 +607,20 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 			step_rc = turn_persist_assistant(turn, &local_result, assistant_for_memory);
 			local_result.assistant_rc = step_rc;
 		}
-		if (step_rc == 0 && (turn_model_history_succeeded(turn) ||
-		    (turn->runtime.react->outcome != REACT_OUTCOME_CANCELLED &&
-		     turn->runtime.react->terminal_tool_error < 0)) &&
-		    turn->runtime.react->final_answer &&
-		    turn->runtime.react->final_answer[0])
-			step_rc = agent_history_record_assistant(
-				turn->runtime.react,
-				turn->runtime.react->final_answer);
+		if (step_rc == 0 &&
+		    (turn_model_history_succeeded(turn) ||
+		     (turn->runtime.react->outcome != REACT_OUTCOME_CANCELLED &&
+		      turn->runtime.react->terminal_tool_error < 0)) &&
+		    turn->runtime.react->final_answer && turn->runtime.react->final_answer[0])
+			step_rc = agent_history_record_assistant(turn->runtime.react,
+								 turn->runtime.react->final_answer);
 		if (step_rc == 0)
 			step_rc = agent_history_record_turn_outcome(turn->runtime.react);
 		if (step_rc == 0)
-			step_rc = db_exec(turn->runtime.db, "COMMIT;");
+			step_rc = store_transaction_commit(turn->runtime.db);
 		if (step_rc != 0) {
 			if (began)
-				(void)db_exec(turn->runtime.db, "ROLLBACK;");
+				(void)store_transaction_rollback(turn->runtime.db);
 			local_result.user_saved = 0;
 			local_result.assistant_saved = 0;
 			local_result.user_tokens = 0;
@@ -673,8 +635,8 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 		}
 	}
 
-	memory_answer = assistant_for_memory ?
-		assistant_for_memory : turn->runtime.react->final_answer;
+	memory_answer =
+		assistant_for_memory ? assistant_for_memory : turn->runtime.react->final_answer;
 	step_rc = turn_save_memory(turn, &local_result, memory_answer);
 	if (step_rc != 0 && local_result.memory_rc == 0)
 		local_result.memory_rc = step_rc;

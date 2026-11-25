@@ -1,4 +1,5 @@
 #include "runtime/protocol_dispatch.h"
+#include "persistence/orm/unit_of_work.h"
 
 #include "runtime/runtime_internal.h"
 #include "runtime/checkpoint.h"
@@ -8,8 +9,8 @@
 #include "agent/tools/exec_jobs.h"
 #include "permission/context.h"
 #include "permission/permission.h"
-#include "persistence/history_store.h"
-#include "persistence/preferences.h"
+#include "persistence/orm/history_store.h"
+#include "persistence/orm/preferences.h"
 #include "errors.h"
 #include <nb/cleanup.h>
 #include <nb/file.h>
@@ -172,7 +173,7 @@ static int protocol_session_create(struct runtime *runtime, const cJSON *params,
 		return rc;
 
 	rc = session_create_with_workdir(&runtime->context.database, name, model,
-		nb_buf_cstr(&workdir), &session);
+					 nb_buf_cstr(&workdir), &session);
 	if (rc == 0)
 		rc = session_ensure_display_id(&runtime->context.database, &session);
 
@@ -202,7 +203,7 @@ static int protocol_session_list(struct runtime *runtime, const cJSON *params, c
 	rc = db_lock_acquire(&runtime->context.database, &lock);
 	if (rc == 0)
 		rc = runtime_session_list_query(runtime, &sessions, &count, (int)limit,
-			protocol_string(params, "filter"));
+						protocol_string(params, "filter"));
 
 	for (int i = 0; rc == 0 && i < count; i++) {
 		cJSON *item = protocol_session_json(&sessions[i]);
@@ -264,7 +265,7 @@ static int protocol_session_update(struct runtime *runtime, const cJSON *params,
 	if (expected && protocol_integer(params, "expected_updated_at", -1) != session.updated_at)
 		return NB_ERR_BUSY;
 
-	rc = db_exec(db, "SAVEPOINT runtime_protocol_session_update");
+	rc = store_savepoint_begin(db, "runtime_protocol_session_update");
 	if (rc != 0)
 		return rc;
 
@@ -280,10 +281,7 @@ static int protocol_session_update(struct runtime *runtime, const cJSON *params,
 	if (rc == 0 && path)
 		rc = session_update_workdir(db, id, nb_buf_cstr(&workdir));
 
-	if (rc != 0)
-		(void)db_exec(db, "ROLLBACK TO runtime_protocol_session_update");
-
-	int finish_rc = db_exec(db, "RELEASE runtime_protocol_session_update");
+	int finish_rc = store_savepoint_finish(db, "runtime_protocol_session_update", rc);
 
 	if (rc == 0)
 		rc = finish_rc;
@@ -315,10 +313,10 @@ static int protocol_history_item(const struct model_history_item *item, void *da
 	    !cJSON_AddStringToObject(json, "role", item->role) ||
 	    !cJSON_AddStringToObject(json, "content", item->content ? item->content : "") ||
 	    !cJSON_AddStringToObject(json, "payload_json",
-		item->payload_json ? item->payload_json : "") ||
-	    !cJSON_AddStringToObject(json, "tool_name", item->tool_name) ||
+				     item->payload_json ? item->payload_json : "") ||
+	    !cJSON_AddStringToObject(json, "tool_name", item->tool_name ? item->tool_name : "") ||
 	    !cJSON_AddStringToObject(json, "tool_call_id",
-		item->tool_call_id ? item->tool_call_id : "") ||
+				     item->tool_call_id ? item->tool_call_id : "") ||
 	    !cJSON_AddBoolToObject(json, "active", item->active) ||
 	    !cJSON_AddBoolToObject(json, "truncated", item->truncated) ||
 	    !cJSON_AddNumberToObject(json, "created_at", (double)item->created_at) ||
@@ -356,8 +354,8 @@ static int protocol_history(struct runtime *runtime, const cJSON *params, cJSON 
 	if (!page.items)
 		return NB_ERR_NOMEM;
 
-	rc = history_store_visit_page(&runtime->context.database, id, before,
-		(int)limit + 1, protocol_history_item, &page);
+	rc = history_store_visit_page(&runtime->context.database, id, before, (int)limit + 1,
+				      protocol_history_item, &page);
 	if (rc != 0)
 		return rc;
 
@@ -370,8 +368,8 @@ static int protocol_history(struct runtime *runtime, const cJSON *params, cJSON 
 	return protocol_commit(out, &json);
 }
 
-static int protocol_permission(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_permission(struct runtime *runtime, const char *method, const cJSON *params,
+			       cJSON **out)
 {
 	struct permission_policy policy;
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
@@ -390,10 +388,10 @@ static int protocol_permission(struct runtime *runtime, const char *method,
 		if (scope && !strcmp(scope, "session_and_defaults") && !runtime->client_parent)
 			return NB_ERR_INVAL;
 
-		rc = preset ? runtime_permission_preset(preset, &policy) :
-			permission_policy_parse(protocol_string(params, "access"),
-				protocol_string(params, "approval"),
-				protocol_string(params, "reviewer"), &policy);
+		rc = preset ? runtime_permission_preset(preset, &policy)
+			    : permission_policy_parse(protocol_string(params, "access"),
+						      protocol_string(params, "approval"),
+						      protocol_string(params, "reviewer"), &policy);
 		if (rc != 0)
 			return rc;
 
@@ -411,8 +409,8 @@ static int protocol_permission(struct runtime *runtime, const char *method,
 			} else {
 				if (scope && !strcmp(scope, "session_and_defaults"))
 					rc = runtime_permission_set_policy(
-						runtime->client_parent ?
-							runtime->client_parent : runtime,
+						runtime->client_parent ? runtime->client_parent
+								       : runtime,
 						&policy);
 
 				if (rc == 0)
@@ -445,8 +443,8 @@ static int protocol_permission(struct runtime *runtime, const char *method,
 	return protocol_commit(out, &json);
 }
 
-static int protocol_grants(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_grants(struct runtime *runtime, const char *method, const cJSON *params,
+			   cJSON **out)
 {
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	int rc = 0;
@@ -469,12 +467,12 @@ static int protocol_grants(struct runtime *runtime, const char *method,
 			if (!item || !cJSON_AddNumberToObject(item, "id", (double)grants[i].id) ||
 			    !cJSON_AddStringToObject(item, "subject", grants[i].subject) ||
 			    !cJSON_AddStringToObject(item, "resource_kind",
-				grants[i].resource_kind) ||
+						     grants[i].resource_kind) ||
 			    !cJSON_AddStringToObject(item, "resource", grants[i].resource) ||
 			    !cJSON_AddStringToObject(item, "project_root",
-				grants[i].project_root) ||
+						     grants[i].project_root) ||
 			    !cJSON_AddNumberToObject(item, "created_at",
-				(double)grants[i].created_at) ||
+						     (double)grants[i].created_at) ||
 			    !cJSON_AddItemToArray(items, item))
 				rc = NB_ERR_NOMEM;
 			else
@@ -513,8 +511,8 @@ static int protocol_grants(struct runtime *runtime, const char *method,
 	return rc == 0 ? protocol_commit(out, &json) : rc;
 }
 
-static int protocol_process(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_process(struct runtime *runtime, const char *method, const cJSON *params,
+			    cJSON **out)
 {
 	const char *id = protocol_string(params, "process_id");
 
@@ -540,8 +538,9 @@ static int protocol_process(struct runtime *runtime, const char *method,
 	if (!strcmp(method, "process.write")) {
 		const char *text = protocol_string(params, "text");
 		int64_t owner = runtime->context.current_session.id;
-		int rc = text && runtime->jobs ? exec_jobs_write(runtime->jobs, owner,
-			id, text, strlen(text)) : NB_ERR_INVAL;
+		int rc = text && runtime->jobs
+				 ? exec_jobs_write(runtime->jobs, owner, id, text, strlen(text))
+				 : NB_ERR_INVAL;
 
 		if (rc != 0)
 			return rc;
@@ -553,8 +552,8 @@ static int protocol_process(struct runtime *runtime, const char *method,
 	return NB_ERR_UNSUPPORTED;
 }
 
-static int protocol_model(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_model(struct runtime *runtime, const char *method, const cJSON *params,
+			  cJSON **out)
 {
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	int ultra = 0;
@@ -572,8 +571,8 @@ static int protocol_model(struct runtime *runtime, const char *method,
 			return NB_ERR_INVAL;
 
 		if ((!model && !mode) || (mode && !cJSON_IsBool(mode)) ||
-		    (model && !protocol_name_valid(model,
-			sizeof(runtime->context.current_session.model))))
+		    (model &&
+		     !protocol_name_valid(model, sizeof(runtime->context.current_session.model))))
 			return NB_ERR_INVAL;
 
 		if (scope && !strcmp(scope, "defaults")) {
@@ -590,8 +589,8 @@ static int protocol_model(struct runtime *runtime, const char *method,
 			if (agent_control_active(runtime->context.agents, 0))
 				rc = NB_ERR_BUSY;
 
-			if (rc == 0 && cJSON_IsTrue(mode) && (!runtime->context.agents ||
-			    !runtime->context.config.agents.enabled))
+			if (rc == 0 && cJSON_IsTrue(mode) &&
+			    (!runtime->context.agents || !runtime->context.config.agents.enabled))
 				rc = NB_ERR_UNSUPPORTED;
 
 			if (rc == 0 && scope && !strcmp(scope, "session_and_defaults")) {
@@ -599,7 +598,7 @@ static int protocol_model(struct runtime *runtime, const char *method,
 					rc = NB_ERR_INVAL;
 				else
 					rc = runtime_model_set_ultra(runtime->client_parent,
-						cJSON_IsTrue(mode));
+								     cJSON_IsTrue(mode));
 			}
 
 			if (rc == 0 && model)
@@ -609,15 +608,15 @@ static int protocol_model(struct runtime *runtime, const char *method,
 				int enabled = cJSON_IsTrue(mode);
 
 				if (enabled && (!runtime->context.agents ||
-				    !runtime->context.config.agents.enabled)) {
+						!runtime->context.config.agents.enabled)) {
 					rc = NB_ERR_UNSUPPORTED;
 				} else {
-					snprintf(
-						runtime->context.config.agents.multi_agent_mode,
-						sizeof(runtime->context.config.agents.multi_agent_mode),
-						"%s", enabled ? "proactive" : "explicit");
+					snprintf(runtime->context.config.agents.multi_agent_mode,
+						 sizeof(runtime->context.config.agents
+								.multi_agent_mode),
+						 "%s", enabled ? "proactive" : "explicit");
 					agent_control_set_proactive(runtime->context.agents,
-						enabled);
+								    enabled);
 				}
 			}
 
@@ -643,8 +642,8 @@ static int protocol_model(struct runtime *runtime, const char *method,
 	return protocol_commit(out, &json);
 }
 
-static int protocol_checkpoint(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_checkpoint(struct runtime *runtime, const char *method, const cJSON *params,
+			       cJSON **out)
 {
 	if (!strcmp(method, "checkpoint.list"))
 		return runtime_checkpoint_list_copy(runtime, out);
@@ -680,15 +679,16 @@ static int protocol_checkpoint(struct runtime *runtime, const char *method,
 static cJSON *protocol_agent_json(const struct agent_info *agent)
 {
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
-	const char *status = agent->status == AGENT_PENDING ? "queued" :
-		agent->status == AGENT_RUNNING ? "running" :
-		agent->status == AGENT_COMPLETED ? "completed" :
-		agent->status == AGENT_CANCELLED ? "interrupted" : "failed";
+	const char *status = agent->status == AGENT_PENDING	? "queued"
+			     : agent->status == AGENT_RUNNING	? "running"
+			     : agent->status == AGENT_COMPLETED ? "completed"
+			     : agent->status == AGENT_CANCELLED ? "interrupted"
+								: "failed";
 
 	if (!json || !cJSON_AddStringToObject(json, "agent_id", agent->id) ||
 	    !cJSON_AddStringToObject(json, "name", agent->agent_name) ||
 	    !cJSON_AddStringToObject(json, "description",
-		agent->description ? agent->description : "") ||
+				     agent->description ? agent->description : "") ||
 	    !cJSON_AddStringToObject(json, "activity", agent->activity ? agent->activity : "") ||
 	    !cJSON_AddStringToObject(json, "result", agent->result ? agent->result : "") ||
 	    !cJSON_AddStringToObject(json, "status", status) ||
@@ -707,8 +707,8 @@ static cJSON *protocol_agent_json(const struct agent_info *agent)
 	return result;
 }
 
-static int protocol_agent(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_agent(struct runtime *runtime, const char *method, const cJSON *params,
+			  cJSON **out)
 {
 	if (!strcmp(method, "agent.budget")) {
 		struct agent_budget budget = {0};
@@ -720,7 +720,7 @@ static int protocol_agent(struct runtime *runtime, const char *method,
 		if (!json || !cJSON_AddNumberToObject(json, "used", (double)budget.used) ||
 		    !cJSON_AddNumberToObject(json, "limit", (double)budget.limit) ||
 		    !cJSON_AddNumberToObject(json, "request_tokens",
-			(double)budget.request_tokens) ||
+					     (double)budget.request_tokens) ||
 		    !cJSON_AddNumberToObject(json, "input_tokens", (double)budget.input_tokens) ||
 		    !cJSON_AddNumberToObject(json, "cached_tokens", (double)budget.cached_tokens) ||
 		    !cJSON_AddNumberToObject(json, "output_tokens", (double)budget.output_tokens) ||
@@ -761,9 +761,9 @@ static int protocol_agent(struct runtime *runtime, const char *method,
 		if (!items)
 			return NB_ERR_NOMEM;
 
-		rc = !strcmp(method, "agent.subscribe") ?
-			runtime_agent_subscribe(runtime, id, &events, &count, &sequence) :
-			runtime_agent_events(runtime, id, &events, &count);
+		rc = !strcmp(method, "agent.subscribe")
+			     ? runtime_agent_subscribe(runtime, id, &events, &count, &sequence)
+			     : runtime_agent_events(runtime, id, &events, &count);
 		for (int i = 0; rc == 0 && i < count; i++) {
 			cJSON *event = cJSON_CreateString(events[i]);
 
@@ -783,11 +783,12 @@ static int protocol_agent(struct runtime *runtime, const char *method,
 			rc = id ? runtime_agent_read(runtime, id, &agents) : NB_ERR_INVAL;
 			count = rc == 0 ? 1 : 0;
 		} else if (!strcmp(method, "agent.list")) {
-			rc = runtime_agent_list(runtime,
-				protocol_integer(params, "session_id", 0), &agents, &count);
+			rc = runtime_agent_list(runtime, protocol_integer(params, "session_id", 0),
+						&agents, &count);
 		} else if (!strcmp(method, "agent.activity")) {
 			rc = runtime_agent_activity(runtime,
-				protocol_integer(params, "session_id", 0), &agents, &count);
+						    protocol_integer(params, "session_id", 0),
+						    &agents, &count);
 		} else {
 			return NB_ERR_UNSUPPORTED;
 		}
@@ -818,8 +819,8 @@ static int protocol_agent(struct runtime *runtime, const char *method,
 	return *out ? 0 : NB_ERR_NOMEM;
 }
 
-static int protocol_skill(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_skill(struct runtime *runtime, const char *method, const cJSON *params,
+			  cJSON **out)
 {
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 
@@ -872,8 +873,8 @@ static int protocol_skill(struct runtime *runtime, const char *method,
 	return protocol_commit(out, &json);
 }
 
-static int protocol_mcp(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_mcp(struct runtime *runtime, const char *method, const cJSON *params,
+			cJSON **out)
 {
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	const char *name = protocol_string(params, "name");
@@ -889,11 +890,11 @@ static int protocol_mcp(struct runtime *runtime, const char *method,
 	else if (!strcmp(method, "mcp.discover")) {
 		int tools = 0, resources = 0, prompts = 0;
 
-		rc = name ? runtime_mcp_discover(runtime, name, &tools, &resources, &prompts) :
-			NB_ERR_INVAL;
+		rc = name ? runtime_mcp_discover(runtime, name, &tools, &resources, &prompts)
+			  : NB_ERR_INVAL;
 		if (rc == 0 && (!cJSON_AddNumberToObject(json, "tools", tools) ||
-		    !cJSON_AddNumberToObject(json, "resources", resources) ||
-		    !cJSON_AddNumberToObject(json, "prompts", prompts)))
+				!cJSON_AddNumberToObject(json, "resources", resources) ||
+				!cJSON_AddNumberToObject(json, "prompts", prompts)))
 			rc = NB_ERR_NOMEM;
 	} else if (!strcmp(method, "mcp.list")) {
 		cJSON *items = cJSON_AddArrayToObject(json, "servers");
@@ -907,14 +908,14 @@ static int protocol_mcp(struct runtime *runtime, const char *method,
 			cJSON *item NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 
 			rc = runtime_mcp_info(runtime, i, &status);
-			if (rc == 0 && (!item ||
-			    !cJSON_AddStringToObject(item, "name", status.config.name) ||
-			    !cJSON_AddNumberToObject(item, "state", status.state) ||
-			    !cJSON_AddBoolToObject(item, "connected", status.connected) ||
-			    !cJSON_AddNumberToObject(item, "error_code", status.error_code) ||
-			    !cJSON_AddNumberToObject(item, "elapsed_ms",
-				(double)status.elapsed_ms) ||
-			    !cJSON_AddItemToArray(items, item)))
+			if (rc == 0 &&
+			    (!item || !cJSON_AddStringToObject(item, "name", status.config.name) ||
+			     !cJSON_AddNumberToObject(item, "state", status.state) ||
+			     !cJSON_AddBoolToObject(item, "connected", status.connected) ||
+			     !cJSON_AddNumberToObject(item, "error_code", status.error_code) ||
+			     !cJSON_AddNumberToObject(item, "elapsed_ms",
+						      (double)status.elapsed_ms) ||
+			     !cJSON_AddItemToArray(items, item)))
 				rc = NB_ERR_NOMEM;
 
 			if (rc == 0)
@@ -931,29 +932,75 @@ static int protocol_info(struct runtime *runtime, cJSON **out)
 {
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	cJSON *methods = json ? cJSON_AddArrayToObject(json, "methods") : NULL;
-	const char *const names[] = {
-		"runtime.info", "runtime.capabilities", "session.create", "session.list",
-		"session.get", "session.update", "session.delete", "session.load", "session.unload",
-		"session.subscribe", "session.unsubscribe", "turn.start", "turn.steer",
-		"turn.interrupt", "turn.get", "turn.expedite", "history.list", "history.read",
-		"context.get", "history.compress", "history.repair", "history.diagnose",
-		"turn.inspect", "interaction.progress",
-		"permission.get", "permission.update", "process.list", "process.read",
-		"process.stop",
-		"permission.grants.list", "permission.grants.revoke", "permission.grants.clear",
-		"model.get", "model.update",
-		"session.claim_interactions",
-		"process.write",
-		"agent.list", "agent.read", "agent.budget", "agent.followup", "agent.interrupt",
-		"skill.list",
-		"agent.activity", "agent.subscribe", "agent.events", "agent.select",
-		"skill.update", "checkpoint.list", "checkpoint.preview", "checkpoint.restore",
-		"mcp.list", "mcp.connect", "mcp.disconnect", "mcp.discover", "task.execute",
-		"recap.request", "recap.cancel", "recap.progress", "recap.is_current",
-		"memory.read", "memory.report", "memory.retry", "memory.jobs", "memory.clear",
-		"preference.read", "preference.update",
-		"session.import", "hooks.list", "hooks.update"
-	};
+	const char *const names[] = {"runtime.info",
+				     "runtime.capabilities",
+				     "session.create",
+				     "session.list",
+				     "session.get",
+				     "session.update",
+				     "session.delete",
+				     "session.load",
+				     "session.unload",
+				     "session.subscribe",
+				     "session.unsubscribe",
+				     "turn.start",
+				     "turn.steer",
+				     "turn.interrupt",
+				     "turn.get",
+				     "turn.expedite",
+				     "history.list",
+				     "history.read",
+				     "context.get",
+				     "history.compress",
+				     "history.repair",
+				     "history.diagnose",
+				     "turn.inspect",
+				     "interaction.progress",
+				     "permission.get",
+				     "permission.update",
+				     "process.list",
+				     "process.read",
+				     "process.stop",
+				     "permission.grants.list",
+				     "permission.grants.revoke",
+				     "permission.grants.clear",
+				     "model.get",
+				     "model.update",
+				     "session.claim_interactions",
+				     "process.write",
+				     "agent.list",
+				     "agent.read",
+				     "agent.budget",
+				     "agent.followup",
+				     "agent.interrupt",
+				     "skill.list",
+				     "agent.activity",
+				     "agent.subscribe",
+				     "agent.events",
+				     "agent.select",
+				     "skill.update",
+				     "checkpoint.list",
+				     "checkpoint.preview",
+				     "checkpoint.restore",
+				     "mcp.list",
+				     "mcp.connect",
+				     "mcp.disconnect",
+				     "mcp.discover",
+				     "task.execute",
+				     "recap.request",
+				     "recap.cancel",
+				     "recap.progress",
+				     "recap.is_current",
+				     "memory.read",
+				     "memory.report",
+				     "memory.retry",
+				     "memory.jobs",
+				     "memory.clear",
+				     "preference.read",
+				     "preference.update",
+				     "session.import",
+				     "hooks.list",
+				     "hooks.update"};
 
 	(void)runtime;
 	if (!methods ||
@@ -973,8 +1020,8 @@ static int protocol_info(struct runtime *runtime, cJSON **out)
 	return protocol_commit(out, &json);
 }
 
-static int protocol_recap(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_recap(struct runtime *runtime, const char *method, const cJSON *params,
+			  cJSON **out)
 {
 	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
 	struct runtime_recap_progress progress = {0};
@@ -1003,7 +1050,7 @@ static int protocol_recap(struct runtime *runtime, const char *method,
 
 		progress.completed_turns = (int)completed;
 		if (!cJSON_AddBoolToObject(json, "current",
-			runtime_recap_is_current(runtime, &progress)))
+					   runtime_recap_is_current(runtime, &progress)))
 			return NB_ERR_NOMEM;
 
 		return protocol_commit(out, &json);
@@ -1023,14 +1070,14 @@ static int protocol_recap(struct runtime *runtime, const char *method,
 	return protocol_commit(out, &json);
 }
 
-static int protocol_misc(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+static int protocol_misc(struct runtime *runtime, const char *method, const cJSON *params,
+			 cJSON **out)
 {
 	if (!strcmp(method, "task.execute")) {
 		char *args NB_CLEANUP(protocol_json_text_cleanup) = cJSON_PrintUnformatted(params);
 		char *result NB_CLEANUP(nb_charp_cleanup) = NULL;
-		int rc = args ? runtime_tasks_execute(runtime, args, (int64_t)time(NULL), &result) :
-			NB_ERR_NOMEM;
+		int rc = args ? runtime_tasks_execute(runtime, args, (int64_t)time(NULL), &result)
+			      : NB_ERR_NOMEM;
 
 		if (rc != 0)
 			return rc;
@@ -1044,8 +1091,8 @@ static int protocol_misc(struct runtime *runtime, const char *method,
 
 	if (!strcmp(method, "hooks.update")) {
 		int rc = runtime_hooks_manage(runtime, protocol_string(params, "action"),
-			protocol_string(params, "hook_id"),
-			protocol_string(params, "expected_digest"));
+					      protocol_string(params, "hook_id"),
+					      protocol_string(params, "expected_digest"));
 
 		if (rc != 0)
 			return rc;
@@ -1065,34 +1112,39 @@ static int protocol_misc(struct runtime *runtime, const char *method,
 			runtime_memory_render_current_copy(runtime, (int)limit);
 
 		*out = cJSON_CreateObject();
-		return *out && cJSON_AddStringToObject(*out, "text", text ? text : "") ?
-			0 : NB_ERR_NOMEM;
+		return *out && cJSON_AddStringToObject(*out, "text", text ? text : "")
+			       ? 0
+			       : NB_ERR_NOMEM;
 	}
 
 	if (!strcmp(method, "memory.jobs") || !strcmp(method, "preference.read")) {
-		char *text NB_CLEANUP(nb_charp_cleanup) = !strcmp(method, "memory.jobs")
-			? runtime_memory_background_render_copy(runtime)
-			: runtime_preferences_render_copy(runtime,
-				cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "history")));
+		char *text NB_CLEANUP(nb_charp_cleanup) =
+			!strcmp(method, "memory.jobs")
+				? runtime_memory_background_render_copy(runtime)
+				: runtime_preferences_render_copy(
+					  runtime, cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(
+							   params, "history")));
 		*out = cJSON_CreateObject();
-		return text && *out && cJSON_AddStringToObject(*out, "text", text) ?
-			0 : NB_ERR_NOMEM;
+		return text && *out && cJSON_AddStringToObject(*out, "text", text) ? 0
+										   : NB_ERR_NOMEM;
 	}
 
 	if (!strcmp(method, "memory.retry") || !strcmp(method, "memory.clear")) {
 		const cJSON *field = cJSON_GetObjectItemCaseSensitive(params, "scope");
 		if (field && (!cJSON_IsNumber(field) || !isfinite(field->valuedouble) ||
-		    field->valuedouble < (double)MEMORY_CLEAR_ALL ||
-		    field->valuedouble > (double)MEMORY_CLEAR_TIPS ||
-		    floor(field->valuedouble) != field->valuedouble))
+			      field->valuedouble < (double)MEMORY_CLEAR_ALL ||
+			      field->valuedouble > (double)MEMORY_CLEAR_TIPS ||
+			      floor(field->valuedouble) != field->valuedouble))
 			return NB_ERR_INVAL;
 
 		int64_t scope = protocol_integer(params, "scope", MEMORY_CLEAR_ALL);
 		if (scope > MEMORY_CLEAR_TIPS)
 			return NB_ERR_INVAL;
 
-		int rc = !strcmp(method, "memory.retry") ? runtime_memory_retry_current(runtime)
-			: runtime_memory_clear_current(runtime, (enum memory_clear_scope)scope);
+		int rc = !strcmp(method, "memory.retry")
+				 ? runtime_memory_retry_current(runtime)
+				 : runtime_memory_clear_current(runtime,
+								(enum memory_clear_scope)scope);
 		if (rc != 0)
 			return rc;
 
@@ -1105,9 +1157,9 @@ static int protocol_misc(struct runtime *runtime, const char *method,
 		const char *key = protocol_string(params, "key");
 		const char *value = protocol_string(params, "value");
 		const cJSON *value_field = cJSON_GetObjectItemCaseSensitive(params, "value");
-		int rc = scope && key &&
-			(cJSON_IsString(value_field) || cJSON_IsNull(value_field)) ?
-			runtime_preference_set(runtime, scope, key, value) : NB_ERR_INVAL;
+		int rc = scope && key && (cJSON_IsString(value_field) || cJSON_IsNull(value_field))
+				 ? runtime_preference_set(runtime, scope, key, value)
+				 : NB_ERR_INVAL;
 
 		if (rc != 0)
 			return rc;
@@ -1119,23 +1171,25 @@ static int protocol_misc(struct runtime *runtime, const char *method,
 	if (!strcmp(method, "session.import")) {
 		struct runtime_session_import_result result;
 		const char *path = protocol_string(params, "path");
-		int rc = path ? runtime_session_import_file(runtime, path,
-			protocol_string(params, "origin"), &result) : NB_ERR_INVAL;
+		int rc = path ? runtime_session_import_file(
+					runtime, path, protocol_string(params, "origin"), &result)
+			      : NB_ERR_INVAL;
 
 		if (rc != 0)
 			return rc;
 
 		*out = cJSON_CreateObject();
 		return *out && cJSON_AddNumberToObject(*out, "imported", result.imported) &&
-			cJSON_AddNumberToObject(*out, "unchanged", result.unchanged) ?
-			0 : NB_ERR_NOMEM;
+				       cJSON_AddNumberToObject(*out, "unchanged", result.unchanged)
+			       ? 0
+			       : NB_ERR_NOMEM;
 	}
 
 	return NB_ERR_UNSUPPORTED;
 }
 
-int runtime_protocol_dispatch(struct runtime *runtime, const char *method,
-	const cJSON *params, cJSON **out)
+int runtime_protocol_dispatch(struct runtime *runtime, const char *method, const cJSON *params,
+			      cJSON **out)
 {
 	if (!runtime || !method || !out || (params && !cJSON_IsObject(params)))
 		return NB_ERR_INVAL;
@@ -1163,8 +1217,8 @@ int runtime_protocol_dispatch(struct runtime *runtime, const char *method,
 		return protocol_session_list(runtime, params, out);
 
 	if (!strcmp(method, "session.get"))
-		return runtime_protocol_session_copy(runtime,
-			protocol_integer(params, "session_id", 0), out);
+		return runtime_protocol_session_copy(
+			runtime, protocol_integer(params, "session_id", 0), out);
 
 	if (!strcmp(method, "session.update"))
 		return protocol_session_update(runtime, params, out);
@@ -1175,7 +1229,6 @@ int runtime_protocol_dispatch(struct runtime *runtime, const char *method,
 		int rc = id > 0 ? db_lock_acquire(&runtime->context.database, &lock) : NB_ERR_INVAL;
 		if (rc == 0)
 			rc = session_delete(&runtime->context.database, id);
-
 
 		if (rc != 0)
 			return rc;

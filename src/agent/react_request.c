@@ -1,4 +1,5 @@
 #include "react_request.h"
+#include "persistence/orm/business_store.h"
 #include "agent/agent_control.h"
 
 #include "react_internal.h"
@@ -219,45 +220,40 @@ static int append_artifact_checkpoint(struct react_context *ctx, nb_buf *buf)
 {
 	if (!ctx->history_enabled || !ctx->history_db || ctx->history_session_id <= 0)
 		return 0;
-	sqlite3_stmt *stmt = NULL;
+	nb_vec records NB_CLEANUP(store_artifacts_cleanup) = {0};
 	cJSON *items = cJSON_CreateArray();
-	int rc = sqlite3_prepare_v2(ctx->history_db->handle,
-				    "SELECT id,kind,path,tool_name FROM outputs WHERE session_id=? "
-				    "ORDER BY id DESC LIMIT 8",
-				    -1, &stmt, NULL);
-	int error = 0;
+	int error = items ? artifact_context_store_list_copy(ctx->history_db,
+							     ctx->history_session_id, &records)
+			  : NB_ERR_NOMEM;
 	size_t bytes = 0;
 
-	if (!items || rc != SQLITE_OK) {
-		error = (items ? MORPH_ERR_DB : NB_ERR_NOMEM);
+	if (error != 0) {
 		cJSON_Delete(items);
-		sqlite3_finalize(stmt);
 		return error;
 	}
-	sqlite3_bind_int64(stmt, 1, ctx->history_session_id);
-	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		const char *path = (const char *)sqlite3_column_text(stmt, 2);
+
+	for (size_t i = 0; i < records.len; i++) {
+		const struct store_artifact *record = nb_vec_at(&records, i);
+		const char *path = record->path;
+
 		if (!path || bytes + strlen(path) > 8192)
 			continue;
+
 		cJSON *item = cJSON_CreateObject();
-		const char *kind = (const char *)sqlite3_column_text(stmt, 1);
-		const char *tool = (const char *)sqlite3_column_text(stmt, 3);
-		if (!item ||
-		    !cJSON_AddNumberToObject(item, "output_id",
-					     (double)sqlite3_column_int64(stmt, 0)) ||
-		    !cJSON_AddStringToObject(item, "kind", kind ? kind : "file") ||
+
+		if (!item || !cJSON_AddNumberToObject(item, "output_id", (double)record->id) ||
+		    !cJSON_AddStringToObject(item, "kind", record->kind ? record->kind : "file") ||
 		    !cJSON_AddStringToObject(item, "path", path) ||
-		    !cJSON_AddStringToObject(item, "tool", tool ? tool : "") ||
+		    !cJSON_AddStringToObject(item, "tool",
+					     record->tool_name ? record->tool_name : "") ||
 		    !cJSON_AddItemToArray(items, item)) {
 			cJSON_Delete(item);
-			error = (NB_ERR_NOMEM);
+			error = NB_ERR_NOMEM;
 			break;
 		}
+
 		bytes += strlen(path);
 	}
-	sqlite3_finalize(stmt);
-	if (error == 0 && rc != SQLITE_DONE)
-		error = (MORPH_ERR_DB);
 	if (error == 0 && cJSON_GetArraySize(items)) {
 		char *json = cJSON_PrintUnformatted(items);
 		if (!json)

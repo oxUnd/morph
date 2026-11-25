@@ -3,13 +3,10 @@
 
 #include "config/config.h"
 #include "sync/sync.h"
+#include "persistence/orm/sync_manifest.h"
+#include "persistence/orm/session_import.h"
 
 struct runtime;
-
-struct runtime_session_import_result {
-	int imported;
-	int unchanged;
-};
 
 int runtime_session_import_file(struct runtime *runtime, const char *path,
 	const char *origin, struct runtime_session_import_result *result);
@@ -37,12 +34,6 @@ int runtime_sync_config_instance(struct runtime *runtime,
 				 const char *default_sync_dir,
 				 const struct morph_sync_backend *backend,
 				 struct morph_sync_config *out);
-
-struct runtime_sync_conflict {
-	int64_t id;
-	char path[PATH_MAX];
-	int64_t created_at;
-};
 
 int runtime_sync_conflicts(struct runtime *runtime,
 			   struct runtime_sync_conflict **out, int *count);

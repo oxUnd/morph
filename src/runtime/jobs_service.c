@@ -1,4 +1,5 @@
 #include "jobs_service.h"
+#include "persistence/orm/business_store.h"
 #include <nb/err.h>
 #include "runtime/runtime_internal.h"
 #include "agent/tools/exec_tool.h"
@@ -48,31 +49,14 @@ int runtime_jobs_event(const struct morph_event *event, void *user_data)
 	int64_t owner = runtime_jobs_event_owner(event);
 	if (owner > 0) {
 		char *json = cJSON_PrintUnformatted(data);
-		sqlite3_stmt *stmt = NULL;
 		nb_mutex_lock(runtime->jobs_lock);
-		int rc = json ? sqlite3_prepare_v2(
-					runtime->context.database.handle,
-					"INSERT INTO "
-					"process_jobs(process_id,session_id,data_json,updated_at) "
-					"VALUES(?,?,?,strftime('%s','now')) ON "
-					"CONFLICT(process_id) DO UPDATE "
-					"SET "
-					"data_json=excluded.data_json,updated_at=excluded.updated_"
-						"at WHERE "
-						"process_jobs.session_id=excluded.session_id",
-					-1, &stmt, NULL)
-			      : SQLITE_NOMEM;
-		if (rc == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, job_string(data, "session_id"), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_int64(stmt, 2, owner);
-			sqlite3_bind_text(stmt, 3, json, -1, SQLITE_TRANSIENT);
-			rc = sqlite3_step(stmt);
-		}
-		sqlite3_finalize(stmt);
+		int rc = json ? process_job_store_put(&runtime->context.database,
+						      job_string(data, "session_id"), owner, json)
+			      : NB_ERR_NOMEM;
+
 		nb_mutex_unlock(runtime->jobs_lock);
 		free(json);
-		if (rc != SQLITE_DONE)
+		if (rc != 0)
 			nb_log_write(runtime->options.logger, NB_LOG_WARN,
 				     "Could not retain process state: %s",
 				     nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT,
@@ -87,16 +71,10 @@ int runtime_jobs_init(struct runtime *runtime)
 	if (rc)
 		return rc;
 	runtime->jobs_lock_ready = 1;
-	rc = sqlite3_exec(
-		runtime->context.database.handle,
-		"CREATE TABLE IF NOT EXISTS process_jobs("
-		"process_id TEXT PRIMARY KEY,session_id INTEGER NOT NULL "
-		"REFERENCES sessions(id) ON DELETE CASCADE, data_json TEXT NOT NULL,"
-		"updated_at INTEGER NOT NULL);"
-		"CREATE INDEX IF NOT EXISTS process_jobs_session ON process_jobs(session_id);",
-		NULL, NULL, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
+	rc = process_job_store_init(&runtime->context.database);
+	if (rc != 0)
+		return rc;
+
 	rc = exec_tool_jobs_acquire(&runtime->context.tools, &runtime->jobs_owner);
 	if (rc && rc != NB_ERR_NOT_FOUND)
 		return rc;
@@ -149,47 +127,42 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 		return NB_ERR_NOMEM;
 	}
 	cJSON *job;
-	cJSON_ArrayForEach(job, jobs)
-	{
+	cJSON_ArrayForEach (job, jobs) {
 		if (!nb_map_put_cstr(live, job_string(job, "session_id"), job, NULL)) {
 			rc = NB_ERR_NOMEM;
 			break;
 		}
 	}
-	sqlite3_stmt *stmt = NULL;
+	nb_vec records NB_CLEANUP(store_text_records_cleanup) = {0};
+
 	nb_mutex_lock(runtime->jobs_lock);
-	int sql_rc = rc ? SQLITE_ERROR
-			: sqlite3_prepare_v2(runtime->context.database.handle,
-					     "SELECT data_json FROM process_jobs WHERE "
-					     "session_id=? ORDER BY updated_at DESC "
-					     "LIMIT 200",
-					     -1, &stmt, NULL);
-	if (sql_rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, owner);
-		while ((sql_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			const char *json = (const char *)sqlite3_column_text(stmt, 0);
-			job = json ? cJSON_Parse(json) : NULL;
-			if (!cJSON_IsObject(job)) {
-				cJSON_Delete(job);
-				rc = NB_ERR_PARSE;
-				break;
-			}
-			if (nb_map_has_cstr(live, job_string(job, "session_id"))) {
-				cJSON_Delete(job);
-				continue;
-			}
-			stored_job_unavailable(job);
-			if (!cJSON_AddItemToArray(jobs, job)) {
-				cJSON_Delete(job);
-				rc = NB_ERR_NOMEM;
-				break;
-			}
+	if (rc == 0)
+		rc = process_job_store_list_copy(&runtime->context.database, owner, &records);
+
+	for (size_t i = 0; rc == 0 && i < records.len; i++) {
+		const char *json = *(char **)nb_vec_at(&records, i);
+
+		job = json ? cJSON_Parse(json) : NULL;
+		if (!cJSON_IsObject(job)) {
+			cJSON_Delete(job);
+			rc = NB_ERR_PARSE;
+			break;
+		}
+
+		if (nb_map_has_cstr(live, job_string(job, "session_id"))) {
+			cJSON_Delete(job);
+			continue;
+		}
+
+		stored_job_unavailable(job);
+		if (!cJSON_AddItemToArray(jobs, job)) {
+			cJSON_Delete(job);
+			rc = NB_ERR_NOMEM;
+			break;
 		}
 	}
-	sqlite3_finalize(stmt);
+
 	nb_mutex_unlock(runtime->jobs_lock);
-	if (!rc && sql_rc != SQLITE_DONE)
-		rc = MORPH_ERR_DB;
 	if (rc) {
 		cJSON_Delete(jobs);
 		return rc;
@@ -211,8 +184,7 @@ static int resolve_job(struct runtime *runtime, const char *id, char **resolved)
 	if (rc)
 		return rc;
 	const char *match = NULL;
-	cJSON_ArrayForEach(job, jobs)
-	{
+	cJSON_ArrayForEach (job, jobs) {
 		const char *candidate = job_string(job, "session_id");
 		const char *short_id = !strncmp(candidate, "proc_", 5) ? candidate + 5 : candidate;
 		if (strcmp(candidate, id) && strncmp(short_id, id, strlen(id)))
@@ -245,26 +217,18 @@ int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out)
 					       resolved, &result)
 		     : NB_ERR_NOT_FOUND;
 	if (rc == NB_ERR_NOT_FOUND) {
-		sqlite3_stmt *stmt = NULL;
+		char *json NB_CLEANUP(nb_charp_cleanup) = NULL;
+
 		nb_mutex_lock(runtime->jobs_lock);
-		int sql_rc = sqlite3_prepare_v2(
-			runtime->context.database.handle,
-			"SELECT data_json FROM process_jobs WHERE process_id=? AND session_id=?",
-			-1, &stmt, NULL);
-		if (sql_rc == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, resolved, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_int64(stmt, 2, runtime->context.current_session.id);
-			sql_rc = sqlite3_step(stmt);
-		}
-		result = sql_rc == SQLITE_ROW
-				 ? cJSON_Parse((const char *)sqlite3_column_text(stmt, 0))
-				 : NULL;
-		sqlite3_finalize(stmt);
+		rc = process_job_store_copy(&runtime->context.database,
+					    runtime->context.current_session.id, resolved, &json);
 		nb_mutex_unlock(runtime->jobs_lock);
-		rc = result		     ? 0
-		     : sql_rc == SQLITE_DONE ? NB_ERR_NOT_FOUND
-		     : sql_rc == SQLITE_ROW  ? NB_ERR_PARSE
-					     : MORPH_ERR_DB;
+		if (rc == 0) {
+			result = json ? cJSON_Parse(json) : NULL;
+			if (!result)
+				rc = NB_ERR_PARSE;
+		}
+
 		if (result)
 			stored_job_unavailable(result);
 	}

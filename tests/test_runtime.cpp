@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <nb/cleanup.h>
+#include "persistence/orm/test_fixture.h"
 
 extern "C" {
 #include "event/event.h"
@@ -12,7 +14,6 @@ extern "C" {
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <sqlite3.h>
 
 static int runtime_test_task_runner(const scheduled_task *,
 				    scheduled_task_action_result *, void *)
@@ -94,7 +95,7 @@ TEST_F(RuntimeLifecycleTest, ContextTokensExcludeCompactedHistoryAndBilledUsage)
 	runtime *instance = nullptr;
 	session created{};
 	int64_t tokens = -1;
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 
 	options.db_path = database;
 	options.workdir = directory;
@@ -103,7 +104,7 @@ TEST_F(RuntimeLifecycleTest, ContextTokensExcludeCompactedHistoryAndBilledUsage)
 	ASSERT_EQ(runtime_session_create_and_select(instance, "usage", &created), 0);
 	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), 0);
 	EXPECT_EQ(tokens, 0);
-	ASSERT_EQ(sqlite3_open(database, &db), SQLITE_OK);
+	ASSERT_EQ(db_open(nullptr, &db, database), 0);
 	std::string id = std::to_string(created.id);
 	std::string sql = "UPDATE sessions SET token_used=999999 WHERE id=" + id +
 		";INSERT INTO model_history_items"
@@ -111,16 +112,16 @@ TEST_F(RuntimeLifecycleTest, ContextTokensExcludeCompactedHistoryAndBilledUsage)
 		id + ",1,'user','old',90000,0,1),(" + id +
 		",2,'summary','summary',1200,1,2),(" + id +
 		",3,'user','recent',300,1,3)";
-	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
 	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), 0);
 	EXPECT_EQ(tokens, 1500);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "legacy", &created), 0);
 	sql = "INSERT INTO messages(session_id,role,content,token_count,created_at) VALUES (" +
 		std::to_string(created.id) + ",'user','legacy history',10,1)";
-	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
 	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), NB_ERR_NO_DATA);
 	EXPECT_EQ(runtime_session_context_tokens(nullptr, created.id, &tokens), NB_ERR_INVAL);
-	sqlite3_close(db);
+	db_close(&db);
 	runtime_close(instance);
 }
 
@@ -132,7 +133,7 @@ TEST_F(RuntimeLifecycleTest, OpeningSessionPreservesActivityAndRecentOrder)
 	session newer{};
 	session selected{};
 	session *sessions = nullptr;
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 	int count = 0;
 	int created = 0;
 
@@ -142,11 +143,11 @@ TEST_F(RuntimeLifecycleTest, OpeningSessionPreservesActivityAndRecentOrder)
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "older", &older), 0);
 	ASSERT_EQ(runtime_session_create_and_select(instance, "newer", &newer), 0);
-	ASSERT_EQ(sqlite3_open(database, &db), SQLITE_OK);
+	ASSERT_EQ(db_open(nullptr, &db, database), 0);
 	std::string sql = "UPDATE sessions SET updated_at=100 WHERE id=" +
 		std::to_string(older.id) +
 		";UPDATE sessions SET updated_at=200 WHERE id=" + std::to_string(newer.id);
-	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
 	ASSERT_EQ(runtime_session_select(instance, "older", &selected, &created), 0);
 	EXPECT_EQ(created, 0);
 	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
@@ -163,7 +164,7 @@ TEST_F(RuntimeLifecycleTest, OpeningSessionPreservesActivityAndRecentOrder)
 	EXPECT_GE(newer_index, 0);
 	EXPECT_GT(older_index, newer_index);
 	runtime_session_list_free(sessions);
-	sqlite3_close(db);
+	db_close(&db);
 	runtime_close(instance);
 }
 
@@ -347,12 +348,12 @@ TEST_F(RuntimeLifecycleTest, RestoresMostRecentSession)
 	ASSERT_EQ(runtime_session_create_and_select(instance, "restore-me", &created), 0);
 	runtime_close(instance);
 	instance = nullptr;
-	sqlite3 *db = nullptr;
-	ASSERT_EQ(sqlite3_open(database, &db), SQLITE_OK);
+	struct db db NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open(nullptr, &db, database), 0);
 	std::string sql = "UPDATE sessions SET updated_at=4102444800 WHERE id=" +
 		std::to_string(created.id);
-	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(db);
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
+	db_close(&db);
 	options.restore_recent_session = 1;
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
 	ASSERT_EQ(runtime_session_current(instance, &restored), 0);

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include "agent_http_test_support.hpp"
 
 extern "C" {
@@ -10,7 +11,7 @@ extern "C" {
 #include "agent/tools/multi_agents.h"
 #include "models/llm.h"
 #include "permission/context.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"
@@ -610,41 +611,35 @@ TEST_F(AgentBudgetVerificationTest, ReminderIsAckedOnlyAfterEnteringModelHistory
 	ASSERT_EQ(agent_turn_begin(&turn, &session_runtime, &input), 0);
 	agent_control_begin_turn(control, react);
 	Usage(70000, 0, 0);
-	sqlite3_stmt *query = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(
-			  database.handle,
-			  "SELECT consumed FROM agent_mailbox WHERE kind='BUDGET_REMINDER'", -1,
-			  &query, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(query, 0), 0);
-	sqlite3_finalize(query);
+	int64_t reminder_count = -1;
+	ASSERT_EQ(orm_fixture_integer(
+			  &database,
+			  "SELECT consumed FROM agent_mailbox WHERE kind='BUDGET_REMINDER'",
+			  &reminder_count),
+		  0);
+	EXPECT_EQ(reminder_count, 0);
 	EXPECT_EQ(react_run(react, input.model_input, nullptr, nullptr), 0);
 	EXPECT_EQ(agent_turn_finish(&turn, nullptr), 0);
 	agent_control_end_turn(control);
 	auto requests = server.snapshot();
 	ASSERT_FALSE(requests.empty());
 	EXPECT_NE(requests.back().find("BUDGET_REMINDER"), std::string::npos);
-	ASSERT_EQ(sqlite3_prepare_v2(
-			  database.handle,
-			  "SELECT consumed FROM agent_mailbox WHERE kind='BUDGET_REMINDER'", -1,
-			  &query, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(query, 0), 1);
-	sqlite3_finalize(query);
+	ASSERT_EQ(orm_fixture_integer(
+			  &database,
+			  "SELECT consumed FROM agent_mailbox WHERE kind='BUDGET_REMINDER'",
+			  &reminder_count),
+		  0);
+	EXPECT_EQ(reminder_count, 1);
 	react_context_destroy(react);
 	Reopen();
 	agent_control_begin_turn(control, nullptr);
 	Usage(1, 0, 0);
-	ASSERT_EQ(sqlite3_prepare_v2(
-			  database.handle,
-			  "SELECT count(*) FROM agent_mailbox WHERE kind='BUDGET_REMINDER'", -1,
-			  &query, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(query, 0), 1);
-	sqlite3_finalize(query);
+	ASSERT_EQ(orm_fixture_integer(
+			  &database,
+			  "SELECT count(*) FROM agent_mailbox WHERE kind='BUDGET_REMINDER'",
+			  &reminder_count),
+		  0);
+	EXPECT_EQ(reminder_count, 1);
 	agent_control_end_turn(control);
 }
 

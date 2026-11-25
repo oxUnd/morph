@@ -6,19 +6,19 @@ extern "C" {
 #include "agent/tool.h"
 #include "agent/history.h"
 #include "agent/turn.h"
-#include "db/scheduled_task.h"
+#include "persistence/orm/scheduled_task.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/jobs_service.h"
 #include "runtime/recap.h"
 #include "runtime/sync.h"
 #include "runtime/tasks.h"
 #include "cJSON.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/history_store.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 }
 
-#include <sqlite3.h>
+#include "persistence/orm/test_fixture.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -175,7 +175,7 @@ static void create_session_import_fixture(const std::string &path, const char *n
 	ASSERT_EQ(session.id, 1);
 	ASSERT_EQ(message_add(&source, session.id, "user", "imported question", 3), 0);
 	ASSERT_EQ(message_add(&source, session.id, "assistant", "imported answer", 3), 0);
-	ASSERT_EQ(db_exec(&source,
+	ASSERT_EQ(orm_fixture_execute(&source,
 		"INSERT INTO model_history_items(session_id,sequence_no,kind,role,content,created_at) "
 		"VALUES(1,1,'user_message','user','imported question',1),"
 		"(1,2,'assistant_message','assistant','imported answer',2);"
@@ -195,7 +195,7 @@ static void seed_session_import_errors(const std::string &path, bool legacy)
 
 	ASSERT_EQ(db_open(nullptr, &source, path.c_str()), 0);
 	if (legacy) {
-		ASSERT_EQ(db_exec(&source,
+		ASSERT_EQ(orm_fixture_execute(&source,
 				  "DELETE FROM schema_migrations WHERE version=3;"
 				  "ALTER TABLE memory_jobs DROP COLUMN legacy_error_code;"
 				  "ALTER TABLE sub_agent_tasks DROP COLUMN legacy_error_code;"
@@ -219,9 +219,9 @@ static void seed_session_import_errors(const std::string &path, bool legacy)
 		"VALUES(1,'manual','failed',1,%d);",
 		legacy ? -261 : NB_ERR_CANCELLED, legacy ? -1 : NB_ERR_NOT_PERMITTED,
 		legacy ? -35 : NB_ERR_AGAIN));
-	ASSERT_EQ(db_exec(&source, nb_buf_cstr(&sql)), 0);
+	ASSERT_EQ(orm_fixture_execute(&source, nb_buf_cstr(&sql)), 0);
 	if (!legacy) {
-		ASSERT_EQ(db_exec(&source,
+		ASSERT_EQ(orm_fixture_execute(&source,
 				  "UPDATE sub_agent_tasks SET legacy_error_code=-89;"
 				  "UPDATE agent_threads SET legacy_error_code=-1;"
 				  "UPDATE history_compaction_attempts SET legacy_error_code=-35;"),
@@ -229,44 +229,47 @@ static void seed_session_import_errors(const std::string &path, bool legacy)
 	}
 }
 
-static void session_import_statement_cleanup(sqlite3_stmt **statement)
+static int64_t import_fixture_integer(struct db *database, const std::string &query)
 {
-	if (*statement)
-		sqlite3_finalize(*statement);
+	int64_t value = 0;
+
+	EXPECT_EQ(orm_fixture_integer(database, query.c_str(), &value), 0);
+	return value;
+}
+
+static std::string import_fixture_text(struct db *database, const std::string &query)
+{
+	char *value NB_CLEANUP(nb_charp_cleanup) = nullptr;
+
+	EXPECT_EQ(orm_fixture_text_copy(database, query.c_str(), &value), 0);
+	return value ? value : "";
 }
 
 static void expect_session_import_errors(struct runtime *runtime, bool legacy)
 {
-	const char *const queries[] = {
-		"SELECT error_code,legacy_error_code FROM sub_agent_tasks",
-		"SELECT error_code,legacy_error_code FROM agent_threads",
-		"SELECT error_code,legacy_error_code FROM history_compaction_attempts",
-	};
+	const char *const tables[] = {"sub_agent_tasks", "agent_threads", "history_compaction_attempts"};
 	const int expected_codes[] = {
 		legacy ? NB_ERR_PARSE : NB_ERR_CANCELLED,
 		NB_ERR_NOT_PERMITTED,
 		legacy ? NB_ERR_OS : NB_ERR_AGAIN,
 	};
 	const int expected_audits[] = {legacy ? -261 : -89, -1, -35};
-	for (size_t index = 0; index < sizeof(queries) / sizeof(queries[0]); index++) {
-		sqlite3_stmt *statement NB_CLEANUP(session_import_statement_cleanup) = nullptr;
 
-		ASSERT_EQ(sqlite3_prepare_v2(runtime->context.database.handle, queries[index], -1,
-					     &statement, nullptr),
-			  SQLITE_OK);
-		ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-		EXPECT_EQ(sqlite3_column_int(statement, 0), expected_codes[index]);
-		EXPECT_EQ(sqlite3_column_int(statement, 1), expected_audits[index]);
-		EXPECT_EQ(sqlite3_step(statement), SQLITE_DONE);
+	for (size_t index = 0; index < sizeof(tables) / sizeof(tables[0]); index++) {
+		std::string table = tables[index];
+		size_t count = 0;
+
+		ASSERT_EQ(orm_fixture_row_count(&runtime->context.database,
+			("SELECT error_code,legacy_error_code FROM " + table).c_str(), &count), 0);
+		EXPECT_EQ(count, 1u);
+		EXPECT_EQ(import_fixture_integer(&runtime->context.database,
+			"SELECT error_code FROM " + table), expected_codes[index]);
+		EXPECT_EQ(import_fixture_integer(&runtime->context.database,
+			"SELECT legacy_error_code FROM " + table), expected_audits[index]);
 	}
-	sqlite3_stmt *statement NB_CLEANUP(session_import_statement_cleanup) = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(runtime->context.database.handle,
-				     "SELECT event_json FROM sub_agent_events", -1, &statement,
-				     nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(statement, 0)),
-		     "{\"error_code\":-261}");
+
+	EXPECT_EQ(import_fixture_text(&runtime->context.database,
+		"SELECT event_json FROM sub_agent_events"), "{\"error_code\":-261}");
 }
 
 TEST_F(RuntimeFacadeTest, SessionImportMigratesLegacyErrorsWithoutChangingBackup)
@@ -310,7 +313,7 @@ TEST_F(RuntimeFacadeTest, SessionImportLegacyErrorFailureRollsBackAllRowsAndRece
 	std::string source = directory + "/legacy-errors.db";
 	create_session_import_fixture(source, "legacy-errors");
 	seed_session_import_errors(source, true);
-	ASSERT_EQ(db_exec(&instance->context.database,
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database,
 			  "CREATE TRIGGER reject_error_import BEFORE INSERT ON agent_threads "
 			  "BEGIN SELECT RAISE(ABORT,'injected error import failure'); END;"),
 		  0);
@@ -322,20 +325,15 @@ TEST_F(RuntimeFacadeTest, SessionImportLegacyErrorFailureRollsBackAllRowsAndRece
 				      "history_compaction_attempts"};
 	for (const char *table : tables) {
 		nb_buf query NB_CLEANUP(nb_buf_cleanup) = {};
-		sqlite3_stmt *statement NB_CLEANUP(session_import_statement_cleanup) = nullptr;
 
 		ASSERT_TRUE(nb_buf_printf(&query, "SELECT count(*) FROM %s", table));
-		ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle, nb_buf_cstr(&query),
-					     -1, &statement, nullptr),
-			  SQLITE_OK);
-		ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-		EXPECT_EQ(sqlite3_column_int(statement, 0), 0) << table;
+		EXPECT_EQ(import_fixture_integer(&instance->context.database, nb_buf_cstr(&query)), 0)
+			<< table;
 	}
-	EXPECT_NE(sqlite3_table_column_metadata(instance->context.database.handle, nullptr,
-						"sync_import_receipts", "origin", nullptr, nullptr,
-						nullptr, nullptr, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(db_exec(&instance->context.database, "DROP TRIGGER reject_error_import"), 0);
+
+	EXPECT_FALSE(orm_fixture_has_column(&instance->context.database, "main",
+		"sync_import_receipts", "origin"));
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database, "DROP TRIGGER reject_error_import"), 0);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "legacy-device", &result),
 		  0);
 	EXPECT_EQ(result.imported, 1);
@@ -403,7 +401,7 @@ TEST_F(RuntimeFacadeTest, SessionImportBranchesChangedHistoryAndRollsBackOnMalfo
 	runtime_session_list_free(sessions);
 	sessions = nullptr;
 	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
-	ASSERT_EQ(db_exec(&changed, "DROP TABLE messages; CREATE TABLE messages(session_id INTEGER, content TEXT); INSERT INTO messages VALUES(1,'broken');"), 0);
+	ASSERT_EQ(orm_fixture_execute(&changed, "DROP TABLE messages; CREATE TABLE messages(session_id INTEGER, content TEXT); INSERT INTO messages VALUES(1,'broken');"), 0);
 	db_close(&changed);
 	EXPECT_NE(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	EXPECT_EQ(result.imported, 0);
@@ -419,7 +417,7 @@ TEST_F(RuntimeFacadeTest, SessionImportWriteFailureRollsBackReceiptAndSession)
 	Open();
 	std::string source = directory + "/incoming.db";
 	create_session_import_fixture(source, "remote");
-	ASSERT_EQ(db_exec(&instance->context.database,
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database,
 		"CREATE TRIGGER reject_import BEFORE INSERT ON messages "
 		"BEGIN SELECT RAISE(ABORT,'injected write failure'); END;"), 0);
 	struct runtime_session_import_result result{};
@@ -431,7 +429,7 @@ TEST_F(RuntimeFacadeTest, SessionImportWriteFailureRollsBackReceiptAndSession)
 	EXPECT_EQ(count, 1);
 	runtime_session_list_free(sessions);
 	sessions = nullptr;
-	ASSERT_EQ(db_exec(&instance->context.database, "DROP TRIGGER reject_import"), 0);
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database, "DROP TRIGGER reject_import"), 0);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	EXPECT_EQ(result.imported, 1);
 	EXPECT_EQ(result.unchanged, 0);
@@ -479,7 +477,7 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesSubagentRelationsAndRejectsOrpha
 	struct session child{};
 	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
 	ASSERT_EQ(session_create(&changed, "child", "model", &child), 0);
-	ASSERT_EQ(db_exec(&changed,
+	ASSERT_EQ(orm_fixture_execute(&changed,
 		"INSERT INTO sub_agent_tasks(task_id,parent_session_id,child_session_id,"
 		"agent_name,description,mode,status,started_at) "
 		"VALUES('task-a',1,2,'researcher','find evidence','delegate',2,1);"
@@ -489,20 +487,23 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesSubagentRelationsAndRejectsOrpha
 	struct runtime_session_import_result result{};
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	EXPECT_EQ(result.imported, 2);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
-		"SELECT p.name,c.name FROM sub_agent_tasks t JOIN sessions p ON p.id=t.parent_session_id "
-		"JOIN sessions c ON c.id=t.child_session_id WHERE t.task_id='task-a'",
-		-1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 0), "parent");
-	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 1), "child");
-	sqlite3_finalize(stmt);
+	const std::string mapping = " FROM sub_agent_tasks t JOIN sessions p ON p.id=t.parent_session_id "
+		"JOIN sessions c ON c.id=t.child_session_id WHERE t.task_id='task-a'";
+
+	EXPECT_EQ(import_fixture_text(&instance->context.database, "SELECT p.name" + mapping), "parent");
+	EXPECT_EQ(import_fixture_text(&instance->context.database, "SELECT c.name" + mapping), "child");
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	EXPECT_EQ(result.imported, 0);
 	EXPECT_EQ(result.unchanged, 2);
 	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
-	ASSERT_EQ(db_exec(&changed, "PRAGMA foreign_keys=OFF; UPDATE messages SET session_id=999;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&changed, "CREATE TEMP TABLE invalid_messages AS SELECT * FROM messages;"
+		"DROP TABLE messages;CREATE TABLE messages(id INTEGER PRIMARY KEY,"
+		"session_id INTEGER NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,"
+		"turn_id TEXT,token_count INTEGER NOT NULL,compressed INTEGER DEFAULT 0,"
+		"created_at INTEGER NOT NULL);"
+		"INSERT INTO messages SELECT id,session_id,role,content,turn_id,token_count,"
+		"compressed,created_at FROM invalid_messages;DROP TABLE invalid_messages;"
+		"UPDATE messages SET session_id=999;"), 0);
 	db_close(&changed);
 	EXPECT_NE(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	EXPECT_EQ(result.imported, 0);
@@ -619,19 +620,19 @@ TEST_F(RuntimeFacadeTest, SessionSelectionDefersModelHistoryLoadingUntilTurn)
 {
 	struct session first{};
 	struct session second{};
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 	int created = 0;
 
 	Open();
 	ASSERT_EQ(runtime_session_current(instance, &first), 0);
 	ASSERT_EQ(runtime_session_select(instance, "second", &second, &created), 0);
-	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
+	ASSERT_EQ(db_open_plain(nullptr, &db, database.c_str()), 0);
 	const std::string sql =
 		"INSERT INTO messages(session_id,role,content,token_count,compressed,created_at) "
 		"VALUES(" + std::to_string(first.id) + ",'user','saved history',2,0,1)";
-	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(db);
-	db = nullptr;
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
+	db_close(&db);
+	db = {};
 
 	ASSERT_EQ(runtime_session_select(instance, first.name, &first, &created), 0);
 	EXPECT_EQ(instance->context.react->messages, nullptr);
@@ -804,7 +805,7 @@ TEST_F(RuntimeFacadeTest, ModelContextStatsMatchReplayRulesWithoutLoadingBodies)
 		"summary_item_id,input_tokens,output_tokens,trigger_kind,created_at) VALUES(" +
 		std::to_string(session_id) + ",'compact',0," + std::to_string(summary_id) +
 		",100,11,'manual',1)";
-	ASSERT_EQ(db_exec(&instance->context.database, compaction.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database, compaction.c_str()), 0);
 	for (int pass = 0; pass < 2; pass++) {
 		int count = 0;
 		struct model_history_item *items NB_CLEANUP(runtime_test_model_history_cleanup) =
@@ -828,9 +829,9 @@ TEST_F(RuntimeFacadeTest, ModelContextStatsMatchReplayRulesWithoutLoadingBodies)
 		EXPECT_EQ(tools, expected_tools);
 		EXPECT_EQ(compactions, pass + 1);
 		EXPECT_EQ(limit, instance->context.tokenizer->context_limit);
-		ASSERT_EQ(db_exec(&instance->context.database,
+		ASSERT_EQ(orm_fixture_execute(&instance->context.database,
 			"UPDATE model_history_items SET active=0 WHERE kind='tool_result';"), 0);
-		ASSERT_EQ(db_exec(&instance->context.database, compaction.c_str()), 0);
+		ASSERT_EQ(orm_fixture_execute(&instance->context.database, compaction.c_str()), 0);
 	}
 }
 
@@ -1374,7 +1375,7 @@ TEST_F(RuntimeFacadeTest, HistoryCopyLeavesEmptyOutputsOnDatabaseFailure)
 {
 	Open();
 	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
-	ASSERT_EQ(db_exec(&instance->context.database, "DROP TABLE model_request_snapshots"), 0);
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database, "DROP TABLE model_request_snapshots"), 0);
 
 	EXPECT_EQ(runtime_session_last_request_copy(instance, &document), MORPH_ERR_DB);
 	EXPECT_EQ(document, nullptr);
@@ -1438,7 +1439,7 @@ TEST_F(RuntimeFacadeTest, ProcessAndTaskFailuresKeepOutputsEmptyAndPreserveError
 	std::string sql = "INSERT INTO process_jobs(process_id,session_id,data_json,updated_at) "
 			  "VALUES('proc_broken'," +
 			  std::to_string(instance->context.current_session.id) + ",'not-json',0)";
-	ASSERT_EQ(db_exec(&instance->context.database, sql.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database, sql.c_str()), 0);
 	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_EQ(runtime_process_list(instance, &document), NB_ERR_PARSE);
 	EXPECT_EQ(document, nullptr);
@@ -1455,7 +1456,7 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesCollaborationWithoutStartingAgen
 	struct session child{};
 	ASSERT_EQ(db_open(nullptr, &incoming, source.c_str()), 0);
 	ASSERT_EQ(session_create(&incoming, "agent-child", "model", &child), 0);
-	ASSERT_EQ(db_exec(&incoming,
+	ASSERT_EQ(orm_fixture_execute(&incoming,
 		"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
 		"model,effort,depth,description,status,started_at) "
 		"VALUES(1,'/root/reader','/root',2,'model','',1,'read files',1,1);"
@@ -1470,20 +1471,17 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesCollaborationWithoutStartingAgen
 	struct runtime_session_import_result result{};
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "agent-device", &result), 0);
 	EXPECT_EQ(result.imported, 2);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
-		"SELECT p.name,c.name,a.status,m.body,a.assignment_json FROM agent_threads a "
-		"JOIN sessions p ON p.id=a.root_session_id JOIN sessions c ON c.id=a.session_id "
-		"JOIN agent_mailbox m ON m.root_session_id=a.root_session_id",
-		-1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "parent");
-	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1)), "agent-child");
-	EXPECT_EQ(sqlite3_column_int(stmt, 2), AGENT_CANCELLED);
-	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3)), "finding");
-	EXPECT_NE(strstr(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4)),
-			"\"scope\":\"text\""), nullptr);
-	sqlite3_finalize(stmt);
+	const std::string joined = " FROM agent_threads a JOIN sessions p ON p.id=a.root_session_id "
+		"JOIN sessions c ON c.id=a.session_id JOIN agent_mailbox m "
+		"ON m.root_session_id=a.root_session_id";
+
+	EXPECT_EQ(import_fixture_text(&instance->context.database, "SELECT p.name" + joined), "parent");
+	EXPECT_EQ(import_fixture_text(&instance->context.database, "SELECT c.name" + joined), "agent-child");
+	EXPECT_EQ(import_fixture_integer(&instance->context.database, "SELECT a.status" + joined),
+		AGENT_CANCELLED);
+	EXPECT_EQ(import_fixture_text(&instance->context.database, "SELECT m.body" + joined), "finding");
+	EXPECT_NE(import_fixture_text(&instance->context.database, "SELECT a.assignment_json" + joined)
+		.find("\"scope\":\"text\""), std::string::npos);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "agent-device", &result), 0);
 	EXPECT_EQ(result.imported, 0);
 }
@@ -1495,38 +1493,31 @@ TEST_F(RuntimeFacadeTest, SessionImportAndDeletionPreserveBudgetUpperBound)
 	create_session_import_fixture(source, "budget-parent");
 	struct db incoming{};
 	ASSERT_EQ(db_open(nullptr, &incoming, source.c_str()), 0);
-	ASSERT_EQ(db_exec(&incoming,
+	ASSERT_EQ(orm_fixture_execute(&incoming,
 		"INSERT INTO agent_budget_state(root_session_id,used,input_tokens,cached_tokens,"
 		"output_tokens,reminder_level) VALUES(1,123,200,100,23,1);"), 0);
 	db_close(&incoming);
 	struct runtime_session_import_result result{};
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "budget-device", &result), 0);
-	sqlite3_stmt *query = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
-		"SELECT b.root_session_id,b.used FROM agent_budget_state b JOIN sessions s "
-		"ON s.id=b.root_session_id WHERE s.name='budget-parent'", -1, &query, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
-	int64_t imported = sqlite3_column_int64(query, 0);
-	EXPECT_EQ(sqlite3_column_int64(query, 1), 123);
-	sqlite3_finalize(query);
+	int64_t imported = import_fixture_integer(&instance->context.database,
+		"SELECT b.root_session_id FROM agent_budget_state b JOIN sessions s "
+		"ON s.id=b.root_session_id WHERE s.name='budget-parent'");
+
+	EXPECT_EQ(import_fixture_integer(&instance->context.database,
+		"SELECT b.used FROM agent_budget_state b JOIN sessions s "
+		"ON s.id=b.root_session_id WHERE s.name='budget-parent'"), 123);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "budget-device", &result), 0);
 	ASSERT_EQ(db_open(nullptr, &incoming, source.c_str()), 0);
-	ASSERT_EQ(db_exec(&incoming, "UPDATE agent_budget_state SET used=500 WHERE root_session_id=1;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&incoming,
+		"UPDATE agent_budget_state SET used=500 WHERE root_session_id=1;"), 0);
 	db_close(&incoming);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "budget-device", &result), 0);
-	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
-		"SELECT used FROM agent_budget_state WHERE root_session_id=?", -1, &query, nullptr), SQLITE_OK);
-	sqlite3_bind_int64(query, 1, imported);
-	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int64(query, 0), 500);
-	sqlite3_finalize(query);
+	EXPECT_EQ(import_fixture_integer(&instance->context.database,
+		"SELECT used FROM agent_budget_state WHERE root_session_id=" + std::to_string(imported)), 500);
 	ASSERT_EQ(runtime_session_delete_and_update(instance, imported), 0);
-	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
-		"SELECT count(*) FROM agent_budget_state WHERE root_session_id=?", -1, &query, nullptr), SQLITE_OK);
-	sqlite3_bind_int64(query, 1, imported);
-	ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(query, 0), 0);
-	sqlite3_finalize(query);
+	EXPECT_EQ(import_fixture_integer(&instance->context.database,
+		"SELECT count(*) FROM agent_budget_state WHERE root_session_id=" + std::to_string(imported)), 0);
+
 }
 
 TEST_F(RuntimeFacadeTest, DeprecatedProcessDisableStillRejectsBackgroundExecution)

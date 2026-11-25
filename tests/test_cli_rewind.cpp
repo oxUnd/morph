@@ -3,7 +3,7 @@
 extern "C" {
 #include <string.h>
 #include <stdlib.h>
-#include "persistence/checkpoint_store.h"
+#include "persistence/orm/checkpoint_store.h"
 #include "runtime/checkpoint.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"

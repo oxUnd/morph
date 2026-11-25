@@ -107,15 +107,19 @@ set(TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/security.c
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/agent_bridge.c
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/session_store.c
-	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/users.c
-	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/quota.c
-	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/artifacts.c
-	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/sessions.c
-	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/events.c
-	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/canvas.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_models.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_store.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_users.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_quota.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_artifacts.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_sessions.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_events.c
+	${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_canvas.c
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/storage/tokens.c
 )
 
+add_library(morph-orm-fixtures STATIC ${CMAKE_SOURCE_DIR}/src/persistence/orm/test_fixture.c)
+target_link_libraries(morph-orm-fixtures PUBLIC morph-db PRIVATE nothing_orm::sqlite)
 add_executable(morph-tests ${TEST_SOURCES})
 add_library(morph-ext-context-probe MODULE ../exts/context-probe/probe.c)
 target_include_directories(morph-ext-context-probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -165,7 +169,6 @@ endif()
 
 target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src
-	${CMAKE_SOURCE_DIR}/src/db
 	${CMAKE_SOURCE_DIR}/src/agent
 	${CMAKE_SOURCE_DIR}/src/agent/tools
 	${CMAKE_SOURCE_DIR}/src/sandbox
@@ -189,6 +192,8 @@ target_compile_definitions(morph-tests PRIVATE
 
 target_link_libraries(morph-tests PRIVATE
 	morph-cli
+	morph-orm-fixtures
+	nothing_orm::sqlite
 	GTest::gtest_main
 )
 
@@ -272,6 +277,14 @@ if(Python3_Interpreter_FOUND)
 	endif()
 	add_test(NAME source_control_flow_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_source_control_flow.py)
+	add_test(NAME orm_boundary_conventions
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_orm_boundary.py)
+	add_dependencies(morph-tests morph-session-sync-audit)
+	add_test(NAME session_sync_audit
+		COMMAND ${CMAKE_COMMAND} -E env
+			"MORPH_SESSION_SYNC_AUDIT_BINARY=$<TARGET_FILE:morph-session-sync-audit>"
+			${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_session_sync_audit.py)
+	set_tests_properties(session_sync_audit PROPERTIES TIMEOUT 30)
 	add_test(NAME nbase_usage_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_nbase_usage.py)
 	add_test(NAME js_runner_host_io_integration

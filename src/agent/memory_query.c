@@ -1,9 +1,9 @@
 #include "agent/memory.h"
 #include <nb/cleanup.h>
 
-#include "persistence/memory_snapshot.h"
-#include "persistence/memory_search.h"
-#include "session.h"
+#include "persistence/orm/memory_snapshot.h"
+#include "persistence/orm/memory_search.h"
+#include "persistence/orm/session.h"
 #include <nb/buf.h>
 #include "errors.h"
 
@@ -310,7 +310,7 @@ char *memory_query_text_create(struct db *db, int64_t current_session_id,
 	nb_buf buf NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc;
 
-	if (!db || !db->handle)
+	if (!db_is_open(db))
 		return NULL;
 	memset(&local_opts, 0, sizeof(local_opts));
 	if (opts)

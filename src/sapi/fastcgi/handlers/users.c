@@ -2,8 +2,8 @@
 #define _GNU_SOURCE
 #include "handlers.h"
 #include <nb/err.h>
-#include "sapi/fastcgi/storage/users.h"
-#include "sapi/fastcgi/storage/quota.h"
+#include "persistence/orm/fcgi_users.h"
+#include "persistence/orm/fcgi_quota.h"
 #include "sapi/fastcgi/storage/tokens.h"
 #include "../session_store.h"
 #include "../auth.h"

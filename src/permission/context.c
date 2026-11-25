@@ -4,7 +4,8 @@
 #include "trusted_paths.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
-#include "db/permission_grant.h"
+#include "persistence/orm/permission_grant.h"
+#include "persistence/orm/unit_of_work.h"
 #include <nb/file.h>
 #include <nb/log.h>
 #include "errors.h"
@@ -1568,7 +1569,7 @@ static int store_directory_access(struct tool_context *tctx,
 	if (transaction) {
 		rc = db_lock_acquire(tctx->grant_db, &lock);
 		if (rc == 0)
-			rc = db_exec(tctx->grant_db, "SAVEPOINT directory_access;");
+			rc = store_savepoint_begin(tctx->grant_db, "directory_access");
 		if (rc != 0)
 			return rc;
 	}
@@ -1586,15 +1587,12 @@ static int store_directory_access(struct tool_context *tctx,
 		if (rc != 0)
 			break;
 	}
-	if (transaction && rc == 0)
-		rc = db_exec(tctx->grant_db, "RELEASE directory_access;");
-	if (rc != 0) {
-		if (transaction) {
-			(void)db_exec(tctx->grant_db, "ROLLBACK TO directory_access;");
-			(void)db_exec(tctx->grant_db, "RELEASE directory_access;");
-		}
+	if (transaction)
+		rc = store_savepoint_finish(tctx->grant_db, "directory_access", rc);
+
+	if (rc != 0)
 		storage->len = before;
-	}
+
 	return rc;
 }
 

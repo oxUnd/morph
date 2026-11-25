@@ -6,8 +6,8 @@ extern "C" {
 #endif
 
 #include "agent/tool.h"
-#include "db/database.h"
-#include "db/scheduled_task.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/scheduled_task.h"
 
 int scheduled_tasks_tool_rebind(struct tool_registry *reg, struct db *db, int64_t source_session);
 int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db);

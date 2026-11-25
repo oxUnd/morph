@@ -1,6 +1,6 @@
 #include "runtime/runtime.h"
 #include "runtime/runtime_internal.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/history_store.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include "errors.h"

@@ -1,4 +1,6 @@
 #include "runtime/hooks.h"
+#include "persistence/orm/unit_of_work.h"
+#include "persistence/orm/hook_store.h"
 #include <nb/cleanup.h>
 #include "runtime/hooks_internal.h"
 
@@ -76,47 +78,34 @@ static void entry_cleanup(struct hook_entry *entry)
 
 int hook_refresh_trust(struct hook_manager *manager, struct hook_entry *entry)
 {
-	sqlite3_stmt *stmt = NULL;
-	int rc;
+	struct store_hook_trust record NB_CLEANUP(hook_store_trust_cleanup) = {0};
 
 	entry->trusted = 0;
 	entry->recorded = 0;
 	entry->disabled = 0;
 	free(entry->previous);
 	entry->previous = NULL;
-	rc = sqlite3_prepare_v2(manager->db->handle,
-				"SELECT digest,disabled,definition FROM hook_trust WHERE id=?", -1,
-				&stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, entry->id, -1, SQLITE_TRANSIENT);
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		entry->recorded = 1;
-		entry->trusted =
-			strcmp(entry->digest, (const char *)sqlite3_column_text(stmt, 0)) == 0;
-		entry->disabled = sqlite3_column_int(stmt, 1);
-		if (((const char *)sqlite3_column_text(stmt, 0))[0])
-			entry->previous = strdup((const char *)sqlite3_column_text(stmt, 2));
+	int rc = hook_store_trust_copy(manager->db, entry->id, &record);
+
+	if (rc == NB_ERR_NOT_FOUND)
+		return 0;
+
+	if (rc != 0)
+		return rc;
+
+	entry->recorded = 1;
+	entry->trusted = !strcmp(entry->digest, record.digest);
+	entry->disabled = record.disabled;
+	if (record.digest[0]) {
+		entry->previous = nb_charp_steal(&record.definition);
 	}
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_ROW && rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
+
 	return 0;
 }
 
 static int project_trusted(struct hook_manager *manager)
 {
-	sqlite3_stmt *stmt = NULL;
-	int trusted = 0;
-
-	if (sqlite3_prepare_v2(manager->db->handle, "SELECT 1 FROM hook_workspaces WHERE path=?",
-			       -1, &stmt, NULL) != SQLITE_OK)
-		return 0;
-	sqlite3_bind_text(stmt, 1, manager->workdir, -1, SQLITE_TRANSIENT);
-	trusted = sqlite3_step(stmt) == SQLITE_ROW;
-	sqlite3_finalize(stmt);
-	return trusted;
+	return hook_store_workspace_trusted(manager->db, manager->workdir) > 0;
 }
 
 static int add_entry(struct hook_manager *manager, const char *source, const char *event,
@@ -246,7 +235,6 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		char legacy_id[65];
 		char legacy_digest[65];
 		nb_buf legacy NB_CLEANUP(nb_buf_cleanup) = {0};
-		sqlite3_stmt *stmt = NULL;
 
 		rc = (nb_buf_init(&legacy), nb_buf_reserve(&legacy, 128) ? 0 : NB_ERR_NOMEM);
 		if (rc != 0)
@@ -267,24 +255,11 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		nb_buf_cleanup(&legacy);
 		if (rc != 0)
 			return rc;
-		rc = sqlite3_prepare_v2(
-			manager->db->handle,
-			"INSERT OR IGNORE INTO hook_trust(id,digest,disabled,definition) "
-			"SELECT ?,CASE WHEN digest=? THEN ? ELSE '' END,disabled,definition "
-			"FROM hook_trust "
-			"WHERE id=? AND (digest=? OR disabled=1)",
-			-1, &stmt, NULL);
-		if (rc == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, entry->id, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 2, legacy_digest, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 3, entry->digest, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 4, legacy_id, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 5, legacy_digest, -1, SQLITE_TRANSIENT);
-			rc = sqlite3_step(stmt);
-		}
-		sqlite3_finalize(stmt);
-		if (rc != SQLITE_DONE)
-			return MORPH_ERR_DB;
+		rc = hook_store_migrate_legacy(manager->db, entry->id, entry->digest, legacy_id,
+					       legacy_digest);
+		if (rc != 0)
+			return rc;
+
 		rc = hook_refresh_trust(manager, entry);
 	}
 	return rc;
@@ -589,7 +564,7 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 
 	int rc;
 
-	if (!manager || !db || !db->handle || !config || !workdir)
+	if (!manager || !db_is_open(db) || !config || !workdir)
 		return NB_ERR_INVAL;
 	memset(manager, 0, sizeof(*manager));
 	manager->logger = config->logger;
@@ -605,11 +580,7 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 			 : NULL);
 	snprintf(manager->workdir, sizeof(manager->workdir), "%s", resolved ? resolved : workdir);
 	free(resolved);
-	rc = db_exec(db,
-		     "CREATE TABLE IF NOT EXISTS hook_trust("
-		     "id TEXT PRIMARY KEY,digest TEXT NOT NULL,disabled INTEGER NOT NULL DEFAULT 0,"
-		     "definition TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hook_workspaces("
-		     "path TEXT PRIMARY KEY)");
+	rc = hook_store_init(db);
 	if (rc == 0)
 		rc = (nb_vec_init(&manager->entries, sizeof(struct hook_entry)),
 		      nb_vec_reserve(&manager->entries, 8) ? 0 : NB_ERR_NOMEM);
@@ -738,64 +709,31 @@ cJSON *hook_manager_list(struct hook_manager *manager)
 	return result;
 }
 
-static void hook_batch_stmt_cleanup(sqlite3_stmt **statement)
-{
-	sqlite3_finalize(*statement);
-	*statement = NULL;
-}
-
 static int hook_manager_batch_write(struct hook_manager *manager, int trust)
 {
-	struct hook_entry *entry;
-	sqlite3_stmt *stmt NB_CLEANUP(hook_batch_stmt_cleanup) = NULL;
-	int rc;
+	nb_vec choices NB_CLEANUP(nb_vec_cleanup) = {0};
 
-	if (trust) {
-		rc = sqlite3_prepare_v2(manager->db->handle,
-					"INSERT OR IGNORE INTO hook_workspaces(path) VALUES(?)", -1,
-					&stmt, NULL);
-		if (rc == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, manager->workdir, -1, SQLITE_TRANSIENT);
-			rc = sqlite3_step(stmt);
-		}
-		hook_batch_stmt_cleanup(&stmt);
-		if (rc != SQLITE_DONE) {
-			rc = (MORPH_ERR_DB);
-			return rc;
-		}
-	}
-	rc = sqlite3_prepare_v2(
-		manager->db->handle,
-		trust ? "INSERT INTO hook_trust(id,digest,disabled,definition) VALUES(?,?,0,?) "
-			"ON CONFLICT(id) DO UPDATE SET digest=excluded.digest,"
-			"definition=excluded.definition,disabled=0"
-		      : "INSERT INTO hook_trust(id,digest,disabled,definition) VALUES(?,'',1,'') "
-			"ON CONFLICT(id) DO UPDATE SET disabled=1",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK) {
-		rc = (MORPH_ERR_DB);
-		return rc;
-	}
-	for (size_t _i_ = 0; _i_ < nb_vec_len(&manager->entries) &&
-			     (entry = (struct hook_entry *)nb_vec_at(&manager->entries, _i_));
-	     _i_++) {
+	nb_vec_init(&choices, sizeof(struct store_hook_choice));
+	for (size_t i = 0; i < manager->entries.len; i++) {
+		const struct hook_entry *entry = nb_vec_at(&manager->entries, i);
+
 		if (!entry->supported)
 			continue;
-		sqlite3_reset(stmt);
-		sqlite3_clear_bindings(stmt);
-		sqlite3_bind_text(stmt, 1, entry->id, -1, SQLITE_TRANSIENT);
-		if (trust) {
-			sqlite3_bind_text(stmt, 2, entry->digest, -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 3, entry->definition, -1, SQLITE_TRANSIENT);
-		}
-		rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE) {
-			rc = (MORPH_ERR_DB);
-			return rc;
-		}
+
+		struct store_hook_choice *choice = nb_vec_push(&choices);
+
+		if (!choice)
+			return NB_ERR_NOMEM;
+
+		*choice = (struct store_hook_choice){
+			.id = entry->id,
+			.digest = entry->digest,
+			.definition = entry->definition,
+		};
 	}
-	hook_batch_stmt_cleanup(&stmt);
-	return 0;
+
+	return hook_store_batch_write(manager->db, manager->workdir, trust,
+				      (const struct store_hook_choice *)choices.data, choices.len);
 }
 
 static int hook_manager_batch(struct hook_manager *manager, int trust, const char *expected_digest)
@@ -812,98 +750,56 @@ static int hook_manager_batch(struct hook_manager *manager, int trust, const cha
 		return NB_ERR_STALE;
 	rc = db_lock_acquire(manager->db, &lock);
 	if (rc == 0)
-		rc = db_exec(manager->db, "SAVEPOINT hook_batch;");
+		rc = store_savepoint_begin(manager->db, "hook_batch");
 	if (rc != 0)
 		return rc;
 	rc = hook_manager_batch_write(manager, trust);
-	if (rc == 0)
-		rc = db_exec(manager->db, "RELEASE hook_batch;");
-	if (rc != 0)
-		(void)db_exec(manager->db, "ROLLBACK TO hook_batch; RELEASE hook_batch;");
-	return rc;
+	return store_savepoint_finish(manager->db, "hook_batch", rc);
 }
 
 int hook_manager_action(struct hook_manager *manager, const char *action, const char *id,
 			const char *expected_digest)
 {
-	struct hook_entry *entry;
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
 	if (!manager || !action || !id || !expected_digest)
 		return NB_ERR_INVAL;
-	if (strcmp(action, "trust-all") == 0 || strcmp(action, "deny-all") == 0)
-		return hook_manager_batch(manager, strcmp(action, "trust-all") == 0,
-					  expected_digest);
-	if (strcmp(action, "trust-project") == 0 || strcmp(action, "revoke-project") == 0) {
+
+	if (!strcmp(action, "trust-all") || !strcmp(action, "deny-all"))
+		return hook_manager_batch(manager, !strcmp(action, "trust-all"), expected_digest);
+
+	if (!strcmp(action, "trust-project") || !strcmp(action, "revoke-project")) {
 		char digest[65];
+
 		digest_text(manager->workdir, digest);
-		if (strcmp(expected_digest, digest) != 0)
+		if (strcmp(expected_digest, digest))
 			return NB_ERR_STALE;
-		rc = sqlite3_prepare_v2(
-			manager->db->handle,
-			strcmp(action, "trust-project") == 0
-				? "INSERT OR IGNORE INTO hook_workspaces(path) VALUES(?)"
-				: "DELETE FROM hook_workspaces WHERE path=?",
-			-1, &stmt, NULL);
-		if (rc == SQLITE_OK)
-			sqlite3_bind_text(stmt, 1, manager->workdir, -1, SQLITE_TRANSIENT);
-	} else {
-		/* Reload immediately: a review token cannot approve an edited definition. */
-		rc = hook_manager_reload(manager);
-		if (rc != 0)
-			return rc;
-		entry = NULL;
-		for (size_t i = 0; i < manager->entries.len; i++) {
-			struct hook_entry *candidate = nb_vec_at(&manager->entries, i);
-			if (strcmp(candidate->id, id) == 0)
-				entry = candidate;
-		}
-		if (!entry)
-			return NB_ERR_NOT_FOUND;
-		if (strcmp(entry->digest, expected_digest) != 0)
-			return NB_ERR_STALE;
-		if (strcmp(action, "trust") == 0) {
-			if (!entry->supported || (entry->project && !project_trusted(manager)))
-				return NB_ERR_NOT_PERMITTED;
-			rc = sqlite3_prepare_v2(
-				manager->db->handle,
-				"INSERT INTO hook_trust(id,digest,disabled,definition) "
-				"VALUES(?,?,0,?) "
-				"ON CONFLICT(id) DO UPDATE SET "
-				"digest=excluded.digest,definition=excluded.definition,disabled=0",
-				-1, &stmt, NULL);
-			if (rc == SQLITE_OK) {
-				sqlite3_bind_text(stmt, 2, entry->digest, -1, SQLITE_TRANSIENT);
-				sqlite3_bind_text(stmt, 3, entry->definition, -1, SQLITE_TRANSIENT);
-			}
-		} else if (strcmp(action, "revoke") == 0) {
-			rc = sqlite3_prepare_v2(
-				manager->db->handle,
-				"INSERT INTO hook_trust(id,digest,disabled,definition) "
-				"VALUES(?,'',0,'') "
-				"ON CONFLICT(id) DO UPDATE SET digest='',disabled=0,definition=''",
-				-1, &stmt, NULL);
-		} else if (strcmp(action, "disable") == 0 || strcmp(action, "enable") == 0) {
-			rc = sqlite3_prepare_v2(
-				manager->db->handle,
-				strcmp(action, "disable") == 0
-					? "INSERT INTO hook_trust(id,digest,disabled,definition) "
-					  "VALUES(?,'',1,'') "
-					  "ON CONFLICT(id) DO UPDATE SET disabled=1"
-					: "UPDATE hook_trust SET disabled=0 WHERE id=?",
-				-1, &stmt, NULL);
-			if (rc == SQLITE_OK)
-				sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT);
-		} else {
-			return NB_ERR_INVAL;
-		}
-		if (rc == SQLITE_OK && strcmp(action, "disable") != 0 &&
-		    strcmp(action, "enable") != 0)
-			sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT);
+
+		return hook_store_workspace_set(manager->db, manager->workdir,
+						!strcmp(action, "trust-project"));
 	}
-	if (rc == SQLITE_OK)
-		rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+
+	int rc = hook_manager_reload(manager);
+
+	if (rc != 0)
+		return rc;
+
+	struct hook_entry *entry = NULL;
+
+	for (size_t i = 0; i < manager->entries.len; i++) {
+		struct hook_entry *candidate = nb_vec_at(&manager->entries, i);
+
+		if (!strcmp(candidate->id, id))
+			entry = candidate;
+	}
+
+	if (!entry)
+		return NB_ERR_NOT_FOUND;
+
+	if (strcmp(entry->digest, expected_digest))
+		return NB_ERR_STALE;
+
+	if (!strcmp(action, "trust") &&
+	    (!entry->supported || (entry->project && !project_trusted(manager))))
+		return NB_ERR_NOT_PERMITTED;
+
+	return hook_store_action(manager->db, id, action, entry->digest, entry->definition);
 }

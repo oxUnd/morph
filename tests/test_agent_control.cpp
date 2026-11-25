@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include "agent_http_test_support.hpp"
 
 extern "C" {
@@ -15,7 +16,7 @@ extern "C" {
 #include "models/llm.h"
 #include "runtime/runtime.h"
 #include "permission/context.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include "cJSON.h"
 #include <nb/signal.h>
 }
@@ -1021,14 +1022,15 @@ TEST_F(AgentControlTest, FailedHistoryInsertionLeavesMailboxUnread)
 	struct agent_turn_input input{};
 	input.model_input = "Integrate the result";
 	ASSERT_EQ(agent_turn_begin(&turn, &session_runtime, &input), 0);
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  "CREATE TRIGGER reject_agent_mail BEFORE INSERT ON model_history_items "
 			  "WHEN NEW.content LIKE 'Message Type:%' BEGIN "
 			  "SELECT RAISE(ABORT,'injected history failure'); END;"),
 		  0);
 	EXPECT_LT(react_run(react, input.model_input, nullptr, nullptr), 0);
 	EXPECT_NE(receive("/root", false).find("child result"), std::string::npos);
-	EXPECT_EQ(db_exec(&database, "DROP TRIGGER reject_agent_mail"), 0);
+	EXPECT_EQ(orm_fixture_execute(&database, "DROP TRIGGER reject_agent_mail"), 0);
 	react_context_destroy(react);
 }
 
@@ -1038,7 +1040,7 @@ TEST_F(AgentControlTest, RestoringActiveAgentMarksInterruptedWithoutModelCalls)
 		       R"({"task_name":"reader","message":"task","fork_turns":"none"})"),
 		  0);
 	agent_control_join(control);
-	ASSERT_EQ(db_exec(&database, "UPDATE agent_threads SET status=1"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "UPDATE agent_threads SET status=1"), 0);
 	reopen();
 	struct agent_info *agents = nullptr;
 	int count = 0;

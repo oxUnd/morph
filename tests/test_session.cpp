@@ -1,11 +1,12 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <nb/err.h>
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "agent/history.h"
 #include "agent/react.h"
 #include "agent/tokenizer.h"
-#include "session.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/session.h"
+#include "persistence/orm/history_store.h"
 #include <nb/vec.h>
 #include <nb/cleanup.h>
 #include <nb/cleanup.h>
@@ -129,7 +130,7 @@ TEST_F(SessionTest, HistoryVisitorPropagatesFailureAndReleasesItsStatement)
 			  [](const struct message *, void *) -> int { return NB_ERR_BROKEN_PIPE; },
 			  nullptr),
 		  NB_ERR_BROKEN_PIPE);
-	EXPECT_EQ(sqlite3_next_stmt(db.handle, nullptr), nullptr);
+	EXPECT_EQ(orm_fixture_statement_count(&db), 0u);
 	EXPECT_EQ(history_store_visit_messages(
 			  &db, session.id,
 			  [](const struct message *message, void *data) {
@@ -140,7 +141,7 @@ TEST_F(SessionTest, HistoryVisitorPropagatesFailureAndReleasesItsStatement)
 			  &visited),
 		  0);
 	EXPECT_EQ(visited, 1);
-	EXPECT_EQ(sqlite3_next_stmt(db.handle, nullptr), nullptr);
+	EXPECT_EQ(orm_fixture_statement_count(&db), 0u);
 }
 
 TEST_F(SessionTest, GetByName) {
@@ -292,9 +293,7 @@ TEST_F(SessionTest, ListMessagesUsesStableOrderForSameTimestamp) {
 	message_add(&db, s.id, "assistant", "second", 1);
 	message_add(&db, s.id, "user", "third", 1);
 
-	ASSERT_EQ(sqlite3_exec(db.handle,
-		"UPDATE messages SET created_at=12345", NULL, NULL, NULL),
-		SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&db, "UPDATE messages SET created_at=12345"), 0);
 
 	int count = 0;
 	struct message *msgs = message_list(&db, s.id, &count);
@@ -1045,10 +1044,11 @@ TEST_F(SessionTest, TranscriptAndModelHistoryWritesAreIdempotent) {
 TEST_F(SessionTest, HistoryWritesKeepConnectionResultsAcrossConcurrentUpdates) {
 	struct session s;
 	ASSERT_EQ(session_create(&db, "history_concurrent", "test", &s), 0);
-	ASSERT_EQ(db_exec(&db,
-		"CREATE TABLE history_connection_noise(id INTEGER PRIMARY KEY)"), 0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "CREATE TABLE history_connection_noise(id INTEGER PRIMARY KEY)"),
+		  0);
 	std::atomic<bool> stop{false};
-	std::atomic<int> update_error{SQLITE_OK};
+	std::atomic<int> update_error{0};
 	std::thread worker([&] {
 		while (!stop.load()) {
 			struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {};
@@ -1057,11 +1057,10 @@ TEST_F(SessionTest, HistoryWritesKeepConnectionResultsAcrossConcurrentUpdates) {
 				update_error.store(lock_rc);
 				break;
 			}
-			int rc = sqlite3_exec(db.handle,
-				"INSERT INTO history_connection_noise DEFAULT VALUES;"
-				"UPDATE sessions SET name=name WHERE id=-1", nullptr, nullptr,
-				nullptr);
-			if (rc != SQLITE_OK)
+			int rc = orm_fixture_execute(
+				&db, "INSERT INTO history_connection_noise DEFAULT VALUES;"
+				     "UPDATE sessions SET name=name WHERE id=-1");
+			if (rc != 0)
 				update_error.store(rc);
 		}
 	});
@@ -1086,7 +1085,7 @@ TEST_F(SessionTest, HistoryWritesKeepConnectionResultsAcrossConcurrentUpdates) {
 	}
 	stop.store(true);
 	worker.join();
-	EXPECT_EQ(update_error.load(), SQLITE_OK);
+	EXPECT_EQ(update_error.load(), 0);
 	EXPECT_EQ(write_error, 0);
 	EXPECT_EQ(wrong_id, 0);
 	EXPECT_EQ(model_history_count(&db, s.id, 0), 500);
@@ -1377,10 +1376,10 @@ TEST_F(SessionTest, CompactionFailureRollsBackWithoutChangingHistory) {
 	item.token_count = 2;
 	item.active = 1;
 	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
-	ASSERT_EQ(sqlite3_exec(db.handle,
-		"CREATE TRIGGER fail_history_checkpoint BEFORE INSERT ON "
-		"history_compactions BEGIN SELECT RAISE(ABORT, 'injected'); END;",
-		nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "CREATE TRIGGER fail_history_checkpoint BEFORE INSERT ON "
+			       "history_compactions BEGIN SELECT RAISE(ABORT, 'injected'); END;"),
+		  0);
 	EXPECT_NE(model_history_compact(&db, s.id, "turn_1", "summary", 2,
 		0, 0, 2, 0, "manual", nullptr), 0);
 	struct model_history_item *items =
@@ -1426,9 +1425,9 @@ TEST_F(SessionTest, AutomaticCompactionFailurePreservesHistoryAtEveryBudget)
 	EXPECT_EQ(model_history_count(&db, s.id, 1), 1);
 	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
 
-	ASSERT_EQ(sqlite3_exec(db.handle,
-		"UPDATE model_history_items SET token_count=100 WHERE active=1",
-		nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "UPDATE model_history_items SET token_count=100 WHERE active=1"),
+		  0);
 	model_history_free_list(react.history_items);
 	react.history_items = model_history_list(&db, s.id, 1, &count);
 	ASSERT_EQ(agent_history_compact(&react, 0), NB_ERR_IO);
@@ -1549,8 +1548,7 @@ TEST_F(SessionTest, MemoryMaintenanceIsNeitherPersistedNorReplayed) {
 
 TEST_F(SessionTest, HistoryReadFailureIsDistinctFromEmptyHistory) {
 	int count = 0;
-	ASSERT_EQ(sqlite3_exec(db.handle, "DROP TABLE model_history_items",
-		nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&db, "DROP TABLE model_history_items"), 0);
 	EXPECT_EQ(model_history_list(&db, 1, 1, &count), nullptr);
 	EXPECT_EQ(count, -1);
 }
@@ -1606,16 +1604,18 @@ TEST_F(SessionTest, CompactionCommitFailureClosesTransactionAndRestoresHistory) 
 	item.content = "keep original history";
 	item.active = 1;
 	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
-	ASSERT_EQ(sqlite3_exec(db.handle,
-		"CREATE TABLE commit_parent(id INTEGER PRIMARY KEY);"
-		"CREATE TABLE commit_child(parent_id INTEGER REFERENCES commit_parent(id) "
-		"DEFERRABLE INITIALLY DEFERRED);"
-		"CREATE TRIGGER fail_commit AFTER INSERT ON history_compactions BEGIN "
-		"INSERT INTO commit_child VALUES(123); END;",
-		nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(
+		orm_fixture_execute(
+			&db,
+			"CREATE TABLE commit_parent(id INTEGER PRIMARY KEY);"
+			"CREATE TABLE commit_child(parent_id INTEGER REFERENCES commit_parent(id) "
+			"DEFERRABLE INITIALLY DEFERRED);"
+			"CREATE TRIGGER fail_commit AFTER INSERT ON history_compactions BEGIN "
+			"INSERT INTO commit_child VALUES(123); END;"),
+		0);
 	EXPECT_NE(model_history_compact(&db, session.id, "turn", "checkpoint", 2,
 		0, 0, 10, 0, "manual", nullptr), 0);
-	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+	EXPECT_TRUE(orm_fixture_transaction_idle(&db));
 	EXPECT_EQ(model_history_count(&db, session.id, 0), 1);
 	EXPECT_EQ(model_history_count(&db, session.id, 1), 1);
 	EXPECT_EQ(model_history_compaction_count(&db, session.id), 0);
@@ -1732,6 +1732,11 @@ TEST_F(SessionTest, HistoryReplayPreservesLongToolNamesAndLocalIds)
 	int count = 0;
 	auto *items = model_history_list(&db, session.id, 1, &count);
 	ASSERT_NE(items, nullptr);
+	for (const auto *item = items; item; item = item->next) {
+		if (strcmp(item->kind, "tool_result") == 0)
+			EXPECT_STREQ(item->tool_name, name.c_str());
+	}
+
 	nb_vec messages{};
 	struct chat_message sample{};
 	ASSERT_EQ((nb_vec_init(&messages, sizeof(sample)),

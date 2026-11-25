@@ -1,7 +1,7 @@
 #include "scheduled_tasks.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
-#include "db/scheduled_task.h"
+#include "persistence/orm/scheduled_task.h"
 #include "errors.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -400,7 +400,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	const char *op;
 	char *out NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
 
-	if (!ctx || !ctx->db || !ctx->db->handle)
+	if (!ctx || !db_is_open(ctx->db))
 		return NB_ERR_INVAL;
 	root = cJSON_Parse(args_json ? args_json : "{}");
 	if (!root) {

@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include "config/config.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <stdint.h>
 
 struct credit_event {

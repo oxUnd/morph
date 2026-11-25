@@ -1,4 +1,5 @@
 #include "errors.h"
+#include "persistence/orm/test_fixture.h"
 #include <gtest/gtest.h>
 #include <nb/err.h>
 #include <nb/cleanup.h>
@@ -7,8 +8,8 @@
 #include "agent/history.h"
 #include "agent/tokenizer.h"
 #include "agent/turn.h"
-#include "db/database.h"
-#include "session.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/session.h"
 
 #include <cstdio>
 #include <cerrno>
@@ -76,7 +77,7 @@ static void agent_turn_test_history_cleanup(struct model_history_item **items)
 
 TEST_F(AgentTurnTest, FailedTurnBeginCannotRollbackACallersTransaction)
 {
-	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "BEGIN IMMEDIATE;"), 0);
 	ASSERT_EQ(message_add(&db, sess.id, "user", "caller-owned write", 3), 0);
 	struct agent_session_runtime runtime{};
 	runtime.db = &db;
@@ -88,25 +89,25 @@ TEST_F(AgentTurnTest, FailedTurnBeginCannotRollbackACallersTransaction)
 	struct agent_turn turn{};
 	EXPECT_EQ(agent_turn_begin(&turn, &runtime, &input), MORPH_ERR_DB);
 	EXPECT_FALSE(turn.begun);
-	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
-	ASSERT_EQ(db_exec(&db, "COMMIT;"), 0);
+	EXPECT_EQ(orm_fixture_transaction_idle(&db), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "COMMIT;"), 0);
 	EXPECT_EQ(message_count(&db, sess.id), 1);
 }
 
 TEST_F(AgentTurnTest, FailedHistoryRepairCannotRollbackACallersTransaction)
 {
-	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "BEGIN IMMEDIATE;"), 0);
 	ASSERT_EQ(message_add(&db, sess.id, "user", "caller-owned write", 3), 0);
 	EXPECT_EQ(agent_history_repair(&db, sess.id, tok, nullptr, nullptr), MORPH_ERR_DB);
-	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
-	ASSERT_EQ(db_exec(&db, "COMMIT;"), 0);
+	EXPECT_EQ(orm_fixture_transaction_idle(&db), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "COMMIT;"), 0);
 	EXPECT_EQ(message_count(&db, sess.id), 1);
 }
 
 TEST_F(AgentTurnTest, LoadsLongTranscriptInOrderWithItsStoredMetadata)
 {
 	constexpr int rounds = 512;
-	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "BEGIN IMMEDIATE;"), 0);
 	for (int round = 0; round < rounds; round++) {
 		const std::string turn_id = "saved-" + std::to_string(round);
 		const std::string question = "question " + std::to_string(round);
@@ -116,7 +117,9 @@ TEST_F(AgentTurnTest, LoadsLongTranscriptInOrderWithItsStoredMetadata)
 		ASSERT_EQ(message_add_with_turn_id(&db, sess.id, "assistant",
 			answer.c_str(), 11, turn_id.c_str()), 0);
 	}
-	ASSERT_EQ(db_exec(&db, "UPDATE messages SET compressed=1 WHERE id%3=0; COMMIT;"), 0);
+	ASSERT_EQ(
+		orm_fixture_execute(&db, "UPDATE messages SET compressed=1 WHERE id%3=0; COMMIT;"),
+		0);
 	struct agent_session_runtime runtime{};
 	runtime.db = &db;
 	runtime.session_id = sess.id;
@@ -150,13 +153,13 @@ TEST_F(AgentTurnTest, FailedHistoryLoadingClearsOldContextWithoutRollingBackCall
 	ASSERT_EQ(agent_session_load_history(&runtime), 0);
 	ASSERT_NE(react->messages, nullptr);
 	ASSERT_NE(react->history_items, nullptr);
-	ASSERT_EQ(db_exec(&db, "BEGIN IMMEDIATE;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "BEGIN IMMEDIATE;"), 0);
 	ASSERT_EQ(message_add(&db, sess.id, "user", "caller-owned write", 3), 0);
 	EXPECT_EQ(agent_session_load_history(&runtime), MORPH_ERR_DB);
 	EXPECT_EQ(react->messages, nullptr);
 	EXPECT_EQ(react->history_items, nullptr);
-	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 0);
-	ASSERT_EQ(db_exec(&db, "COMMIT;"), 0);
+	EXPECT_EQ(orm_fixture_transaction_idle(&db), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "COMMIT;"), 0);
 	EXPECT_EQ(message_count(&db, sess.id), 3);
 	ASSERT_EQ(agent_session_load_history(&runtime), 0);
 	EXPECT_EQ(msg_list_count(react->messages), 3);
@@ -224,9 +227,10 @@ TEST_F(AgentTurnTest, OutcomeWriteFailureRollsBackFinalAnswer)
 	input.turn_id = "rollback_outcome";
 	struct agent_turn turn;
 	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
-	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER fail_outcome BEFORE UPDATE OF "
-		"payload_json ON model_history_items BEGIN "
-		"SELECT RAISE(ABORT, 'injected'); END;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "CREATE TRIGGER fail_outcome BEFORE UPDATE OF "
+					   "payload_json ON model_history_items BEGIN "
+					   "SELECT RAISE(ABORT, 'injected'); END;"),
+		  0);
 	react->state = REACT_STATE_DONE;
 	react->outcome = REACT_OUTCOME_SUCCESS;
 	react->final_answer = strdup("Opened");
@@ -382,10 +386,10 @@ TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 
 TEST_F(AgentTurnTest, AssistantFailureKeepsPreModelUserCheckpoint)
 {
-	ASSERT_EQ(db_exec(&db,
-		"CREATE TRIGGER reject_assistant_message "
-		"BEFORE INSERT ON messages WHEN NEW.role = 'assistant' "
-		"BEGIN SELECT RAISE(ABORT, 'reject assistant'); END;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "CREATE TRIGGER reject_assistant_message "
+					   "BEFORE INSERT ON messages WHEN NEW.role = 'assistant' "
+					   "BEGIN SELECT RAISE(ABORT, 'reject assistant'); END;"),
+		  0);
 
 	struct agent_session_runtime runtime;
 	memset(&runtime, 0, sizeof(runtime));
@@ -777,9 +781,11 @@ TEST_F(AgentTurnTest, CancelledOutcomeWriteFailureRollsBackHistoryDeactivation)
 	struct model_history_item *before NB_CLEANUP(agent_turn_test_history_cleanup) =
 		model_history_list(&db, sess.id, 0, &count);
 	ASSERT_EQ(count, 4);
-	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER reject_cancelled_outcome BEFORE UPDATE OF "
-		"payload_json ON model_history_items BEGIN "
-		"SELECT RAISE(ABORT, 'injected cancelled outcome failure'); END;"), 0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "CREATE TRIGGER reject_cancelled_outcome BEFORE UPDATE OF "
+			       "payload_json ON model_history_items BEGIN "
+			       "SELECT RAISE(ABORT, 'injected cancelled outcome failure'); END;"),
+		  0);
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_CANCELLED;
 	react->last_error_code = NB_ERR_CANCELLED;
@@ -788,7 +794,7 @@ TEST_F(AgentTurnTest, CancelledOutcomeWriteFailureRollsBackHistoryDeactivation)
 	struct agent_turn_result result{};
 	EXPECT_EQ(agent_turn_finish(&turn, &result), MORPH_ERR_DB);
 	EXPECT_EQ(result.message_persistence_rc, MORPH_ERR_DB);
-	EXPECT_EQ(sqlite3_get_autocommit(db.handle), 1);
+	EXPECT_EQ(orm_fixture_transaction_idle(&db), 1);
 	EXPECT_EQ(message_count(&db, sess.id), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 4);
 	struct model_history_item *after NB_CLEANUP(agent_turn_test_history_cleanup) =
@@ -1173,7 +1179,7 @@ TEST_F(AgentTurnTest, CompactionReplayFailureRollsBackDatabaseAndMemory)
 	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
-	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+	EXPECT_TRUE(orm_fixture_transaction_idle(&db));
 }
 
 static int agent_turn_unicode_summary(const char *, void *, char **out)
@@ -1529,14 +1535,15 @@ TEST_F(AgentTurnTest, RepeatedCompactionSummarizesOldFactsAndKeepsRecentExchange
 		}
 	}
 	EXPECT_TRUE(kept);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-		"SELECT count(*) FROM history_summary_sources s JOIN model_history_items m "
-		"ON s.source_item_id=m.id WHERE m.tool_call_id='recent-review'",
-		-1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(stmt, 0), 0);
-	sqlite3_finalize(stmt);
+	int64_t source_count = -1;
+	ASSERT_EQ(
+		orm_fixture_integer(
+			&db,
+			"SELECT count(*) FROM history_summary_sources s JOIN model_history_items m "
+			"ON s.source_item_id=m.id WHERE m.tool_call_id='recent-review'",
+			&source_count),
+		0);
+	EXPECT_EQ(source_count, 0);
 	add_group("bulky-review", "{\"command\":\"review\"}", bulky.c_str(), "PRIVATE_REASONING_2");
 	add_group("new-review", "{\"command\":\"check-latest\"}", "LATEST_EXACT_RESULT", nullptr);
 	ASSERT_EQ(agent_history_reload(react), 0);
@@ -1559,7 +1566,7 @@ TEST_F(AgentTurnTest, CompactionRejectsHistoryGrowthAfterSnapshotWithoutLosingNe
 	react->compress.summarize_user_data = react;
 	react->compress.summarize = [](const char *, void *data, char **out) -> int {
 		auto *ctx = static_cast<react_context *>(data);
-		EXPECT_TRUE(sqlite3_get_autocommit(ctx->history_db->handle));
+		EXPECT_TRUE(orm_fixture_transaction_idle(ctx->history_db));
 		struct model_history_insert item = {};
 		item.session_id = ctx->history_session_id;
 		item.kind = "background_receipt";
@@ -1574,7 +1581,7 @@ TEST_F(AgentTurnTest, CompactionRejectsHistoryGrowthAfterSnapshotWithoutLosingNe
 	EXPECT_EQ(agent_history_compact(react, 1), NB_ERR_AGAIN);
 	EXPECT_EQ(model_history_count(&db, sess.id, 1), 2);
 	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
-	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+	EXPECT_TRUE(orm_fixture_transaction_idle(&db));
 }
 
 TEST_F(AgentTurnTest, FailedCompactionDoesNotRollbackAnotherThreadsSession)
@@ -1672,9 +1679,11 @@ TEST_F(AgentTurnTest, AssistantRenderingPrecedesTransactionAndNullRenderKeepsOri
 		runtime.render_assistant = [](const char *, void *data) -> char * {
 			auto *render = static_cast<render_state *>(data);
 			render->calls++;
-			EXPECT_TRUE(sqlite3_get_autocommit(render->database->handle));
-			EXPECT_EQ(db_exec(render->database,
-				"SAVEPOINT render_probe; RELEASE render_probe;"), 0);
+			EXPECT_TRUE(orm_fixture_transaction_idle(render->database));
+			EXPECT_EQ(orm_fixture_execute(
+					  render->database,
+					  "SAVEPOINT render_probe; RELEASE render_probe;"),
+				  0);
 			return render->fallback ? nullptr : strdup("rendered answer");
 		};
 		struct agent_turn_input input{};

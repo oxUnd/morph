@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include "agent/react.h"
 #include "agent/agent_control.h"
 #include "agent/tools/multi_agents.h"
@@ -28,8 +29,8 @@
 #include "http_test_support.hpp"
 #include <nb/sse.h>
 #include "config/config.h"
-#include "db/database.h"
-#include "session.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/session.h"
 #include "errors.h"
 #include <nb/file.h>
 #include <nb/utf8.h>
@@ -1977,12 +1978,15 @@ TEST_F(MockLlmTest, InTurnCompactionOverBudgetRollsBackCheckpoint)
 	ctx->history_enabled = 1;
 	ctx->history_db = &db;
 	ctx->history_session_id = session.id;
-	ASSERT_EQ(db_exec(&db, "CREATE TABLE compaction_usage_probe(value INTEGER)"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "CREATE TABLE compaction_usage_probe(value INTEGER)"),
+		  0);
 	ctx->compress.summarize_user_data = &db;
 	ctx->compress.summarize = [](const char *text, void *data, char **out) -> int {
 		auto *database = static_cast<struct db *>(data);
-		EXPECT_TRUE(sqlite3_get_autocommit(database->handle));
-		EXPECT_EQ(db_exec(database, "INSERT INTO compaction_usage_probe VALUES(1)"), 0);
+		EXPECT_TRUE(orm_fixture_transaction_idle(database));
+		EXPECT_EQ(orm_fixture_execute(database,
+					      "INSERT INTO compaction_usage_probe VALUES(1)"),
+			  0);
 		return test_compress_cb(text, nullptr, out);
 	};
 	ctx->system_prompt_replace = 1;
@@ -1997,22 +2001,26 @@ TEST_F(MockLlmTest, InTurnCompactionOverBudgetRollsBackCheckpoint)
 	EXPECT_EQ(model_history_count(&db, session.id, 1), 1);
 	ASSERT_NE(ctx->history_items, nullptr);
 	EXPECT_STREQ(ctx->history_items->content, "keep the original objective");
-	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+	EXPECT_TRUE(orm_fixture_transaction_idle(&db));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.compaction.failed"));
 	EXPECT_FALSE(event_recorder_has_name(&rec, "react.compaction.completed"));
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-		"SELECT status FROM history_compaction_attempts ORDER BY id",
-		-1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "failed");
-	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
-	sqlite3_finalize(stmt);
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT count(*) FROM compaction_usage_probe",
-		-1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
-	sqlite3_finalize(stmt);
+	char *attempt_status NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	int64_t usage_count = 0;
+	size_t attempts = 0;
+
+	ASSERT_EQ(orm_fixture_text_copy(
+			  &db, "SELECT status FROM history_compaction_attempts ORDER BY id",
+			  &attempt_status),
+		  0);
+	EXPECT_STREQ(attempt_status, "failed");
+	ASSERT_EQ(orm_fixture_row_count(&db, "SELECT status FROM history_compaction_attempts",
+					&attempts),
+		  0);
+	EXPECT_EQ(attempts, 1u);
+	ASSERT_EQ(orm_fixture_integer(&db, "SELECT count(*) FROM compaction_usage_probe",
+				      &usage_count),
+		  0);
+	EXPECT_EQ(usage_count, 1);
 	react_context_destroy(ctx);
 	morph_event_recorder_cleanup(&rec);
 	db_close(&db);
@@ -7973,7 +7981,7 @@ TEST_F(PromptModeTest, DurableArtifactsAndPlanEvidenceSurviveCompactionAndRestor
 	std::string sql = "INSERT INTO outputs(session_id,kind,path,tool_name,created_at) VALUES(" +
 		std::to_string(session.id) + ",'video','/tmp/rendered-video.mp4','vid_gen',1),(" +
 		std::to_string(foreign.id) + ",'image','/tmp/foreign-secret.png','img_gen',1)";
-	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
 	auto plans = std::make_unique<plan_registry>();
 	plan_registry_init(plans.get());
 	ASSERT_EQ(plan_registry_bind(plans.get(), &db, session.id), 0);
@@ -8691,7 +8699,8 @@ TEST_F(MockLlmTest, HistoryFailureRetiresEveryOutstandingWorker)
 	db database{};
 	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
-	ASSERT_EQ(db_exec(&database,
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
 			  "INSERT INTO sessions(id,name,model,created_at,updated_at) "
 			  "VALUES(1,'test','mock',1,1);"
 			  "CREATE TRIGGER reject_tool_history BEFORE INSERT ON model_history_items "

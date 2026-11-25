@@ -2,9 +2,9 @@
 #include <nb/cleanup.h>
 
 #include "agent/memory.h"
-#include "persistence/memory_snapshot.h"
-#include "persistence/memory_job_store.h"
-#include "persistence/memory_search.h"
+#include "persistence/orm/memory_snapshot.h"
+#include "persistence/orm/memory_job_store.h"
+#include "persistence/orm/memory_search.h"
 #include <nb/buf.h>
 #include "errors.h"
 #include <nb/utf8.h>
@@ -235,7 +235,7 @@ static char *memory_render_archive(struct db *db, int64_t session_id, int max_pa
 	int sections_total = 0;
 	int sections_seen = 0;
 
-	if (!db || !db->handle)
+	if (!db_is_open(db))
 		return NULL;
 
 	if ((nb_buf_init(&buf), nb_buf_reserve(&buf, MEMORY_APPEND_INIT_CAP) ? 0 : NB_ERR_NOMEM) !=

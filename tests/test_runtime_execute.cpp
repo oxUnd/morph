@@ -1,4 +1,5 @@
 #include "runtime_test_support.hpp"
+#include "persistence/orm/test_fixture.h"
 #include <nb/err.h>
 
 extern "C" {
@@ -358,8 +359,11 @@ TEST_F(RuntimeExecuteTest, InputSnapshotFailureDoesNotPreventModelDispatch)
 	struct db database_handle{};
 	OpenScripted();
 	ASSERT_EQ(db_open(NULL, &database_handle, database.c_str()), 0);
-	ASSERT_EQ(db_exec(&database_handle, "CREATE TRIGGER fail_input_snapshot BEFORE INSERT ON "
-		"model_request_snapshots BEGIN SELECT RAISE(ABORT,'test failure'); END"), 0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &database_handle,
+			  "CREATE TRIGGER fail_input_snapshot BEFORE INSERT ON "
+			  "model_request_snapshots BEGIN SELECT RAISE(ABORT,'test failure'); END"),
+		  0);
 	ASSERT_EQ(Execute("still execute this request", &result), 0);
 	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_COMPLETED);
 	EXPECT_EQ(scripted.calls, 1);
@@ -948,12 +952,12 @@ TEST_F(RuntimeExecuteTest, FailedCheckpointSealStopsFurtherTrackedEditsUntilNext
 	OpenScripted(true);
 	cJSON *empty NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	ASSERT_EQ(runtime_checkpoint_list_copy(instance, &empty), 0);
-	ASSERT_EQ(sqlite3_exec(
-			  instance->context.database.handle,
-			  "CREATE TRIGGER reject_checkpoint_seal BEFORE UPDATE OF after_data "
-			  "ON code_checkpoint_files BEGIN SELECT RAISE(ABORT,'seal rejected'); END",
-			  nullptr, nullptr, nullptr),
-		  SQLITE_OK);
+	ASSERT_EQ(
+		orm_fixture_execute(
+			&instance->context.database,
+			"CREATE TRIGGER reject_checkpoint_seal BEFORE UPDATE OF after_data "
+			"ON code_checkpoint_files BEGIN SELECT RAISE(ABORT,'seal rejected'); END"),
+		0);
 	scripted.actions = {
 		{"apply_patch", "*** Begin Patch\n*** Add File: first.c\n+first\n*** End Patch\n"},
 		{"apply_patch",
@@ -964,9 +968,9 @@ TEST_F(RuntimeExecuteTest, FailedCheckpointSealStopsFurtherTrackedEditsUntilNext
 	EXPECT_EQ(runtime_checkpoint_read_file(directory + "/first.c"), "first\n");
 	EXPECT_FALSE(std::filesystem::exists(directory + "/second.c"));
 	EXPECT_TRUE(instance->checkpoint_failed);
-	ASSERT_EQ(sqlite3_exec(instance->context.database.handle,
-			       "DROP TRIGGER reject_checkpoint_seal", nullptr, nullptr, nullptr),
-		  SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database,
+				      "DROP TRIGGER reject_checkpoint_seal"),
+		  0);
 	scripted.actions = {{"apply_patch",
 			     "*** Begin Patch\n*** Add File: second.c\n+second\n*** End Patch\n"}};
 	scripted.action_cursor = 0;

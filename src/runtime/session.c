@@ -2,7 +2,7 @@
 #include "runtime/session.h"
 
 #include "agent/context.h"
-#include "session_history.h"
+#include "persistence/orm/session_history.h"
 #include "permission/context.h"
 #include <nb/cleanup.h>
 #include "errors.h"

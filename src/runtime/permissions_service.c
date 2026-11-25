@@ -1,6 +1,6 @@
 #include "runtime/runtime.h"
 
-#include "db/permission_grant.h"
+#include "persistence/orm/permission_grant.h"
 #include "runtime/runtime_internal.h"
 #include <nb/vec.h>
 #include <nb/cleanup.h>

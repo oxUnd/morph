@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <nb/err.h>
 #include "agent_http_test_support.hpp"
 
@@ -8,7 +9,7 @@ extern "C" {
 #include "agent/tool.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include <nb/utf8.h>
 #include "cJSON.h"
 #include <nb/cleanup.h>
@@ -102,15 +103,14 @@ class AgentEventBatchingTest : public testing::Test
 		self->reasoning += text ? text : "";
 		self->live_deltas++;
 		if (self->first_delta_stored < 0) {
-			sqlite3_stmt *statement = nullptr;
-			if (sqlite3_prepare_v2(
-				    self->database.handle,
+			int64_t count = -1;
+
+			if (orm_fixture_integer(
+				    &self->database,
 				    "SELECT count(*) FROM agent_events WHERE "
 				    "json_extract(event_json,'$.name')='react.reasoning.delta'",
-				    -1, &statement, nullptr) == SQLITE_OK &&
-			    sqlite3_step(statement) == SQLITE_ROW)
-				self->first_delta_stored = sqlite3_column_int(statement, 0);
-			sqlite3_finalize(statement);
+				    &count) == 0)
+				self->first_delta_stored = static_cast<int>(count);
 		}
 		return 0;
 	}

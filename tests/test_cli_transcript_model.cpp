@@ -6,7 +6,7 @@ extern "C" {
 #include "sapi/cli/presentation/transcript_details.h"
 #include <nb/cleanup.h>
 #include <nothing/tui/terminal/text.h>
-#include "session_history.h"
+#include "persistence/orm/session_history.h"
 #include "cJSON.h"
 #include "errors.h"
 }

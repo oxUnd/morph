@@ -1,5 +1,5 @@
 #include "credits.h"
-#include "persistence/credit_store.h"
+#include "persistence/orm/credit_store.h"
 #include "errors.h"
 #include <errno.h>
 #include <string.h>
@@ -101,7 +101,7 @@ int credit_record_event(struct db *db, const struct config_credits *cfg,
 	struct credit_store_event store_event;
 	int rc;
 
-	if (!db || !db->handle || !cfg || !event || !event->kind)
+	if (!db_is_open(db) || !cfg || !event || !event->kind)
 		return NB_ERR_INVAL;
 
 	rc = credit_calculate(cfg, event, &charge);
@@ -144,7 +144,7 @@ int credit_summary_today(struct db *db, const char *user_id,
 	struct credit_store_summary summary;
 	int rc;
 
-	if (!db || !db->handle || !user_id || !out)
+	if (!db_is_open(db) || !user_id || !out)
 		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	rc = credit_store_summary_today(db, user_id, &summary);
@@ -160,7 +160,7 @@ int credit_summary_total(struct db *db, const char *user_id,
 	struct credit_store_summary summary;
 	int rc;
 
-	if (!db || !db->handle || !user_id || !out)
+	if (!db_is_open(db) || !user_id || !out)
 		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	rc = credit_store_summary_total(db, user_id, &summary);
@@ -176,7 +176,7 @@ int credit_summary_session(struct db *db, const char *session_id,
 	struct credit_store_summary summary;
 	int rc;
 
-	if (!db || !db->handle || !session_id || !out)
+	if (!db_is_open(db) || !session_id || !out)
 		return NB_ERR_INVAL;
 	memset(out, 0, sizeof(*out));
 	rc = credit_store_summary_session(db, session_id, &summary);

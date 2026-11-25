@@ -1,4 +1,5 @@
 #include "history.h"
+#include "persistence/orm/business_store.h"
 #include "history_internal.h"
 
 #include "prompt_context.h"
@@ -26,7 +27,6 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	cJSON *input = NULL;
 	char *json;
 	char *safe;
-	sqlite3_stmt *stmt = NULL;
 	int rc;
 
 	if (!ctx || !model)
@@ -45,25 +45,10 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	free(json);
 	if (!safe)
 		return NB_ERR_NOMEM;
-	rc = sqlite3_prepare_v2(
-		ctx->history_db->handle,
-		"INSERT INTO model_request_snapshots(session_id,turn_id,provider,model,"
-		"input_json,created_at) VALUES(?,?,?,?,?,strftime('%s','now')) "
-		"ON CONFLICT(session_id) DO UPDATE SET turn_id=excluded.turn_id,"
-		"provider=excluded.provider,model=excluded.model,input_json=excluded.input_json,"
-		"created_at=excluded.created_at",
-		-1, &stmt, NULL);
-	if (rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, ctx->history_session_id);
-		sqlite3_bind_text(stmt, 2, ctx->turn_id, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 3, model->provider, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 4, model->model_id, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 5, safe, -1, SQLITE_TRANSIENT);
-		rc = sqlite3_step(stmt);
-	}
-	sqlite3_finalize(stmt);
+	rc = request_snapshot_store_put(ctx->history_db, ctx->history_session_id, ctx->turn_id,
+					model->provider, model->model_id, safe);
 	free(safe);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+	return rc;
 }
 
 static int history_store(struct react_context *ctx, const struct model_history_insert *insert)
@@ -162,9 +147,12 @@ int agent_history_record_user_steer(struct react_context *ctx, const char *conte
 static int history_xml_append(nb_buf *text, const char *value)
 {
 	for (const char *at = value; *at; at++) {
-		const char *escaped = *at == '&' ? "&amp;" : *at == '<' ? "&lt;"
-			: *at == '>' ? "&gt;" : *at == '"' ? "&quot;" : *at == '\'' ? "&apos;"
-			: NULL;
+		const char *escaped = *at == '&'    ? "&amp;"
+				      : *at == '<'  ? "&lt;"
+				      : *at == '>'  ? "&gt;"
+				      : *at == '"'  ? "&quot;"
+				      : *at == '\'' ? "&apos;"
+						    : NULL;
 		int rc = escaped ? (nb_buf_append_cstr(text, escaped) ? 0 : NB_ERR_NOMEM)
 				 : (nb_buf_append_char(text, *at) ? 0 : NB_ERR_NOMEM);
 
@@ -196,7 +184,7 @@ char *agent_history_hook_prompt_create(const char *content, const char *hook_run
 }
 
 int agent_history_record_hook_prompt(struct react_context *ctx, const char *content,
-	const char *hook_run_id, int sequence)
+				     const char *hook_run_id, int sequence)
 {
 	char key[192];
 	cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = NULL;
@@ -279,35 +267,15 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 				const char *status, int error_code, struct tokenizer *tokenizer,
 				int *changed)
 {
-	const char *select_sql = "SELECT id,content,payload_json "
-				 "FROM model_history_items WHERE session_id=? AND turn_id=? "
-				 "AND kind='user_message'";
-	const char *backfill_sql = "SELECT u.id,u.content,u.payload_json "
-				   "FROM model_history_items u WHERE u.session_id=? AND u.active=1 "
-				   "AND u.kind='user_message' AND EXISTS (SELECT 1 "
-				   "FROM model_history_items a WHERE a.session_id=u.session_id "
-				   "AND a.turn_id=u.turn_id AND a.kind='assistant_message' "
-				   "AND a.sequence_no>u.sequence_no)";
-	const char *update_sql = "UPDATE model_history_items SET "
-				 "payload_json=?,token_count=? WHERE id=?";
-	sqlite3_stmt *select = NULL;
-	sqlite3_stmt *update = NULL;
-	int rc;
-	int error = 0;
+	nb_vec records NB_CLEANUP(store_history_bodies_cleanup) = {0};
+	int error = history_body_store_list_copy(db, session_id, turn_id, &records);
 
-	rc = sqlite3_prepare_v2(db->handle, turn_id ? select_sql : backfill_sql, -1, &select, NULL);
-	if (rc == SQLITE_OK)
-		rc = sqlite3_prepare_v2(db->handle, update_sql, -1, &update, NULL);
-	if (rc != SQLITE_OK) {
-		sqlite3_finalize(select);
-		sqlite3_finalize(update);
-		return MORPH_ERR_DB;
-	}
-	sqlite3_bind_int64(select, 1, session_id);
-	if (turn_id)
-		sqlite3_bind_text(select, 2, turn_id, -1, SQLITE_TRANSIENT);
-	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
-		const char *old = (const char *)sqlite3_column_text(select, 2);
+	if (error != 0)
+		return error;
+
+	for (size_t i = 0; i < records.len; i++) {
+		const struct store_history_body *record = nb_vec_at(&records, i);
+		const char *old = record->payload_json;
 		cJSON *payload = old ? cJSON_Parse(old) : cJSON_CreateObject();
 		cJSON *outcome = cJSON_CreateObject();
 		char *json = NULL;
@@ -342,7 +310,7 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 		}
 		json = cJSON_PrintUnformatted(payload);
 		cJSON_Delete(payload);
-		item.content = (char *)sqlite3_column_text(select, 1);
+		item.content = record->content;
 		item.payload_json = json;
 		if (json)
 			rendered = history_user_content_create(&item);
@@ -351,26 +319,18 @@ int history_store_turn_outcomes(struct db *db, int64_t session_id, const char *t
 			error = (NB_ERR_NOMEM);
 			break;
 		}
-		sqlite3_bind_text(update, 1, json, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_int(update, 2, tokenizer_count(tokenizer, rendered));
-		sqlite3_bind_int64(update, 3, sqlite3_column_int64(select, 0));
+		error = history_body_store_update(db, record->id, json,
+						  tokenizer_count(tokenizer, rendered));
 		free(rendered);
 		free(json);
-		if (sqlite3_step(update) != SQLITE_DONE) {
-			error = (MORPH_ERR_DB);
+		if (error != 0)
 			break;
-		}
+
 		if (changed)
 			(*changed)++;
-		sqlite3_reset(update);
-		sqlite3_clear_bindings(update);
 	}
-	sqlite3_finalize(select);
-	sqlite3_finalize(update);
 	if (error)
 		return error;
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
 	return 0;
 }
 

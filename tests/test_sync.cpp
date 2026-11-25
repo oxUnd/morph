@@ -6,7 +6,7 @@
 #include <nb/cleanup.h>
 #include "blake3.h"
 #include "cJSON.h"
-#include <sqlite3.h>
+#include "persistence/orm/test_fixture.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -54,57 +54,47 @@ protected:
 		std::system(cmd);
 	}
 
-	int OpenManifest(sqlite3 **db) {
+	int OpenManifest(struct db *database) {
 		char path[PATH_MAX];
 		snprintf(path, sizeof(path), "%s/.morph-sync/manifest.db", remote);
-		return sqlite3_open_v2(path, db, SQLITE_OPEN_READWRITE, nullptr);
+		return db_open_plain(nullptr, database, path);
 	}
 
 	int QueryInt(const char *sql) {
-		sqlite3 *db = nullptr;
-		sqlite3_stmt *stmt = nullptr;
-		int value = -1;
-		if (OpenManifest(&db) != SQLITE_OK)
-			return value;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK &&
-		    sqlite3_step(stmt) == SQLITE_ROW)
-			value = sqlite3_column_int(stmt, 0);
-		sqlite3_finalize(stmt);
-		sqlite3_close(db);
-		return value;
+		struct db database NB_CLEANUP(db_close) = {};
+		int64_t value = -1;
+
+		if (OpenManifest(&database) != 0)
+			return -1;
+
+		return orm_fixture_integer(&database, sql, &value) == 0 ? (int)value : -1;
 	}
 
 	void CreateSqlite(const std::string &path, int rows = 1) {
-		sqlite3 *db = nullptr;
-		ASSERT_EQ(sqlite3_open(path.c_str(), &db), SQLITE_OK);
-		ASSERT_EQ(sqlite3_exec(db,
-			"PRAGMA journal_mode=WAL;"
-			"CREATE TABLE items(id INTEGER PRIMARY KEY,value TEXT);",
-			nullptr, nullptr, nullptr), SQLITE_OK);
+		struct db database NB_CLEANUP(db_close) = {};
+
+		ASSERT_EQ(db_open_plain(nullptr, &database, path.c_str()), 0);
+		ASSERT_EQ(orm_fixture_execute(&database, "PRAGMA journal_mode=WAL;"
+			"CREATE TABLE items(id INTEGER PRIMARY KEY,value TEXT);"), 0);
 		for (int i = 0; i < rows; i++) {
 			std::string sql = "INSERT INTO items(value) VALUES('item-" +
 				std::to_string(i) + "')";
-			ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr,
-				nullptr), SQLITE_OK);
+
+			ASSERT_EQ(orm_fixture_execute(&database, sql.c_str()), 0);
 		}
-		sqlite3_close(db);
 	}
 
 	int SqliteCount(const std::string &path) {
-		sqlite3 *db = nullptr;
-		sqlite3_stmt *stmt = nullptr;
-		int count = -1;
-		if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY,
-			nullptr) != SQLITE_OK)
-			return count;
-		if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM items", -1,
-			&stmt, nullptr) == SQLITE_OK &&
-		    sqlite3_step(stmt) == SQLITE_ROW)
-			count = sqlite3_column_int(stmt, 0);
-		sqlite3_finalize(stmt);
-		sqlite3_close(db);
-		return count;
+		struct db database NB_CLEANUP(db_close) = {};
+		int64_t count = -1;
+
+		if (db_open_readonly(nullptr, &database, path.c_str()) != 0)
+			return -1;
+
+		return orm_fixture_integer(&database, "SELECT COUNT(*) FROM items", &count) == 0
+			? (int)count : -1;
 	}
+
 };
 
 static int test_path_join(char *dst, size_t size, const char *root,
@@ -603,15 +593,13 @@ TEST_F(SyncTest, BacksUpAndRestoresLiveSqliteDatabase) {
 	int count = 0;
 	std::string database = std::string(local) + "/actual.db";
 	std::string restored = std::string(root) + "/restored.db";
-	sqlite3 *writer = nullptr;
+	struct db writer NB_CLEANUP(db_close) = {};
 
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
 	cfg.include_count = 1;
 	CreateSqlite(database);
-	ASSERT_EQ(sqlite3_open(database.c_str(), &writer), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(writer,
-		"INSERT INTO items(value) VALUES('wal-row')", nullptr, nullptr,
-		nullptr), SQLITE_OK);
+	ASSERT_EQ(db_open_plain(nullptr, &writer, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&writer, "INSERT INTO items(value) VALUES('wal-row')"), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0) << st.last_error;
 	EXPECT_EQ(st.conflicts, 0);
 	EXPECT_EQ(st.db_snapshots, 1);
@@ -631,7 +619,7 @@ TEST_F(SyncTest, BacksUpAndRestoresLiveSqliteDatabase) {
 	EXPECT_EQ(morph_sync_restore_db(&cfg, backups[0].snapshot_id, restored.c_str()),
 		  NB_ERR_EXISTS);
 	morph_sync_backups_free(backups);
-	sqlite3_close(writer);
+	db_close(&writer);
 }
 
 TEST_F(SyncTest, UnchangedSqliteDoesNotCreateAnotherSnapshot) {
@@ -659,26 +647,24 @@ TEST_F(SyncTest, CoreSnapshotIncludesDisplayHistoryFromWalAndIsIdempotent) {
 	const std::string ui = std::string(local) + "/ui-history.db";
 	const std::string restored = std::string(root) + "/restored.db";
 	CreateSqlite(database);
-	sqlite3 *core = nullptr;
-	ASSERT_EQ(sqlite3_open(database.c_str(), &core), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(core,
-		"CREATE TABLE sessions(id INTEGER PRIMARY KEY, display_id TEXT);"
+	struct db core NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open_plain(nullptr, &core, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&core, "CREATE TABLE sessions(id INTEGER PRIMARY KEY, display_id TEXT);"
 		"INSERT INTO sessions VALUES(1,'session-a');"
 		"CREATE TABLE sync_ui_messages(session_id,turn_id,core_message_id,seq,type,content,"
 		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,created_at,updated_at);"
 		"INSERT INTO sync_ui_messages VALUES(2,'imported',NULL,0,'thought','preserved',"
-		"NULL,NULL,NULL,NULL,1000,1000)", nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(core);
-	sqlite3 *writer = nullptr;
-	ASSERT_EQ(sqlite3_open(ui.c_str(), &writer), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(writer,
-		"PRAGMA journal_mode=WAL;"
+		"NULL,NULL,NULL,NULL,1000,1000)"), 0);
+	db_close(&core);
+	struct db writer NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open_plain(nullptr, &writer, ui.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&writer, "PRAGMA journal_mode=WAL;"
 		"CREATE TABLE ui_session_identity(session_id INTEGER PRIMARY KEY, identity TEXT);"
 		"INSERT INTO ui_session_identity VALUES(1,'session-a');"
 		"CREATE TABLE ui_messages(session_id,turn_id,core_message_id,seq,type,content,"
 		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,created_at,updated_at);"
 		"INSERT INTO ui_messages VALUES(1,'turn',10,0,'USER','question',"
-		"NULL,NULL,NULL,NULL,1000,1000)", nullptr, nullptr, nullptr), SQLITE_OK);
+		"NULL,NULL,NULL,NULL,1000,1000)"), 0);
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "data.db");
 	cfg.include_count = 1;
 	struct morph_sync_status status{};
@@ -692,20 +678,29 @@ TEST_F(SyncTest, CoreSnapshotIncludesDisplayHistoryFromWalAndIsIdempotent) {
 	ASSERT_EQ(count, 1);
 	ASSERT_EQ(morph_sync_restore_db(&cfg, backups[0].snapshot_id, restored.c_str()), 0);
 	morph_sync_backups_free(backups);
-	sqlite3 *copy = nullptr;
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_open(restored.c_str(), &copy), SQLITE_OK);
-	ASSERT_EQ(sqlite3_prepare_v2(copy,
-		"SELECT type,content FROM sync_ui_messages ORDER BY session_id", -1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 0), "USER");
-	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 1), "question");
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 1), "preserved");
-	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
-	sqlite3_finalize(stmt);
-	sqlite3_close(copy);
-	sqlite3_close(writer);
+	struct db copy NB_CLEANUP(db_close) = {};
+	ASSERT_EQ(db_open_plain(nullptr, &copy, restored.c_str()), 0);
+	char *text NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	size_t stored_count = 0;
+
+	ASSERT_EQ(orm_fixture_row_count(&copy,
+		"SELECT type,content FROM sync_ui_messages ORDER BY session_id", &stored_count), 0);
+	EXPECT_EQ(stored_count, 2u);
+	ASSERT_EQ(orm_fixture_text_copy(&copy,
+		"SELECT type FROM sync_ui_messages ORDER BY session_id LIMIT 1", &text), 0);
+	EXPECT_STREQ(text, "USER");
+	free(text);
+	text = nullptr;
+	ASSERT_EQ(orm_fixture_text_copy(&copy,
+		"SELECT content FROM sync_ui_messages ORDER BY session_id LIMIT 1", &text), 0);
+	EXPECT_STREQ(text, "question");
+	free(text);
+	text = nullptr;
+	ASSERT_EQ(orm_fixture_text_copy(&copy,
+		"SELECT content FROM sync_ui_messages ORDER BY session_id LIMIT 1 OFFSET 1", &text), 0);
+	EXPECT_STREQ(text, "preserved");
+	db_close(&copy);
+	db_close(&writer);
 }
 
 TEST_F(SyncTest, ExternalOutputDirectoryUsesPortableOutputNamespace) {
@@ -730,16 +725,15 @@ TEST_F(SyncTest, ChangedSqliteCreatesImmutableVersion) {
 	struct morph_sync_backup *backups = nullptr;
 	int count = 0;
 	std::string database = std::string(local) + "/actual.db";
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
 	cfg.include_count = 1;
 	CreateSqlite(database);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
-	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(db, "INSERT INTO items(value) VALUES('new')",
-		nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(db);
+	ASSERT_EQ(db_open_plain(nullptr, &db, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "INSERT INTO items(value) VALUES('new')"), 0);
+	db_close(&db);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	EXPECT_EQ(st.db_snapshots, 1);
 	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
@@ -754,7 +748,7 @@ TEST_F(SyncTest, RevertedSqliteCreatesAnotherImmutableVersion) {
 	int count = 0;
 	std::string database = std::string(local) + "/actual.db";
 	std::string baseline = std::string(root) + "/baseline.db";
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
 	cfg.include_count = 1;
@@ -767,10 +761,9 @@ TEST_F(SyncTest, RevertedSqliteCreatesAnotherImmutableVersion) {
 	morph_sync_backups_free(backups);
 	backups = nullptr;
 
-	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(db, "INSERT INTO items(value) VALUES('new')",
-		nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(db);
+	ASSERT_EQ(db_open_plain(nullptr, &db, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "INSERT INTO items(value) VALUES('new')"), 0);
+	db_close(&db);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	ASSERT_EQ(std::remove(database.c_str()), 0);
 	ASSERT_EQ(std::rename(baseline.c_str(), database.c_str()), 0);
@@ -788,7 +781,7 @@ TEST_F(SyncTest, TransactionalDatabaseReplaceCanCommitAndRollback) {
 	char original_snapshot[MORPH_SYNC_SNAPSHOT_ID_MAX];
 	int count = 0;
 	std::string database = std::string(local) + "/actual.db";
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
 	cfg.include_count = 1;
@@ -800,10 +793,9 @@ TEST_F(SyncTest, TransactionalDatabaseReplaceCanCommitAndRollback) {
 		 backups[0].snapshot_id);
 	morph_sync_backups_free(backups);
 	backups = nullptr;
-	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(db, "INSERT INTO items(value) VALUES('new')",
-		nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(db);
+	ASSERT_EQ(db_open_plain(nullptr, &db, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "INSERT INTO items(value) VALUES('new')"), 0);
+	db_close(&db);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
 	ASSERT_EQ(count, 2);
@@ -874,7 +866,7 @@ TEST_F(SyncTest, PrepareProtectsUncheckpointedLiveWalState) {
 	int count = 0;
 	std::string database = std::string(local) + "/actual.db";
 	std::string protected_copy = std::string(root) + "/protected.db";
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
 	cfg.include_count = 1;
@@ -886,10 +878,9 @@ TEST_F(SyncTest, PrepareProtectsUncheckpointedLiveWalState) {
 		 backups[0].snapshot_id);
 	morph_sync_backups_free(backups);
 	backups = nullptr;
-	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(db, "PRAGMA wal_autocheckpoint=0;"
-		"INSERT INTO items(value) VALUES('live-wal')",
-		nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(db_open_plain(nullptr, &db, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "PRAGMA wal_autocheckpoint=0;"
+		"INSERT INTO items(value) VALUES('live-wal')"), 0);
 
 	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, original_snapshot,
 		&plan), 0);
@@ -902,7 +893,7 @@ TEST_F(SyncTest, PrepareProtectsUncheckpointedLiveWalState) {
 		protected_copy.c_str()), 0);
 	EXPECT_EQ(SqliteCount(protected_copy), 2);
 	ASSERT_EQ(morph_sync_rollback_db_replace(&plan), 0);
-	sqlite3_close(db);
+	db_close(&db);
 	morph_sync_backups_free(backups);
 }
 
@@ -1169,17 +1160,16 @@ TEST_F(SyncTest, DifferentDevicesPublishIndependentSqliteVersions) {
 	int count = 0;
 	std::string database = std::string(local) + "/actual.db";
 	std::string device_file = std::string(local) + "/.morph-sync/device-id";
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
 	cfg.include_count = 1;
 	CreateSqlite(database);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	ASSERT_EQ(unlink(device_file.c_str()), 0);
-	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(db, "INSERT INTO items(value) VALUES('device-2')",
-		nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(db);
+	ASSERT_EQ(db_open_plain(nullptr, &db, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "INSERT INTO items(value) VALUES('device-2')"), 0);
+	db_close(&db);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	EXPECT_EQ(st.conflicts, 0);
 	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
@@ -1225,17 +1215,16 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 	int prefix_count = 0;
 	int count = 0;
 	std::string database = std::string(local) + "/actual.db";
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 
 	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
 	cfg.include_count = 1;
 	cfg.retention_days = 1;
 	CreateSqlite(database);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
-	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(db, "INSERT INTO items(value) VALUES('new')",
-		nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_close(db);
+	ASSERT_EQ(db_open_plain(nullptr, &db, database.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "INSERT INTO items(value) VALUES('new')"), 0);
+	db_close(&db);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	ASSERT_EQ(morph_sync_backups(&cfg, nullptr, &backups, &count), 0);
 	ASSERT_EQ(count, 2);
@@ -1377,7 +1366,7 @@ TEST_F(SyncTest, RestoreTrashClearsTombstone) {
 
 TEST_F(SyncTest, CleansExpiredTrash) {
 	struct morph_sync_status st;
-	sqlite3 *db = nullptr;
+	struct db db NB_CLEANUP(db_close) = {};
 	char remote_file[PATH_MAX];
 	char trash_path[PATH_MAX];
 
@@ -1389,19 +1378,14 @@ TEST_F(SyncTest, CleansExpiredTrash) {
 	ASSERT_EQ(std::remove(remote_file), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	ASSERT_GT(QueryInt("SELECT COUNT(*) FROM trash"), 0);
-	ASSERT_EQ(OpenManifest(&db), SQLITE_OK);
-	ASSERT_EQ(sqlite3_exec(db,
-		"UPDATE trash SET created_at=strftime('%s','now')-172800",
-		nullptr, nullptr, nullptr), SQLITE_OK);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db,
-		"SELECT trash_path FROM trash LIMIT 1", -1, &stmt, nullptr),
-		SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	snprintf(trash_path, sizeof(trash_path), "%s",
-		 (const char *)sqlite3_column_text(stmt, 0));
-	sqlite3_finalize(stmt);
-	sqlite3_close(db);
+	ASSERT_EQ(OpenManifest(&db), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "UPDATE trash SET created_at=strftime('%s','now')-172800"), 0);
+	char *stored_path NB_CLEANUP(nb_charp_cleanup) = nullptr;
+
+	ASSERT_EQ(orm_fixture_text_copy(&db,
+		"SELECT trash_path FROM trash LIMIT 1", &stored_path), 0);
+	ASSERT_EQ(nb_str_copy_to(nb_str_from_cstr(stored_path), trash_path, sizeof(trash_path)), 0);
+	db_close(&db);
 	ASSERT_EQ(nb_file_exists(trash_path), 1);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	EXPECT_EQ(QueryInt("SELECT COUNT(*) FROM trash"), 0);

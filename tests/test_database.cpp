@@ -1,14 +1,16 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <stdlib.h>
 #include <nb/cleanup.h>
-#include "db/database.h"
-#include "db/permission_grant.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/permission_grant.h"
 #include "errors.h"
 #include <nb/buf.h>
 #include <nb/file.h>
 #include <cstdio>
 #include <cstring>
 #include <utility>
+#include <string>
 
 class DatabaseTest : public ::testing::Test {
 protected:
@@ -41,22 +43,20 @@ TEST_F(DatabaseTest, InitSchema) {
 
 TEST_F(DatabaseTest, StandaloneCreditInitializationSurvivesFullSchemaInitialization)
 {
-	sqlite3_stmt *statement = nullptr;
+	int64_t value = 0;
+	size_t count = 0;
 
 	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
 	ASSERT_EQ(db_init_credit_schema(&db), 0);
-	ASSERT_EQ(db_exec(&db, "INSERT INTO credit_events(kind,credits,created_at) "
-			       "VALUES('test',7,1)"),
+	ASSERT_EQ(orm_fixture_execute(&db, "INSERT INTO credit_events(kind,credits,created_at) "
+					   "VALUES('test',7,1)"),
 		  0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(db_init_credit_schema(&db), 0);
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT credits FROM credit_events", -1, &statement,
-				     nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(statement, 0), 7);
-	EXPECT_EQ(sqlite3_step(statement), SQLITE_DONE);
-	sqlite3_finalize(statement);
+	ASSERT_EQ(orm_fixture_integer(&db, "SELECT credits FROM credit_events", &value), 0);
+	EXPECT_EQ(value, 7);
+	ASSERT_EQ(orm_fixture_row_count(&db, "SELECT credits FROM credit_events", &count), 0);
+	EXPECT_EQ(count, 1u);
 }
 
 TEST_F(DatabaseTest, OpenNull) {
@@ -69,7 +69,8 @@ TEST_F(DatabaseTest, ExecValid) {
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
-	rc = db_exec(&db, "INSERT INTO sessions(name,model,created_at,updated_at) VALUES('test','gpt-4o',1,1)");
+	rc = orm_fixture_execute(&db, "INSERT INTO sessions(name,model,created_at,updated_at) "
+				      "VALUES('test','gpt-4o',1,1)");
 	EXPECT_EQ(rc, 0);
 }
 
@@ -78,7 +79,7 @@ TEST_F(DatabaseTest, ExecInvalid) {
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
-	rc = db_exec(&db, "INVALID SQL STATEMENT");
+	rc = orm_fixture_execute(&db, "INVALID SQL STATEMENT");
 	EXPECT_NE(rc, 0);
 }
 
@@ -94,50 +95,52 @@ TEST_F(DatabaseTest, SchemaTables) {
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
-	sqlite3_stmt *stmt;
-	rc = sqlite3_prepare_v2(db.handle,
-		"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
-		-1, &stmt, nullptr);
-	EXPECT_EQ(rc, SQLITE_OK);
-	int tables = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW)
-		tables++;
-	sqlite3_finalize(stmt);
-	EXPECT_GE(tables, 6);
+	size_t tables = 0;
+
+	ASSERT_EQ(orm_fixture_row_count(
+			  &db, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+			  &tables),
+		  0);
+	EXPECT_GE(tables, 6u);
 }
 
 TEST_F(DatabaseTest, SubAgentSessionTablesExist) {
 	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	for (const char *name : { "sub_agent_tasks", "sub_agent_events" }) {
-		sqlite3_stmt *stmt = nullptr;
-		ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-			"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-			-1, &stmt, nullptr), SQLITE_OK);
-		sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
-		EXPECT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-		sqlite3_finalize(stmt);
+		size_t count = 0;
+		std::string query = "SELECT 1 FROM sqlite_master WHERE type='table' AND name='";
+		query += name;
+		query += "'";
+		ASSERT_EQ(orm_fixture_row_count(&db, query.c_str(), &count), 0);
+		EXPECT_EQ(count, 1u);
 	}
 }
 
 TEST_F(DatabaseTest, CollaborationAssignmentMigrationPreservesLegacyRows) {
 	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	ASSERT_EQ(db_exec(&db,
-		"INSERT INTO sessions(id,name,created_at,updated_at) VALUES(1,'root',1,1),(2,'child',1,1);"
-		"INSERT INTO agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
-		"model,effort,depth,description,status,started_at) "
-		"VALUES(1,'/root/reader','/root',2,'test','',1,'legacy scope',2,1);"
-		"ALTER TABLE agent_threads DROP COLUMN assignment_json;"), 0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "INSERT INTO sessions(id,name,created_at,updated_at) "
+			       "VALUES(1,'root',1,1),(2,'child',1,1);"
+			       "INSERT INTO "
+			       "agent_threads(root_session_id,agent_id,parent_agent_id,session_id,"
+			       "model,effort,depth,description,status,started_at) "
+			       "VALUES(1,'/root/reader','/root',2,'test','',1,'legacy scope',2,1);"
+			       "ALTER TABLE agent_threads DROP COLUMN assignment_json;"),
+		  0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-		"SELECT description,assignment_json FROM agent_threads", -1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "legacy scope");
-	EXPECT_EQ(sqlite3_column_type(stmt, 1), SQLITE_NULL);
-	sqlite3_finalize(stmt);
+	char *description NB_CLEANUP(nb_charp_cleanup) = nullptr;
+	int64_t missing = 0;
+
+	ASSERT_EQ(orm_fixture_text_copy(&db, "SELECT description FROM agent_threads", &description),
+		  0);
+	EXPECT_STREQ(description, "legacy scope");
+	ASSERT_EQ(orm_fixture_integer(&db, "SELECT assignment_json IS NULL FROM agent_threads",
+				      &missing),
+		  0);
+	EXPECT_EQ(missing, 1);
 }
 
 TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
@@ -145,60 +148,71 @@ TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
-	sqlite3_stmt *stmt;
-	rc = sqlite3_prepare_v2(db.handle,
-		"SELECT name FROM schema_migrations WHERE version=1",
-		-1, &stmt, nullptr);
-	EXPECT_EQ(rc, SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 0), "baseline");
-	sqlite3_finalize(stmt);
+	char *name NB_CLEANUP(nb_charp_cleanup) = nullptr;
+
+	ASSERT_EQ(orm_fixture_text_copy(&db, "SELECT name FROM schema_migrations WHERE version=1",
+					&name),
+		  0);
+	EXPECT_STREQ(name, "baseline");
 }
 
 TEST_F(DatabaseTest, RetiresOnlyLegacyMemoryMaintenanceReceipts) {
 	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	ASSERT_EQ(db_exec(&db,
-		"INSERT INTO sessions(id,name,model,created_at,updated_at) VALUES(1,'legacy','test',1,1);"
-		"INSERT INTO model_history_items(session_id,sequence_no,kind,role,content,active,created_at) "
-		"VALUES(1,1,'background_receipt','system',"
-		"'[Background receipt] memory_consolidation: memory consolidation queued',1,1),"
-		"(1,2,'background_receipt','system','[Background receipt] build: archive created',1,1),"
-		"(1,3,'user_message','user','[Background receipt] memory_consolidation: user text',1,1);"
-		"DELETE FROM schema_migrations WHERE version=2;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db,
+				      "INSERT INTO sessions(id,name,model,created_at,updated_at) "
+				      "VALUES(1,'legacy','test',1,1);"
+				      "INSERT INTO "
+				      "model_history_items(session_id,sequence_no,kind,role,"
+				      "content,active,created_at) "
+				      "VALUES(1,1,'background_receipt','system',"
+				      "'[Background receipt] memory_consolidation: memory "
+				      "consolidation queued',1,1),"
+				      "(1,2,'background_receipt','system','[Background receipt] "
+				      "build: archive created',1,1),"
+				      "(1,3,'user_message','user','[Background receipt] "
+				      "memory_consolidation: user text',1,1);"
+				      "DELETE FROM schema_migrations WHERE version=2;"),
+		  0);
 	db_close(&db);
 	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-		"SELECT sequence_no,active,content FROM model_history_items ORDER BY sequence_no",
-		-1, &stmt, nullptr), SQLITE_OK);
+	size_t count = 0;
+	ASSERT_EQ(orm_fixture_row_count(&db, "SELECT sequence_no FROM model_history_items", &count),
+		  0);
+	ASSERT_EQ(count, 3u);
 	for (int index = 1; index <= 3; index++) {
-		ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-		EXPECT_EQ(sqlite3_column_int(stmt, 0), index);
-		EXPECT_EQ(sqlite3_column_int(stmt, 1), index == 1 ? 0 : 1);
-		EXPECT_GT(sqlite3_column_bytes(stmt, 2), 0);
+		int64_t active = -1;
+		int64_t length = 0;
+		const std::string where =
+			" FROM model_history_items WHERE sequence_no=" + std::to_string(index);
+
+		ASSERT_EQ(orm_fixture_integer(&db, ("SELECT active" + where).c_str(), &active), 0);
+		EXPECT_EQ(active, index == 1 ? 0 : 1);
+		ASSERT_EQ(orm_fixture_integer(&db, ("SELECT length(content)" + where).c_str(),
+					      &length),
+			  0);
+		EXPECT_GT(length, 0);
 	}
-	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
-	sqlite3_finalize(stmt);
 }
 
 static int database_prepare_legacy_errors(struct db *database)
 {
-	return db_exec(database,
-		       "DELETE FROM schema_migrations WHERE version=3;"
-		       "ALTER TABLE memory_jobs DROP COLUMN legacy_error_code;"
-		       "ALTER TABLE sub_agent_tasks DROP COLUMN legacy_error_code;"
-		       "ALTER TABLE agent_threads DROP COLUMN legacy_error_code;"
-		       "ALTER TABLE history_compaction_attempts DROP COLUMN legacy_error_code;"
-		       "INSERT INTO sessions(id,name,created_at,updated_at) VALUES(1,'legacy',1,1);"
-		       "CREATE TABLE migration_error_cases(id INTEGER PRIMARY KEY,code "
-		       "INTEGER,expected INTEGER);");
+	return orm_fixture_execute(
+		database,
+		"DELETE FROM schema_migrations WHERE version=3;"
+		"ALTER TABLE memory_jobs DROP COLUMN legacy_error_code;"
+		"ALTER TABLE sub_agent_tasks DROP COLUMN legacy_error_code;"
+		"ALTER TABLE agent_threads DROP COLUMN legacy_error_code;"
+		"ALTER TABLE history_compaction_attempts DROP COLUMN legacy_error_code;"
+		"INSERT INTO sessions(id,name,created_at,updated_at) VALUES(1,'legacy',1,1);"
+		"CREATE TABLE migration_error_cases(id INTEGER PRIMARY KEY,code "
+		"INTEGER,expected INTEGER);");
 }
 
 static int database_seed_legacy_errors(struct db *database)
 {
-	return db_exec(
+	return orm_fixture_execute(
 		database,
 		"INSERT INTO memory_jobs(id,session_id,generation,payload,error_code) "
 		"SELECT id,1,0,'{}',code FROM migration_error_cases;"
@@ -224,24 +238,15 @@ static int database_insert_legacy_error(struct db *database, size_t id, int lega
 	if (!nb_buf_printf(&sql, "INSERT INTO migration_error_cases VALUES(%zu,%d,%d)", id, legacy,
 			   current))
 		return nb_buf_status(&sql);
-	return db_exec(database, nb_buf_cstr(&sql));
-}
-
-static void database_statement_cleanup(sqlite3_stmt **statement)
-{
-	if (*statement)
-		sqlite3_finalize(*statement);
+	return orm_fixture_execute(database, nb_buf_cstr(&sql));
 }
 
 static int database_scalar(struct db *database, const char *sql)
 {
-	sqlite3_stmt *statement NB_CLEANUP(database_statement_cleanup) = nullptr;
+	int64_t value = -1;
 
-	if (sqlite3_prepare_v2(database->handle, sql, -1, &statement, nullptr) != SQLITE_OK)
-		return -1;
-	if (sqlite3_step(statement) != SQLITE_ROW)
-		return -1;
-	return sqlite3_column_int(statement, 0);
+	EXPECT_EQ(orm_fixture_integer(database, sql, &value), 0);
+	return static_cast<int>(value);
 }
 
 static void database_expect_migrated_errors(struct db *database)
@@ -352,8 +357,8 @@ TEST_F(DatabaseTest, NewDatabaseNeverReinterpretsNativeErrorCodes)
 {
 	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	ASSERT_EQ(db_exec(&db, "INSERT INTO sessions(id,name,created_at,updated_at) "
-			       "VALUES(1,'native',1,1);"),
+	ASSERT_EQ(orm_fixture_execute(&db, "INSERT INTO sessions(id,name,created_at,updated_at) "
+					   "VALUES(1,'native',1,1);"),
 		  0);
 	nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {};
 	ASSERT_TRUE(
@@ -361,7 +366,7 @@ TEST_F(DatabaseTest, NewDatabaseNeverReinterpretsNativeErrorCodes)
 			      "INSERT INTO memory_jobs(session_id,generation,payload,error_code) "
 			      "VALUES(1,0,'{}',%d)",
 			      NB_ERR_CANCELLED));
-	ASSERT_EQ(db_exec(&db, nb_buf_cstr(&sql)), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, nb_buf_cstr(&sql)), 0);
 	db_close(&db);
 	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
@@ -378,7 +383,8 @@ TEST_F(DatabaseTest, LegacyErrorMigrationRollsBackSchemaAndRowsOnFailure)
 	ASSERT_EQ(database_prepare_legacy_errors(&db), 0);
 	ASSERT_EQ(database_insert_legacy_error(&db, 1, -261, NB_ERR_PARSE), 0);
 	ASSERT_EQ(database_seed_legacy_errors(&db), 0);
-	ASSERT_EQ(db_exec(&db,
+	ASSERT_EQ(orm_fixture_execute(
+			  &db,
 			  "CREATE TRIGGER reject_error_migration BEFORE UPDATE OF error_code ON "
 			  "agent_threads "
 			  "BEGIN SELECT RAISE(ABORT,'injected error migration failure'); END;"),
@@ -391,10 +397,7 @@ TEST_F(DatabaseTest, LegacyErrorMigrationRollsBackSchemaAndRowsOnFailure)
 		"history_compaction_attempts",
 	};
 	for (const char *table : tables) {
-		EXPECT_NE(sqlite3_table_column_metadata(db.handle, nullptr, table,
-							"legacy_error_code", nullptr, nullptr,
-							nullptr, nullptr, nullptr),
-			  SQLITE_OK)
+		EXPECT_FALSE(orm_fixture_has_column(&db, nullptr, table, "legacy_error_code"))
 			<< table;
 		nb_buf sql NB_CLEANUP(nb_buf_cleanup) = {};
 		ASSERT_TRUE(nb_buf_printf(&sql, "SELECT error_code FROM %s", table));
@@ -402,7 +405,8 @@ TEST_F(DatabaseTest, LegacyErrorMigrationRollsBackSchemaAndRowsOnFailure)
 	}
 	EXPECT_EQ(database_scalar(&db, "SELECT count(*) FROM schema_migrations WHERE version=3"),
 		  0);
-	ASSERT_EQ(db_exec(&db, "BEGIN; ROLLBACK; DROP TRIGGER reject_error_migration;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "BEGIN; ROLLBACK; DROP TRIGGER reject_error_migration;"),
+		  0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	database_expect_migrated_errors(&db);
 }
@@ -414,7 +418,8 @@ TEST_F(DatabaseTest, LegacyErrorMigrationCommitsVersionOnlyAfterAllUpdatesSuccee
 	ASSERT_EQ(database_prepare_legacy_errors(&db), 0);
 	ASSERT_EQ(database_insert_legacy_error(&db, 1, -261, NB_ERR_PARSE), 0);
 	ASSERT_EQ(database_seed_legacy_errors(&db), 0);
-	ASSERT_EQ(db_exec(&db,
+	ASSERT_EQ(orm_fixture_execute(
+			  &db,
 			  "CREATE TRIGGER reject_error_version BEFORE INSERT ON schema_migrations "
 			  "WHEN NEW.version=3 BEGIN SELECT RAISE(ABORT,'injected version "
 			  "failure'); END;"),
@@ -424,10 +429,11 @@ TEST_F(DatabaseTest, LegacyErrorMigrationCommitsVersionOnlyAfterAllUpdatesSuccee
 	EXPECT_EQ(database_scalar(&db, "SELECT error_code FROM history_compaction_attempts"), -261);
 	EXPECT_EQ(database_scalar(&db, "SELECT count(*) FROM schema_migrations WHERE version=3"),
 		  0);
-	ASSERT_EQ(db_exec(&db, "DROP TRIGGER reject_error_version; SAVEPOINT caller;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "DROP TRIGGER reject_error_version; SAVEPOINT caller;"),
+		  0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	database_expect_migrated_errors(&db);
-	ASSERT_EQ(db_exec(&db, "ROLLBACK TO caller; RELEASE caller;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "ROLLBACK TO caller; RELEASE caller;"), 0);
 	EXPECT_EQ(database_scalar(&db, "SELECT error_code FROM memory_jobs"), -261);
 	EXPECT_EQ(database_scalar(&db, "SELECT count(*) FROM schema_migrations WHERE version=3"),
 		  0);
@@ -440,20 +446,7 @@ TEST_F(DatabaseTest, MessagesHaveTurnIdColumn) {
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
-	sqlite3_stmt *stmt;
-	rc = sqlite3_prepare_v2(db.handle, "PRAGMA table_info(messages)", -1,
-				&stmt, nullptr);
-	EXPECT_EQ(rc, SQLITE_OK);
-	int found = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *name = (const char *)sqlite3_column_text(stmt, 1);
-		if (name && strcmp(name, "turn_id") == 0) {
-			found = 1;
-			break;
-		}
-	}
-	sqlite3_finalize(stmt);
-	EXPECT_EQ(found, 1);
+	EXPECT_TRUE(orm_fixture_has_column(&db, nullptr, "messages", "turn_id"));
 }
 
 TEST_F(DatabaseTest, ForeignKeysEnabled) {
@@ -461,39 +454,34 @@ TEST_F(DatabaseTest, ForeignKeysEnabled) {
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
-	sqlite3_stmt *stmt;
-	rc = sqlite3_prepare_v2(db.handle, "PRAGMA foreign_keys", -1, &stmt, nullptr);
-	EXPECT_EQ(rc, SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
-	sqlite3_finalize(stmt);
+	EXPECT_NE(orm_fixture_execute(&db,
+				      "INSERT INTO messages(session_id,role,content,created_at) "
+				      "VALUES(-1,'user','orphan',1)"),
+		  0);
 }
 
 TEST_F(DatabaseTest, LegacySessionsGainWorkdirColumn)
 {
-	sqlite3_stmt *stmt = nullptr;
+	char *workdir NB_CLEANUP(nb_charp_cleanup) = nullptr;
 
 	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
-	ASSERT_EQ(db_exec(&db,
-			  "CREATE TABLE sessions ("
-			  "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-			  "display_id TEXT UNIQUE,"
-			  "name TEXT UNIQUE NOT NULL,"
-			  "model TEXT,"
-			  "created_at INTEGER NOT NULL,"
-			  "updated_at INTEGER NOT NULL,"
-			  "token_used INTEGER DEFAULT 0);"
-			  "INSERT INTO sessions(display_id,name,model,created_at,updated_at) "
-			  "VALUES('1234abcd','legacy','test',1,1);"),
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "CREATE TABLE sessions ("
+			       "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+			       "display_id TEXT UNIQUE,"
+			       "name TEXT UNIQUE NOT NULL,"
+			       "model TEXT,"
+			       "created_at INTEGER NOT NULL,"
+			       "updated_at INTEGER NOT NULL,"
+			       "token_used INTEGER DEFAULT 0);"
+			       "INSERT INTO sessions(display_id,name,model,created_at,updated_at) "
+			       "VALUES('1234abcd','legacy','test',1,1);"),
 		  0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-				     "SELECT workdir FROM sessions WHERE name='legacy'", -1,
-				     &stmt, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "");
-	sqlite3_finalize(stmt);
+	ASSERT_EQ(orm_fixture_text_copy(&db, "SELECT workdir FROM sessions WHERE name='legacy'",
+					&workdir),
+		  0);
+	EXPECT_STREQ(workdir, "");
 }
 
 static int count_permission_grant(const struct permission_grant *grant,
@@ -562,4 +550,69 @@ TEST_F(DatabaseTest, PermissionGrantCanBeRevokedAndCleared)
 	ASSERT_EQ(permission_grant_clear_project(
 		&db, "/tmp/project", &deleted), 0);
 	EXPECT_EQ(deleted, 1);
+}
+
+TEST_F(DatabaseTest, StructuredIndexesPreserveOrderingAndPartialUniqueness)
+{
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	int64_t descending = 0;
+	ASSERT_EQ(orm_fixture_integer(&db,
+		"SELECT \"desc\" FROM pragma_index_xinfo('idx_outputs_path') WHERE name='id'",
+		&descending), 0);
+	EXPECT_EQ(descending, 1);
+	ASSERT_EQ(orm_fixture_integer(&db,
+		"SELECT \"desc\" FROM pragma_index_xinfo('idx_preferences_resolve') WHERE name='id'",
+		&descending), 0);
+	EXPECT_EQ(descending, 1);
+	int64_t partial = 0;
+	ASSERT_EQ(orm_fixture_integer(&db,
+		"SELECT partial FROM pragma_index_list('memory_episodes') WHERE name='idx_memory_episode_job'",
+		&partial), 0);
+	EXPECT_EQ(partial, 1);
+	ASSERT_EQ(orm_fixture_execute(&db,
+		"INSERT INTO sessions(id,name,created_at,updated_at) VALUES(1,'index-test',1,1);"
+		"INSERT INTO memory_episodes(session_id,summary_text,created_at) VALUES(1,'first',1),(1,'second',1);"
+		"INSERT INTO memory_episodes(session_id,summary_text,created_at,job_id) VALUES(1,'job',1,42)"), 0);
+	EXPECT_NE(orm_fixture_execute(&db,
+		"INSERT INTO memory_episodes(session_id,summary_text,created_at,job_id) VALUES(1,'duplicate',1,42)"), 0);
+	EXPECT_NE(orm_fixture_execute(&db,
+		"INSERT INTO memory_notes(session_id,title,text,source,event_token,scope) "
+		"VALUES(1,'invalid','text','test','invalid-scope','invalid')"), 0);
+}
+
+TEST_F(DatabaseTest, StructuredRevisionTriggersCoverAllWritesAndRemainIdempotent)
+{
+	ASSERT_EQ(db_open(nullptr, &db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	int64_t count = 0;
+	ASSERT_EQ(orm_fixture_integer(&db,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name GLOB 'memory_*_revision_[012]'",
+		&count), 0);
+	EXPECT_EQ(count, 15);
+	ASSERT_EQ(orm_fixture_execute(&db,
+		"INSERT INTO sessions(id,name,created_at,updated_at) VALUES(1,'revision-test',1,1);"
+		"INSERT INTO memory_scopes(session_id,owner) VALUES(1,'local');"
+		"INSERT INTO memory_facts(session_id,key_name,value_text,valid_from,created_at,updated_at) "
+		"VALUES(1,'key','before',1,1,1)"), 0);
+	ASSERT_EQ(orm_fixture_integer(
+			  &db, "SELECT content_revision FROM memory_scopes WHERE session_id=1",
+			  &count),
+		  0);
+	EXPECT_EQ(count, 1);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "UPDATE memory_facts SET value_text='after' WHERE session_id=1"),
+		  0);
+	ASSERT_EQ(orm_fixture_integer(
+			  &db, "SELECT content_revision FROM memory_scopes WHERE session_id=1",
+			  &count),
+		  0);
+	EXPECT_EQ(count, 2);
+	ASSERT_EQ(orm_fixture_execute(&db, "DELETE FROM memory_facts WHERE session_id=1"), 0);
+	ASSERT_EQ(orm_fixture_integer(
+			  &db, "SELECT content_revision FROM memory_scopes WHERE session_id=1",
+			  &count),
+		  0);
+	EXPECT_EQ(count, 3);
 }

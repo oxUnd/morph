@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <nb/time.h>
 #include <stdlib.h>
 #include <nb/err.h>
@@ -8,8 +9,8 @@
 #include "config/config.h"
 #include "mcp/mcp_internal.h"
 #include <fcntl.h>
-#include "db/database.h"
-#include "db/scheduled_task.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/scheduled_task.h"
 #include <nb/process.h>
 #include <nb/time.h>
 #include <nb/file.h>
@@ -203,7 +204,8 @@ TEST(Stability, LegacyScheduledTaskMigrationPreservesExistingRows)
 	db database{};
 	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
 	ASSERT_EQ(
-		db_exec(&database,
+		orm_fixture_execute(
+			&database,
 			"CREATE TABLE scheduled_tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL,"
 			"kind TEXT NOT NULL,status TEXT NOT NULL,trigger_type TEXT NOT NULL,"
 			"next_run_at INTEGER NOT NULL,interval_seconds INTEGER NOT NULL DEFAULT 0,"
@@ -266,24 +268,22 @@ TEST_F(StableTask, ObserverFailureDoesNotUndoOrRepeatSuccessfulExecution)
 
 struct transaction_trace {
 	std::atomic<int> active{0};
+	std::atomic<int> starts{0};
 	std::atomic<int> foreign_reads{0};
 };
 
-static int trace_task_transaction(unsigned type, void *opaque, void *statement, void *)
+static void trace_task_transaction(void *opaque, const char *sql)
 {
-	if (type != SQLITE_TRACE_STMT) {
-		return 0;
-	}
 	auto *trace = static_cast<transaction_trace *>(opaque);
-	const char *sql = sqlite3_sql(static_cast<sqlite3_stmt *>(statement));
-	if (std::strstr(sql, "SAVEPOINT task_result")) {
+
+	if (std::strncmp(sql, "SAVEPOINT ", 10) == 0 && std::strstr(sql, "task_result")) {
 		trace->active.store(1);
-	} else if (std::strstr(sql, "RELEASE task_result")) {
+		trace->starts.fetch_add(1);
+	} else if (std::strstr(sql, "RELEASE") && std::strstr(sql, "task_result")) {
 		trace->active.store(0);
 	} else if (std::strstr(sql, "SELECT 987654321") && trace->active.load()) {
 		trace->foreign_reads.fetch_add(1);
 	}
-	return 0;
 }
 
 TEST_F(StableTask, OtherConnectionUsersCannotEnterTheResultTransaction)
@@ -292,14 +292,15 @@ TEST_F(StableTask, OtherConnectionUsersCannotEnterTheResultTransaction)
 		create();
 	}
 	transaction_trace trace;
-	ASSERT_EQ(sqlite3_trace_v2(database.handle, SQLITE_TRACE_STMT, trace_task_transaction,
-				   &trace),
-		  SQLITE_OK);
+	ASSERT_EQ(orm_fixture_trace_hook(&database, trace_task_transaction, &trace), 0);
 	std::atomic<bool> running{true};
 	std::atomic<int> queries{0};
 	std::thread reader([&] {
 		while (running.load()) {
-			EXPECT_EQ(db_exec(&database, "SELECT 987654321"), 0);
+			int64_t value = 0;
+
+			EXPECT_EQ(orm_fixture_integer(&database, "SELECT 987654321", &value), 0);
+			EXPECT_EQ(value, 987654321);
 			queries.fetch_add(1);
 			std::this_thread::yield();
 		}
@@ -313,17 +314,19 @@ TEST_F(StableTask, OtherConnectionUsersCannotEnterTheResultTransaction)
 		  0);
 	running.store(false);
 	reader.join();
-	EXPECT_EQ(sqlite3_trace_v2(database.handle, 0, nullptr, nullptr), SQLITE_OK);
+	EXPECT_EQ(orm_fixture_trace_hook(&database, nullptr, nullptr), 0);
 	EXPECT_EQ(calls, 100);
 	EXPECT_EQ(ran, 100);
+	EXPECT_EQ(trace.starts.load(), 100);
 	EXPECT_EQ(trace.foreign_reads.load(), 0);
 }
 
 TEST_F(StableTask, NotificationFailureRollsBackStateAndCleansInitializedOutput)
 {
 	int64_t id = create();
-	ASSERT_EQ(db_exec(&database, "CREATE TRIGGER reject_notification BEFORE INSERT "
-				     "ON notifications BEGIN SELECT RAISE(FAIL,'injected'); END"),
+	ASSERT_EQ(orm_fixture_execute(&database,
+				      "CREATE TRIGGER reject_notification BEFORE INSERT "
+				      "ON notifications BEGIN SELECT RAISE(FAIL,'injected'); END"),
 		  0);
 	int calls = 0;
 	int count = 123;

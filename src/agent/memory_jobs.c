@@ -1,4 +1,5 @@
 #include "agent/memory.h"
+#include "persistence/orm/business_store.h"
 #include <nb/queue.h>
 #include <nb/cleanup.h>
 #include "agent/memory_internal.h"
@@ -6,7 +7,7 @@
 #include "models/llm.h"
 #include <nb/utf8.h>
 #include "cJSON.h"
-#include "persistence/memory_job_store.h"
+#include "persistence/orm/memory_job_store.h"
 #include <nb/buf.h>
 #include "errors.h"
 #include <nb/log.h>
@@ -558,7 +559,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 	int rc;
 
 	/* A private in-memory connection cannot be reopened by the worker. */
-	if (!worker || !db || !db->handle || !strcmp(db->path, ":memory:"))
+	if (!worker || !db_is_open(db) || !strcmp(db->path, ":memory:"))
 		return 0;
 	rc = memory_job_store_recoverable(db, &records);
 	if (rc)
@@ -605,8 +606,8 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 
 			for (nb_queue *link = worker->pending.next; link != &worker->pending;
 			     link = link->next) {
-				struct memory_job *queued = NB_QUEUE_DATA(link, struct memory_job,
-					link);
+				struct memory_job *queued =
+					NB_QUEUE_DATA(link, struct memory_job, link);
 				if (queued->opts.background_job_id == id &&
 				    !strcmp(queued->db_path, db->path)) {
 					exists = 1;
@@ -626,67 +627,44 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 	return 0;
 }
 
-static void memory_refresh_statement_cleanup(sqlite3_stmt **statement)
-{
-	sqlite3_finalize(*statement);
-}
-
 int memory_refresh_summaries_async(struct db *db, int64_t session_id,
 				   const struct memory_options *options)
 {
-	sqlite3_stmt *stmt NB_CLEANUP(memory_refresh_statement_cleanup) = NULL;
+	nb_vec records NB_CLEANUP(store_refresh_sessions_cleanup) = {0};
 	nb_vec sessions NB_CLEANUP(nb_vec_cleanup) = {0};
-	int step;
 
 	if (!options->enabled || !options->learn_from_chats_enabled || !options->worker ||
 	    !options->llm || !options->llm->chat || !model_api_key_borrow(options->llm)[0] ||
 	    !strcmp(db->path, ":memory:"))
 		return 0;
-	/* Catch up only changed, visible project sessions. Valid summaries and
-	 * in-flight jobs do not consume the four-session catch-up budget. */
-	if (sqlite3_prepare_v2(
-		    db->handle,
-		    "SELECT s.session_id,COALESCE(session.display_id,'') FROM memory_scopes s "
-		    "JOIN memory_scopes current ON current.session_id=?1 "
-		    "JOIN sessions session ON session.id=s.session_id WHERE "
-		    "(s.session_id=?1 OR (s.owner=current.owner AND current.project!='' "
-		    "AND s.project=current.project)) AND NOT EXISTS "
-		    "(SELECT 1 FROM memory_summaries m WHERE m.session_id=s.session_id AND "
-		    "m.memory_version=s.generation AND m.content_revision=s.content_revision) "
-		    "AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.session_id=s.session_id "
-		    "AND j.generation=s.generation AND (j.state IN ('queued','running') OR "
-		    "(j.state='failed' AND j.content_revision=s.content_revision))) "
-		    "AND (EXISTS (SELECT 1 FROM memory_facts WHERE session_id=s.session_id) OR "
-		    "EXISTS (SELECT 1 FROM memory_candidates WHERE session_id=s.session_id) OR "
-		    "EXISTS (SELECT 1 FROM memory_episodes WHERE session_id=s.session_id) OR "
-		    "EXISTS (SELECT 1 FROM memory_notes WHERE session_id=s.session_id)) "
-		    "ORDER BY session.updated_at DESC,s.session_id DESC",
-		    -1, &stmt, NULL) != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	int rc = (nb_vec_init(&sessions, sizeof(session_id)),
-		  nb_vec_reserve(&sessions, 4) ? 0 : NB_ERR_NOMEM);
+	int rc = memory_refresh_store_list_copy(db, session_id, &records);
 
 	if (rc != 0)
 		return rc;
-	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
-		const char *display = (const char *)sqlite3_column_text(stmt, 1);
+
+	rc = (nb_vec_init(&sessions, sizeof(session_id)),
+	      nb_vec_reserve(&sessions, 4) ? 0 : NB_ERR_NOMEM);
+
+	if (rc != 0)
+		return rc;
+	for (size_t i = 0; i < records.len; i++) {
+		const struct store_refresh_session *record = nb_vec_at(&records, i);
+		const char *display = record->display_id;
 
 		if (options->visible_fn && !options->visible_fn(display, options->visible_user_id,
 								options->visible_user_data))
 			continue;
+
 		int64_t *saved = nb_vec_push(&sessions);
 
 		if (!saved)
 			return NB_ERR_NOMEM;
-		*saved = sqlite3_column_int64(stmt, 0);
+
+		*saved = record->session_id;
 		if (sessions.len >= 4)
 			break;
 	}
-	if (step != SQLITE_ROW && step != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	sqlite3_finalize(stmt);
-	stmt = NULL;
+
 	for (size_t i = 0; i < sessions.len; i++) {
 		int64_t target = *(int64_t *)nb_vec_at(&sessions, i);
 		struct memory_options refresh = *options;
@@ -701,7 +679,7 @@ int memory_refresh_summaries_async(struct db *db, int64_t session_id,
 
 int memory_retry_updates(struct db *db, int64_t session_id, const struct memory_options *opts)
 {
-	if (!db || !db->handle || !opts || !opts->enabled || session_id <= 0)
+	if (!db_is_open(db) || !opts || !opts->enabled || session_id <= 0)
 		return NB_ERR_INVAL;
 	int rc = memory_job_store_retry_session(db, session_id);
 

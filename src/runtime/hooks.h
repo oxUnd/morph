@@ -5,7 +5,7 @@ struct nb_log;
 #include "agent/hooks.h"
 #include <nb/thread.h>
 #include "config/config.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "event/event.h"
 #include <nb/vec.h>
 #include <nb/cleanup.h>

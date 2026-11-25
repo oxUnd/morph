@@ -1,10 +1,11 @@
 #include "plan.h"
+#include "persistence/orm/business_store.h"
 #include <nb/cleanup.h>
 #include <nb/random.h>
 #include <nb/encoding.h>
 #include "errors.h"
 #include <nb/utf8.h>
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <stdlib.h>
 
 #include <stdio.h>
@@ -93,11 +94,9 @@ struct plan *plan_add_borrow(struct plan_registry *reg, const char *name, const 
 			strncpy(p->steps[i].description, step_descs[i],
 				sizeof(p->steps[i].description) - 1);
 		if (i == 0)
-			strncpy(p->steps[i].status, "in_progress",
-				sizeof(p->steps[i].status) - 1);
+			strncpy(p->steps[i].status, "in_progress", sizeof(p->steps[i].status) - 1);
 		else
-			strncpy(p->steps[i].status, "pending",
-				sizeof(p->steps[i].status) - 1);
+			strncpy(p->steps[i].status, "pending", sizeof(p->steps[i].status) - 1);
 	}
 
 	reg->count++;
@@ -109,8 +108,7 @@ struct plan *plan_borrow(struct plan_registry *reg, const char *name)
 	return plan_find_by_name(reg, name);
 }
 
-static int plan_update_step_ptr(struct plan *p, int step_id,
-				const char *status)
+static int plan_update_step_ptr(struct plan *p, int step_id, const char *status)
 {
 	if (!p || !status)
 		return NB_ERR_INVAL;
@@ -127,8 +125,7 @@ static int plan_update_step_ptr(struct plan *p, int step_id,
 
 	strncpy(p->steps[idx].status, status, sizeof(p->steps[idx].status) - 1);
 
-	if (strcmp(status, "completed") == 0 ||
-	    strcmp(status, "failed") == 0 ||
+	if (strcmp(status, "completed") == 0 || strcmp(status, "failed") == 0 ||
 	    strcmp(status, "skipped") == 0) {
 		if (p->active_step == idx) {
 			int next = -1;
@@ -153,8 +150,8 @@ static int plan_update_step_ptr(struct plan *p, int step_id,
 	return 0;
 }
 
-int plan_update_step(struct plan_registry *reg, const char *plan_name,
-		     int step_id, const char *status)
+int plan_update_step(struct plan_registry *reg, const char *plan_name, int step_id,
+		     const char *status)
 {
 	struct plan *p;
 
@@ -166,8 +163,8 @@ int plan_update_step(struct plan_registry *reg, const char *plan_name,
 	return plan_update_step_ptr(p, step_id, status);
 }
 
-int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
-			   int step_id, const char *status)
+int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id, int step_id,
+			   const char *status)
 {
 	struct plan *p;
 
@@ -334,59 +331,45 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 
 int plan_registry_save(struct plan_registry *reg)
 {
-	cJSON *json;
-	char *text;
-	sqlite3_stmt *stmt = NULL;
-	int rc;
+	char *text NB_CLEANUP(cJSON_FreeTextOwner) = NULL;
+	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+
 	if (!reg || !reg->db || reg->session_id <= 0)
 		return 0;
+
 	json = plan_registry_json_create(reg);
 	text = json ? cJSON_PrintUnformatted(json) : NULL;
-	cJSON_Delete(json);
 	if (!text)
 		return NB_ERR_NOMEM;
-	rc = sqlite3_prepare_v2(
-	    reg->db->handle,
-	    "INSERT INTO session_plans(session_id,state_json) VALUES(?,?) "
-	    "ON CONFLICT(session_id) DO UPDATE SET state_json=excluded.state_json",
-	    -1, &stmt, NULL);
-	if (rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, reg->session_id);
-		sqlite3_bind_text(stmt, 2, text, -1, SQLITE_TRANSIENT);
-		rc = sqlite3_step(stmt);
-	}
-	sqlite3_finalize(stmt);
-	free(text);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+
+	return plan_store_put(reg->db, reg->session_id, text);
 }
 
 int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session_id)
 {
-	sqlite3_stmt *stmt = NULL;
-	int rc;
+	char *text NB_CLEANUP(nb_charp_cleanup) = NULL;
+	cJSON *json NB_CLEANUP(cJSON_DeleteOwner) = NULL;
+
 	if (!reg || !db || session_id <= 0)
 		return NB_ERR_INVAL;
+
 	if (reg->db == db && reg->session_id == session_id)
 		return 0;
-	rc = sqlite3_prepare_v2(
-	    db->handle, "SELECT state_json FROM session_plans WHERE session_id=?", -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		cJSON *json = cJSON_Parse((const char *)sqlite3_column_text(stmt, 0));
+
+	int rc = plan_store_copy(db, session_id, &text);
+
+	if (rc == 0) {
+		json = text ? cJSON_Parse(text) : NULL;
 		rc = plan_registry_restore(reg, json);
-		cJSON_Delete(json);
-	} else if (rc == SQLITE_DONE) {
+	} else if (rc == NB_ERR_NOT_FOUND) {
 		plan_registry_init(reg);
 		rc = 0;
-	} else
-		rc = MORPH_ERR_DB;
-	sqlite3_finalize(stmt);
+	}
+
 	if (rc == 0) {
 		reg->db = db;
 		reg->session_id = session_id;
 	}
+
 	return rc;
 }

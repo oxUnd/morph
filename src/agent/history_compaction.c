@@ -1,5 +1,6 @@
 #include "history_internal.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/unit_of_work.h"
+#include "persistence/orm/history_store.h"
 
 #include "prompt_context.h"
 #include "react.h"
@@ -256,7 +257,7 @@ static int history_compact_checked(struct react_context *ctx, const char *summar
 	int count = 0;
 	int rc = db_lock_acquire(ctx->history_db, &lock);
 	if (rc == 0)
-		rc = db_exec(ctx->history_db, "SAVEPOINT history_replay;");
+		rc = store_savepoint_begin(ctx->history_db, "history_replay");
 
 	if (rc != 0)
 		return rc;
@@ -275,11 +276,8 @@ static int history_compact_checked(struct react_context *ctx, const char *summar
 	}
 	if (rc == 0 && validate)
 		rc = validate(candidate, user_data);
-	if (rc == 0)
-		rc = db_exec(ctx->history_db, "RELEASE history_replay;");
+	rc = store_savepoint_finish(ctx->history_db, "history_replay", rc);
 	if (rc != 0) {
-		(void)db_exec(ctx->history_db,
-			      "ROLLBACK TO history_replay; RELEASE history_replay;");
 		model_history_free_list(candidate);
 		return rc;
 	}
@@ -587,7 +585,7 @@ int agent_history_compact_validated(struct react_context *ctx, int force, const 
 		users = 0;
 	rc = db_lock_acquire(ctx->history_db, &lock);
 	if (rc == 0)
-		rc = db_exec(ctx->history_db, "SAVEPOINT history_selection;");
+		rc = store_savepoint_begin(ctx->history_db, "history_selection");
 	if (rc != 0)
 		return rc;
 	rc = history_store_refresh_retention_tokens(ctx->history_db, ctx->history_session_id,
@@ -598,12 +596,8 @@ int agent_history_compact_validated(struct react_context *ctx, int force, const 
 						   ctx->compress.max_history_rounds, &preserved);
 	if (rc == 0)
 		rc = history_store_last_sequence(ctx->history_db, ctx->history_session_id, &cutoff);
-	if (rc == 0)
-		rc = db_exec(ctx->history_db, "RELEASE history_selection;");
-	if (rc != 0) {
-		(void)db_exec(ctx->history_db,
-			      "ROLLBACK TO history_selection; RELEASE history_selection;");
-	} else {
+	rc = store_savepoint_finish(ctx->history_db, "history_selection", rc);
+	if (rc == 0) {
 		db_lock_cleanup(&lock);
 		rc = history_compact_selected(ctx, force, trigger_kind, validate, user_data,
 					      &preserved, cutoff);

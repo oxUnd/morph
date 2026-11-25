@@ -1,5 +1,6 @@
 #include "history_internal.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/unit_of_work.h"
+#include "persistence/orm/history_store.h"
 
 #include "prompt_context.h"
 #include "react.h"
@@ -220,35 +221,35 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	rc = db_lock_acquire(db, &lock);
 	if (rc == 0)
-		rc = db_exec(db, "BEGIN IMMEDIATE;");
+		rc = store_transaction_begin(db);
 	if (rc != 0)
 		return rc;
 	items = model_history_list(db, session_id, 1, &count);
 	if (!items && count != 0) {
-		(void)db_exec(db, "ROLLBACK;");
+		(void)store_transaction_rollback(db);
 		return MORPH_ERR_DB;
 	}
 	rc = agent_history_diagnose(items, tokenizer, before ? before : &local);
 	model_history_free_list(items);
 	if (rc != 0) {
-		(void)db_exec(db, "ROLLBACK;");
+		(void)store_transaction_rollback(db);
 		return rc;
 	}
 	changes = before ? before->dangling_calls : local.dangling_calls;
 	/* Legacy answers prove a response was delivered, not task success. */
 	rc = history_store_turn_outcomes(db, session_id, NULL, "answered", 0, tokenizer, &changes);
 	if (rc != 0) {
-		(void)db_exec(db, "ROLLBACK;");
+		(void)store_transaction_rollback(db);
 		return rc;
 	}
 	rc = agent_history_repair_interrupted(db, session_id);
 	if (rc != 0) {
-		(void)db_exec(db, "ROLLBACK;");
+		(void)store_transaction_rollback(db);
 		return rc;
 	}
 	items = model_history_list(db, session_id, 1, &count);
 	if (!items && count != 0) {
-		(void)db_exec(db, "ROLLBACK;");
+		(void)store_transaction_rollback(db);
 		return MORPH_ERR_DB;
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
@@ -298,14 +299,14 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 		tokens = history_item_tokens(item, tokenizer, token_text);
 		if (tokens < 0) {
 			model_history_free_list(items);
-			(void)db_exec(db, "ROLLBACK;");
+			(void)store_transaction_rollback(db);
 			return tokens;
 		}
 		if (active != item->active || tokens != item->token_count) {
 			rc = history_store_update_item(db, item->id, active, tokens);
 			if (rc != 0) {
 				model_history_free_list(items);
-				(void)db_exec(db, "ROLLBACK;");
+				(void)store_transaction_rollback(db);
 				return rc;
 			}
 			changes++;
@@ -314,7 +315,7 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 	model_history_free_list(items);
 	items = model_history_list(db, session_id, 1, &count);
 	if (!items && count != 0) {
-		(void)db_exec(db, "ROLLBACK;");
+		(void)store_transaction_rollback(db);
 		return MORPH_ERR_DB;
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
@@ -326,15 +327,15 @@ int agent_history_repair(struct db *db, int64_t session_id, struct tokenizer *to
 		rc = history_store_update_item(db, item->id, 0, item->token_count);
 		if (rc != 0) {
 			model_history_free_list(items);
-			(void)db_exec(db, "ROLLBACK;");
+			(void)store_transaction_rollback(db);
 			return rc;
 		}
 		changes++;
 	}
 	model_history_free_list(items);
-	rc = db_exec(db, "COMMIT;");
+	rc = store_transaction_commit(db);
 	if (rc != 0) {
-		(void)db_exec(db, "ROLLBACK;");
+		(void)store_transaction_rollback(db);
 		return rc;
 	}
 	if (changed)

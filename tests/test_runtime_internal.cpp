@@ -1,4 +1,5 @@
 #include "errors.h"
+#include "persistence/orm/test_fixture.h"
 #include <gtest/gtest.h>
 #include <nb/err.h>
 #include <thread>
@@ -505,7 +506,7 @@ TEST(RuntimeInternalTest, PartialTurnScopePreparationRestoresUsageBeforeRetry)
 	ASSERT_EQ(db_open(nullptr, &db, ":memory:"), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "scope-prepare-failure", "mock", &current), 0);
-	ASSERT_EQ(db_exec(&db, "DROP TABLE session_plans"), 0);
+	ASSERT_EQ(orm_fixture_execute(&db, "DROP TABLE session_plans"), 0);
 	plan_registry_init(&plans);
 	sink.user_data = &original_usage;
 	model.usage_sink = &sink;
@@ -527,8 +528,9 @@ TEST(RuntimeInternalTest, PartialTurnScopePreparationRestoresUsageBeforeRetry)
 	EXPECT_STREQ(scope.credit_session_id, "");
 	runtime_turn_scope_finish(&context);
 	EXPECT_EQ(sink.user_data, &original_usage);
-	ASSERT_EQ(db_exec(&db, "CREATE TABLE session_plans("
-			       "session_id INTEGER PRIMARY KEY,state_json TEXT NOT NULL)"),
+	ASSERT_EQ(orm_fixture_execute(&db,
+				      "CREATE TABLE session_plans("
+				      "session_id INTEGER PRIMARY KEY,state_json TEXT NOT NULL)"),
 		  0);
 	ASSERT_EQ(runtime_turn_scope_begin(&context, &request), 0);
 	EXPECT_EQ(sink.user_data, &request_usage);

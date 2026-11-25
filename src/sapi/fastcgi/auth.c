@@ -1,6 +1,6 @@
 #include "auth.h"
 #include <nb/cleanup.h>
-#include "sapi/fastcgi/storage/users.h"
+#include "persistence/orm/fcgi_users.h"
 #include "sapi/fastcgi/storage/tokens.h"
 
 #include <nb/thread.h>

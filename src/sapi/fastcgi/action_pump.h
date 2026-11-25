@@ -12,7 +12,7 @@
 #define MORPH_FCGI_ACTION_PUMP_H
 
 #include "session_store.h"
-#include "sapi/fastcgi/storage/events.h"
+#include "persistence/orm/fcgi_events.h"
 
 /* Block until an action arrives or `timeout_sec` expires.
  * On success: fills `out`, returns 1.  On timeout/empty: returns 0.

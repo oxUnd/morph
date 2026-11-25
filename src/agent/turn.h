@@ -7,7 +7,7 @@ extern "C" {
 
 #include "agent/memory.h"
 #include "agent/react.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <stdint.h>
 
 #define AGENT_TURN_LOAD_HISTORY		(1u << 0)

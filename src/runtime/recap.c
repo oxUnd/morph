@@ -1,7 +1,7 @@
 #include "runtime/recap.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/history_store.h"
 #include "credits.h"
 #include <nb/cleanup.h>
 #include <nb/buf.h>

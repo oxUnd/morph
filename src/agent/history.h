@@ -8,7 +8,7 @@ extern "C" {
 
 #include "models/llm.h"
 #include "agent/tool.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include <nb/vec.h>
 #include <nb/cleanup.h>
 

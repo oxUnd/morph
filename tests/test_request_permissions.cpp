@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <string.h>
 #include <stdlib.h>
 #include <nb/err.h>
@@ -7,7 +8,7 @@ extern "C" {
 #include "agent/tool_context.h"
 #include "agent/tool.h"
 #include "agent/tools/request_permissions.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <nb/file.h>
 #include "permission/context.h"
 #include <nb/cleanup.h>
@@ -82,7 +83,7 @@ protected:
 		tool_result_cleanup(&result);
 		tool_registry_cleanup(&registry);
 		tool_context_destroy(context);
-		if (database.handle)
+		if (db_is_open(&database))
 			db_close(&database);
 		if (!base.empty())
 			std::filesystem::remove_all(base);
@@ -282,9 +283,12 @@ TEST_F(DirectoryPermissionTest, PersistenceFailureRollsBackEveryOperation)
 	ASSERT_EQ(db_open(NULL, &database, ":memory:"), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
 	ASSERT_EQ(tool_context_set_grant_store(context, &database, work.c_str()), 0);
-	ASSERT_EQ(db_exec(&database,
-		"CREATE TRIGGER reject_write BEFORE INSERT ON permission_grants "
-		"WHEN NEW.resource_kind='write_path' BEGIN SELECT RAISE(ABORT,'reject'); END;"), 0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &database,
+			  "CREATE TRIGGER reject_write BEFORE INSERT ON permission_grants "
+			  "WHEN NEW.resource_kind='write_path' BEGIN SELECT RAISE(ABORT,'reject'); "
+			  "END;"),
+		  0);
 	verdict = TOOL_OP_ALWAYS;
 	request(all(target));
 	EXPECT_FALSE(success());

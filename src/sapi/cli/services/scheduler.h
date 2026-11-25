@@ -1,7 +1,7 @@
 #ifndef MORPH_CLI_SERVICES_SCHEDULER_H
 #define MORPH_CLI_SERVICES_SCHEDULER_H
 
-#include "db/scheduled_task.h"
+#include "persistence/orm/scheduled_task.h"
 
 struct cli_application;
 

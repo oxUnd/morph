@@ -1,6 +1,7 @@
 #include "skill_activate.h"
+#include "persistence/orm/business_store.h"
 #include "agent/tool_runtime.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <nb/vec.h>
 #include <nb/cleanup.h>
 #include "cJSON.h"
@@ -11,12 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "errors.h"
-
-static void skill_statement_cleanup(sqlite3_stmt **statement)
-{
-	if (statement && *statement)
-		sqlite3_finalize(*statement);
-}
 
 int skill_activate_session(struct skill_registry *skills, struct db *db, int64_t session,
 			   const char *name, int active)
@@ -32,21 +27,7 @@ int skill_activate_session(struct skill_registry *skills, struct db *db, int64_t
 		skill_deactivate(entry);
 	if (rc != 0 || !db || session <= 0)
 		return rc;
-	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *statement NB_CLEANUP(skill_statement_cleanup) = NULL;
-	rc = db_lock_acquire(db, &lock);
-	const char *sql = active ? "INSERT OR IGNORE INTO "
-				   "session_skill_activations(session_id,skill_name) VALUES(?,?)"
-				 : "DELETE FROM session_skill_activations WHERE session_id=? AND "
-				   "skill_name=?";
-	if (rc == 0 && sqlite3_prepare_v2(db->handle, sql, -1, &statement, NULL) != SQLITE_OK)
-		rc = MORPH_ERR_DB;
-	if (rc == 0) {
-		sqlite3_bind_int64(statement, 1, session);
-		sqlite3_bind_text(statement, 2, name, -1, SQLITE_TRANSIENT);
-		if (sqlite3_step(statement) != SQLITE_DONE)
-			rc = MORPH_ERR_DB;
-	}
+	rc = activation_store_set(db, session, name, active);
 	if (rc != 0)
 		entry->activated = before;
 	return rc;
@@ -69,29 +50,23 @@ int skill_restore_session(struct skill_registry *skills, struct db *db, int64_t 
 	if (rc != 0)
 		return rc;
 	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
-	sqlite3_stmt *statement NB_CLEANUP(skill_statement_cleanup) = NULL;
+	nb_vec names NB_CLEANUP(store_text_records_cleanup) = {0};
+
 	rc = db_lock_acquire(db, &lock);
-	if (rc == 0 && sqlite3_prepare_v2(db->handle,
-					  "SELECT skill_name FROM session_skill_activations WHERE "
-					  "session_id=? ORDER BY skill_name",
-					  -1, &statement, NULL) != SQLITE_OK)
-		rc = MORPH_ERR_DB;
+	if (rc == 0)
+		rc = activation_store_list_copy(db, session, &names);
+
 	if (rc != 0)
 		return rc;
+
 	skill_deactivate_all(skills);
-	sqlite3_bind_int64(statement, 1, session);
-	int step;
-	while ((step = sqlite3_step(statement)) == SQLITE_ROW) {
-		const char *name = (const char *)sqlite3_column_text(statement, 0);
+	for (size_t i = 0; rc == 0 && i < names.len; i++) {
+		const char *name = *(char **)nb_vec_at(&names, i);
 		struct skill_entry *entry = skill_borrow(skills, name);
-		if (entry && entry->enabled) {
+
+		if (entry && entry->enabled)
 			rc = skill_activate(entry);
-			if (rc != 0)
-				break;
-		}
 	}
-	if (rc == 0 && step != SQLITE_DONE)
-		rc = MORPH_ERR_DB;
 	if (rc != 0) {
 		for (int i = 0; i < skills->count; i++)
 			skill_entry_borrow_at(skills, (size_t)i)->activated =

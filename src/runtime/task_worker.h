@@ -3,7 +3,7 @@
 
 struct nb_log;
 #include "agent/tools/scheduled_tasks.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "runtime/tasks.h"
 
 #include <limits.h>

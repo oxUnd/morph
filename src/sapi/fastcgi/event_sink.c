@@ -1,6 +1,6 @@
 /* event_sink.c — produce JSON-shaped event payloads via cJSON */
 #include "event_sink.h"
-#include "sapi/fastcgi/storage/events.h"
+#include "persistence/orm/fcgi_events.h"
 
 #include <stdlib.h>
 

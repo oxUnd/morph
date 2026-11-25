@@ -2,7 +2,7 @@
 
 #include "runtime/runtime_internal.h"
 #include "runtime/protocol_dispatch.h"
-#include "persistence/runtime_store.h"
+#include "persistence/orm/runtime_store.h"
 #include "permission/context.h"
 #include "agent/tools/exec_jobs.h"
 #include <nb/cleanup.h>

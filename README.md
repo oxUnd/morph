@@ -62,6 +62,17 @@ of that revision. [nothing-tui source](https://codeberg.org/oxund/nothing-tui/sr
 CMake also fetches [nothing-orm](https://codeberg.org/oxund/nothing-orm/src/commit/243633b2deb3550b7fb091950bf88d8e781b37d5)
 from Codeberg at a pinned revision. The database library links its SQLite
 extension target; dependency tests, examples and network drivers are disabled.
+The checked-in patch in `vendor/patches` adds structured computed queries,
+subqueries, CTEs, conflict handling and schema extensions, plus controlled SQLite
+attachment APIs. Regression hooks are built only when `BUILD_TESTS` is enabled.
+All persistent models, schema changes, queries, transactions, imports and online
+backups live in `src/persistence/orm/`. Runtime, agents, sync and frontends call
+these model APIs; they do not use driver handles or execute SQL. Production
+models use structured CRUD, query, schema, index and trigger APIs. Raw SQL is
+limited to test fixtures and native trigger/default metadata required by the ORM.
+The offline
+`scripts/audit_session_sync.py` diagnostic uses the built or installed
+`morph-session-sync-audit` helper.
 
 Morph, nothing-tui and nothing-orm share one `nbase::nbase` target built from a
 pinned post-v0.1.0 nothing revision under the MIT license. Morph uses nbase's HTTP backend
@@ -261,12 +272,11 @@ src/
   exec/         Managed process sessions behind the exec and background tools
   event/        Unified event sink shared by all frontends
   js_runner/    Embedded QuickJS runtime for dynamic tools
-  persistence/  Persistent stores for memory and credit queries
+  persistence/orm/  All persistent models, queries, schema and database maintenance
   models/       LLM / image / video backends
   skill/        Skill discovery, parsing, and activation
   sync/         Session synchronisation
   sapi/         Front-ends: CLI and FastCGI
-  db/           SQLite schema, sessions, permission grants
   ext/          Ext loading and management
   sandbox/      Sandboxed ext execution
   ipc/          JSON-RPC

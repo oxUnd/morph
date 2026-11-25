@@ -4,7 +4,7 @@
 #include "agent/agent_control.h"
 #include "agent/tool_runtime.h"
 #include "models/llm.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "errors.h"
 #include <nb/cleanup.h>
 #include <nb/process.h>

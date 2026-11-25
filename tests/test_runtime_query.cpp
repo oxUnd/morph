@@ -1,18 +1,19 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
 #include "agent/tools/runtime_query.h"
 #include "agent/memory.h"
 #include "credits.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include "cJSON.h"
 #include <nb/utf8.h>
 #include "agent/tokenizer.h"
-#include "persistence/memory_repository.h"
-#include "persistence/memory_summary_store.h"
-#include "persistence/memory_search.h"
+#include "persistence/orm/memory_repository.h"
+#include "persistence/orm/memory_summary_store.h"
+#include "persistence/orm/memory_search.h"
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -360,10 +361,6 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredPastTaskLimitByDefault)
 {
 	struct session s;
 	struct tool_result result;
-	sqlite3_stmt *stmt = nullptr;
-	const char *sql =
-		"INSERT INTO memory_episodes"
-		"(session_id,summary_text,created_at) VALUES(?,?,?)";
 
 	ASSERT_EQ(session_create(&db, "runtime_memory_limit", "gpt-test", &s),
 		  0);
@@ -371,20 +368,14 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredPastTaskLimitByDefault)
 	SetRuntime(s);
 	cfg.memory.max_past_tasks = 2;
 
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle, sql, -1, &stmt, nullptr),
-		  SQLITE_OK);
 	for (int i = 1; i <= 3; i++) {
-		char summary[32];
+		const std::string sql =
+			"INSERT INTO memory_episodes(session_id,summary_text,created_at) VALUES(" +
+			std::to_string(s.id) + ",'episode-" + std::to_string(i) + "'," +
+			std::to_string(i) + ")";
 
-		std::snprintf(summary, sizeof(summary), "episode-%d", i);
-		sqlite3_bind_int64(stmt, 1, s.id);
-		sqlite3_bind_text(stmt, 2, summary, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_int64(stmt, 3, i);
-		ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE);
-		ASSERT_EQ(sqlite3_reset(stmt), SQLITE_OK);
-		ASSERT_EQ(sqlite3_clear_bindings(stmt), SQLITE_OK);
+		ASSERT_EQ(orm_fixture_execute(&db, sql.c_str()), 0);
 	}
-	sqlite3_finalize(stmt);
 
 	tool_result_init(&result);
 	result.runtime = &rt;

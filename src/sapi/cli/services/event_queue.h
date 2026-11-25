@@ -2,7 +2,7 @@
 #define MORPH_CLI_SERVICES_EVENT_QUEUE_H
 
 #include "event/event.h"
-#include "db/scheduled_task.h"
+#include "persistence/orm/scheduled_task.h"
 
 struct cli_application;
 struct nt_application;

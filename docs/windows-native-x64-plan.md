@@ -72,7 +72,7 @@
 | 范围 | 移植与验收重点 |
 | --- | --- |
 | 路径和用户目录 | 内部保留 UTF-8，在 Windows API 边界转换 UTF-16。复用 nbase 的绝对路径、可执行文件路径、临时目录与规范化接口。首发建议将用户目录映射到 `%USERPROFILE%\.morph`，保留 `-c`、`-w`。覆盖盘符、UNC、目录大小写模式、长路径、junction、符号链接、硬链接、设备名及备用数据流。授予范围按实际文件身份和父目录关系判定。明确标注超出初版验证范围的卷类型 |
-| Checkpoint、文件工具、SQLite | `apply_patch`、文件授权与 `/rewind` 共用经过验证的路径规则。现有 checkpoint 使用目录 fd、`openat`、`O_NOFOLLOW` 等。Windows 版须用句柄核验父目录、文件身份和 reparse point，让核验和最终文件操作绑定同一目录或文件身份，处理共享锁、并发修改、回滚和部分失败。验证 SQLite WAL 并发读写、会话恢复、备份还原及既有记录读取。[checkpoint 实现](../src/persistence/checkpoint_store.c) |
+| Checkpoint、文件工具、SQLite | `apply_patch`、文件授权与 `/rewind` 共用经过验证的路径规则。现有 checkpoint 使用目录 fd、`openat`、`O_NOFOLLOW` 等。Windows 版须用句柄核验父目录、文件身份和 reparse point，让核验和最终文件操作绑定同一目录或文件身份，处理共享锁、并发修改、回滚和部分失败。验证 SQLite WAL 并发读写、会话恢复、备份还原及既有记录读取。[checkpoint 实现](../src/persistence/orm/checkpoint_store.c) |
 | DLL 和原生扩展 | nbase 提供可移植加载/查符号/卸载接口，Windows 实现用 `LoadLibraryExW`、`GetProcAddress`、`FreeLibrary`。扩展与 guardrail 共用。用受控绝对路径及 DLL 搜索目录，核验 AMD64、导出名称、调用约定和分配/释放的 ABI 所有权。受限策略对进程内扩展的既有约束继续适用。[扩展加载器](../src/sandbox/loader.c) · [guardrail](../src/agent/guardrail.c) |
 | 交互与非交互 | 终端输入、编辑、剪贴板交互、渲染和恢复归 nothing-tui。Morph 保留页面、命令、消息与状态。不再由额外线程与框架争读 stdin。覆盖聊天、setup、审批、提问和长任务取消。重定向 stdin/stdout、`-p` 和 JSON 模式继续使用流式协议，stdout 可供机器逐行解析。[CLI 分层](tui-application-layout.md) · [现有 Esc 监听](../src/sapi/cli/adapters/input/cancel.c) |
 | 媒体、MCP 与其他集成 | 覆盖 HTTP/SSE、代理与 CA、MCP stdio 和 Streamable HTTP、JS/Wasm runner、图片编解码、字体与 Markdown。对于 ffmpeg、Git 等外部程序，在实际需要时解析路径并说明缺失能力。每项平台专属集成在启动时按能力发现，分别记录功能验收结果 |

@@ -7,10 +7,11 @@ Exit 0: no detected inconsistencies (not proof of identity); 1: invalid input;
 """
 
 import argparse
-from contextlib import closing
 import json
 from pathlib import Path
-import sqlite3
+import os
+import shutil
+import subprocess
 
 
 KINDS = {
@@ -24,59 +25,40 @@ KINDS = {
 # Both mobile readers accept these legacy wire formats after the sync repair.
 KINDS = {platform: set.union(*KINDS.values()) for platform in KINDS}
 
-def open_snapshot(path):
+def _audit_executable():
+    configured = os.environ.get("MORPH_SESSION_SYNC_AUDIT_BINARY")
+    if configured:
+        return configured
+    built = Path(__file__).resolve().parents[1] / "build/bin/morph-session-sync-audit"
+    if built.is_file():
+        return str(built)
+    installed = shutil.which("morph-session-sync-audit")
+    if installed:
+        return installed
+    raise FileNotFoundError("Build morph-session-sync-audit or set MORPH_SESSION_SYNC_AUDIT_BINARY")
+
+
+def _snapshot_path(path):
     path = Path(path).resolve(strict=True)
     if any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-journal")):
         raise ValueError("Use a standalone SQLite backup with no pending journal")
-    # Immutable prevents SQLite from creating lock, WAL or SHM files.
-    return sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
+    return path
 
 
 def audit(core_path, ui_path, platform):
-    with closing(open_snapshot(core_path)) as core, closing(open_snapshot(ui_path)) as ui:
-        for database in (core, ui):
-            if database.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
-                raise ValueError("SQLite integrity check failed")
-        sessions = {row[0] for row in core.execute("SELECT id FROM sessions")}
-        core_counts = dict(core.execute(
-            "SELECT session_id, COUNT(*) FROM messages GROUP BY session_id"))
-        core_messages = dict(core.execute("SELECT id, session_id FROM messages"))
-        ui_counts = {}
-        readable = {}
-        unsupported = {}
-        invalid_links = 0
-        for sid, kind, message_id in ui.execute(
-                "SELECT session_id, type, core_message_id FROM ui_messages"):
-            ui_counts[sid] = ui_counts.get(sid, 0) + 1
-            if kind in KINDS[platform]:
-                readable[sid] = readable.get(sid, 0) + 1
-            else:
-                # Do not echo untrusted type values: report only counts.
-                unsupported[sid] = unsupported.get(sid, 0) + 1
-            if message_id is not None and core_messages.get(message_id) != sid:
-                invalid_links += 1
-        missing = sorted(sid for sid in sessions
-                         if core_counts.get(sid, 0) and not ui_counts.get(sid, 0))
-        unreadable = sorted(sid for sid in sessions
-                            if ui_counts.get(sid, 0) and not readable.get(sid, 0))
-        report = {
-            "target_platform": platform,
-            "session_count": len(sessions),
-            "sessions_with_core_messages_but_no_ui_rows": missing,
-            "sessions_with_ui_rows_but_no_readable_rows": unreadable,
-            "ui_sessions_missing_from_core": sorted(set(ui_counts) - sessions),
-            "core_message_sessions_missing_from_core": sorted(set(core_counts) - sessions),
-            "unsupported_ui_message_count": sum(unsupported.values()),
-            "invalid_core_message_link_count": invalid_links,
-            "identity_verified": False,
-            "limitations": "Local integer IDs cannot prove matching database origins. "
-                           "Assets, model history and runtime caches are not checked.",
-        }
-        report["has_findings"] = bool(
-            missing or unreadable or report["ui_sessions_missing_from_core"]
-            or report["core_message_sessions_missing_from_core"]
-            or unsupported or invalid_links)
-        return report
+    if platform not in KINDS:
+        raise KeyError(platform)
+    core = _snapshot_path(core_path)
+    ui = _snapshot_path(ui_path)
+    result = subprocess.run(
+        [_audit_executable(), str(core), str(ui), "--platform", platform],
+        check=False, capture_output=True, text=True)
+    if result.returncode not in (0, 2):
+        raise ValueError("Cannot audit input: check files, schemas, integrity and journals")
+    report = json.loads(result.stdout)
+    if not isinstance(report, dict) or "has_findings" not in report:
+        raise ValueError("Invalid audit report")
+    return report
 
 
 def main():
@@ -87,7 +69,7 @@ def main():
     args = parser.parse_args()
     try:
         report = audit(args.core, args.ui, args.platform)
-    except (OSError, sqlite3.Error, ValueError):
+    except (OSError, ValueError):
         print(json.dumps({"error": "Cannot audit input: check files, schemas, integrity and journals"}))
         return 1
     print(json.dumps(report, indent=2))

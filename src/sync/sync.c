@@ -7,7 +7,8 @@
 #include <nb/file.h>
 #include <nb/log.h>
 #include "content_hash.h"
-#include <sqlite3.h>
+#include "persistence/orm/sync_manifest.h"
+#include "persistence/orm/file_database.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -24,47 +25,6 @@
 #define SYNC_MANIFEST "manifest.db"
 #define SYNC_STAGING "staging"
 #define SYNC_TRASH "trash"
-
-struct sync_file {
-	char path[PATH_MAX];
-	char full[PATH_MAX];
-	char hash[MORPH_SYNC_HASH_LEN];
-	int exists;
-	int64_t size;
-	int64_t mtime;
-};
-
-struct sync_pair {
-	char path[PATH_MAX];
-	struct sync_file local;
-	struct sync_file remote;
-};
-
-struct manifest_entry {
-	int found;
-	int local_exists;
-	int remote_exists;
-	int tombstone;
-	int64_t local_size;
-	int64_t remote_size;
-	int64_t local_mtime;
-	int64_t remote_mtime;
-	char local_hash[MORPH_SYNC_HASH_LEN];
-	char remote_hash[MORPH_SYNC_HASH_LEN];
-};
-
-static void sync_database_cleanup(sqlite3 **database)
-{
-	if (*database)
-		sqlite3_close(*database);
-	*database = NULL;
-}
-
-static void sync_stmt_cleanup(sqlite3_stmt **stmt)
-{
-	sqlite3_finalize(*stmt);
-	*stmt = NULL;
-}
 
 static int ensure_parent_dir(const char *path)
 {
@@ -143,15 +103,6 @@ static int should_skip_rel(const char *rel)
 static int is_db_rel(const char *rel)
 {
 	return path_has_suffix(rel, ".db");
-}
-
-static void sync_device_id(char *buf, size_t size)
-{
-	if (!buf || size == 0)
-		return;
-	if (gethostname(buf, size) != 0 || !buf[0])
-		snprintf(buf, size, "device-%u", (unsigned)getpid());
-	buf[size - 1] = '\0';
 }
 
 static struct sync_pair *find_pair(nb_vec *pairs, const char *rel)
@@ -539,300 +490,6 @@ static int scan_side(nb_vec *pairs, const char *root, const struct morph_sync_co
 	return 0;
 }
 
-static int manifest_open(sqlite3 **out, const char *sync_dir)
-{
-	char meta[PATH_MAX];
-	char path[PATH_MAX];
-	int rc;
-
-	rc = sync_path_join(meta, sizeof(meta), sync_dir, SYNC_META_DIR);
-	if (rc != 0)
-		return rc;
-	rc = nb_file_mkdir(meta, true, NULL);
-	if (rc != 0)
-		return rc;
-	rc = sync_path_join(path, sizeof(path), meta, SYNC_MANIFEST);
-	if (rc != 0)
-		return rc;
-	if (sqlite3_open_v2(path, out, SQLITE_OPEN_READWRITE |
-	    SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK)
-		return MORPH_ERR_DB;
-	rc = sqlite3_exec(*out,
-		"CREATE TABLE IF NOT EXISTS entries("
-		"path TEXT PRIMARY KEY,"
-		"local_hash TEXT,"
-		"remote_hash TEXT,"
-		"local_exists INTEGER NOT NULL DEFAULT 0,"
-		"remote_exists INTEGER NOT NULL DEFAULT 0,"
-		"local_size INTEGER NOT NULL DEFAULT 0,"
-		"remote_size INTEGER NOT NULL DEFAULT 0,"
-		"local_mtime INTEGER NOT NULL DEFAULT 0,"
-		"remote_mtime INTEGER NOT NULL DEFAULT 0,"
-		"tombstone INTEGER NOT NULL DEFAULT 0,"
-		"last_device TEXT,"
-		"updated_at INTEGER NOT NULL);"
-		"CREATE TABLE IF NOT EXISTS conflicts("
-		"id INTEGER PRIMARY KEY AUTOINCREMENT,"
-		"path TEXT NOT NULL,"
-		"local_hash TEXT,"
-		"remote_hash TEXT,"
-		"created_at INTEGER NOT NULL,"
-		"resolved_at INTEGER NOT NULL DEFAULT 0);"
-		"CREATE TABLE IF NOT EXISTS trash("
-		"id INTEGER PRIMARY KEY AUTOINCREMENT,"
-		"path TEXT NOT NULL,"
-		"trash_path TEXT NOT NULL,"
-		"created_at INTEGER NOT NULL);"
-		"CREATE TABLE IF NOT EXISTS tombstones("
-		"path TEXT PRIMARY KEY,"
-		"deleted_at INTEGER NOT NULL,"
-		"device_id TEXT);",
-		NULL, NULL, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	(void)sqlite3_exec(*out,
-		"ALTER TABLE entries ADD COLUMN local_size INTEGER NOT NULL DEFAULT 0",
-		NULL, NULL, NULL);
-	(void)sqlite3_exec(*out,
-		"ALTER TABLE entries ADD COLUMN remote_size INTEGER NOT NULL DEFAULT 0",
-		NULL, NULL, NULL);
-	(void)sqlite3_exec(*out,
-		"ALTER TABLE entries ADD COLUMN local_mtime INTEGER NOT NULL DEFAULT 0",
-		NULL, NULL, NULL);
-	(void)sqlite3_exec(*out,
-		"ALTER TABLE entries ADD COLUMN remote_mtime INTEGER NOT NULL DEFAULT 0",
-		NULL, NULL, NULL);
-	(void)sqlite3_exec(*out,
-		"ALTER TABLE entries ADD COLUMN last_device TEXT",
-		NULL, NULL, NULL);
-	(void)sqlite3_exec(*out,
-		"ALTER TABLE conflicts ADD COLUMN resolved_at INTEGER NOT NULL DEFAULT 0",
-		NULL, NULL, NULL);
-	return 0;
-}
-
-static int manifest_get(sqlite3 *db, const char *path,
-			struct manifest_entry *out)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	memset(out, 0, sizeof(*out));
-	rc = sqlite3_prepare_v2(db,
-		"SELECT local_hash,remote_hash,local_exists,remote_exists,"
-		"tombstone,local_size,remote_size,local_mtime,remote_mtime "
-		"FROM entries WHERE path=?",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		const char *lh = (const char *)sqlite3_column_text(stmt, 0);
-		const char *rh = (const char *)sqlite3_column_text(stmt, 1);
-		out->found = 1;
-		if (lh)
-			(void)nb_str_copy_to(
-				nb_str_from_parts((lh), strnlen((lh), sizeof(out->local_hash) - 1)),
-				out->local_hash, sizeof(out->local_hash));
-		if (rh)
-			(void)nb_str_copy_to(
-				nb_str_from_parts((rh),
-						  strnlen((rh), sizeof(out->remote_hash) - 1)),
-				out->remote_hash, sizeof(out->remote_hash));
-		out->local_exists = sqlite3_column_int(stmt, 2);
-		out->remote_exists = sqlite3_column_int(stmt, 3);
-		out->tombstone = sqlite3_column_int(stmt, 4);
-		out->local_size = sqlite3_column_int64(stmt, 5);
-		out->remote_size = sqlite3_column_int64(stmt, 6);
-		out->local_mtime = sqlite3_column_int64(stmt, 7);
-		out->remote_mtime = sqlite3_column_int64(stmt, 8);
-	}
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE || rc == SQLITE_ROW ? 0 : MORPH_ERR_DB;
-}
-
-static int manifest_put(sqlite3 *db, const struct sync_pair *pair,
-			int tombstone)
-{
-	sqlite3_stmt *stmt = NULL;
-	char device[128];
-	int rc;
-	int64_t now = (int64_t)time(NULL);
-
-	sync_device_id(device, sizeof(device));
-	rc = sqlite3_prepare_v2(db,
-		"INSERT INTO entries(path,local_hash,remote_hash,local_exists,"
-		"remote_exists,local_size,remote_size,local_mtime,remote_mtime,"
-		"tombstone,last_device,updated_at) "
-		"VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
-		"ON CONFLICT(path) DO UPDATE SET local_hash=excluded.local_hash,"
-		"remote_hash=excluded.remote_hash,"
-		"local_exists=excluded.local_exists,"
-		"remote_exists=excluded.remote_exists,"
-		"local_size=excluded.local_size,"
-		"remote_size=excluded.remote_size,"
-		"local_mtime=excluded.local_mtime,"
-		"remote_mtime=excluded.remote_mtime,"
-		"tombstone=excluded.tombstone,"
-		"last_device=excluded.last_device,"
-		"updated_at=excluded.updated_at",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, pair->path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 2, pair->local.exists ?
-			  pair->local.hash : "", -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, pair->remote.exists ?
-			  pair->remote.hash : "", -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 4, pair->local.exists);
-	sqlite3_bind_int(stmt, 5, pair->remote.exists);
-	sqlite3_bind_int64(stmt, 6, pair->local.exists ?
-			   pair->local.size : 0);
-	sqlite3_bind_int64(stmt, 7, pair->remote.exists ?
-			   pair->remote.size : 0);
-	sqlite3_bind_int64(stmt, 8, pair->local.exists ?
-			   pair->local.mtime : 0);
-	sqlite3_bind_int64(stmt, 9, pair->remote.exists ?
-			   pair->remote.mtime : 0);
-	sqlite3_bind_int(stmt, 10, tombstone);
-	sqlite3_bind_text(stmt, 11, device, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 12, now);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
-static int manifest_conflict(sqlite3 *db, const struct sync_pair *pair)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	rc = sqlite3_prepare_v2(db,
-		"INSERT INTO conflicts(path,local_hash,remote_hash,created_at)"
-		" VALUES(?,?,?,?)",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, pair->path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 2, pair->local.hash, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, pair->remote.hash, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
-static int manifest_resolve_db_conflicts(sqlite3 *db, const char *path)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	rc = sqlite3_prepare_v2(db,
-		"UPDATE conflicts SET resolved_at=? WHERE path=? AND resolved_at=0",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, (int64_t)time(NULL));
-	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
-static int manifest_trash(sqlite3 *db, const char *path,
-			  const char *trash_path)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	rc = sqlite3_prepare_v2(db,
-		"INSERT INTO trash(path,trash_path,created_at) VALUES(?,?,?)",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 2, trash_path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
-static int manifest_tombstone(sqlite3 *db, const char *path)
-{
-	sqlite3_stmt *stmt = NULL;
-	char device[128];
-	int rc;
-
-	sync_device_id(device, sizeof(device));
-	rc = sqlite3_prepare_v2(db,
-		"INSERT INTO tombstones(path,deleted_at,device_id) "
-		"VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET "
-		"deleted_at=excluded.deleted_at,device_id=excluded.device_id",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, (int64_t)time(NULL));
-	sqlite3_bind_text(stmt, 3, device, -1, SQLITE_TRANSIENT);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
-static int manifest_clear_tombstone(sqlite3 *db, const char *path)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	rc = sqlite3_prepare_v2(db, "DELETE FROM tombstones WHERE path=?",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
-static int manifest_delete_trash(sqlite3 *db, int64_t id)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	rc = sqlite3_prepare_v2(db, "DELETE FROM trash WHERE id=?",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-}
-
-static int copy_sqlite_backup(const char *src, const char *dst)
-{
-	sqlite3 *from NB_CLEANUP(sync_database_cleanup) = NULL;
-	sqlite3 *to NB_CLEANUP(sync_database_cleanup) = NULL;
-	sqlite3_backup *backup;
-	int rc;
-
-	rc = sqlite3_open_v2(src, &from, SQLITE_OPEN_READONLY, NULL);
-	if (rc != SQLITE_OK)
-		return NB_ERR_INVAL;
-	rc = sqlite3_open_v2(dst, &to, SQLITE_OPEN_READWRITE |
-			     SQLITE_OPEN_CREATE, NULL);
-	if (rc != SQLITE_OK)
-		return NB_ERR_INVAL;
-	backup = sqlite3_backup_init(to, "main", from, "main");
-	if (!backup)
-		return NB_ERR_INVAL;
-	(void)sqlite3_backup_step(backup, -1);
-	rc = sqlite3_backup_finish(backup);
-	return rc == SQLITE_OK ? 0 : MORPH_ERR_DB;
-}
-
 static void sync_staging_cleanup(nb_buf *path)
 {
 	if (!nb_buf_empty(path))
@@ -854,7 +511,7 @@ static int sync_copy_local_file(const char *src, const char *dst, const char *re
 		rc = nb_file_temp(&staging, NULL);
 		if (rc != 0)
 			return rc;
-		if (copy_sqlite_backup(src, nb_buf_cstr(&staging)) == 0)
+		if (orm_database_snapshot(src, nb_buf_cstr(&staging), NULL) == 0)
 			source = nb_buf_cstr(&staging);
 	}
 	return nb_file_copy(source, dst, &(nb_file_copy_options){.overwrite = true}, NULL);
@@ -928,7 +585,7 @@ static void sanitize_rel(char *dst, size_t size, const char *rel)
 	dst[pos] = '\0';
 }
 
-static int move_to_trash(sqlite3 *db, const struct morph_sync_config *cfg,
+static int move_to_trash(struct db *db, const struct morph_sync_config *cfg,
 			 const char *path, const char *rel)
 {
 	char meta[PATH_MAX];
@@ -966,7 +623,7 @@ static int move_to_trash(sqlite3 *db, const struct morph_sync_config *cfg,
 	return manifest_tombstone(db, rel);
 }
 
-static int move_remote_to_trash(sqlite3 *db,
+static int move_remote_to_trash(struct db *db,
 				const struct morph_sync_config *cfg,
 				const char *rel)
 {
@@ -1007,7 +664,7 @@ static int move_remote_to_trash(sqlite3 *db,
 	return manifest_tombstone(db, rel);
 }
 
-static int create_conflict(sqlite3 *db, const struct morph_sync_config *cfg,
+static int create_conflict(struct db *db, const struct morph_sync_config *cfg,
 			   const struct sync_pair *pair)
 {
 	nb_buf conflict NB_CLEANUP(nb_buf_destroy) = {0};
@@ -1087,7 +744,7 @@ static int update_pair_paths(struct sync_pair *pair,
 	return 0;
 }
 
-static int sync_pair(sqlite3 *db, const struct morph_sync_config *cfg,
+static int sync_pair(struct db *db, const struct morph_sync_config *cfg,
 		     struct sync_pair *pair, struct morph_sync_status *status)
 {
 	struct manifest_entry old;
@@ -1291,76 +948,30 @@ static int prepare_dirs(const struct morph_sync_config *cfg)
 	return nb_file_mkdir(trash, true, NULL);
 }
 
-static int count_table(sqlite3 *db, const char *table)
+static int cleanup_trash(struct db *db, const struct morph_sync_config *cfg)
 {
-	char sql[128];
-	sqlite3_stmt *stmt = NULL;
-	int count = 0;
-
-	snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s", table);
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-		return 0;
-	if (sqlite3_step(stmt) == SQLITE_ROW)
-		count = sqlite3_column_int(stmt, 0);
-	sqlite3_finalize(stmt);
-	return count;
-}
-
-static int count_unresolved_conflicts(sqlite3 *db)
-{
-	sqlite3_stmt *stmt = NULL;
-	int count = 0;
-
-	if (sqlite3_prepare_v2(db,
-	    "SELECT COUNT(*) FROM conflicts WHERE resolved_at=0", -1,
-	    &stmt, NULL) != SQLITE_OK)
-		return 0;
-	if (sqlite3_step(stmt) == SQLITE_ROW)
-		count = sqlite3_column_int(stmt, 0);
-	sqlite3_finalize(stmt);
-	return count;
-}
-
-static int cleanup_trash(sqlite3 *db, const struct morph_sync_config *cfg)
-{
-	sqlite3_stmt *stmt = NULL;
-	int64_t cutoff;
-	int rc;
+	struct manifest_trash_records records NB_CLEANUP(manifest_trash_records_cleanup) = {0};
 
 	if (!db || !cfg || cfg->retention_days <= 0)
 		return 0;
-	cutoff = (int64_t)time(NULL) -
-		((int64_t)cfg->retention_days * 24 * 60 * 60);
-	rc = sqlite3_prepare_v2(db,
-		"SELECT id,trash_path FROM trash WHERE created_at<?",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	sqlite3_bind_int64(stmt, 1, cutoff);
-	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		sqlite3_int64 id = sqlite3_column_int64(stmt, 0);
-		const char *path = (const char *)sqlite3_column_text(stmt, 1);
-		if (path && nb_file_exists(path)) {
-			(void)unlink(path);
-		}
-		{
-			sqlite3_stmt *del = NULL;
-			if (sqlite3_prepare_v2(db, "DELETE FROM trash WHERE id=?",
-			    -1, &del, NULL) == SQLITE_OK) {
-				sqlite3_bind_int64(del, 1, id);
-				(void)sqlite3_step(del);
-			}
-			sqlite3_finalize(del);
-		}
+
+	int64_t cutoff = (int64_t)time(NULL) - ((int64_t)cfg->retention_days * 86400);
+	int rc = manifest_trash_expired_copy(db, cutoff, &records);
+
+	for (size_t i = 0; rc == 0 && i < records.count; i++) {
+		if (records.items[i].trash_path && nb_file_exists(records.items[i].trash_path))
+			(void)unlink(records.items[i].trash_path);
+
+		rc = manifest_delete_trash(db, records.items[i].id);
 	}
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+
+	return rc;
 }
 
 static int sync_once_collect(const struct morph_sync_config *cfg,
 		    struct morph_sync_status *status)
 {
-	sqlite3 *manifest NB_CLEANUP(sync_database_cleanup) = NULL;
+	struct db *manifest NB_CLEANUP(manifest_close) = NULL;
 	nb_vec pairs NB_CLEANUP(nb_vec_cleanup) = {0};
 	char data_root[PATH_MAX];
 	int rc;
@@ -1398,8 +1009,8 @@ static int sync_once_collect(const struct morph_sync_config *cfg,
 	if (rc != 0)
 		return rc;
 	status->last_run_at = (int64_t)time(NULL);
-	status->conflicts = count_unresolved_conflicts(manifest);
-	status->recycled = count_table(manifest, "trash");
+	status->conflicts = manifest_unresolved_count(manifest);
+	status->recycled = manifest_trash_count(manifest);
 
 	return rc;
 }
@@ -1583,12 +1194,10 @@ int morph_sync_worker_status(struct morph_sync_worker *worker,
 int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 			     int64_t trash_id)
 {
-	sqlite3 *manifest NB_CLEANUP(sync_database_cleanup) = NULL;
-	sqlite3_stmt *stmt NB_CLEANUP(sync_stmt_cleanup) = NULL;
+	struct db *manifest NB_CLEANUP(manifest_close) = NULL;
+	struct manifest_trash_record record NB_CLEANUP(manifest_trash_record_cleanup) = {0};
 	struct sync_pair pair;
 	char data_root[PATH_MAX];
-	const char *rel;
-	const char *trash_path;
 	char rel_buf[PATH_MAX];
 	char trash_buf[PATH_MAX];
 	int rc;
@@ -1598,29 +1207,17 @@ int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 	rc = manifest_open(&manifest, cfg->sync_dir);
 	if (rc != 0)
 		return rc;
-	rc = sqlite3_prepare_v2(manifest,
-		"SELECT path,trash_path FROM trash WHERE id=?",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK) {
-		return MORPH_ERR_DB;
-	}
-	sqlite3_bind_int64(stmt, 1, trash_id);
-	rc = sqlite3_step(stmt);
-	if (rc != SQLITE_ROW) {
-		return NB_ERR_NOT_FOUND;
-	}
-	rel = (const char *)sqlite3_column_text(stmt, 0);
-	trash_path = (const char *)sqlite3_column_text(stmt, 1);
-	(void)nb_str_copy_to(
-		nb_str_from_parts((rel ? rel : ""), strnlen((rel ? rel : ""), sizeof(rel_buf) - 1)),
-		rel_buf, sizeof(rel_buf));
-	rel_buf[sizeof(rel_buf) - 1] = '\0';
-	(void)nb_str_copy_to(
-		nb_str_from_parts((trash_path ? trash_path : ""),
-				  strnlen((trash_path ? trash_path : ""), sizeof(trash_buf) - 1)),
-		trash_buf, sizeof(trash_buf));
-	trash_buf[sizeof(trash_buf) - 1] = '\0';
-	sync_stmt_cleanup(&stmt);
+	rc = manifest_trash_get_copy(manifest, trash_id, &record);
+	if (rc != 0)
+		return rc;
+
+	rc = nb_str_copy_to(nb_str_from_cstr(record.path), rel_buf, sizeof(rel_buf));
+	if (rc == 0)
+		rc = nb_str_copy_to(nb_str_from_cstr(record.trash_path), trash_buf, sizeof(trash_buf));
+
+	if (rc != 0)
+		return rc;
+
 	if (!rel_buf[0] || !trash_buf[0]) {
 		return NB_ERR_INVAL;
 	}

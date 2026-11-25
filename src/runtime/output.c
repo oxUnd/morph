@@ -1,7 +1,7 @@
 #include "runtime/output.h"
 #include "agent/tool_artifact.h"
 #include <nb/err.h>
-#include "persistence/output_store.h"
+#include "persistence/orm/output_store.h"
 #include <nb/cleanup.h>
 
 #include <nb/log.h>
@@ -204,7 +204,7 @@ int runtime_output_record_event(const struct runtime_output_context *context,
 
 	/* Generation records carry model/provider provenance. Local image
 	 * transformations remain artifacts in the tool result instead. */
-	if (!context || !context->db || !context->db->handle || !event ||
+	if (!context || !db_is_open(context->db) || !event ||
 	    event->type != REACT_STEP_OBSERVATION ||
 	    event->status != REACT_OUTPUT_COMPLETED ||
 	    tool_media_operation_for_name(event->tool_name) != TOOL_MEDIA_GENERATION ||
@@ -245,7 +245,7 @@ char *runtime_output_json_by_path_copy(struct db *db, const char *path)
 	char *json = NULL;
 	int ok;
 
-	if (!db || !db->handle || !path || !path[0])
+	if (!db_is_open(db) || !path || !path[0])
 		return NULL;
 	if (output_store_copy(db, path, &record) != 0)
 		return NULL;

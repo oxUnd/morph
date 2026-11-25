@@ -5,8 +5,8 @@
 #include "agent/tokenizer.h"
 #include "agent/tools/exec_jobs.h"
 #include "agent/tools/skill_activate.h"
-#include "persistence/checkpoint_store.h"
-#include "session_history.h"
+#include "persistence/orm/checkpoint_store.h"
+#include "persistence/orm/session_history.h"
 #include <nb/buf.h>
 #include <nb/cleanup.h>
 #include "errors.h"

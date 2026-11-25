@@ -1,13 +1,13 @@
 #ifndef MORPH_FCGI_SESSION_STORE_H
 #define MORPH_FCGI_SESSION_STORE_H
 
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <nb/thread.h>
 
 struct nb_log;
 struct event_subscriber;
 
-/* One shared SQLite connection; domain modules borrow this owner. */
+/* Persistence owner and event-observation state. */
 struct session_store {
 	struct db db;
 	nb_mutex *mu;

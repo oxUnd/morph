@@ -2,7 +2,7 @@
 #include <nb/str.h>
 #include <nb/utf8.h>
 #include "runtime/runtime_internal.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/history_store.h"
 
 #include "runtime/session.h"
 #include "errors.h"

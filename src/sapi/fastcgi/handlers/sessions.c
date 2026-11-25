@@ -2,7 +2,7 @@
 #define _GNU_SOURCE
 #include "handlers.h"
 #include <nb/err.h>
-#include "sapi/fastcgi/storage/sessions.h"
+#include "persistence/orm/fcgi_sessions.h"
 #include "../session_store.h"
 
 #include <errno.h>

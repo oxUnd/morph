@@ -3,7 +3,7 @@
 
 #include "agent/react.h"
 #include "config/config.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "event/event.h"
 
 #include <stdint.h>

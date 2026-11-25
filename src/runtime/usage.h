@@ -2,7 +2,7 @@
 #define MORPH_RUNTIME_USAGE_H
 
 #include "config/config.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "models/llm.h"
 
 void *runtime_usage_bind(struct model_usage_sink *sink, void *user_data);

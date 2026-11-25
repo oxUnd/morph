@@ -3,7 +3,7 @@
 #define MORPH_FCGI_EVENT_SINK_H
 
 #include "session_store.h"
-#include "sapi/fastcgi/storage/events.h"
+#include "persistence/orm/fcgi_events.h"
 
 void event_sink_thought(struct session_store *s, const char *sid, const char *text);
 void event_sink_reasoning(struct session_store *s, const char *sid, const char *text);

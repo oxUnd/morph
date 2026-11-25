@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 
 #include <nb/cleanup.h>
 #include "agent/plan.h"
@@ -231,8 +232,8 @@ TEST(PlanTool, LegacyNameUpdateStillWorks)
 }
 
 extern "C" {
-#include "db/database.h"
-#include "session.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/session.h"
 #include "agent/tool_context.h"
 #include <nb/file.h>
 }
@@ -280,8 +281,10 @@ TEST(PlanTool, DurableCheckpointRestoresEvidenceAndRollsBackInvalidUpdates)
 			    &result),
 		  0);
 	EXPECT_STREQ(plans->plans[0].acceptance, "300 seconds");
-	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER fail_checkpoint BEFORE UPDATE ON session_plans "
-		"BEGIN SELECT RAISE(ABORT,'test failure'); END"), 0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "CREATE TRIGGER fail_checkpoint BEFORE UPDATE ON session_plans "
+			       "BEGIN SELECT RAISE(ABORT,'test failure'); END"),
+		  0);
 	EXPECT_NE(tool_exec(tools.get(), "plan", "{\"command\":\"update\",\"plan\":\"film\","
 		"\"step_id\":1,\"status\":\"pending\"}", &result), 0);
 	EXPECT_STREQ(plans->plans[0].steps[0].status, "completed");

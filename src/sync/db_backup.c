@@ -11,8 +11,7 @@
 #include <nb/map.h>
 #include <nb/str.h>
 #include "content_hash.h"
-#include "cJSON.h"
-#include <sqlite3.h>
+#include "persistence/orm/file_database.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -45,26 +44,6 @@ struct backup_staging {
 	char chunk[PATH_MAX];
 	int keep_snapshot;
 };
-
-static void backup_database_cleanup(sqlite3 **database)
-{
-	if (*database)
-		sqlite3_close(*database);
-	*database = NULL;
-}
-
-static void backup_stmt_cleanup(sqlite3_stmt **stmt)
-{
-	sqlite3_finalize(*stmt);
-	*stmt = NULL;
-}
-
-static void backup_transfer_cleanup(sqlite3_backup **backup)
-{
-	if (*backup)
-		(void)sqlite3_backup_finish(*backup);
-	*backup = NULL;
-}
 
 static void backup_file_cleanup(FILE **file)
 {
@@ -180,106 +159,12 @@ static int store_get(const struct morph_sync_config *cfg, const char *rel,
 
 int sync_db_quick_check(const char *path)
 {
-	sqlite3_stmt *statement = NULL;
-	sqlite3 *database = NULL;
-	const unsigned char *text;
-	int rc;
-
-	rc = sqlite3_open_v2(path, &database, SQLITE_OPEN_READWRITE, NULL);
-	if (rc != SQLITE_OK) {
-		sqlite3_close(database);
-		return 0;
-	}
-	rc = sqlite3_prepare_v2(database, "PRAGMA quick_check", -1,
-				&statement, NULL);
-	if (rc == SQLITE_OK)
-		rc = sqlite3_step(statement);
-	text = rc == SQLITE_ROW ? sqlite3_column_text(statement, 0) : NULL;
-	rc = text && strcmp((const char *)text, "ok") == 0;
-	sqlite3_finalize(statement);
-	sqlite3_close(database);
-	return rc;
+	return orm_database_quick_check(path);
 }
 
 int sync_db_is_sqlite(const char *path)
 {
-	unsigned char header[16];
-	sqlite3_stmt *statement = NULL;
-	sqlite3 *database = NULL;
-	FILE *file;
-	int rc;
-
-	if (!path)
-		return 0;
-	file = fopen(path, "rb");
-	if (!file)
-		return 0;
-	if (fread(header, 1, sizeof(header), file) != sizeof(header)) {
-		fclose(file);
-		return 0;
-	}
-	fclose(file);
-	if (memcmp(header, "SQLite format 3\0", sizeof(header)) != 0)
-		return 0;
-	rc = sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY, NULL);
-	if (rc == SQLITE_OK)
-		rc = sqlite3_prepare_v2(database, "PRAGMA schema_version", -1,
-					&statement, NULL);
-	if (rc == SQLITE_OK)
-		rc = sqlite3_step(statement);
-	sqlite3_finalize(statement);
-	sqlite3_close(database);
-	return rc == SQLITE_ROW;
-}
-
-static int sqlite_snapshot(const char *source, const char *destination,
-			   int *page_size)
-{
-	sqlite3 *output NB_CLEANUP(backup_database_cleanup) = NULL;
-	sqlite3 *input NB_CLEANUP(backup_database_cleanup) = NULL;
-	sqlite3_stmt *statement NB_CLEANUP(backup_stmt_cleanup) = NULL;
-	sqlite3_backup *backup NB_CLEANUP(backup_transfer_cleanup) = NULL;
-	int busy_retries = 0;
-	int rc;
-
-	rc = sqlite3_open_v2(source, &input, SQLITE_OPEN_READONLY, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	rc = sqlite3_open_v2(destination, &output,
-			     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	backup = sqlite3_backup_init(output, "main", input, "main");
-	if (!backup)
-		return MORPH_ERR_DB;
-	do {
-		rc = sqlite3_backup_step(backup, 256);
-		if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
-			if (++busy_retries > 500) {
-				rc = SQLITE_BUSY;
-				break;
-			}
-			sqlite3_sleep(10);
-		} else {
-			busy_retries = 0;
-		}
-	} while (rc == SQLITE_OK || rc == SQLITE_BUSY || rc == SQLITE_LOCKED);
-	if (sqlite3_backup_finish(backup) != SQLITE_OK || rc != SQLITE_DONE) {
-		backup = NULL;
-		return MORPH_ERR_DB;
-	}
-	backup = NULL;
-	rc = sqlite3_exec(output, "PRAGMA journal_mode=DELETE", NULL, NULL, NULL);
-	if (rc != SQLITE_OK)
-		return MORPH_ERR_DB;
-	rc = sqlite3_prepare_v2(output, "PRAGMA page_size", -1,
-				&statement, NULL);
-	if (rc == SQLITE_OK && sqlite3_step(statement) == SQLITE_ROW)
-		*page_size = sqlite3_column_int(statement, 0);
-	else
-		rc = SQLITE_ERROR;
-
-	return rc == SQLITE_OK && *page_size > 0 ? 0 : MORPH_ERR_DB;
+	return orm_database_is_sqlite(path);
 }
 
 static int device_id_get(const struct morph_sync_config *cfg,
@@ -494,8 +379,6 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 	char source[PATH_MAX];
 	struct backup_staging staging NB_CLEANUP(backup_staging_cleanup) = {0};
 	struct stat st;
-	sqlite3 *db NB_CLEANUP(backup_database_cleanup) = NULL;
-	sqlite3_stmt *attach NB_CLEANUP(backup_stmt_cleanup) = NULL;
 	int page_size = 0;
 	int rc;
 
@@ -518,47 +401,10 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 	rc = staging_path(cfg, ".display.db", staging.snapshot);
 	if (rc != 0)
 		return rc;
-	rc = sqlite_snapshot(source, staging.snapshot, &page_size);
+	rc = orm_database_snapshot(source, staging.snapshot, &page_size);
 	if (rc != 0)
 		return rc;
-	if (sqlite3_open_v2(snapshot, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
-	    sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS display", -1,
-			       &attach, NULL) != SQLITE_OK) {
-		return MORPH_ERR_DB;
-	}
-	sqlite3_bind_text(attach, 1, staging.snapshot, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(attach) != SQLITE_DONE) {
-		return MORPH_ERR_DB;
-	}
-	if (sqlite3_exec(db,
-		"BEGIN IMMEDIATE;"
-		"CREATE TEMP TABLE local_display AS "
-		"SELECT session_id,turn_id,core_message_id,seq,type,content,"
-		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,"
-		"created_at,updated_at FROM display.ui_messages;"
-		"CREATE TABLE IF NOT EXISTS sync_ui_messages AS SELECT * FROM local_display WHERE 0;",
-		NULL, NULL, NULL) != SQLITE_OK)
-		rc = (MORPH_ERR_DB);
-	if (rc == 0 && sqlite3_table_column_metadata(db, "display",
-		"ui_session_identity", "identity", NULL, NULL, NULL, NULL, NULL) == SQLITE_OK &&
-	    sqlite3_table_column_metadata(db, "main", "sessions", "display_id",
-		NULL, NULL, NULL, NULL, NULL) == SQLITE_OK) {
-		if (sqlite3_exec(db,
-			"DELETE FROM local_display WHERE session_id IN ("
-			"SELECT i.session_id FROM display.ui_session_identity i "
-			"JOIN main.sessions s ON s.id=i.session_id "
-			"WHERE i.identity<>s.display_id)", NULL, NULL, NULL) != SQLITE_OK)
-			rc = (MORPH_ERR_DB);
-	}
-
-	if (rc == 0 && sqlite3_exec(db,
-		"DELETE FROM sync_ui_messages WHERE session_id IN "
-		"(SELECT DISTINCT session_id FROM local_display);"
-		"INSERT INTO sync_ui_messages SELECT * FROM local_display;"
-		"CREATE INDEX IF NOT EXISTS sync_ui_session_seq "
-		"ON sync_ui_messages(session_id,seq); COMMIT", NULL, NULL, NULL) != SQLITE_OK)
-		rc = (MORPH_ERR_DB);
-	return rc;
+	return orm_database_merge_display(snapshot, staging.snapshot);
 }
 
 int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *rel,
@@ -590,7 +436,7 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 	rc = staging_path(cfg, ".db", staging.snapshot);
 	if (rc != 0)
 		return rc;
-	rc = sqlite_snapshot(path, staging.snapshot, &page_size);
+	rc = orm_database_snapshot(path, staging.snapshot, &page_size);
 	if (rc != 0)
 		return rc;
 	if (update_cursor) {

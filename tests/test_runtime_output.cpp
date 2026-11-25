@@ -1,9 +1,10 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <nb/err.h>
 
 extern "C" {
 #include "runtime/output.h"
-#include "persistence/output_store.h"
+#include "persistence/orm/output_store.h"
 #include <nb/cleanup.h>
 }
 
@@ -117,13 +118,12 @@ TEST_F(RuntimeOutputTest, DuplicateArtifactPathIsIdempotent)
 					      nullptr, nullptr};
 	ASSERT_EQ(runtime_output_record_event(&context, &event), 0);
 	ASSERT_EQ(runtime_output_record_event(&context, &event), 0);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
-		"SELECT COUNT(*) FROM outputs WHERE path='/tmp/result.mp4'",
-		-1, &stmt, nullptr), SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
-	sqlite3_finalize(stmt);
+	int64_t output_count = -1;
+	ASSERT_EQ(orm_fixture_integer(&db,
+				      "SELECT COUNT(*) FROM outputs WHERE path='/tmp/result.mp4'",
+				      &output_count),
+		  0);
+	EXPECT_EQ(output_count, 1);
 }
 
 TEST_F(RuntimeOutputTest, ConcurrentOutputRecordsKeepTheirOwnInsertedIdentity)
@@ -199,24 +199,14 @@ TEST(RuntimeOutputMigrationTest, AddsRecipeColumnsToExistingOutputsTable)
 	std::string database = std::string(directory) + "/data.db";
 	struct db db{};
 	ASSERT_EQ(db_open(NULL, &db, database.c_str()), 0);
-	ASSERT_EQ(db_exec(&db,
-		"CREATE TABLE outputs(id INTEGER PRIMARY KEY,session_id INTEGER,"
-		"kind TEXT NOT NULL,path TEXT NOT NULL,prompt TEXT,model TEXT,"
-		"created_at INTEGER NOT NULL)"), 0);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "CREATE TABLE outputs(id INTEGER PRIMARY KEY,session_id INTEGER,"
+			       "kind TEXT NOT NULL,path TEXT NOT NULL,prompt TEXT,model TEXT,"
+			       "created_at INTEGER NOT NULL)"),
+		  0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "PRAGMA table_info(outputs)",
-		-1, &stmt, nullptr), SQLITE_OK);
-	bool foundRecipe = false;
-	bool foundProvider = false;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
-		foundRecipe = foundRecipe || (name && std::string(name) == "recipe_json");
-		foundProvider = foundProvider || (name && std::string(name) == "provider");
-	}
-	sqlite3_finalize(stmt);
-	EXPECT_TRUE(foundRecipe);
-	EXPECT_TRUE(foundProvider);
+	EXPECT_TRUE(orm_fixture_has_column(&db, nullptr, "outputs", "recipe_json"));
+	EXPECT_TRUE(orm_fixture_has_column(&db, nullptr, "outputs", "provider"));
 	db_close(&db);
 	std::error_code ignored;
 	std::filesystem::remove_all(directory, ignored);
@@ -238,8 +228,7 @@ TEST_F(RuntimeOutputTest, ReturnedOutputOwnsItsStringsAfterTheStoredRowIsDeleted
 	ASSERT_EQ(output_store_copy(&db, input.path, &first), 0);
 	ASSERT_EQ(output_store_copy(&db, input.path, &second), 0);
 	EXPECT_NE(first.prompt, second.prompt);
-	ASSERT_EQ(sqlite3_exec(db.handle, "DELETE FROM outputs", nullptr, nullptr, nullptr),
-		  SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&db, "DELETE FROM outputs"), 0);
 	output_record_cleanup(&first);
 	EXPECT_STREQ(second.prompt, "original prompt");
 	EXPECT_STREQ(second.recipe_json, "{\"seed\":42}");

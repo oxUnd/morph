@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "credits.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>

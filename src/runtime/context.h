@@ -3,8 +3,8 @@
 
 #include "agent/plan.h"
 #include "agent/tool_runtime.h"
-#include "db/database.h"
-#include "../session.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/session.h"
 
 #include <stdint.h>
 

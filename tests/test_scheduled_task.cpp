@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 #include <nb/err.h>
 #include <nb/cleanup.h>
-#include "db/database.h"
-#include "db/scheduled_task.h"
-#include "session.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/scheduled_task.h"
+#include "persistence/orm/session.h"
 #include "agent/tool.h"
 #include "agent/tools/scheduled_tasks.h"
 #include "event/event.h"

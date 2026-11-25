@@ -1,4 +1,5 @@
 #include "runtime_test_support.hpp"
+#include "persistence/orm/test_fixture.h"
 #include <nb/err.h>
 #include "agent_http_test_support.hpp"
 
@@ -198,7 +199,7 @@ TEST_F(RuntimeAgentsTest, IdleFollowupRetainsOwnedIdentityAndPersistentEventSink
 	runtime_agent_events_free(events, count);
 	int observed = usage_observations.load();
 	int temporary_events = request_events.load();
-	ASSERT_EQ(db_exec(&instance->context.database, "DELETE FROM credit_events"), 0);
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database, "DELETE FROM credit_events"), 0);
 	ASSERT_EQ(runtime_agent_followup(instance, "/root/worker", "Continue after root finished"),
 		  0);
 	agent_control_join(instance->context.agents);
@@ -216,27 +217,32 @@ TEST_F(RuntimeAgentsTest, IdleFollowupRetainsOwnedIdentityAndPersistentEventSink
 	EXPECT_EQ(identities.front().second, actor.credit_session_id);
 	std::string credit_session = actor.credit_session_id;
 	runtime_agent_actor_end(instance);
-	sqlite3_stmt *raw = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(
-			  instance->context.database.handle,
-			  "SELECT user_id,session_id,input_tokens,output_tokens FROM credit_events",
-			  -1, &raw, nullptr),
-		  SQLITE_OK);
-	std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
-	int records = 0;
-	int step;
-	while ((step = sqlite3_step(statement.get())) == SQLITE_ROW) {
-		EXPECT_STREQ(
-			reinterpret_cast<const char *>(sqlite3_column_text(statement.get(), 0)),
-			"facade-user");
-		EXPECT_EQ(reinterpret_cast<const char *>(sqlite3_column_text(statement.get(), 1)),
-			  credit_session);
-		EXPECT_EQ(sqlite3_column_int(statement.get(), 2), 12);
-		EXPECT_EQ(sqlite3_column_int(statement.get(), 3), 5);
-		records++;
-	}
-	EXPECT_EQ(step, SQLITE_DONE);
-	EXPECT_GT(records, 0);
+	int64_t mismatch_count = -1;
+	int64_t session_count = 0;
+	size_t records = 0;
+	char *recorded_session NB_CLEANUP(nb_charp_cleanup) = nullptr;
+
+	ASSERT_EQ(orm_fixture_row_count(&instance->context.database,
+					"SELECT user_id FROM credit_events", &records),
+		  0);
+	EXPECT_GT(records, 0u);
+	ASSERT_EQ(orm_fixture_integer(
+			  &instance->context.database,
+			  "SELECT count(*) FROM credit_events WHERE user_id<>'facade-user' OR "
+			  "input_tokens<>12 OR output_tokens<>5",
+			  &mismatch_count),
+		  0);
+	EXPECT_EQ(mismatch_count, 0);
+	ASSERT_EQ(orm_fixture_integer(&instance->context.database,
+				      "SELECT count(DISTINCT session_id) FROM credit_events",
+				      &session_count),
+		  0);
+	EXPECT_EQ(session_count, 1);
+	ASSERT_EQ(orm_fixture_text_copy(&instance->context.database,
+					"SELECT session_id FROM credit_events LIMIT 1",
+					&recorded_session),
+		  0);
+	EXPECT_EQ(recorded_session, credit_session);
 }
 
 TEST_F(RuntimeAgentsTest, FinishingRejectsIdleRestartsAndStillAcceptsRunningWorkerSteering)
@@ -336,7 +342,7 @@ TEST_F(RuntimeAgentsTest, DetachedPrimaryRequestRestoresSelectedWorkerTreeAndIde
 	ASSERT_EQ(runtime_session_create_detached(instance, "detached-request", &detached), 0);
 	const std::string activate = "INSERT INTO session_skill_activations VALUES(" +
 				     std::to_string(detached.id) + ",'detached-check')";
-	ASSERT_EQ(db_exec(&instance->context.database, activate.c_str()), 0);
+	ASSERT_EQ(orm_fixture_execute(&instance->context.database, activate.c_str()), 0);
 	struct runtime_request request{};
 	struct runtime_result result{};
 	request.session_id = detached.id;

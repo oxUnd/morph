@@ -6,7 +6,7 @@
 #include "agent/agent_control.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "mcp/mcp.h"
 #include "models/llm.h"
 #include "runtime/bootstrap.h"

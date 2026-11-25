@@ -8,7 +8,7 @@
 #include "mcp/mcp.h"
 #include "session.h"
 #include "skill/skill.h"
-#include "db/scheduled_task.h"
+#include "persistence/orm/scheduled_task.h"
 
 struct runtime;
 

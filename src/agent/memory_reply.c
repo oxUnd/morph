@@ -2,8 +2,8 @@
 #include <nb/cleanup.h>
 
 #include "agent/memory.h"
-#include "persistence/memory_snapshot.h"
-#include "persistence/memory_search.h"
+#include "persistence/orm/memory_snapshot.h"
+#include "persistence/orm/memory_search.h"
 #include <nb/buf.h>
 #include "errors.h"
 #include <nb/utf8.h>
@@ -211,7 +211,7 @@ int memory_reply_text_create(struct db *db, int64_t session_id, const char *quer
 		return NB_ERR_INVAL;
 	if (*out)
 		return NB_ERR_STATE;
-	if (!db || !db->handle || !opts || !opts->enabled)
+	if (!db_is_open(db) || !opts || !opts->enabled)
 		return 0;
 	struct db_lock lock NB_CLEANUP(db_lock_cleanup) = {0};
 	rc = db_lock_acquire(db, &lock);

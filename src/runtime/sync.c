@@ -6,7 +6,7 @@
 #include "errors.h"
 #include <nb/cleanup.h>
 #include <nb/file.h>
-#include <sqlite3.h>
+#include "persistence/orm/sync_manifest.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -205,79 +205,20 @@ static int runtime_sync_manifest_path(struct runtime *runtime, char *path,
 		       : rc;
 }
 
-static void runtime_sync_stmt_cleanup(sqlite3_stmt **statement)
-{
-	sqlite3_finalize(*statement);
-	*statement = NULL;
-}
-
-static void runtime_sync_database_cleanup(sqlite3 **database)
-{
-	if (*database)
-		sqlite3_close(*database);
-	*database = NULL;
-}
-
 int runtime_sync_conflicts(struct runtime *runtime, struct runtime_sync_conflict **out, int *count)
 {
-	nb_vec items NB_CLEANUP(nb_vec_cleanup) = {0};
-	sqlite3 *database NB_CLEANUP(runtime_sync_database_cleanup) = NULL;
-	sqlite3_stmt *statement NB_CLEANUP(runtime_sync_stmt_cleanup) = NULL;
 	char path[PATH_MAX];
-	nb_vec_init(&items, sizeof(struct runtime_sync_conflict));
-	int step;
-	int rc;
+
 	if (!runtime || !out || !count)
 		return NB_ERR_INVAL;
+
 	if (*out)
 		return NB_ERR_EXISTS;
+
 	*count = 0;
-	rc = runtime_sync_manifest_path(runtime, path, sizeof(path));
-	if (rc != 0)
-		return rc;
-	if (sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-		return NB_ERR_NOT_FOUND;
-	}
-	rc = sqlite3_prepare_v2(database,
-		"SELECT id,path,created_at FROM conflicts WHERE resolved_at=0 "
-		"ORDER BY id DESC",
-		-1, &statement, NULL);
-	if (rc != SQLITE_OK) {
-		rc = sqlite3_prepare_v2(database,
-			"SELECT id,path,created_at FROM conflicts ORDER BY id DESC",
-			-1, &statement, NULL);
-	}
-	if (rc != SQLITE_OK) {
-		return MORPH_ERR_DB;
-	}
-	while ((step = sqlite3_step(statement)) == SQLITE_ROW) {
-		if (items.len >= INT_MAX)
-			return NB_ERR_RANGE;
-		struct runtime_sync_conflict *item = nb_vec_push(&items);
-		if (!item)
-			return NB_ERR_NOMEM;
-		memset(item, 0, sizeof(*item));
-		item->id = sqlite3_column_int64(statement, 0);
-		const unsigned char *value = sqlite3_column_text(statement, 1);
-		if (value)
-			(void)nb_str_copy_to(
-				nb_str_from_parts((const char *)value,
-						  nb_utf8_clamp_bytes((const char *)value,
-								      sizeof(item->path) - 1)),
-				item->path, (sizeof(item->path) - 1) + 1);
-		item->created_at = sqlite3_column_int64(statement, 2);
-	}
-	rc = step == SQLITE_DONE ? 0 : MORPH_ERR_DB;
-	if (rc != 0) {
-		return rc;
-	}
-	*out = items.len ? malloc(items.len * items.elem_size) : NULL;
-	if (items.len && !*out)
-		return NB_ERR_NOMEM;
-	if (items.len)
-		memcpy(*out, items.data, items.len * items.elem_size);
-	*count = (int)items.len;
-	return 0;
+	int rc = runtime_sync_manifest_path(runtime, path, sizeof(path));
+
+	return rc == 0 ? manifest_conflicts_copy(path, out, count) : rc;
 }
 
 void runtime_sync_conflicts_free(struct runtime_sync_conflict *items)

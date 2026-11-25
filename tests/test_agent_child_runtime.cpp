@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include "agent_http_test_support.hpp"
 
 extern "C" {
@@ -11,10 +12,10 @@ extern "C" {
 #include "agent/tools/dynamic_tool_internal.h"
 #include "agent/tools/scheduled_tasks.h"
 #include "agent/tools/ask_user.h"
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "models/llm.h"
 #include "runtime/bootstrap.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include "skill/skill.h"
 #include "errors.h"
 }
@@ -337,14 +338,11 @@ TEST_F(AgentChildRuntimeTest, SessionSkillRowsCascadeWithTheirSession)
 {
 	ASSERT_EQ(skill_activate_session(&root_skills, &database, session.id, "child-check", 1), 0);
 	ASSERT_EQ(session_delete(&database, session.id), 0);
-	sqlite3_stmt *statement = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(database.handle,
-				     "SELECT COUNT(*) FROM session_skill_activations", -1,
-				     &statement, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int(statement, 0), 0);
-	sqlite3_finalize(statement);
+	int64_t count = -1;
+	ASSERT_EQ(orm_fixture_integer(&database, "SELECT COUNT(*) FROM session_skill_activations",
+				      &count),
+		  0);
+	EXPECT_EQ(count, 0);
 }
 
 TEST(AgentChildGuardrailTest, CheckerRequestUsesTurnCancellationWithoutChangingItsClient)
@@ -437,13 +435,11 @@ TEST_F(AgentChildRuntimeTest, MutableToolBindingsRemainPrivateAndNeverBorrowAFro
 		"prompt":"Inspect the child result","delay_seconds":10})",
 			    &result),
 		  0);
-	sqlite3_stmt *statement = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(
-			  database.handle,
+	int64_t source_session_id = -1;
+	ASSERT_EQ(orm_fixture_integer(
+			  &database,
 			  "SELECT source_session_id FROM scheduled_tasks WHERE title='Child task'",
-			  -1, &statement, nullptr),
-		  SQLITE_OK);
-	ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-	EXPECT_EQ(sqlite3_column_int64(statement, 0), child_session.id);
-	sqlite3_finalize(statement);
+			  &source_session_id),
+		  0);
+	EXPECT_EQ(source_session_id, child_session.id);
 }

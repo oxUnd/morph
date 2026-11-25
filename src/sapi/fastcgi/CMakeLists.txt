@@ -36,12 +36,14 @@ set(FCGI_SOURCES
     fcgi_io.c
     security.c
     session_store.c
-    storage/users.c
-    storage/quota.c
-    storage/artifacts.c
-    storage/sessions.c
-    storage/events.c
-    storage/canvas.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_models.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_store.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_users.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_quota.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_artifacts.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_sessions.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_events.c
+    ${CMAKE_SOURCE_DIR}/src/persistence/orm/fcgi_canvas.c
     storage/tokens.c
     auth.c
     router.c
@@ -77,6 +79,7 @@ target_include_directories(morph-fastcgi PRIVATE
 target_link_libraries(morph-fastcgi PRIVATE
     ${FCGI_LIBRARIES}
     morph-runtime
+    nothing_orm::sqlite
     Threads::Threads)
 
 if(FCGI_LIBRARY_DIRS)

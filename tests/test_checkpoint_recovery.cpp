@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <string.h>
 #include <nb/err.h>
 
 extern "C" {
-#include "persistence/checkpoint_store.h"
-#include "session.h"
+#include "persistence/orm/checkpoint_store.h"
+#include "persistence/orm/session.h"
 #include <nb/cleanup.h>
 #include <nb/file.h>
 #include "cJSON.h"
@@ -45,21 +46,21 @@ int reject_restored_file_commit(void *opaque)
 class ScopedCommitRefusal
 {
       public:
-	ScopedCommitRefusal(sqlite3 *database, CommitRefusal *refusal) : database_(database)
+	ScopedCommitRefusal(struct db *database, CommitRefusal *refusal) : database_(database)
 	{
-		sqlite3_commit_hook(database_, reject_restored_file_commit, refusal);
+		orm_fixture_commit_hook(database_, reject_restored_file_commit, refusal);
 	}
 
 	~ScopedCommitRefusal()
 	{
-		sqlite3_commit_hook(database_, nullptr, nullptr);
+		orm_fixture_commit_hook(database_, nullptr, nullptr);
 	}
 
 	ScopedCommitRefusal(const ScopedCommitRefusal &) = delete;
 	ScopedCommitRefusal &operator=(const ScopedCommitRefusal &) = delete;
 
       private:
-	sqlite3 *database_;
+	struct db *database_;
 };
 
 class CheckpointRecoveryTest : public ::testing::Test
@@ -85,8 +86,8 @@ class CheckpointRecoveryTest : public ::testing::Test
 
 	void TearDown() override
 	{
-		if (database.handle)
-			sqlite3_commit_hook(database.handle, nullptr, nullptr);
+		if (db_is_open(&database))
+			orm_fixture_commit_hook(&database, nullptr, nullptr);
 		db_close(&database);
 		std::error_code ignored;
 		std::filesystem::remove_all(directory, ignored);
@@ -102,16 +103,10 @@ class CheckpointRecoveryTest : public ::testing::Test
 
 	int64_t Scalar(const char *sql)
 	{
-		sqlite3_stmt *statement = nullptr;
-		EXPECT_EQ(sqlite3_prepare_v2(database.handle, sql, -1, &statement, nullptr),
-			  SQLITE_OK);
-		if (!statement)
-			return -1;
-		const int rc = sqlite3_step(statement);
-		EXPECT_EQ(rc, SQLITE_ROW);
-		const int64_t result = rc == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : -1;
-		sqlite3_finalize(statement);
-		return result;
+		int64_t value = -1;
+
+		EXPECT_EQ(orm_fixture_integer(&database, sql, &value), 0);
+		return value;
 	}
 
 	void AddHistory(const char *content)
@@ -178,7 +173,7 @@ TEST_F(CheckpointRecoveryTest, RefusedCommitCompensatesCodeAndPreservesLaterConv
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	int rc;
 	{
-		ScopedCommitRefusal hook(database.handle, &refusal);
+		ScopedCommitRefusal hook(&database, &refusal);
 		rc = checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_BOTH,
 					      &report);
 	}
@@ -208,18 +203,18 @@ TEST_F(CheckpointRecoveryTest, OuterTransactionRejectsCaptureAndRestoreWithoutSi
 	const int64_t id = PrepareEditedCheckpoint();
 	ASSERT_GT(id, 0);
 	Write("uncaptured.txt", "user data\n");
-	ASSERT_EQ(db_exec(&database, "BEGIN"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "BEGIN"), 0);
 	cJSON *report NB_CLEANUP(cJSON_DeleteOwner) = nullptr;
 	EXPECT_EQ(checkpoint_store_capture(&database, id, "uncaptured.txt"), NB_ERR_BUSY);
 	EXPECT_EQ(checkpoint_store_restore(&database, session.id, id, CHECKPOINT_RESTORE_BOTH,
 					   &report),
 		  NB_ERR_BUSY);
 	EXPECT_EQ(report, nullptr);
-	EXPECT_EQ(sqlite3_get_autocommit(database.handle), 0);
+	EXPECT_EQ(orm_fixture_transaction_idle(&database), 0);
 	ExpectLaterState();
 	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files"), 2);
 	EXPECT_EQ(read_recovery_file(workspace + "/uncaptured.txt"), "user data\n");
-	ASSERT_EQ(db_exec(&database, "ROLLBACK"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "ROLLBACK"), 0);
 	ExpectLaterState();
 	EXPECT_EQ(Scalar("SELECT count(*) FROM code_checkpoint_files"), 2);
 	ExpectNoRecoveryFiles();

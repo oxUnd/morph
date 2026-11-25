@@ -1,12 +1,13 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
 #include <nb/err.h>
 
 extern "C" {
-#include "sapi/fastcgi/storage/quota.h"
-#include "sapi/fastcgi/storage/artifacts.h"
-#include "sapi/fastcgi/storage/sessions.h"
-#include "sapi/fastcgi/storage/events.h"
-#include "sapi/fastcgi/storage/canvas.h"
+#include "persistence/orm/fcgi_quota.h"
+#include "persistence/orm/fcgi_artifacts.h"
+#include "persistence/orm/fcgi_sessions.h"
+#include "persistence/orm/fcgi_events.h"
+#include "persistence/orm/fcgi_canvas.h"
 #include "sapi/fastcgi/storage/tokens.h"
 #include <nb/file.h>
 #include <nb/cleanup.h>
@@ -173,13 +174,13 @@ class FastcgiSessionStoreTest : public ::testing::Test
 	{
 		store = session_store_open(nullptr, ":memory:");
 		ASSERT_NE(store, nullptr);
-		ASSERT_EQ(sqlite3_exec(store->db.handle,
-				       "INSERT INTO fcgi_user_quota(user_id,profile) "
-				       "VALUES('user','admin');"
-				       "UPDATE fcgi_quota_profiles SET max_concurrent_turns=-1 "
-				       "WHERE name='admin'",
-				       nullptr, nullptr, nullptr),
-			  SQLITE_OK);
+		ASSERT_EQ(orm_fixture_execute(
+				  &store->db,
+				  "INSERT INTO fcgi_user_quota(user_id,profile) "
+				  "VALUES('user','admin');"
+				  "UPDATE fcgi_quota_profiles SET max_concurrent_turns=-1 "
+				  "WHERE name='admin'"),
+			  0);
 	}
 
 	void TearDown() override
@@ -195,17 +196,9 @@ class FastcgiSessionStoreTest : public ::testing::Test
 
 	int64_t query(const char *sql)
 	{
-		sqlite3_stmt *statement = nullptr;
-		int rc = sqlite3_prepare_v2(store->db.handle, sql, -1, &statement, nullptr);
+		int64_t value = -1;
 
-		EXPECT_EQ(rc, SQLITE_OK);
-		if (rc != SQLITE_OK)
-			return -1;
-		rc = sqlite3_step(statement);
-		EXPECT_EQ(rc, SQLITE_ROW);
-		int64_t value = rc == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : -1;
-
-		sqlite3_finalize(statement);
+		EXPECT_EQ(orm_fixture_integer(&store->db, sql, &value), 0);
 		return value;
 	}
 
@@ -271,11 +264,11 @@ TEST_F(FastcgiSessionStoreTest, CanvasReadFailureDoesNotReturnPartialOutput)
 	char *text = nullptr;
 
 	ASSERT_EQ(canvas_add_node(store, "session", "{}", id), 0);
-	sqlite3_progress_handler(store->db.handle, 1, [](void *) { return 1; }, nullptr);
+	orm_fixture_progress_hook(&store->db, 1, [](void *) { return 1; }, nullptr);
 	EXPECT_NE(canvas_list_json(store, "session", &text), 0);
 	EXPECT_EQ(text, nullptr);
-	sqlite3_progress_handler(store->db.handle, 0, nullptr, nullptr);
-	EXPECT_EQ(sqlite3_next_stmt(store->db.handle, nullptr), nullptr);
+	orm_fixture_progress_hook(&store->db, 0, nullptr, nullptr);
+	EXPECT_EQ(orm_fixture_statement_count(&store->db), 0u);
 	ASSERT_EQ(canvas_list_json(store, "session", &text), 0);
 	free(text);
 }
@@ -309,8 +302,7 @@ TEST_F(FastcgiSessionStoreTest, ConcurrentArtifactsRespectImageAndStorageQuotas)
 				  "storage_bytes=-1 WHERE name='admin';"
 				  "UPDATE fcgi_quota_profiles SET " +
 				  std::string(limit) + " WHERE name='admin'";
-		ASSERT_EQ(sqlite3_exec(store->db.handle, sql.c_str(), nullptr, nullptr, nullptr),
-			  SQLITE_OK);
+		ASSERT_EQ(orm_fixture_execute(&store->db, sql.c_str()), 0);
 		std::atomic<int> successes{0}, rejected{0}, failures{0};
 
 		concurrently(8, [&](int) {
@@ -340,22 +332,20 @@ TEST_F(FastcgiSessionStoreTest, ConcurrentArtifactsRespectImageAndStorageQuotas)
 
 TEST_F(FastcgiSessionStoreTest, ArtifactFailureRollsBackUsageAndReleasesConnection)
 {
-	ASSERT_EQ(sqlite3_exec(store->db.handle,
-			       "CREATE TRIGGER reject_usage BEFORE INSERT ON fcgi_usage_daily "
-			       "BEGIN SELECT RAISE(FAIL,'test usage failure'); END",
-			       nullptr, nullptr, nullptr),
-		  SQLITE_OK);
+	ASSERT_EQ(
+		orm_fixture_execute(&store->db,
+				    "CREATE TRIGGER reject_usage BEFORE INSERT ON fcgi_usage_daily "
+				    "BEGIN SELECT RAISE(FAIL,'test usage failure'); END"),
+		0);
 	EXPECT_EQ(register_artifact(), NB_ERR_IO);
-	EXPECT_EQ(sqlite3_get_autocommit(store->db.handle), 1);
+	EXPECT_EQ(orm_fixture_transaction_idle(&store->db), 1);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_artifacts"), 0);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_usage_storage"), 0);
-	ASSERT_EQ(sqlite3_exec(store->db.handle, "DROP TRIGGER reject_usage", nullptr, nullptr,
-			       nullptr),
-		  SQLITE_OK);
-	sqlite3_commit_hook(store->db.handle, [](void *) { return 1; }, nullptr);
+	ASSERT_EQ(orm_fixture_execute(&store->db, "DROP TRIGGER reject_usage"), 0);
+	orm_fixture_commit_hook(&store->db, [](void *) { return 1; }, nullptr);
 	EXPECT_EQ(register_artifact(), NB_ERR_IO);
-	sqlite3_commit_hook(store->db.handle, nullptr, nullptr);
-	EXPECT_EQ(sqlite3_get_autocommit(store->db.handle), 1);
+	orm_fixture_commit_hook(&store->db, nullptr, nullptr);
+	EXPECT_EQ(orm_fixture_transaction_idle(&store->db), 1);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_artifacts"), 0);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_usage_storage"), 0);
 	EXPECT_EQ(query("SELECT count(*) FROM fcgi_usage_daily"), 0);
@@ -366,16 +356,15 @@ TEST_F(FastcgiSessionStoreTest, ArtifactFailureRollsBackUsageAndReleasesConnecti
 
 TEST_F(FastcgiSessionStoreTest, FailedBeginPreservesTheExistingTransaction)
 {
-	ASSERT_EQ(sqlite3_exec(store->db.handle, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr),
-		  SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(&store->db, "BEGIN IMMEDIATE"), 0);
 	EXPECT_EQ(register_artifact(), NB_ERR_IO);
 	EXPECT_EQ(store_quota_begin_turn(store, "user", "session", nullptr), NB_ERR_IO);
 	EXPECT_EQ(store_delete_session(store, "session", "user"), NB_ERR_IO);
 	struct action_record action{};
 
 	EXPECT_EQ(actions_drain_one(store, "actions", &action), 0);
-	EXPECT_EQ(sqlite3_get_autocommit(store->db.handle), 0);
-	ASSERT_EQ(sqlite3_exec(store->db.handle, "ROLLBACK", nullptr, nullptr, nullptr), SQLITE_OK);
+	EXPECT_EQ(orm_fixture_transaction_idle(&store->db), 0);
+	ASSERT_EQ(orm_fixture_execute(&store->db, "ROLLBACK"), 0);
 	concurrently(1, [&](int) { EXPECT_EQ(register_artifact(), 0); });
 }
 

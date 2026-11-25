@@ -6,10 +6,10 @@ struct nb_log;
 extern "C" {
 #endif
 
-#include "db/database.h"
+#include "persistence/orm/database.h"
 #include "agent/react.h"
-#include "persistence/memory_store.h"
-#include "persistence/preferences.h"
+#include "persistence/orm/memory_store.h"
+#include "persistence/orm/preferences.h"
 
 struct model;
 struct memory_worker;

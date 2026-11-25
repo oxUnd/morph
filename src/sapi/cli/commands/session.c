@@ -457,7 +457,7 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 			if (strcmp(cur->kind, "tool_result") == 0) {
 				(void)cli_command_output_linef(
 					ctx, CLI_OUTPUT_STYLE_PLAIN, 0, "%s: %d tokens%s",
-					cur->tool_name[0] ? cur->tool_name : "tool",
+					cur->tool_name && cur->tool_name[0] ? cur->tool_name : "tool",
 					cur->token_count,
 					cur->truncated ? ", truncated" : "");
 			} else {

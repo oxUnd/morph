@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include "persistence/orm/test_fixture.h"
+#include "persistence/orm/hook_store.h"
 #include <nb/thread.h>
 #include "runtime/hooks.h"
 #include "runtime/runtime.h"
@@ -187,13 +189,15 @@ TEST_F(HooksTest, BatchTrustIncludesProjectTrustAndRollsBackOnFailure)
 	cJSON *rows = hook_manager_list(&hooks);
 	auto digest = field(cJSON_GetArrayItem(rows, 0), "review_digest");
 	cJSON_Delete(rows);
-	ASSERT_EQ(db_exec(&database, "CREATE TRIGGER fail_hook_trust BEFORE INSERT "
-		"ON hook_trust BEGIN SELECT RAISE(ABORT,'injected'); END;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database,
+				      "CREATE TRIGGER fail_hook_trust BEFORE INSERT "
+				      "ON hook_trust BEGIN SELECT RAISE(ABORT,'injected'); END;"),
+		  0);
 	EXPECT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), MORPH_ERR_DB);
 	rows = hook_manager_list(&hooks);
 	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "project_untrusted");
 	cJSON_Delete(rows);
-	ASSERT_EQ(db_exec(&database, "DROP TRIGGER fail_hook_trust;"), 0);
+	ASSERT_EQ(orm_fixture_execute(&database, "DROP TRIGGER fail_hook_trust;"), 0);
 	ASSERT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), 0);
 	rows = hook_manager_list(&hooks);
 	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");
@@ -261,15 +265,9 @@ TEST_F(HooksTest, LegacyTrustMigratesOnceAndCannotResurrectAfterRevoke)
 	cJSON_Delete(rows);
 	auto legacy_id = hook_test_hash(std::string(hooks.workdir) + "\n" + source + "\nStop\n0\n0");
 	auto legacy_digest = hook_test_hash(legacy_id + "\n" + definition);
-	sqlite3_stmt *stmt = nullptr;
-	ASSERT_EQ(sqlite3_prepare_v2(database.handle,
-		"INSERT INTO hook_trust(id,digest,definition) VALUES(?,?,?)", -1, &stmt, nullptr),
-		SQLITE_OK);
-	sqlite3_bind_text(stmt, 1, legacy_id.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 2, legacy_digest.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, definition.c_str(), -1, SQLITE_TRANSIENT);
-	ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE);
-	sqlite3_finalize(stmt);
+	ASSERT_EQ(hook_store_action(&database, legacy_id.c_str(), "trust", legacy_digest.c_str(),
+				    definition.c_str()),
+		  0);
 	ASSERT_EQ(hook_manager_reload(&hooks), 0);
 	rows = hook_manager_list(&hooks);
 	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");

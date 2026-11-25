@@ -1,6 +1,6 @@
 #include "runtime/runtime.h"
 #include "runtime/runtime_internal.h"
-#include "persistence/history_store.h"
+#include "persistence/orm/history_store.h"
 #include <nb/map.h>
 #include <nb/str.h>
 #include <nb/utf8.h>
@@ -74,7 +74,7 @@ static cJSON *history_entry(const struct model_history_item *item, const nb_map 
 	    !cJSON_AddStringToObject(entry, "content", item->content ? item->content : "") ||
 	    !cJSON_AddStringToObject(entry, "payload_json",
 		item->payload_json ? item->payload_json : "") ||
-	    !cJSON_AddStringToObject(entry, "tool_name", item->tool_name) ||
+	    !cJSON_AddStringToObject(entry, "tool_name", item->tool_name ? item->tool_name : "") ||
 	    !cJSON_AddStringToObject(entry, "tool_call_id",
 		item->tool_call_id ? item->tool_call_id : "") ||
 	    !cJSON_AddStringToObject(entry, "turn_id", item->turn_id ? item->turn_id : "") ||

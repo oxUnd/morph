@@ -4,7 +4,8 @@ file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_PERSISTENCE_SOURCE
 add_library(morph-persistence STATIC ${MORPH_PERSISTENCE_SOURCES})
 
 target_include_directories(morph-persistence PUBLIC
-	${CMAKE_CURRENT_SOURCE_DIR}
+	${CMAKE_CURRENT_SOURCE_DIR}/orm
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-persistence PUBLIC nbase::nbase morph-cjson morph-db morph-session)
+target_link_libraries(morph-persistence PUBLIC nbase::nbase morph-cjson morph-db morph-session blake3
+	PRIVATE nothing_orm::sqlite)

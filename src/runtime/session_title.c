@@ -1,4 +1,5 @@
 #include "runtime/session_title.h"
+#include "persistence/orm/business_store.h"
 #include <nb/cleanup.h>
 #include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
@@ -122,25 +123,11 @@ char *runtime_title_parse(const char *response)
 /* Compare both identity and name so late results cannot rename another session. */
 static int title_save(struct db *db, const struct session *session, const char *title)
 {
-	sqlite3_stmt *stmt;
-	int rc = sqlite3_prepare_v2(
-		db->handle, "UPDATE sessions SET name=? WHERE id=? AND display_id=? AND name=?", -1,
-		&stmt, NULL);
+	int rc = session_title_store_update(db, session->id, session->display_id, session->name,
+					    title);
 
-	if (rc != SQLITE_OK)
-		return nb_err_trace(db->logger, MORPH_ERR_DB, morph_error_descriptions(),
-				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
-	sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, session->id);
-	sqlite3_bind_text(stmt, 3, session->display_id, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, session->name, -1, SQLITE_TRANSIENT);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc == SQLITE_CONSTRAINT)
-		return nb_err_trace(db->logger, NB_ERR_EXISTS, morph_error_descriptions(),
-				    MORPH_ERROR_COUNT, __FILE__, __LINE__);
-	return nb_err_trace(db->logger, rc == SQLITE_DONE ? 0 : MORPH_ERR_DB,
-			    morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__, __LINE__);
+	return nb_err_trace(db->logger, rc, morph_error_descriptions(), MORPH_ERROR_COUNT, __FILE__,
+			    __LINE__);
 }
 
 static int title_save_unique(struct db *db, const struct session *session, const char *title)

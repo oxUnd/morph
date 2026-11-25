@@ -6,7 +6,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
-#include "db/scheduled_task.h"
+#include "persistence/orm/scheduled_task.h"
 #include "cJSON.h"
 #include "sapi/cli/application_internal.h"
 #include "sapi/cli/presentation/markdown.h"

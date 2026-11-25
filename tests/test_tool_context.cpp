@@ -1,12 +1,13 @@
 #include "errors.h"
+#include "persistence/orm/test_fixture.h"
 #include <gtest/gtest.h>
 #include <stdlib.h>
 #include <nb/err.h>
 #include "agent/tool_context.h"
 #include "permission/context_internal.h"
 #include "permission/trusted_paths.h"
-#include "db/database.h"
-#include "db/permission_grant.h"
+#include "persistence/orm/database.h"
+#include "persistence/orm/permission_grant.h"
 #include <nb/file.h>
 #include <nb/cleanup.h>
 #include <cerrno>
@@ -1287,10 +1288,10 @@ TEST_F(ToolContextTest, CommandPersistenceFailureIsReturned)
 	auto *tctx = tool_context_create(NULL, "/different-work", "/different-output");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(tool_context_set_grant_store(tctx, &db, cwd), 0);
-	ASSERT_EQ(sqlite3_exec(db.handle,
-		"CREATE TRIGGER reject_grant BEFORE INSERT ON permission_grants "
-		"BEGIN SELECT RAISE(FAIL, 'test persistence failure'); END",
-		nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(orm_fixture_execute(
+			  &db, "CREATE TRIGGER reject_grant BEFORE INSERT ON permission_grants "
+			       "BEGIN SELECT RAISE(FAIL, 'test persistence failure'); END"),
+		  0);
 	tool_context_set_operation_approval(tctx, op_always, &op_always_calls);
 	struct tool_operation op = {};
 	op.kind = TOOL_OP_COMMAND;

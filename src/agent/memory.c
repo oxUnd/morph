@@ -1,11 +1,11 @@
 #include "agent/memory.h"
 #include "agent/memory_internal.h"
 #include "agent/history_internal.h"
-#include "persistence/memory_repository.h"
-#include "persistence/memory_snapshot.h"
-#include "persistence/memory_job_store.h"
+#include "persistence/orm/memory_repository.h"
+#include "persistence/orm/memory_snapshot.h"
+#include "persistence/orm/memory_job_store.h"
 #include "models/llm.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include <nb/cleanup.h>
 #include <nb/buf.h>
 #include <nb/log.h>
@@ -145,7 +145,7 @@ static int memory_add_task(struct db *db, int64_t session_id, const char *user_i
 	const char *outcome;
 	int rc;
 
-	if (!db || !db->handle || !user_input)
+	if (!db_is_open(db) || !user_input)
 		return NB_ERR_INVAL;
 	if (importance < 0.0 || importance > 1.0)
 		importance = 0.5;
@@ -625,7 +625,7 @@ int memory_save_turn(struct db *db, int64_t session_id, const char *user_input,
 	char *llm_artifacts NB_CLEANUP(nb_charp_cleanup) = NULL;
 	double llm_importance = 0.5;
 
-	if (!db || !db->handle || !opts || !opts->enabled || !user_input)
+	if (!db_is_open(db) || !opts || !opts->enabled || !user_input)
 		return 0;
 
 	rc = memory_prepare_session(db, session_id);

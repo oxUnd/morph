@@ -3,9 +3,9 @@
 #include "sapi/fastcgi/services/turn_job_internal.h"
 #include "sapi/fastcgi/agent_bridge.h"
 #include "sapi/fastcgi/session_store.h"
-#include "sapi/fastcgi/storage/sessions.h"
-#include "sapi/fastcgi/storage/events.h"
-#include "sapi/fastcgi/storage/quota.h"
+#include "persistence/orm/fcgi_sessions.h"
+#include "persistence/orm/fcgi_events.h"
+#include "persistence/orm/fcgi_quota.h"
 #include "sapi/fastcgi/event_sink.h"
 #include "cJSON.h"
 #include "errors.h"
@@ -18,7 +18,7 @@
 #include "sapi/fastcgi/adapters/turn_interactions.h"
 #include "sapi/fastcgi/presentation/media_refs.h"
 #include "runtime/runtime.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 
 static int bridge_memory_session_visible(const char *display_id, const char *user_id,
 					 void *user_data)

@@ -1,6 +1,6 @@
 /* health.c — liveness probe */
 #include "handlers.h"
-#include "sapi/fastcgi/storage/users.h"
+#include "persistence/orm/fcgi_users.h"
 #include "../agent_bridge.h"
 #include <stdio.h>
 #include <time.h>

@@ -1,6 +1,6 @@
 #include "memory.h"
 
-#include "persistence/memory_search.h"
+#include "persistence/orm/memory_search.h"
 #include <nb/cleanup.h>
 #include "errors.h"
 #include "cJSON.h"

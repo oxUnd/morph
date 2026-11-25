@@ -8,7 +8,7 @@
 #include "sapi/cli/presentation/style.h"
 #include "sapi/cli/presentation/transcript.h"
 #include "sapi/cli/services/transcript.h"
-#include "session.h"
+#include "persistence/orm/session.h"
 #include "errors.h"
 #include <nb/map.h>
 #include <nb/cleanup.h>
