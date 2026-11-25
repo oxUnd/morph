@@ -272,9 +272,9 @@ static int runtime_apply_guardrails(struct react_context *react, const struct co
 
 int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf compaction_prompt_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf compaction_prompt_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *compaction_prompt_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct compress_config compress_cfg;
 	struct guardrail_config guardrail_cfg;
@@ -347,19 +347,24 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	if (profile->workdir && profile->workdir[0])
 		models->react->workdir = strdup(profile->workdir);
 	if (config->context.compaction_prompt_file[0]) {
-		char *path = (nb_path_expand(&file_value_1, config->context.compaction_prompt_file,
-					     NULL) == NB_OK
-				      ? strdup(nb_buf_cstr(&file_value_1))
+		char *path = (nb_path_expand(&compaction_prompt_path_buffer,
+					     config->context.compaction_prompt_file, NULL) == NB_OK
+				      ? strdup(nb_buf_cstr(&compaction_prompt_path_buffer))
 				      : NULL);
 
 		if (path)
 			models->react->history_compaction_prompt =
-				(nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
-						 (file_copy_2 = (char *)malloc(
-							  nb_buf_len(&file_value_2) + 1)) != NULL
-					 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-						   nb_buf_len(&file_value_2) + 1),
-					    nb_charp_steal(&file_copy_2))
+				(nb_file_read_all(path, &compaction_prompt_contents_buffer, 0,
+						  NULL) == NB_OK &&
+						 (compaction_prompt_contents_copy = (char *)malloc(
+							  nb_buf_len(
+								  &compaction_prompt_contents_buffer) +
+							  1)) != NULL
+					 ? (memcpy(compaction_prompt_contents_copy,
+						   nb_buf_cstr(&compaction_prompt_contents_buffer),
+						   nb_buf_len(&compaction_prompt_contents_buffer) +
+							   1),
+					    nb_charp_steal(&compaction_prompt_contents_copy))
 					 : NULL);
 		if (!models->react->history_compaction_prompt)
 			nb_log_write(profile ? profile->logger : NULL, NB_LOG_WARN,
@@ -436,8 +441,8 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 
 int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_3 = NB_OK;
+	nb_buf skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int skill_dir_status = NB_OK;
 
 	struct config *config;
 	struct tool_context *tctx;
@@ -507,13 +512,13 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		}
 	}
 	if (config->skill.dir[0]) {
-		char *dir = ((expand_status_3 = nb_path_expand(&file_value_3, config->skill.dir,
-			NULL)) == NB_OK
-				     ? strdup(nb_buf_cstr(&file_value_3))
+		char *dir = ((skill_dir_status = nb_path_expand(&skill_dir_buffer,
+								config->skill.dir, NULL)) == NB_OK
+				     ? strdup(nb_buf_cstr(&skill_dir_buffer))
 				     : NULL);
 
 		if (!dir)
-			return expand_status_3 != NB_OK ? expand_status_3 : NB_ERR_NOMEM;
+			return skill_dir_status != NB_OK ? skill_dir_status : NB_ERR_NOMEM;
 		rc = nb_file_mkdir(dir, true, NULL);
 		if (rc == 0)
 			rc = tool_context_add_builtin_path(tctx, TOOL_PATH_READ, dir);

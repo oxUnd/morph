@@ -962,10 +962,10 @@ static int react_append_tool_message(nb_vec *messages, const char *content,
 
 static int react_prepare_tool_call_ids(struct chat_response *response)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf provider_call_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int provider_call_id_status = NB_OK;
+	nb_buf tool_call_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int tool_call_id_status = NB_OK;
 
 	if (!response)
 		return NB_ERR_INVAL;
@@ -977,18 +977,19 @@ static int react_prepare_tool_call_ids(struct chat_response *response)
 		if (!tc->name || !tc->name[0])
 			return NB_ERR_PROTOCOL;
 		if (!tc->id || !tc->id[0]) {
-			rc = ((file_status_1 =
+			rc = ((provider_call_id_status =
 				       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_1),
-					    nb_buf_append_cstr(&file_value_1, "pc_"))
+					: !(nb_buf_clear(&provider_call_id_buffer),
+					    nb_buf_append_cstr(&provider_call_id_buffer, "pc_"))
 						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-				      ? file_status_1
-			      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1),
-								generated, sizeof(generated))) ==
-					      NB_ERR_RANGE
+						: nb_random_hex(&provider_call_id_buffer, 16,
+								NULL))) != NB_OK
+				      ? provider_call_id_status
+			      : (provider_call_id_status = nb_str_copy_to(
+					 nb_buf_str(&provider_call_id_buffer), generated,
+					 sizeof(generated))) == NB_ERR_RANGE
 				      ? NB_ERR_NO_SPACE
-				      : file_status_1);
+				      : provider_call_id_status);
 			if (rc < 0)
 				return rc;
 			char *id NB_CLEANUP(nb_charp_cleanup) = strdup(generated);
@@ -998,18 +999,19 @@ static int react_prepare_tool_call_ids(struct chat_response *response)
 			tc->id = nb_charp_steal(&id);
 		}
 		if (!tc->tool_call_id || !tc->tool_call_id[0]) {
-			rc = ((file_status_2 =
+			rc = ((tool_call_id_status =
 				       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_2),
-					    nb_buf_append_cstr(&file_value_2, "tc_"))
+					: !(nb_buf_clear(&tool_call_id_buffer),
+					    nb_buf_append_cstr(&tool_call_id_buffer, "tc_"))
 						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_2, 16, NULL))) != NB_OK
-				      ? file_status_2
-			      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2),
-								generated, sizeof(generated))) ==
-					      NB_ERR_RANGE
+						: nb_random_hex(&tool_call_id_buffer, 16, NULL))) !=
+					      NB_OK
+				      ? tool_call_id_status
+			      : (tool_call_id_status =
+					 nb_str_copy_to(nb_buf_str(&tool_call_id_buffer), generated,
+							sizeof(generated))) == NB_ERR_RANGE
 				      ? NB_ERR_NO_SPACE
-				      : file_status_2);
+				      : tool_call_id_status);
 			if (rc < 0)
 				return rc;
 			char *id NB_CLEANUP(nb_charp_cleanup) = strdup(generated);
@@ -3314,9 +3316,9 @@ static int react_collect_background_results(struct react_context *ctx, nb_vec *m
 int react_run(struct react_context *ctx, const char *user_input, react_output_cb cb,
 	      void *user_data)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf turn_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int turn_id_status = NB_OK;
+	nb_buf morph_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	if (!ctx || !user_input)
 		return NB_ERR_INVAL;
@@ -3344,18 +3346,18 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 	free(ctx->hook_context);
 	ctx->hook_context = NULL;
 	if (!use_user_turn_id) {
-		int id_rc =
-			((file_status_3 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					   : !(nb_buf_clear(&file_value_3),
-					       nb_buf_append_cstr(&file_value_3, "turn_"))
-						   ? NB_ERR_NOMEM
-						   : nb_random_hex(&file_value_3, 16, NULL))) !=
-					 NB_OK
-				 ? file_status_3
-			 : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), ctx->turn_id,
-							   sizeof(ctx->turn_id))) == NB_ERR_RANGE
-				 ? NB_ERR_NO_SPACE
-				 : file_status_3);
+		int id_rc = ((turn_id_status =
+				      ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				       : !(nb_buf_clear(&turn_id_buffer),
+					   nb_buf_append_cstr(&turn_id_buffer, "turn_"))
+					       ? NB_ERR_NOMEM
+					       : nb_random_hex(&turn_id_buffer, 16, NULL))) != NB_OK
+				     ? turn_id_status
+			     : (turn_id_status =
+					nb_str_copy_to(nb_buf_str(&turn_id_buffer), ctx->turn_id,
+						       sizeof(ctx->turn_id))) == NB_ERR_RANGE
+				     ? NB_ERR_NO_SPACE
+				     : turn_id_status);
 		if (id_rc != 0)
 			return id_rc;
 	}
@@ -3444,8 +3446,8 @@ int react_run(struct react_context *ctx, const char *user_input, react_output_cb
 	char *expanded_global = NULL;
 
 	if (getenv("HOME")) {
-		expanded_global = (nb_path_expand(&file_value_4, "~/.morph", NULL) == NB_OK
-					   ? strdup(nb_buf_cstr(&file_value_4))
+		expanded_global = (nb_path_expand(&morph_dir_buffer, "~/.morph", NULL) == NB_OK
+					   ? strdup(nb_buf_cstr(&morph_dir_buffer))
 					   : NULL);
 		if (!expanded_global)
 			context_rc = NB_ERR_NOMEM;

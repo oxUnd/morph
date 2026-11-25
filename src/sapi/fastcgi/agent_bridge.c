@@ -281,8 +281,8 @@ static int bridge_pool_configure(struct fcgi_bridge *pool, const char *db_path,
 
 static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_1 = NB_OK;
+	nb_buf output_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int output_dir_status = NB_OK;
 
 	const char *config_path;
 	const char *output_dir;
@@ -311,12 +311,12 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	}
 	output_dir = getenv("MORPH_FCGI_OUTPUT_DIR");
 	if (output_dir && output_dir[0]) {
-		expanded_output = ((expand_status_1 = nb_path_expand(&file_value_1, output_dir,
-			NULL)) == NB_OK
-					   ? strdup(nb_buf_cstr(&file_value_1))
+		expanded_output = ((output_dir_status = nb_path_expand(&output_dir_buffer,
+								       output_dir, NULL)) == NB_OK
+					   ? strdup(nb_buf_cstr(&output_dir_buffer))
 					   : NULL);
 		if (!expanded_output)
-			return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
+			return output_dir_status != NB_OK ? output_dir_status : NB_ERR_NOMEM;
 		rc = nb_file_mkdir(expanded_output, true, NULL);
 		if (rc != 0) {
 			free(expanded_output);

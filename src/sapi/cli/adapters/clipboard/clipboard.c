@@ -277,10 +277,10 @@ static int cli_clipboard_run(const char *const argv[], const char *stdout_path)
 
 static int cli_clipboard_output_path(struct cli_application *ctx, char **out_path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf image_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int image_id_status = NB_OK;
+	nb_buf filename_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf image_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	const struct config *config;
 	char id[CLI_CLIPBOARD_ID_SIZE];
@@ -300,27 +300,28 @@ static int cli_clipboard_output_path(struct cli_application *ctx, char **out_pat
 	if (rc != 0)
 		return rc;
 
-	rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				: !(nb_buf_clear(&file_value_1),
-				    nb_buf_append_cstr(&file_value_1, "clipboard_"))
-					? NB_ERR_NOMEM
-					: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-		      ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), id, sizeof(id))) ==
+	rc = ((image_id_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				  : !(nb_buf_clear(&image_id_buffer),
+				      nb_buf_append_cstr(&image_id_buffer, "clipboard_"))
+					  ? NB_ERR_NOMEM
+					  : nb_random_hex(&image_id_buffer, 16, NULL))) != NB_OK
+		      ? image_id_status
+	      : (image_id_status = nb_str_copy_to(nb_buf_str(&image_id_buffer), id, sizeof(id))) ==
 			      NB_ERR_RANGE
 		      ? NB_ERR_NO_SPACE
-		      : file_status_1);
+		      : image_id_status);
 	if (rc != 0)
 		return rc;
 
-	filename = (nb_buf_clear(&file_value_2), nb_buf_printf(&file_value_2, "%s%s", id, ".png")
-							 ? strdup(nb_buf_cstr(&file_value_2))
+	filename =
+		(nb_buf_clear(&filename_buffer), nb_buf_printf(&filename_buffer, "%s%s", id, ".png")
+							 ? strdup(nb_buf_cstr(&filename_buffer))
 							 : NULL);
 	if (!filename)
 		return NB_ERR_NOMEM;
 
-	path = (nb_path_concat(&file_value_3, config->general.output_dir, filename) == NB_OK
-			? strdup(nb_buf_cstr(&file_value_3))
+	path = (nb_path_concat(&image_path_buffer, config->general.output_dir, filename) == NB_OK
+			? strdup(nb_buf_cstr(&image_path_buffer))
 			: NULL);
 	free(filename);
 	if (!path)
@@ -334,7 +335,7 @@ static int cli_clipboard_output_path(struct cli_application *ctx, char **out_pat
 
 static int cli_clipboard_save_platform_image(const char *png_path)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf tiff_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	static const char script[] = "on run argv\n"
 				     "set outFile to open for access POSIX file (item 1 of argv) "
@@ -353,9 +354,9 @@ static int cli_clipboard_save_platform_image(const char *png_path)
 	const char *sips_argv[8];
 	int rc;
 
-	tiff_path = (nb_buf_clear(&file_value_4),
-		     nb_buf_printf(&file_value_4, "%s%s", png_path, ".tiff")
-			     ? strdup(nb_buf_cstr(&file_value_4))
+	tiff_path = (nb_buf_clear(&tiff_path_buffer),
+		     nb_buf_printf(&tiff_path_buffer, "%s%s", png_path, ".tiff")
+			     ? strdup(nb_buf_cstr(&tiff_path_buffer))
 			     : NULL);
 	if (!tiff_path)
 		return NB_ERR_NOMEM;

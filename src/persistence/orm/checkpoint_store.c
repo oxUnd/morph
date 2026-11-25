@@ -2559,14 +2559,14 @@ static int checkpoint_mark_undone(struct db *db, const struct checkpoint_info *i
 
 static int checkpoint_effects_prepare(struct checkpoint_plan *plan, cJSON *report)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_4 = NB_OK;
+	nb_buf backup_name_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int backup_name_status = NB_OK;
+	nb_buf compensation_backup_name_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int compensation_backup_name_status = NB_OK;
+	nb_buf staging_name_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int staging_name_status = NB_OK;
+	nb_buf compensation_staging_name_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int compensation_staging_name_status = NB_OK;
 
 	cJSON *effects = cJSON_AddArrayToObject(report, "effects");
 	if (!effects || !cJSON_AddBoolToObject(report, "code_restored", 0) ||
@@ -2582,58 +2582,66 @@ static int checkpoint_effects_prepare(struct checkpoint_plan *plan, cJSON *repor
 	for (size_t _i_ = 0; _i_ < nb_vec_len(&plan->files) &&
 			     (file = (struct checkpoint_file *)nb_vec_at(&plan->files, _i_));
 	     _i_++) {
-		int rc = ((file_status_1 =
-				   ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				    : !(nb_buf_clear(&file_value_1),
-					nb_buf_append_cstr(&file_value_1, ".morph-rewind-save-"))
-					    ? NB_ERR_NOMEM
-					    : nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-				  ? file_status_1
-			  : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), file->backup,
-							    sizeof(file->backup))) == NB_ERR_RANGE
-				  ? NB_ERR_NO_SPACE
-				  : file_status_1);
+		int rc =
+			((backup_name_status =
+				  ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				   : !(nb_buf_clear(&backup_name_buffer),
+				       nb_buf_append_cstr(&backup_name_buffer,
+							  ".morph-rewind-save-"))
+					   ? NB_ERR_NOMEM
+					   : nb_random_hex(&backup_name_buffer, 16, NULL))) != NB_OK
+				 ? backup_name_status
+			 : (backup_name_status =
+				    nb_str_copy_to(nb_buf_str(&backup_name_buffer), file->backup,
+						   sizeof(file->backup))) == NB_ERR_RANGE
+				 ? NB_ERR_NO_SPACE
+				 : backup_name_status);
 		if (rc == 0)
-			rc = ((file_status_2 =
+			rc = ((compensation_backup_name_status =
 				       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_2),
-					    nb_buf_append_cstr(&file_value_2,
+					: !(nb_buf_clear(&compensation_backup_name_buffer),
+					    nb_buf_append_cstr(&compensation_backup_name_buffer,
 							       ".morph-rewind-undo-"))
 						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_2, 16, NULL))) != NB_OK
-				      ? file_status_2
-			      : (file_status_2 = nb_str_copy_to(
-					 nb_buf_str(&file_value_2), file->compensation_backup,
+						: nb_random_hex(&compensation_backup_name_buffer,
+								16, NULL))) != NB_OK
+				      ? compensation_backup_name_status
+			      : (compensation_backup_name_status = nb_str_copy_to(
+					 nb_buf_str(&compensation_backup_name_buffer),
+					 file->compensation_backup,
 					 sizeof(file->compensation_backup))) == NB_ERR_RANGE
 				      ? NB_ERR_NO_SPACE
-				      : file_status_2);
+				      : compensation_backup_name_status);
 		if (rc == 0)
-			rc = ((file_status_3 =
-				       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_3),
-					    nb_buf_append_cstr(&file_value_3, ".morph-rewind-new-"))
-						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_3, 16, NULL))) != NB_OK
-				      ? file_status_3
-			      : (file_status_3 =
-					 nb_str_copy_to(nb_buf_str(&file_value_3), file->staging,
-							sizeof(file->staging))) == NB_ERR_RANGE
+			rc = ((staging_name_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+						      : !(nb_buf_clear(&staging_name_buffer),
+							  nb_buf_append_cstr(&staging_name_buffer,
+									     ".morph-rewind-new-"))
+							      ? NB_ERR_NOMEM
+							      : nb_random_hex(&staging_name_buffer,
+									      16, NULL))) != NB_OK
+				      ? staging_name_status
+			      : (staging_name_status = nb_str_copy_to(
+					 nb_buf_str(&staging_name_buffer), file->staging,
+					 sizeof(file->staging))) == NB_ERR_RANGE
 				      ? NB_ERR_NO_SPACE
-				      : file_status_3);
+				      : staging_name_status);
 		if (rc == 0)
-			rc = ((file_status_4 =
+			rc = ((compensation_staging_name_status =
 				       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_4),
-					    nb_buf_append_cstr(&file_value_4,
+					: !(nb_buf_clear(&compensation_staging_name_buffer),
+					    nb_buf_append_cstr(&compensation_staging_name_buffer,
 							       ".morph-rewind-comp-"))
 						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_4, 16, NULL))) != NB_OK
-				      ? file_status_4
-			      : (file_status_4 = nb_str_copy_to(
-					 nb_buf_str(&file_value_4), file->compensation_staging,
+						: nb_random_hex(&compensation_staging_name_buffer,
+								16, NULL))) != NB_OK
+				      ? compensation_staging_name_status
+			      : (compensation_staging_name_status = nb_str_copy_to(
+					 nb_buf_str(&compensation_staging_name_buffer),
+					 file->compensation_staging,
 					 sizeof(file->compensation_staging))) == NB_ERR_RANGE
 				      ? NB_ERR_NO_SPACE
-				      : file_status_4);
+				      : compensation_staging_name_status);
 		if (rc != 0)
 			return rc;
 		nb_buf backup_path NB_CLEANUP(nb_buf_cleanup) = {0};

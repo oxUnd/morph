@@ -69,8 +69,8 @@ protected:
 };
 
 TEST_F(CliSetupTest, SkipOptionalModels) {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	ASSERT_GE(run_custom(std::string(9, '\n')), 0);
 	struct config cfg;
@@ -87,14 +87,13 @@ TEST_F(CliSetupTest, SkipOptionalModels) {
 	EXPECT_TRUE(cfg.exec.allow_host_execution);
 	EXPECT_TRUE(cfg.react.hitl_auto_approve_readonly);
 	EXPECT_TRUE(cfg.react.hitl_auto_approve_media);
-	char *saved =
-		(nb_file_read_all(path.c_str(), &file_value_1, 0, NULL) == NB_OK &&
-				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				   nb_buf_len(&file_value_1) + 1),
-			    nb_charp_steal(&file_copy_1))
-			 : NULL);
+	char *saved = (nb_file_read_all(path.c_str(), &file_contents_buffer, 0, NULL) == NB_OK &&
+				       (file_contents_copy = (char *)malloc(
+						nb_buf_len(&file_contents_buffer) + 1)) != NULL
+			       ? (memcpy(file_contents_copy, nb_buf_cstr(&file_contents_buffer),
+					 nb_buf_len(&file_contents_buffer) + 1),
+				  nb_charp_steal(&file_contents_copy))
+			       : NULL);
 	ASSERT_NE(saved, nullptr);
 	nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(saved), nullptr);
 	ASSERT_TRUE(parsed);
@@ -131,22 +130,21 @@ TEST_F(CliSetupTest, VideoDefaultsConfigureAllModelsWithoutPerModelQuestions) {
 }
 
 TEST_F(CliSetupTest, DefaultsStillRequireSaveAndCannotHideIncompleteCustomModels) {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf saved_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *saved_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	EXPECT_EQ(run_input("\n"), NB_ERR_CANCELLED);
 	EXPECT_FALSE(nb_file_exists(path.c_str()));
 	const std::string old = "[model.text]\nprovider='custom'\nmodel=''\napi_base=''\n";
 	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
 	EXPECT_EQ(run_input("\n\n", true), NB_ERR_CANCELLED);
-	char *saved =
-		(nb_file_read_all(path.c_str(), &file_value_2, 0, NULL) == NB_OK &&
-				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				   nb_buf_len(&file_value_2) + 1),
-			    nb_charp_steal(&file_copy_2))
-			 : NULL);
+	char *saved = (nb_file_read_all(path.c_str(), &saved_contents_buffer, 0, NULL) == NB_OK &&
+				       (saved_contents_copy = (char *)malloc(
+						nb_buf_len(&saved_contents_buffer) + 1)) != NULL
+			       ? (memcpy(saved_contents_copy, nb_buf_cstr(&saved_contents_buffer),
+					 nb_buf_len(&saved_contents_buffer) + 1),
+				  nb_charp_steal(&saved_contents_copy))
+			       : NULL);
 	ASSERT_NE(saved, nullptr);
 	EXPECT_EQ(std::string(saved), old);
 	free(saved);
@@ -186,18 +184,17 @@ TEST(CliSetupDefaults, NewlyRequiredModelsReuseAnExistingProviderAccount) {
 }
 
 TEST_F(CliSetupTest, SetupWritesOnlyTheSelectedCredentialSource) {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf saved_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *saved_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	ASSERT_GE(run_custom_raw("7\n" + std::string(21, '\n')), 0);
-	char *saved =
-		(nb_file_read_all(path.c_str(), &file_value_3, 0, NULL) == NB_OK &&
-				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				   nb_buf_len(&file_value_3) + 1),
-			    nb_charp_steal(&file_copy_3))
-			 : NULL);
+	char *saved = (nb_file_read_all(path.c_str(), &saved_contents_buffer, 0, NULL) == NB_OK &&
+				       (saved_contents_copy = (char *)malloc(
+						nb_buf_len(&saved_contents_buffer) + 1)) != NULL
+			       ? (memcpy(saved_contents_copy, nb_buf_cstr(&saved_contents_buffer),
+					 nb_buf_len(&saved_contents_buffer) + 1),
+				  nb_charp_steal(&saved_contents_copy))
+			       : NULL);
 	ASSERT_NE(saved, nullptr);
 	nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(saved), nullptr);
 	ASSERT_TRUE(parsed);
@@ -215,22 +212,21 @@ TEST_F(CliSetupTest, SetupWritesOnlyTheSelectedCredentialSource) {
 }
 
 TEST_F(CliSetupTest, ReconfigureRemovesEnvironmentFieldWhenKeepingDirectKey) {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf saved_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *saved_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const std::string old = "[model.text]\nprovider='custom'\nmodel='private'\n"
 		"api_base='http://localhost:1234/v1'\napi_key='fixture-secret'\n"
 		"api_key_env='OLD_KEY' # retain this comment\n";
 	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
 	ASSERT_GE(run_custom_raw(std::string(11, '\n'), true), 0);
-	char *saved =
-		(nb_file_read_all(path.c_str(), &file_value_4, 0, NULL) == NB_OK &&
-				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-				   nb_buf_len(&file_value_4) + 1),
-			    nb_charp_steal(&file_copy_4))
-			 : NULL);
+	char *saved = (nb_file_read_all(path.c_str(), &saved_contents_buffer, 0, NULL) == NB_OK &&
+				       (saved_contents_copy = (char *)malloc(
+						nb_buf_len(&saved_contents_buffer) + 1)) != NULL
+			       ? (memcpy(saved_contents_copy, nb_buf_cstr(&saved_contents_buffer),
+					 nb_buf_len(&saved_contents_buffer) + 1),
+				  nb_charp_steal(&saved_contents_copy))
+			       : NULL);
 	ASSERT_NE(saved, nullptr);
 	nb_toml *parsed = nb_toml_parse(nb_str_from_cstr(saved), nullptr);
 	ASSERT_TRUE(parsed);
@@ -336,20 +332,20 @@ TEST_F(CliSetupTest, CancellationDoesNotCreateFile) {
 }
 
 TEST_F(CliSetupTest, NeverOverwriteExistingConfig) {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct cli_application _cli_output_context = {0};
 	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	ASSERT_EQ(nb_file_write_all(path.c_str(), "# keep\n", 7, NULL), 0);
 	EXPECT_EQ(run_custom(std::string(9, '\n')), NB_ERR_EXISTS);
 	char *contents =
-		(nb_file_read_all(path.c_str(), &file_value_5, 0, NULL) == NB_OK &&
-				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
-				   nb_buf_len(&file_value_5) + 1),
-			    nb_charp_steal(&file_copy_5))
+		(nb_file_read_all(path.c_str(), &config_contents_buffer, 0, NULL) == NB_OK &&
+				 (config_contents_copy = (char *)malloc(
+					  nb_buf_len(&config_contents_buffer) + 1)) != NULL
+			 ? (memcpy(config_contents_copy, nb_buf_cstr(&config_contents_buffer),
+				   nb_buf_len(&config_contents_buffer) + 1),
+			    nb_charp_steal(&config_contents_copy))
 			 : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "# keep\n");
@@ -497,8 +493,8 @@ TEST_F(CliSetupTest, VideoRoleCannotSaveBeforeAllRequiredModelsAreCollected) {
 }
 
 TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesBackup) {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_6 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf backup_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *backup_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const std::string old = "# user comments survive in the backup\n"
 		"[model.text]\nprovider='custom'\nadapter='openai-chat-compatible'\n"
@@ -530,12 +526,14 @@ TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesB
 	for (const auto &entry : std::filesystem::directory_iterator(dir)) {
 		if (entry.path().filename().string().find(".backup-") == std::string::npos) continue;
 		char *backup =
-			(nb_file_read_all(entry.path().c_str(), &file_value_6, 0, NULL) == NB_OK &&
-					 (file_copy_6 = (char *)malloc(nb_buf_len(&file_value_6) +
-								       1)) != NULL
-				 ? (memcpy(file_copy_6, nb_buf_cstr(&file_value_6),
-					   nb_buf_len(&file_value_6) + 1),
-				    nb_charp_steal(&file_copy_6))
+			(nb_file_read_all(entry.path().c_str(), &backup_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (backup_contents_copy = (char *)malloc(
+						  nb_buf_len(&backup_contents_buffer) + 1)) != NULL
+				 ? (memcpy(backup_contents_copy,
+					   nb_buf_cstr(&backup_contents_buffer),
+					   nb_buf_len(&backup_contents_buffer) + 1),
+				    nb_charp_steal(&backup_contents_copy))
 				 : NULL);
 		ASSERT_NE(backup, nullptr);
 		EXPECT_EQ(std::string(backup), old);
@@ -546,20 +544,19 @@ TEST_F(CliSetupTest, ReconfigureKeepsValuesCredentialsAndCustomPromptAndCreatesB
 }
 
 TEST_F(CliSetupTest, ReconfigureCancelAndInvalidConfigLeaveFilesUntouched) {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const std::string old = "[memory]\nenabled=false\n";
 	ASSERT_EQ(nb_file_write_all(path.c_str(), old.c_str(), old.size(), NULL), 0);
 	EXPECT_EQ(run_custom_raw("", true), NB_ERR_CANCELLED);
-	char *text =
-		(nb_file_read_all(path.c_str(), &file_value_7, 0, NULL) == NB_OK &&
-				 (file_copy_7 = (char *)malloc(nb_buf_len(&file_value_7) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
-				   nb_buf_len(&file_value_7) + 1),
-			    nb_charp_steal(&file_copy_7))
-			 : NULL);
+	char *text = (nb_file_read_all(path.c_str(), &config_contents_buffer, 0, NULL) == NB_OK &&
+				      (config_contents_copy = (char *)malloc(
+					       nb_buf_len(&config_contents_buffer) + 1)) != NULL
+			      ? (memcpy(config_contents_copy, nb_buf_cstr(&config_contents_buffer),
+					nb_buf_len(&config_contents_buffer) + 1),
+				 nb_charp_steal(&config_contents_copy))
+			      : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_EQ(std::string(text), old);
 	free(text);
@@ -570,10 +567,10 @@ TEST_F(CliSetupTest, ReconfigureCancelAndInvalidConfigLeaveFilesUntouched) {
 }
 
 TEST_F(CliSetupTest, RolePromptReplacementPreservesOriginalPromptFiles) {
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_9 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf original_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *original_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf generated_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *generated_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	std::string custom = dir + "/custom.md";
 	ASSERT_EQ(nb_file_write_all(custom.c_str(), "Customized instructions", 23, NULL), 0);
@@ -584,23 +581,24 @@ TEST_F(CliSetupTest, RolePromptReplacementPreservesOriginalPromptFiles) {
 	ASSERT_EQ(config_load(nullptr, &cfg, path.c_str()), 0);
 	EXPECT_STRNE(cfg.prompt.system_prompt_file, custom.c_str());
 	char *original =
-		(nb_file_read_all(custom.c_str(), &file_value_8, 0, NULL) == NB_OK &&
-				 (file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
-				   nb_buf_len(&file_value_8) + 1),
-			    nb_charp_steal(&file_copy_8))
+		(nb_file_read_all(custom.c_str(), &original_contents_buffer, 0, NULL) == NB_OK &&
+				 (original_contents_copy = (char *)malloc(
+					  nb_buf_len(&original_contents_buffer) + 1)) != NULL
+			 ? (memcpy(original_contents_copy, nb_buf_cstr(&original_contents_buffer),
+				   nb_buf_len(&original_contents_buffer) + 1),
+			    nb_charp_steal(&original_contents_copy))
 			 : NULL);
 	ASSERT_NE(original, nullptr);
 	EXPECT_STREQ(original, "Customized instructions");
 	free(original);
 	char *generated =
-		(nb_file_read_all(cfg.prompt.system_prompt_file, &file_value_9, 0, NULL) == NB_OK &&
-				 (file_copy_9 = (char *)malloc(nb_buf_len(&file_value_9) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_9, nb_buf_cstr(&file_value_9),
-				   nb_buf_len(&file_value_9) + 1),
-			    nb_charp_steal(&file_copy_9))
+		(nb_file_read_all(cfg.prompt.system_prompt_file, &generated_contents_buffer, 0,
+				  NULL) == NB_OK &&
+				 (generated_contents_copy = (char *)malloc(
+					  nb_buf_len(&generated_contents_buffer) + 1)) != NULL
+			 ? (memcpy(generated_contents_copy, nb_buf_cstr(&generated_contents_buffer),
+				   nb_buf_len(&generated_contents_buffer) + 1),
+			    nb_charp_steal(&generated_contents_copy))
 			 : NULL);
 	ASSERT_NE(generated, nullptr);
 	EXPECT_NE(std::string(generated).find("author's voice"), std::string::npos);
@@ -622,21 +620,20 @@ TEST_F(CliSetupTest, EveryRoleRendersAndUsesExplicitModelRequirements) {
 }
 
 TEST_F(CliSetupTest, ReconfigureUsesSavedVideoRoleAndNeverAddsSkipSteps) {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_10 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf saved_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *saved_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	ASSERT_GE(run_custom_raw("7\n" + std::string(21, '\n')), 0);
 	ASSERT_GE(run_custom_raw(std::string(23, '\n'), true), 0);
 	EXPECT_EQ(transcript.find("1) Skip"), std::string::npos);
 	EXPECT_NE(transcript.find("Video model (required)"), std::string::npos);
-	char *saved =
-		(nb_file_read_all(path.c_str(), &file_value_10, 0, NULL) == NB_OK &&
-				 (file_copy_10 = (char *)malloc(nb_buf_len(&file_value_10) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_10, nb_buf_cstr(&file_value_10),
-				   nb_buf_len(&file_value_10) + 1),
-			    nb_charp_steal(&file_copy_10))
-			 : NULL);
+	char *saved = (nb_file_read_all(path.c_str(), &saved_contents_buffer, 0, NULL) == NB_OK &&
+				       (saved_contents_copy = (char *)malloc(
+						nb_buf_len(&saved_contents_buffer) + 1)) != NULL
+			       ? (memcpy(saved_contents_copy, nb_buf_cstr(&saved_contents_buffer),
+					 nb_buf_len(&saved_contents_buffer) + 1),
+				  nb_charp_steal(&saved_contents_copy))
+			       : NULL);
 	ASSERT_NE(saved, nullptr);
 	EXPECT_EQ(cli_setup_config_role(saved), CLI_SETUP_VIDEO_CREATOR);
 	free(saved);
@@ -873,8 +870,8 @@ TEST_F(CliSetupTest, SetupReplacesAllStringFormsWhileRetainingTrailingComments) 
 }
 
 TEST_F(CliSetupTest, RoleSnapshotsHaveReadableNamesAndReuseUnchangedContent) {
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_11 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf custom_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *custom_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	ASSERT_GE(run_custom(std::string(9, '\n')), 0);
 	struct config cfg;
@@ -892,12 +889,12 @@ TEST_F(CliSetupTest, RoleSnapshotsHaveReadableNamesAndReuseUnchangedContent) {
 	EXPECT_EQ(next.extension(), ".md");
 	EXPECT_EQ(next.filename().string().find("general-"), 0u);
 	char *custom =
-		(nb_file_read_all(first.c_str(), &file_value_11, 0, NULL) == NB_OK &&
-				 (file_copy_11 = (char *)malloc(nb_buf_len(&file_value_11) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_11, nb_buf_cstr(&file_value_11),
-				   nb_buf_len(&file_value_11) + 1),
-			    nb_charp_steal(&file_copy_11))
+		(nb_file_read_all(first.c_str(), &custom_contents_buffer, 0, NULL) == NB_OK &&
+				 (custom_contents_copy = (char *)malloc(
+					  nb_buf_len(&custom_contents_buffer) + 1)) != NULL
+			 ? (memcpy(custom_contents_copy, nb_buf_cstr(&custom_contents_buffer),
+				   nb_buf_len(&custom_contents_buffer) + 1),
+			    nb_charp_steal(&custom_contents_copy))
 			 : NULL);
 	ASSERT_NE(custom, nullptr);
 	EXPECT_STREQ(custom, "Custom instructions");

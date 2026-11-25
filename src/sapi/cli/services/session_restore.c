@@ -13,7 +13,7 @@
 
 void cli_session_history_print_resume_hint(struct cli_application *ctx)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct session session;
 	const char *config_path;
@@ -29,11 +29,11 @@ void cli_session_history_print_resume_hint(struct cli_application *ctx)
 	config_path = runtime_config_path_borrow(ctx->runtime);
 	resolved_config =
 		config_path && config_path[0]
-			? (nb_path_expand(&file_value_1, config_path, NULL) == NB_OK &&
-					   nb_path_canonical_missing(&file_value_1,
-								     nb_buf_cstr(&file_value_1),
-								     NULL) == NB_OK
-				   ? strdup(nb_buf_cstr(&file_value_1))
+			? (nb_path_expand(&config_path_buffer, config_path, NULL) == NB_OK &&
+					   nb_path_canonical_missing(
+						   &config_path_buffer,
+						   nb_buf_cstr(&config_path_buffer), NULL) == NB_OK
+				   ? strdup(nb_buf_cstr(&config_path_buffer))
 				   : NULL)
 			: NULL;
 	workdir = runtime_workdir_borrow(ctx->runtime);

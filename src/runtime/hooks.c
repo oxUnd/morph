@@ -112,7 +112,7 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		     const char *matcher, const cJSON *handler, int project, int group_index,
 		     int handler_index)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf source_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct hook_entry *entry;
 	nb_buf identity NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -136,12 +136,12 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		return NB_ERR_NOMEM;
 	}
 	memset(entry, 0, sizeof(*entry));
-	entry->source =
-		(nb_path_expand(&file_value_1, source, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_1, nb_buf_cstr(&file_value_1), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_1))
-			 : NULL);
+	entry->source = (nb_path_expand(&source_path_buffer, source, NULL) == NB_OK &&
+					 nb_path_canonical_missing(&source_path_buffer,
+								   nb_buf_cstr(&source_path_buffer),
+								   NULL) == NB_OK
+				 ? strdup(nb_buf_cstr(&source_path_buffer))
+				 : NULL);
 	if (!entry->source)
 		entry->source = strdup(source);
 	entry->event = strdup(event);
@@ -359,7 +359,7 @@ static void hook_json_error_position(struct hook_manager *manager, const char *t
 
 static int load_json_file(struct hook_manager *manager, const char *path, int project)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf hooks_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct stat st;
 	const char *text;
@@ -385,9 +385,9 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 		return hook_load_error(
 			manager, path, NB_ERR_TOO_BIG,
 			"Hooks configuration must be a regular file within the size limit.");
-	if (nb_file_read_all(path, &file_value_2, 0, NULL) != NB_OK)
+	if (nb_file_read_all(path, &hooks_contents_buffer, 0, NULL) != NB_OK)
 		return hook_load_error(manager, path, NB_ERR_IO, NULL);
-	text = nb_buf_cstr(&file_value_2);
+	text = nb_buf_cstr(&hooks_contents_buffer);
 	root = cJSON_ParseWithOpts(text, &parse_end, 1);
 	if (!root) {
 		hook_json_error_position(manager, text, parse_end);
@@ -399,7 +399,7 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 				  "document.");
 		return rc;
 	}
-	nb_buf_destroy(&file_value_2);
+	nb_buf_destroy(&hooks_contents_buffer);
 	rc = load_object(manager, cJSON_GetObjectItemCaseSensitive(root, "hooks"), path, project);
 	cJSON_Delete(root);
 	if (rc != 0)
@@ -449,19 +449,20 @@ static int load_inline(struct hook_manager *manager, const char *path, const cha
 
 int hook_manager_reload(struct hook_manager *manager)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_4 = NB_OK;
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_5 = NB_OK;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_6 = NB_OK;
+	nb_buf global_hooks_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_hooks_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int config_hooks_path_status = NB_OK;
+	nb_buf project_hooks_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int project_hooks_path_status = NB_OK;
+	nb_buf project_config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int project_config_path_status = NB_OK;
 
 	struct hook_entry *entry;
 	char path[PATH_MAX];
-	char *home = (nb_path_expand(&file_value_3, "~/.morph/hooks.json", NULL) == NB_OK
-			      ? strdup(nb_buf_cstr(&file_value_3))
-			      : NULL);
+	char *home =
+		(nb_path_expand(&global_hooks_path_buffer, "~/.morph/hooks.json", NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&global_hooks_path_buffer))
+			 : NULL);
 	int rc;
 	int enabled = manager ? manager->config->hooks_enabled : 0;
 
@@ -486,13 +487,15 @@ int hook_manager_reload(struct hook_manager *manager)
 			*slash = '\0';
 		else
 			strcpy(directory, ".");
-		rc = ((file_status_4 = nb_path_concat(&file_value_4, *directory ? directory : "/",
-						      "hooks.json")) != NB_OK
-			      ? file_status_4
-		      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), path,
-							sizeof(path))) == NB_ERR_RANGE
+		rc = ((config_hooks_path_status =
+			       nb_path_concat(&config_hooks_path_buffer,
+					      *directory ? directory : "/", "hooks.json")) != NB_OK
+			      ? config_hooks_path_status
+		      : (config_hooks_path_status =
+				 nb_str_copy_to(nb_buf_str(&config_hooks_path_buffer), path,
+						sizeof(path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_4);
+			      : config_hooks_path_status);
 		free(directory);
 		if (rc == 0)
 			rc = load_json_file(manager, path, 0);
@@ -517,24 +520,28 @@ int hook_manager_reload(struct hook_manager *manager)
 		rc = load_inline(manager, manager->config_path, manager->config->hooks_json, 0);
 	}
 	if (rc == 0)
-		rc = ((file_status_5 = nb_path_concat(&file_value_5, manager->workdir,
-						      ".morph/hooks.json")) != NB_OK
-			      ? file_status_5
-		      : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), path,
-							sizeof(path))) == NB_ERR_RANGE
+		rc = ((project_hooks_path_status =
+			       nb_path_concat(&project_hooks_path_buffer, manager->workdir,
+					      ".morph/hooks.json")) != NB_OK
+			      ? project_hooks_path_status
+		      : (project_hooks_path_status =
+				 nb_str_copy_to(nb_buf_str(&project_hooks_path_buffer), path,
+						sizeof(path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_5);
+			      : project_hooks_path_status);
 	if (rc == 0)
 		rc = load_json_file(manager, path, 1);
 	/* Project TOML is parsed with the normal schema, never applied to runtime. */
 	if (rc == 0)
-		rc = ((file_status_6 = nb_path_concat(&file_value_6, manager->workdir,
-						      ".morph/config.toml")) != NB_OK
-			      ? file_status_6
-		      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), path,
-							sizeof(path))) == NB_ERR_RANGE
+		rc = ((project_config_path_status =
+			       nb_path_concat(&project_config_path_buffer, manager->workdir,
+					      ".morph/config.toml")) != NB_OK
+			      ? project_config_path_status
+		      : (project_config_path_status =
+				 nb_str_copy_to(nb_buf_str(&project_config_path_buffer), path,
+						sizeof(path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_6);
+			      : project_config_path_status);
 	if (rc == 0 && nb_file_exists(path) && strcmp(path, manager->config_path) != 0) {
 		struct config *project = calloc(1, sizeof(*project));
 		if (!project)
@@ -560,7 +567,7 @@ int hook_manager_reload(struct hook_manager *manager)
 int hook_manager_init(struct hook_manager *manager, struct db *db, const struct config *config,
 		      const char *config_path, const char *workdir)
 {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf workdir_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	int rc;
 
@@ -572,12 +579,12 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 	manager->config = config;
 	snprintf(manager->config_path, sizeof(manager->config_path), "%s",
 		 config_path ? config_path : "");
-	char *resolved =
-		(nb_path_expand(&file_value_7, workdir, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_7, nb_buf_cstr(&file_value_7), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_7))
-			 : NULL);
+	char *resolved = (nb_path_expand(&workdir_path_buffer, workdir, NULL) == NB_OK &&
+					  nb_path_canonical_missing(
+						  &workdir_path_buffer,
+						  nb_buf_cstr(&workdir_path_buffer), NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&workdir_path_buffer))
+				  : NULL);
 	snprintf(manager->workdir, sizeof(manager->workdir), "%s", resolved ? resolved : workdir);
 	free(resolved);
 	rc = hook_store_init(db);

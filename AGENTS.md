@@ -13,8 +13,8 @@
   `-DPython3_EXECUTABLE=/path/to/venv/bin/python`.
   See the [build instructions](README.md#build) for environment setup.
 - For C-family source changes, run `source_control_flow_conventions`,
-  `nbase_usage_conventions` and relevant behavior tests. CLI code and related
-  tests also follow the [CLI guide](src/sapi/cli/AGENTS.md).
+  `source_naming_conventions`, `nbase_usage_conventions` and relevant behavior
+  tests. CLI code and related tests also follow the [CLI guide](src/sapi/cli/AGENTS.md).
 - Confirm required tests are registered (`ctest --test-dir build -N`) and
   actually run. A skipped test, missing registration or a filter matching no
   tests does not validate a change. Resolve missing dependencies where possible;
@@ -225,6 +225,13 @@ Prefer these over hand-rolled equivalents.
   Raw allocations need NULL checks and cleanup on every path.
 - Multi-statement macros wrapped in `do { } while (0)`.
 - Naming: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`.
+- Name variables by their content, role or lifecycle. Do not use arbitrary
+  numeric suffixes such as `file_value_1`, `file_status_2` or `path_3` to avoid
+  choosing a meaningful name. Distinguish related values by purpose, such as
+  `source_path_buffer` and `destination_path_buffer`. Numbers with domain meaning
+  (protocol codes, bit widths, versions or ORM metadata ordinals) are allowed.
+  `source_naming_conventions` rejects the known numbered migration placeholders;
+  semantic naming remains a review requirement for other identifiers.
 - Do not introduce mutable objects with static storage: file-scope variables,
   function-local statics or thread-local variables. Immutable tables, strings
   and function tables are allowed; qualify the object itself, for example

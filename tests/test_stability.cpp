@@ -495,36 +495,33 @@ TEST(Stability, ReplacementRejectsFailedRegistryInitializationWithoutTakingOwner
 
 TEST(Stability, AtomicFileReplacementPreservesModeAndRejectsSymlinks)
 {
-	const nb_file_write_options file_write_options_1 = {0, 0600, false, true, false, nullptr};
-	const nb_file_write_options file_write_options_2 = {0, 0600, false, true, false, nullptr};
-	const nb_file_write_options file_write_options_3 = {0, 0600, false, true, false, nullptr};
+	const nb_file_write_options write_options = {0, 0600, false, true, false, nullptr};
 
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char directory[] = "/tmp/morph-atomic-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	std::string path = std::string(directory) + "/data";
-	ASSERT_EQ(nb_file_write_all_atomic(path.c_str(), "old", 3, &file_write_options_1, NULL), 0);
+	ASSERT_EQ(nb_file_write_all_atomic(path.c_str(), "old", 3, &write_options, NULL), 0);
 	ASSERT_EQ(chmod(path.c_str(), 0640), 0);
-	EXPECT_EQ(nb_file_write_all_atomic(path.c_str(), "new", 3, &file_write_options_2, NULL), 0);
+	EXPECT_EQ(nb_file_write_all_atomic(path.c_str(), "new", 3, &write_options, NULL), 0);
 	struct stat st{};
 	ASSERT_EQ(stat(path.c_str(), &st), 0);
 	EXPECT_EQ(st.st_mode & 0777, 0640);
-	char *text =
-		(nb_file_read_all(path.c_str(), &file_value_1, 0, NULL) == NB_OK &&
-				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				   nb_buf_len(&file_value_1) + 1),
-			    nb_charp_steal(&file_copy_1))
-			 : NULL);
+	char *text = (nb_file_read_all(path.c_str(), &file_contents_buffer, 0, NULL) == NB_OK &&
+				      (file_contents_copy = (char *)malloc(
+					       nb_buf_len(&file_contents_buffer) + 1)) != NULL
+			      ? (memcpy(file_contents_copy, nb_buf_cstr(&file_contents_buffer),
+					nb_buf_len(&file_contents_buffer) + 1),
+				 nb_charp_steal(&file_contents_copy))
+			      : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "new");
 	free(text);
 	std::string link = std::string(directory) + "/link";
 	ASSERT_EQ(symlink(path.c_str(), link.c_str()), 0);
-	EXPECT_LT(nb_file_write_all_atomic(link.c_str(), "bad", 3, &file_write_options_3, NULL), 0);
+	EXPECT_LT(nb_file_write_all_atomic(link.c_str(), "bad", 3, &write_options, NULL), 0);
 	unlink(link.c_str());
 	unlink(path.c_str());
 	rmdir(directory);
@@ -556,18 +553,15 @@ TEST(Stability, BufferedFileCloseFailureIsReported)
 
 TEST(Stability, AtomicFileWriteFailurePreservesCommittedContents)
 {
-	const nb_file_write_options file_write_options_4 = {0, 0600, false, true, false, nullptr};
-	const nb_file_write_options file_write_options_5 = {0, 0600, false, true, false, nullptr};
+	const nb_file_write_options write_options = {0, 0600, false, true, false, nullptr};
 
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char directory[] = "/tmp/morph-atomic-failure-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	std::string path = std::string(directory) + "/data";
-	ASSERT_EQ(
-		nb_file_write_all_atomic(path.c_str(), "committed", 9, &file_write_options_4, NULL),
-		0);
+	ASSERT_EQ(nb_file_write_all_atomic(path.c_str(), "committed", 9, &write_options, NULL), 0);
 	pid_t pid = fork();
 	ASSERT_GE(pid, 0);
 	if (pid == 0) {
@@ -576,8 +570,8 @@ TEST(Stability, AtomicFileWriteFailurePreservesCommittedContents)
 		if (setrlimit(RLIMIT_FSIZE, &limit) != 0) {
 			_exit(2);
 		}
-		_exit(nb_file_write_all_atomic(path.c_str(), "replacement", 11,
-					       &file_write_options_5, NULL) < 0
+		_exit(nb_file_write_all_atomic(path.c_str(), "replacement", 11, &write_options,
+					       NULL) < 0
 			      ? 0
 			      : 1);
 	}
@@ -585,14 +579,13 @@ TEST(Stability, AtomicFileWriteFailurePreservesCommittedContents)
 	ASSERT_EQ(waitpid(pid, &status, 0), pid);
 	ASSERT_TRUE(WIFEXITED(status));
 	EXPECT_EQ(WEXITSTATUS(status), 0);
-	char *contents =
-		(nb_file_read_all(path.c_str(), &file_value_2, 0, NULL) == NB_OK &&
-				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				   nb_buf_len(&file_value_2) + 1),
-			    nb_charp_steal(&file_copy_2))
-			 : NULL);
+	char *contents = (nb_file_read_all(path.c_str(), &file_contents_buffer, 0, NULL) == NB_OK &&
+					  (file_contents_copy = (char *)malloc(
+						   nb_buf_len(&file_contents_buffer) + 1)) != NULL
+				  ? (memcpy(file_contents_copy, nb_buf_cstr(&file_contents_buffer),
+					    nb_buf_len(&file_contents_buffer) + 1),
+				     nb_charp_steal(&file_contents_copy))
+				  : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "committed");
 	free(contents);

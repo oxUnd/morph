@@ -14,8 +14,8 @@
 int cli_composer_service_add_image(struct cli_composer_model *composer, const char *path,
 				   const char **label)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_1 = NB_OK;
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expanded_path_status = NB_OK;
 
 	char *expanded;
 	char *absolute;
@@ -26,11 +26,12 @@ int cli_composer_service_add_image(struct cli_composer_model *composer, const ch
 	if (!composer || !path || !label)
 		return NB_ERR_INVAL;
 
-	expanded = ((expand_status_1 = nb_path_expand(&file_value_1, path, NULL)) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_1))
-			    : NULL);
+	expanded =
+		((expanded_path_status = nb_path_expand(&expanded_path_buffer, path, NULL)) == NB_OK
+			 ? strdup(nb_buf_cstr(&expanded_path_buffer))
+			 : NULL);
 	if (!expanded)
-		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
+		return expanded_path_status != NB_OK ? expanded_path_status : NB_ERR_NOMEM;
 
 	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
 	rc = nb_path_canonical(&canonical, expanded, NULL);
@@ -53,7 +54,7 @@ int cli_composer_service_add_image(struct cli_composer_model *composer, const ch
 int cli_composer_service_convert_paths_copy(struct cli_composer_model *composer,
 					    const char *input, char **output)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf result NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -109,8 +110,8 @@ int cli_composer_service_convert_paths_copy(struct cli_composer_model *composer,
 		if (quote || nb_buf_status(&path))
 			break;
 
-		expanded = (nb_path_expand(&file_value_2, nb_buf_cstr(&path), NULL) == NB_OK
-				    ? strdup(nb_buf_cstr(&file_value_2))
+		expanded = (nb_path_expand(&expanded_path_buffer, nb_buf_cstr(&path), NULL) == NB_OK
+				    ? strdup(nb_buf_cstr(&expanded_path_buffer))
 				    : NULL);
 		if (!expanded)
 			break;

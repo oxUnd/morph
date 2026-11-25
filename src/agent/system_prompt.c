@@ -54,17 +54,17 @@ static int prompt_append_file(nb_buf *buf, const char *path)
 
 static int prompt_append_directory(struct nb_log *logger, nb_buf *buf, const char *dir)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf prompt_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int prompt_path_status = NB_OK;
 
 	nb_dir_listing files NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
-	int rc = ((directory_status_1 = nb_dir_scan(
+	int rc = ((directory_scan_status = nb_dir_scan(
 			   dir, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 			   &files, NULL)) != NB_OK
-			  ? directory_status_1
+			  ? directory_scan_status
 		  : files.names.len > INT_MAX ? NB_ERR_RANGE
 					      : (count = (int)files.names.len, NB_OK));
 
@@ -73,14 +73,14 @@ static int prompt_append_directory(struct nb_log *logger, nb_buf *buf, const cha
 	for (int i = 0; i < count; i++) {
 		char path[PATH_MAX];
 
-		rc = ((file_status_1 = nb_path_concat(&file_value_1, dir,
-						      nb_dir_listing_name(&files, (size_t)(i)))) !=
-				      NB_OK
-			      ? file_status_1
-		      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), path,
-							sizeof(path))) == NB_ERR_RANGE
+		rc = ((prompt_path_status =
+			       nb_path_concat(&prompt_path_buffer, dir,
+					      nb_dir_listing_name(&files, (size_t)(i)))) != NB_OK
+			      ? prompt_path_status
+		      : (prompt_path_status = nb_str_copy_to(nb_buf_str(&prompt_path_buffer), path,
+							     sizeof(path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_1);
+			      : prompt_path_status);
 		if (rc == 0)
 			rc = prompt_append_file(buf, path);
 		if (rc != 0) {
@@ -98,16 +98,17 @@ static int prompt_append_directory(struct nb_log *logger, nb_buf *buf, const cha
 static int prompt_append_source(struct nb_log *logger, nb_buf *buf, const char *source,
 				int is_directory)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_2 = NB_OK;
+	nb_buf source_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int source_path_status = NB_OK;
 
-	char *path = ((expand_status_2 = nb_path_expand(&file_value_2, source, NULL)) == NB_OK
-			      ? strdup(nb_buf_cstr(&file_value_2))
-			      : NULL);
+	char *path =
+		((source_path_status = nb_path_expand(&source_path_buffer, source, NULL)) == NB_OK
+			 ? strdup(nb_buf_cstr(&source_path_buffer))
+			 : NULL);
 	int rc;
 
 	if (!path)
-		return expand_status_2 != NB_OK ? expand_status_2 : NB_ERR_NOMEM;
+		return source_path_status != NB_OK ? source_path_status : NB_ERR_NOMEM;
 	rc = is_directory ? prompt_append_directory(logger, buf, path)
 			  : prompt_append_file(buf, path);
 	if (rc != 0)

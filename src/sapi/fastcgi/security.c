@@ -55,19 +55,19 @@ static void pbkdf2_sha256(const char *password, const unsigned char *salt,
 
 int fcgi_random_id(const char *prefix, char *out, size_t out_size)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf random_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int random_id_status = NB_OK;
 
-	return ((file_status_1 = (!(prefix) || (16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				  : !(nb_buf_clear(&file_value_1),
-				      nb_buf_append_cstr(&file_value_1, prefix))
-					  ? NB_ERR_NOMEM
-					  : nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-			? file_status_1
-		: (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), out, out_size)) ==
-				NB_ERR_RANGE
+	return ((random_id_status = (!(prefix) || (16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				     : !(nb_buf_clear(&random_id_buffer),
+					 nb_buf_append_cstr(&random_id_buffer, prefix))
+					     ? NB_ERR_NOMEM
+					     : nb_random_hex(&random_id_buffer, 16, NULL))) != NB_OK
+			? random_id_status
+		: (random_id_status = nb_str_copy_to(nb_buf_str(&random_id_buffer), out,
+						     out_size)) == NB_ERR_RANGE
 			? NB_ERR_NO_SPACE
-			: file_status_1);
+			: random_id_status);
 }
 
 int fcgi_password_hash(const char *password, char *out, size_t out_size)

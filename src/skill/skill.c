@@ -112,9 +112,9 @@ int skill_registry_add_copy(struct skill_registry *reg, const struct skill_entry
 int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 			     const char *user_dir)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf project_skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf canonical_skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf user_skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	int rc = 0;
 	int initial;
@@ -124,24 +124,27 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 	initial = reg->count;
 
 	if (workdir && *workdir) {
-		rc = nb_path_concat(&file_value_1, workdir, ".agents/skills");
+		rc = nb_path_concat(&project_skill_dir_buffer, workdir, ".agents/skills");
 		if (rc == NB_OK)
-			rc = nb_path_expand(&file_value_2, nb_buf_cstr(&file_value_1), NULL);
+			rc = nb_path_expand(&canonical_skill_dir_buffer,
+					    nb_buf_cstr(&project_skill_dir_buffer), NULL);
 		if (rc == NB_OK)
-			rc = nb_path_canonical_missing(&file_value_2, nb_buf_cstr(&file_value_2),
-				NULL);
+			rc = nb_path_canonical_missing(&canonical_skill_dir_buffer,
+						       nb_buf_cstr(&canonical_skill_dir_buffer),
+						       NULL);
 		if (rc != NB_OK)
 			return rc;
-		rc = skill_discover(reg, nb_buf_cstr(&file_value_2));
+		rc = skill_discover(reg, nb_buf_cstr(&canonical_skill_dir_buffer));
 		if (rc < 0)
 			return rc;
 	}
 	rc = skill_discover(reg, user_dir && *user_dir ? user_dir : "~/.morph/skills");
 	if (rc < 0)
 		return rc;
-	char *default_dir = (nb_path_expand(&file_value_3, "~/.morph/skills", NULL) == NB_OK
-				     ? strdup(nb_buf_cstr(&file_value_3))
-				     : NULL);
+	char *default_dir =
+		(nb_path_expand(&user_skill_dir_buffer, "~/.morph/skills", NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&user_skill_dir_buffer))
+			 : NULL);
 	int use_shared = !user_dir || !*user_dir ||
 		strcmp(user_dir, "~/.morph/skills") == 0 ||
 		(default_dir && strcmp(user_dir, default_dir) == 0);
@@ -157,21 +160,23 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 
 int skill_discover(struct skill_registry *reg, const char *dir_path)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_4 = NB_OK;
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_5 = NB_OK;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_6 = NB_OK;
+	nb_buf expanded_skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expanded_skill_dir_status = NB_OK;
+	nb_buf skill_subdir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int skill_subdir_status = NB_OK;
+	nb_buf skill_manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int skill_manifest_path_status = NB_OK;
 
 	if (!reg || !dir_path)
 		return NB_ERR_INVAL;
 
-	char *expanded = ((expand_status_4 = nb_path_expand(&file_value_4, dir_path, NULL)) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_4))
+	char *expanded = ((expanded_skill_dir_status = nb_path_expand(&expanded_skill_dir_buffer,
+								      dir_path, NULL)) == NB_OK
+				  ? strdup(nb_buf_cstr(&expanded_skill_dir_buffer))
 				  : NULL);
 	if (!expanded)
-		return expand_status_4 != NB_OK ? expand_status_4 : NB_ERR_NOMEM;
+		return expanded_skill_dir_status != NB_OK ? expanded_skill_dir_status
+							  : NB_ERR_NOMEM;
 
 	struct stat st;
 	if (stat(expanded, &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -195,12 +200,14 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			continue;
 
 		char subdir[SKILL_PATH_MAX];
-		if (((file_status_5 = nb_path_concat(&file_value_5, expanded, ent->name)) != NB_OK
-			     ? file_status_5
-		     : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), subdir,
-						       sizeof(subdir))) == NB_ERR_RANGE
+		if (((skill_subdir_status =
+			      nb_path_concat(&skill_subdir_buffer, expanded, ent->name)) != NB_OK
+			     ? skill_subdir_status
+		     : (skill_subdir_status = nb_str_copy_to(nb_buf_str(&skill_subdir_buffer),
+							     subdir, sizeof(subdir))) ==
+				     NB_ERR_RANGE
 			     ? NB_ERR_NAME_TOO_LONG
-			     : file_status_5) != 0)
+			     : skill_subdir_status) != 0)
 			continue;
 
 		struct stat sub_st;
@@ -208,12 +215,14 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			continue;
 
 		char skill_md_path[SKILL_PATH_MAX];
-		if (((file_status_6 = nb_path_concat(&file_value_6, subdir, "SKILL.md")) != NB_OK
-			     ? file_status_6
-		     : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), skill_md_path,
-						       sizeof(skill_md_path))) == NB_ERR_RANGE
+		if (((skill_manifest_path_status = nb_path_concat(&skill_manifest_path_buffer,
+								  subdir, "SKILL.md")) != NB_OK
+			     ? skill_manifest_path_status
+		     : (skill_manifest_path_status = nb_str_copy_to(
+				nb_buf_str(&skill_manifest_path_buffer), skill_md_path,
+				sizeof(skill_md_path))) == NB_ERR_RANGE
 			     ? NB_ERR_NAME_TOO_LONG
-			     : file_status_6) != 0)
+			     : skill_manifest_path_status) != 0)
 			continue;
 
 		if (stat(skill_md_path, &sub_st) != 0) {

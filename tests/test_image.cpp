@@ -1515,8 +1515,8 @@ TEST(ImageEncode, RejectsExcessivePixelsAndDimensionsBeforeAllocation)
 
 TEST(MediaOutputTest, ConcurrentArtifactsKeepIndependentBytes)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf image_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *image_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char directory[] = "/tmp/morph-media-output-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
@@ -1543,12 +1543,13 @@ TEST(MediaOutputTest, ConcurrentArtifactsKeepIndependentBytes)
 		EXPECT_EQ(metadata.st_mode & 0777, 0600u);
 		std::string expected = "artifact " + std::to_string(i);
 		char *content =
-			(nb_file_read_all(paths[i].c_str(), &file_value_1, 0, NULL) == NB_OK &&
-					 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
-								       1)) != NULL
-				 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-					   nb_buf_len(&file_value_1) + 1),
-				    nb_charp_steal(&file_copy_1))
+			(nb_file_read_all(paths[i].c_str(), &image_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (image_contents_copy = (char *)malloc(
+						  nb_buf_len(&image_contents_buffer) + 1)) != NULL
+				 ? (memcpy(image_contents_copy, nb_buf_cstr(&image_contents_buffer),
+					   nb_buf_len(&image_contents_buffer) + 1),
+				    nb_charp_steal(&image_contents_copy))
 				 : NULL);
 		ASSERT_NE(content, nullptr);
 		EXPECT_EQ(std::string(content), expected);
@@ -1822,10 +1823,10 @@ TEST_F(ImgGenToolTest, DefaultTransformsPublishDistinctCompleteImages)
 
 TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf transformed_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *transformed_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf canonical_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *canonical_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char directory[] = "/tmp/morph-image-explicit-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
@@ -1861,13 +1862,16 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 		EXPECT_TRUE(std::filesystem::equivalent(result.artifacts.items[0].path, output));
 		size_t bytes = 0;
 		char *encoded =
-			(nb_file_read_all(output.c_str(), &file_value_2, 0, NULL) == NB_OK &&
-					 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) +
-								       1)) != NULL
-				 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-					   nb_buf_len(&file_value_2) + 1),
-				    *(&bytes) = nb_buf_len(&file_value_2),
-				    nb_charp_steal(&file_copy_2))
+			(nb_file_read_all(output.c_str(), &transformed_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (transformed_contents_copy = (char *)malloc(
+						  nb_buf_len(&transformed_contents_buffer) + 1)) !=
+						 NULL
+				 ? (memcpy(transformed_contents_copy,
+					   nb_buf_cstr(&transformed_contents_buffer),
+					   nb_buf_len(&transformed_contents_buffer) + 1),
+				    *(&bytes) = nb_buf_len(&transformed_contents_buffer),
+				    nb_charp_steal(&transformed_contents_copy))
 				 : NULL);
 		ASSERT_NE(encoded, nullptr);
 		ASSERT_GE(bytes, item.magic_length);
@@ -1890,12 +1894,12 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 	ASSERT_EQ(tool_exec(&reg, "img_resize", args.c_str(), &result), 0);
 	EXPECT_TRUE(std::filesystem::is_symlink(alias));
 	char *encoded =
-		(nb_file_read_all(target.c_str(), &file_value_3, 0, NULL) == NB_OK &&
-				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				   nb_buf_len(&file_value_3) + 1),
-			    nb_charp_steal(&file_copy_3))
+		(nb_file_read_all(target.c_str(), &canonical_contents_buffer, 0, NULL) == NB_OK &&
+				 (canonical_contents_copy = (char *)malloc(
+					  nb_buf_len(&canonical_contents_buffer) + 1)) != NULL
+			 ? (memcpy(canonical_contents_copy, nb_buf_cstr(&canonical_contents_buffer),
+				   nb_buf_len(&canonical_contents_buffer) + 1),
+			    nb_charp_steal(&canonical_contents_copy))
 			 : NULL);
 	ASSERT_NE(encoded, nullptr);
 	EXPECT_EQ(memcmp(encoded, "\x89PNG", 4), 0);
@@ -1907,8 +1911,8 @@ TEST_F(ImgGenToolTest, ExplicitTransformsKeepTheirOwnFormatSelection)
 
 TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf marker_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *marker_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char directory[] = "/tmp/morph-image-output-failure-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
@@ -1935,12 +1939,12 @@ TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
 		tool_result_cleanup(&result);
 	}
 	char *contents =
-		(nb_file_read_all(marker.c_str(), &file_value_4, 0, NULL) == NB_OK &&
-				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-				   nb_buf_len(&file_value_4) + 1),
-			    nb_charp_steal(&file_copy_4))
+		(nb_file_read_all(marker.c_str(), &marker_contents_buffer, 0, NULL) == NB_OK &&
+				 (marker_contents_copy = (char *)malloc(
+					  nb_buf_len(&marker_contents_buffer) + 1)) != NULL
+			 ? (memcpy(marker_contents_copy, nb_buf_cstr(&marker_contents_buffer),
+				   nb_buf_len(&marker_contents_buffer) + 1),
+			    nb_charp_steal(&marker_contents_copy))
 			 : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "unchanged");
@@ -1957,8 +1961,8 @@ TEST_F(ImgGenToolTest, TransformOutputFailuresLeaveNoArtifactOrTemporaryFiles)
 
 TEST_F(ImgGenToolTest, ConvertRejectsUnboundedQualityBeforeWriting)
 {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf output_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *output_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char directory[] = "/tmp/morph-image-quality-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
@@ -1979,12 +1983,12 @@ TEST_F(ImgGenToolTest, ConvertRejectsUnboundedQualityBeforeWriting)
 		tool_result_cleanup(&result);
 	}
 	char *contents =
-		(nb_file_read_all(output.c_str(), &file_value_5, 0, NULL) == NB_OK &&
-				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
-				   nb_buf_len(&file_value_5) + 1),
-			    nb_charp_steal(&file_copy_5))
+		(nb_file_read_all(output.c_str(), &output_contents_buffer, 0, NULL) == NB_OK &&
+				 (output_contents_copy = (char *)malloc(
+					  nb_buf_len(&output_contents_buffer) + 1)) != NULL
+			 ? (memcpy(output_contents_copy, nb_buf_cstr(&output_contents_buffer),
+				   nb_buf_len(&output_contents_buffer) + 1),
+			    nb_charp_steal(&output_contents_copy))
 			 : NULL);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "unchanged");

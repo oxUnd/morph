@@ -57,7 +57,7 @@ static int cli_share_store_share_publish(const char *directory, const char *stam
 
 int cli_share_store_save(const cJSON *document, char **out_path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf downloads_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	if (!out_path)
 		return NB_ERR_INVAL;
@@ -82,8 +82,8 @@ int cli_share_store_save(const cJSON *document, char **out_path)
 		return rc;
 	}
 
-	directory = (nb_path_concat(&file_value_1, home, "Downloads") == NB_OK
-			     ? strdup(nb_buf_cstr(&file_value_1))
+	directory = (nb_path_concat(&downloads_path_buffer, home, "Downloads") == NB_OK
+			     ? strdup(nb_buf_cstr(&downloads_path_buffer))
 			     : NULL);
 	if (!directory) {
 		rc = (NB_ERR_NOMEM);

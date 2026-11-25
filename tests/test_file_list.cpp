@@ -307,13 +307,14 @@ TEST_F(FileListTest, ListingAnExternalSymlinkDirectoryIsDenied)
 
 TEST_F(FileListTest, ReaddirFailureDoesNotReturnSuccessfulPartialListing)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf canonical_directory_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	char *canonical =
-		(nb_path_expand(&file_value_1, directory, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_1, nb_buf_cstr(&file_value_1), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_1))
+		(nb_path_expand(&canonical_directory_buffer, directory, NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_directory_buffer,
+							   nb_buf_cstr(&canonical_directory_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_directory_buffer))
 			 : NULL);
 	ASSERT_NE(canonical, nullptr);
 	struct CloseDirectory {

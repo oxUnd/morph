@@ -306,6 +306,8 @@ if(Python3_Interpreter_FOUND)
 	endif()
 	add_test(NAME source_control_flow_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_source_control_flow.py)
+	add_test(NAME source_naming_conventions
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_source_naming.py)
 	add_test(NAME orm_boundary_conventions
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_orm_boundary.py)
 	add_dependencies(morph-tests morph-session-sync-audit)

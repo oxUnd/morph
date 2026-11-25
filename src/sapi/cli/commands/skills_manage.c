@@ -190,40 +190,40 @@ static int cli_skills_manage_skills_parse(int argc, char **argv, const char *con
 
 static int cli_skills_manage_skills_user_dir(const char *config_path, char **out)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int config_path_status = NB_OK;
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf default_skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf configured_skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	nb_err parse_error = {0};
-	char *path =
-		((expand_status_1 = nb_path_expand(&file_value_1,
-			config_path ? config_path : "~/.morph/config.toml", NULL)) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_1))
-			 : NULL);
+	char *path = ((config_path_status = nb_path_expand(
+			       &config_path_buffer,
+			       config_path ? config_path : "~/.morph/config.toml", NULL)) == NB_OK
+			      ? strdup(nb_buf_cstr(&config_path_buffer))
+			      : NULL);
 	char *text;
 	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) = NULL;
 	const nb_toml_value *dir;
 
 	if (!path)
-		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
+		return config_path_status != NB_OK ? config_path_status : NB_ERR_NOMEM;
 
-	text = (nb_file_read_all(path, &file_value_2, 0, NULL) == NB_OK &&
-				(file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					NULL
-			? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				  nb_buf_len(&file_value_2) + 1),
-			   nb_charp_steal(&file_copy_2))
+	text = (nb_file_read_all(path, &config_contents_buffer, 0, NULL) == NB_OK &&
+				(config_contents_copy = (char *)malloc(
+					 nb_buf_len(&config_contents_buffer) + 1)) != NULL
+			? (memcpy(config_contents_copy, nb_buf_cstr(&config_contents_buffer),
+				  nb_buf_len(&config_contents_buffer) + 1),
+			   nb_charp_steal(&config_contents_copy))
 			: NULL);
 	free(path);
 	if (!text) {
 		if (config_path || errno != ENOENT)
 			return NB_ERR_IO;
 
-		*out = (nb_path_expand(&file_value_3, "~/.morph/skills", NULL) == NB_OK
-				? strdup(nb_buf_cstr(&file_value_3))
+		*out = (nb_path_expand(&default_skill_dir_buffer, "~/.morph/skills", NULL) == NB_OK
+				? strdup(nb_buf_cstr(&default_skill_dir_buffer))
 				: NULL);
 		return *out ? 0 : NB_ERR_NOMEM;
 	}
@@ -242,12 +242,12 @@ static int cli_skills_manage_skills_user_dir(const char *config_path, char **out
 	}
 
 	dir = nb_toml_table_get_cstr(nb_toml_table_get_cstr(nb_toml_root(parsed), "skill"), "dir");
-	*out = (nb_path_expand(&file_value_4,
+	*out = (nb_path_expand(&configured_skill_dir_buffer,
 			       nb_toml_type_of(dir) == NB_TOML_STRING && nb_toml_string(dir).ptr[0]
 				       ? nb_toml_string(dir).ptr
 				       : "~/.morph/skills",
 			       NULL) == NB_OK
-			? strdup(nb_buf_cstr(&file_value_4))
+			? strdup(nb_buf_cstr(&configured_skill_dir_buffer))
 			: NULL);
 	nb_toml_cleanup(&parsed);
 	return *out ? 0 : NB_ERR_NOMEM;
@@ -276,13 +276,13 @@ static int cli_skills_manage_skills_repo_name_valid(const char *name)
 static int cli_skills_manage_skills_prepare(const char *source, const char *ref, int force_git,
 					    struct cli_skills_manage_skills_source *prepared)
 {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_5 = NB_OK;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_6 = NB_OK;
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_8 = NB_OK;
+	nb_buf git_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int git_dir_status = NB_OK;
+	nb_buf cache_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int cache_dir_status = NB_OK;
+	nb_buf temporary_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf repository_root_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int repository_root_status = NB_OK;
 
 	char resolved[PATH_MAX];
 	nb_buf canonical_path NB_CLEANUP(nb_buf_destroy) = {0};
@@ -303,12 +303,12 @@ static int cli_skills_manage_skills_prepare(const char *source, const char *ref,
 		if (rc != 0)
 			return rc;
 
-		rc = ((file_status_5 = nb_path_concat(&file_value_5, resolved, ".git")) != NB_OK
-			      ? file_status_5
-		      : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), git_dir,
-							sizeof(git_dir))) == NB_ERR_RANGE
+		rc = ((git_dir_status = nb_path_concat(&git_dir_buffer, resolved, ".git")) != NB_OK
+			      ? git_dir_status
+		      : (git_dir_status = nb_str_copy_to(nb_buf_str(&git_dir_buffer), git_dir,
+							 sizeof(git_dir))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_5);
+			      : git_dir_status);
 		if (rc != 0)
 			return rc;
 
@@ -359,36 +359,38 @@ static int cli_skills_manage_skills_prepare(const char *source, const char *ref,
 	if (prepared->source[0] == '-')
 		return NB_ERR_INVAL;
 
-	cache = ((expand_status_6 = nb_path_expand(&file_value_6, "~/.morph/cache/skills",
-		NULL)) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_6))
+	cache = ((cache_dir_status =
+			  nb_path_expand(&cache_dir_buffer, "~/.morph/cache/skills", NULL)) == NB_OK
+			 ? strdup(nb_buf_cstr(&cache_dir_buffer))
 			 : NULL);
 	if (!cache)
-		return expand_status_6 != NB_OK ? expand_status_6 : NB_ERR_NOMEM;
+		return cache_dir_status != NB_OK ? cache_dir_status : NB_ERR_NOMEM;
 
 	rc = nb_file_mkdir(cache, true, NULL);
 	if (rc == NB_OK)
-		rc = nb_file_temp_dir(&file_value_7, cache, "checkout-", NULL);
+		rc = nb_file_temp_dir(&temporary_dir_buffer, cache, "checkout-", NULL);
 
 	free(cache);
 	if (rc == NB_OK)
-		rc = nb_str_copy_to(nb_buf_str(&file_value_7), prepared->temporary,
+		rc = nb_str_copy_to(nb_buf_str(&temporary_dir_buffer), prepared->temporary,
 				    sizeof(prepared->temporary));
 
 	if (rc != NB_OK) {
-		if (!nb_buf_empty(&file_value_7))
-			(void)nb_file_remove_all(nb_buf_cstr(&file_value_7), 0, NULL);
+		if (!nb_buf_empty(&temporary_dir_buffer))
+			(void)nb_file_remove_all(nb_buf_cstr(&temporary_dir_buffer), 0, NULL);
 
 		prepared->temporary[0] = '\0';
 		return rc == NB_ERR_RANGE ? NB_ERR_NAME_TOO_LONG : rc;
 	}
 
-	rc = ((file_status_8 = nb_path_concat(&file_value_8, prepared->temporary, "repo")) != NB_OK
-		      ? file_status_8
-	      : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), prepared->root,
-						sizeof(prepared->root))) == NB_ERR_RANGE
+	rc = ((repository_root_status = nb_path_concat(&repository_root_buffer, prepared->temporary,
+						       "repo")) != NB_OK
+		      ? repository_root_status
+	      : (repository_root_status = nb_str_copy_to(nb_buf_str(&repository_root_buffer),
+							 prepared->root, sizeof(prepared->root))) ==
+			      NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_8);
+		      : repository_root_status);
 	if (rc != 0)
 		return rc;
 
@@ -453,19 +455,20 @@ cli_skills_manage_skills_scan_source(struct nb_log *logger,
 				     const struct cli_skills_manage_skills_source *source,
 				     const char *subdir, nb_vec *candidates)
 {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_9 = NB_OK;
+	nb_buf selected_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int selected_path_status = NB_OK;
 
 	char selected[PATH_MAX];
 	char resolved[PATH_MAX];
 	nb_buf canonical_path NB_CLEANUP(nb_buf_destroy) = {0};
-	int rc = ((file_status_9 = nb_path_concat(&file_value_9, source->root,
-						  subdir ? subdir : ".")) != NB_OK
-			  ? file_status_9
-		  : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), selected,
-						    sizeof(selected))) == NB_ERR_RANGE
+	int rc = ((selected_path_status = nb_path_concat(&selected_path_buffer, source->root,
+							 subdir ? subdir : ".")) != NB_OK
+			  ? selected_path_status
+		  : (selected_path_status = nb_str_copy_to(nb_buf_str(&selected_path_buffer),
+							   selected, sizeof(selected))) ==
+				  NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_9);
+			  : selected_path_status);
 
 	if (rc != 0)
 		return rc;
@@ -632,8 +635,8 @@ static int cli_skills_manage_skills_add(struct nb_log *logger,
 					const struct cli_skills_manage_skills_options *options,
 					const char *root)
 {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_10 = NB_OK;
+	nb_buf target_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int target_path_status = NB_OK;
 
 	struct cli_skills_manage_skills_source source = {0};
 	nb_vec candidates = {0};
@@ -677,13 +680,14 @@ static int cli_skills_manage_skills_add(struct nb_log *logger,
 		if (!selected[i])
 			continue;
 
-		rc = ((file_status_10 = nb_path_concat(&file_value_10, root, candidate->fm.name)) !=
-				      NB_OK
-			      ? file_status_10
-		      : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), target,
-							 sizeof(target))) == NB_ERR_RANGE
+		rc = ((target_path_status = nb_path_concat(&target_path_buffer, root,
+							   candidate->fm.name)) != NB_OK
+			      ? target_path_status
+		      : (target_path_status = nb_str_copy_to(nb_buf_str(&target_path_buffer),
+							     target, sizeof(target))) ==
+				      NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_10);
+			      : target_path_status);
 		if (rc == 0 && lstat(target, &st) == 0) {
 			if (!options->replace)
 				rc = NB_ERR_EXISTS;
@@ -781,19 +785,19 @@ static const char *cli_skills_manage_metadata_string(const cJSON *metadata, cons
 static int cli_skills_manage_skills_update_one(struct nb_log *logger, const char *root,
 					       const char *name)
 {
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_11 = NB_OK;
+	nb_buf target_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int target_path_status = NB_OK;
 
 	char target[PATH_MAX];
 	struct cli_skills_manage_skills_source source = {0};
 	nb_vec candidates NB_CLEANUP(nb_vec_cleanup) = {0};
 	cJSON *metadata NB_CLEANUP(cJSON_DeleteOwner) = NULL;
-	int rc = ((file_status_11 = nb_path_concat(&file_value_11, root, name)) != NB_OK
-			  ? file_status_11
-		  : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), target,
-						     sizeof(target))) == NB_ERR_RANGE
+	int rc = ((target_path_status = nb_path_concat(&target_path_buffer, root, name)) != NB_OK
+			  ? target_path_status
+		  : (target_path_status = nb_str_copy_to(nb_buf_str(&target_path_buffer), target,
+							 sizeof(target))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_11);
+			  : target_path_status);
 
 	if (rc != 0)
 		return rc;
@@ -860,10 +864,10 @@ static int cli_skills_manage_skills_modify(struct nb_log *logger,
 					   const struct cli_skills_manage_skills_options *options,
 					   const char *root)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_12 = NB_OK;
+	nb_buf target_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int target_path_status = NB_OK;
 
 	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
@@ -873,11 +877,11 @@ static int cli_skills_manage_skills_modify(struct nb_log *logger,
 	if (options->name_count) {
 		count = options->name_count;
 	} else {
-		rc = ((directory_status_1 = nb_dir_scan(root,
-							NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
-								NB_DIR_SCAN_FOLLOW_LINKS,
-							&names, NULL)) != NB_OK
-			      ? directory_status_1
+		rc = ((directory_scan_status = nb_dir_scan(root,
+							   NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								   NB_DIR_SCAN_FOLLOW_LINKS,
+							   &names, NULL)) != NB_OK
+			      ? directory_scan_status
 		      : names.names.len > INT_MAX ? NB_ERR_RANGE
 						  : (count = (int)names.names.len, NB_OK));
 		if (rc != 0)
@@ -895,12 +899,14 @@ static int cli_skills_manage_skills_modify(struct nb_log *logger,
 			continue;
 
 		rc = 0;
-		rc = ((file_status_12 = nb_path_concat(&file_value_12, root, name)) != NB_OK
-			      ? file_status_12
-		      : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), target,
-							 sizeof(target))) == NB_ERR_RANGE
+		rc = ((target_path_status = nb_path_concat(&target_path_buffer, root, name)) !=
+				      NB_OK
+			      ? target_path_status
+		      : (target_path_status = nb_str_copy_to(nb_buf_str(&target_path_buffer),
+							     target, sizeof(target))) ==
+				      NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_12);
+			      : target_path_status);
 		if (rc != 0)
 			break;
 
@@ -955,7 +961,7 @@ static void cli_skills_manage_options_cleanup(struct cli_skills_manage_skills_op
 
 int cli_skills_manage_run(struct nb_log *logger, int argc, char **argv, const char *config_path)
 {
-	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf lock_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct cli_skills_manage_skills_options options NB_CLEANUP(
 		cli_skills_manage_options_cleanup) = {0};
@@ -1019,8 +1025,8 @@ int cli_skills_manage_run(struct nb_log *logger, int argc, char **argv, const ch
 			return rc == 0 ? 0 : cli_management_error(rc, "skills command failed");
 		}
 
-		lock = (nb_path_concat(&file_value_13, root, ".morph-skills.lock") == NB_OK
-				? strdup(nb_buf_cstr(&file_value_13))
+		lock = (nb_path_concat(&lock_path_buffer, root, ".morph-skills.lock") == NB_OK
+				? strdup(nb_buf_cstr(&lock_path_buffer))
 				: NULL);
 		if (!lock) {
 			rc = (NB_ERR_NOMEM);

@@ -44,10 +44,10 @@ static int restore_token_valid(const char *token)
 
 static int restore_plan_valid(const char *source_dir, const struct morph_sync_restore_plan *plan)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf expected_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expected_path_status = NB_OK;
+	nb_buf restore_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int restore_dir_status = NB_OK;
 
 	char expected[PATH_MAX];
 	char directory[PATH_MAX];
@@ -58,12 +58,13 @@ static int restore_plan_valid(const char *source_dir, const struct morph_sync_re
 	    strlen(plan->target) > PATH_MAX - sizeof("-wal") ||
 	    strlen(plan->rollback) > PATH_MAX - sizeof("-wal"))
 		return 0;
-	if (((file_status_1 = nb_path_concat(&file_value_1, source_dir, plan->path)) != NB_OK
-		     ? file_status_1
-	     : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), expected,
-					       sizeof(expected))) == NB_ERR_RANGE
+	if (((expected_path_status =
+		      nb_path_concat(&expected_path_buffer, source_dir, plan->path)) != NB_OK
+		     ? expected_path_status
+	     : (expected_path_status = nb_str_copy_to(nb_buf_str(&expected_path_buffer), expected,
+						      sizeof(expected))) == NB_ERR_RANGE
 		     ? NB_ERR_NAME_TOO_LONG
-		     : file_status_1) != 0 ||
+		     : expected_path_status) != 0 ||
 	    strcmp(expected, plan->target) != 0)
 		return 0;
 	if (snprintf(expected, sizeof(expected), "%s.%s.tmp", plan->target, plan->token) >=
@@ -74,13 +75,13 @@ static int restore_plan_valid(const char *source_dir, const struct morph_sync_re
 		    (int)sizeof(expected) ||
 	    strcmp(expected, plan->rollback) != 0)
 		return 0;
-	if (((file_status_2 = nb_path_concat(&file_value_2, source_dir, ".morph-sync/restore")) !=
-			     NB_OK
-		     ? file_status_2
-	     : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), directory,
-					       sizeof(directory))) == NB_ERR_RANGE
+	if (((restore_dir_status = nb_path_concat(&restore_dir_buffer, source_dir,
+						  ".morph-sync/restore")) != NB_OK
+		     ? restore_dir_status
+	     : (restore_dir_status = nb_str_copy_to(nb_buf_str(&restore_dir_buffer), directory,
+						    sizeof(directory))) == NB_ERR_RANGE
 		     ? NB_ERR_NAME_TOO_LONG
-		     : file_status_2) != 0 ||
+		     : restore_dir_status) != 0 ||
 	    snprintf(expected, sizeof(expected), "%s/%s.json", directory, plan->token) >=
 		    (int)sizeof(expected) ||
 	    strcmp(expected, plan->journal) != 0)
@@ -161,8 +162,8 @@ static int restore_journal_write(const struct morph_sync_restore_plan *plan, con
 static int restore_plan_from_json(const char *journal, struct morph_sync_restore_plan *plan,
 				  char phase[16])
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf journal_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *journal_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char *text;
 	cJSON *root;
@@ -175,12 +176,12 @@ static int restore_plan_from_json(const char *journal, struct morph_sync_restore
 			  sizeof(plan->journal), sizeof(plan->expected_hash)};
 	cJSON *item;
 
-	text = (nb_file_read_all(journal, &file_value_3, 0, NULL) == NB_OK &&
-				(file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					NULL
-			? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				  nb_buf_len(&file_value_3) + 1),
-			   nb_charp_steal(&file_copy_3))
+	text = (nb_file_read_all(journal, &journal_contents_buffer, 0, NULL) == NB_OK &&
+				(journal_contents_copy = (char *)malloc(
+					 nb_buf_len(&journal_contents_buffer) + 1)) != NULL
+			? (memcpy(journal_contents_copy, nb_buf_cstr(&journal_contents_buffer),
+				  nb_buf_len(&journal_contents_buffer) + 1),
+			   nb_charp_steal(&journal_contents_copy))
 			: NULL);
 	if (!text)
 		return NB_ERR_IO;
@@ -226,12 +227,12 @@ static int restore_sidecar_path(const char *path, const char *suffix, char out[P
 int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg, const char *snapshot_id,
 				  struct morph_sync_restore_plan *plan)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_4 = NB_OK;
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_5 = NB_OK;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_6 = NB_OK;
+	nb_buf target_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int target_path_status = NB_OK;
+	nb_buf restore_token_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int restore_token_status = NB_OK;
+	nb_buf journal_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int journal_dir_status = NB_OK;
 
 	struct morph_sync_backup *items = NULL;
 	struct morph_sync_status status;
@@ -269,24 +270,27 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg, const cha
 				  strnlen((items[found].hash), sizeof(plan->expected_hash) - 1)),
 		plan->expected_hash, sizeof(plan->expected_hash));
 	morph_sync_backups_free(items);
-	rc = ((file_status_4 = nb_path_concat(&file_value_4, cfg->source_dir, plan->path)) != NB_OK
-		      ? file_status_4
-	      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), plan->target,
-						sizeof(plan->target))) == NB_ERR_RANGE
+	rc = ((target_path_status =
+		       nb_path_concat(&target_path_buffer, cfg->source_dir, plan->path)) != NB_OK
+		      ? target_path_status
+	      : (target_path_status = nb_str_copy_to(nb_buf_str(&target_path_buffer), plan->target,
+						     sizeof(plan->target))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_4);
+		      : target_path_status);
 	if (rc != 0)
 		return rc;
-	rc = ((file_status_5 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				: !(nb_buf_clear(&file_value_5),
-				    nb_buf_append_cstr(&file_value_5, "restore_"))
-					? NB_ERR_NOMEM
-					: nb_random_hex(&file_value_5, 16, NULL))) != NB_OK
-		      ? file_status_5
-	      : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), plan->token,
-						sizeof(plan->token))) == NB_ERR_RANGE
+	rc = ((restore_token_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				       : !(nb_buf_clear(&restore_token_buffer),
+					   nb_buf_append_cstr(&restore_token_buffer, "restore_"))
+					       ? NB_ERR_NOMEM
+					       : nb_random_hex(&restore_token_buffer, 16, NULL))) !=
+			      NB_OK
+		      ? restore_token_status
+	      : (restore_token_status = nb_str_copy_to(nb_buf_str(&restore_token_buffer),
+						       plan->token, sizeof(plan->token))) ==
+			      NB_ERR_RANGE
 		      ? NB_ERR_NO_SPACE
-		      : file_status_5);
+		      : restore_token_status);
 	if (rc != 0)
 		return rc;
 	if (snprintf(plan->staging, sizeof(plan->staging), "%s.%s.tmp", plan->target,
@@ -294,13 +298,13 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg, const cha
 	    snprintf(plan->rollback, sizeof(plan->rollback), "%s.%s.rollback", plan->target,
 		     plan->token) >= (int)sizeof(plan->rollback))
 		return NB_ERR_NAME_TOO_LONG;
-	rc = ((file_status_6 = nb_path_concat(&file_value_6, cfg->source_dir,
-					      ".morph-sync/restore")) != NB_OK
-		      ? file_status_6
-	      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), journal_dir,
-						sizeof(journal_dir))) == NB_ERR_RANGE
+	rc = ((journal_dir_status = nb_path_concat(&journal_dir_buffer, cfg->source_dir,
+						   ".morph-sync/restore")) != NB_OK
+		      ? journal_dir_status
+	      : (journal_dir_status = nb_str_copy_to(nb_buf_str(&journal_dir_buffer), journal_dir,
+						     sizeof(journal_dir))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_6);
+		      : journal_dir_status);
 	if (rc == 0)
 		rc = nb_file_mkdir(journal_dir, true, NULL);
 	if (rc != 0)
@@ -453,12 +457,12 @@ int morph_sync_rollback_db_replace(struct morph_sync_restore_plan *plan)
 
 static int restore_journals_process(struct nb_log *logger, const char *source_dir, int finalize)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_7 = NB_OK;
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_8 = NB_OK;
+	nb_buf metadata_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int metadata_dir_status = NB_OK;
+	nb_buf journal_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int journal_path_status = NB_OK;
 
 	char directory[PATH_MAX];
 	char journal[PATH_MAX];
@@ -466,19 +470,19 @@ static int restore_journals_process(struct nb_log *logger, const char *source_di
 	int count = 0;
 	int rc;
 
-	rc = ((file_status_7 = nb_path_concat(&file_value_7, source_dir, ".morph-sync/restore")) !=
-			      NB_OK
-		      ? file_status_7
-	      : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), directory,
-						sizeof(directory))) == NB_ERR_RANGE
+	rc = ((metadata_dir_status = nb_path_concat(&metadata_dir_buffer, source_dir,
+						    ".morph-sync/restore")) != NB_OK
+		      ? metadata_dir_status
+	      : (metadata_dir_status = nb_str_copy_to(nb_buf_str(&metadata_dir_buffer), directory,
+						      sizeof(directory))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_7);
+		      : metadata_dir_status);
 	if (rc != 0)
 		return rc;
-	rc = ((directory_status_1 = nb_dir_scan(
+	rc = ((directory_scan_status = nb_dir_scan(
 		       directory, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 		       &names, NULL)) != NB_OK
-		      ? directory_status_1
+		      ? directory_scan_status
 	      : names.names.len > INT_MAX ? NB_ERR_RANGE
 					  : (count = (int)names.names.len, NB_OK));
 	if (rc == NB_ERR_NOT_FOUND)
@@ -487,14 +491,15 @@ static int restore_journals_process(struct nb_log *logger, const char *source_di
 		struct morph_sync_restore_plan plan;
 		char phase[16] = {0};
 
-		rc = ((file_status_8 = nb_path_concat(&file_value_8, directory,
-						      nb_dir_listing_name(&names, (size_t)(i)))) !=
-				      NB_OK
-			      ? file_status_8
-		      : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), journal,
-							sizeof(journal))) == NB_ERR_RANGE
+		rc = ((journal_path_status =
+			       nb_path_concat(&journal_path_buffer, directory,
+					      nb_dir_listing_name(&names, (size_t)(i)))) != NB_OK
+			      ? journal_path_status
+		      : (journal_path_status = nb_str_copy_to(nb_buf_str(&journal_path_buffer),
+							      journal, sizeof(journal))) ==
+				      NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_8);
+			      : journal_path_status);
 		if (rc == 0)
 			rc = restore_plan_from_json(journal, &plan, phase);
 		if (rc == 0 &&

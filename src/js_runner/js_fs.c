@@ -15,7 +15,7 @@
 
 static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	const char *path;
 	char *resolved;
@@ -31,12 +31,12 @@ static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val, int argc, 
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
-	rc = nb_file_read_all(resolved, &file_value_1, 0, NULL);
+	rc = nb_file_read_all(resolved, &file_contents_buffer, 0, NULL);
 	free(resolved);
 	if (rc != NB_OK)
 		return JS_ThrowInternalError(ctx, "failed to read file");
-	JSValue out = JS_NewStringLen(ctx, nb_buf_cstr(&file_value_1),
-			       nb_buf_len(&file_value_1));
+	JSValue out = JS_NewStringLen(ctx, nb_buf_cstr(&file_contents_buffer),
+				      nb_buf_len(&file_contents_buffer));
 	return out;
 }
 
@@ -77,7 +77,7 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val, int 
 
 static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	const char *path;
 	char *resolved;
@@ -94,12 +94,12 @@ static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val, int argc, 
 	JS_FreeCString(ctx, path);
 	if (!resolved)
 		return JS_EXCEPTION;
-	rc = nb_file_read_all(resolved, &file_value_2, 0, NULL);
+	rc = nb_file_read_all(resolved, &file_contents_buffer, 0, NULL);
 	free(resolved);
 	if (rc != NB_OK)
 		return JS_ThrowInternalError(ctx, "failed to read file");
-	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)nb_buf_cstr(&file_value_2),
-			    nb_buf_len(&file_value_2));
+	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)nb_buf_cstr(&file_contents_buffer),
+				    nb_buf_len(&file_contents_buffer));
 	return out;
 }
 

@@ -1854,8 +1854,8 @@ TEST(ExecToolTest, JobsConstructorsAndSnapshotsRejectOccupiedOwners)
 
 TEST_F(ProcessTest, SpoolPreservesOutputBeforeTheMemoryWindow)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf stdout_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *stdout_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	process_spawn_options options{};
 	options.command = "printf 'BEGIN\n'; dd if=/dev/zero bs=1024 count=256 2>/dev/null | "
@@ -1878,12 +1878,13 @@ TEST_F(ProcessTest, SpoolPreservesOutputBeforeTheMemoryWindow)
 	EXPECT_FALSE(snapshot.stdout_path_truncated);
 	EXPECT_EQ(snapshot.stdout_capture_error, 0);
 	char *stored NB_CLEANUP(nb_charp_cleanup) =
-		(nb_file_read_all(snapshot.stdout_path, &file_value_1, 0, NULL) == NB_OK &&
-				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				   nb_buf_len(&file_value_1) + 1),
-			    nb_charp_steal(&file_copy_1))
+		(nb_file_read_all(snapshot.stdout_path, &stdout_contents_buffer, 0, NULL) ==
+					 NB_OK &&
+				 (stdout_contents_copy = (char *)malloc(
+					  nb_buf_len(&stdout_contents_buffer) + 1)) != NULL
+			 ? (memcpy(stdout_contents_copy, nb_buf_cstr(&stdout_contents_buffer),
+				   nb_buf_len(&stdout_contents_buffer) + 1),
+			    nb_charp_steal(&stdout_contents_copy))
 			 : NULL);
 	ASSERT_NE(stored, nullptr);
 	EXPECT_EQ(std::string(stored), expected);
@@ -1957,10 +1958,10 @@ private:
 
 TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf prefix_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *prefix_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf stored_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *stored_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	ProcessSecretEnvironment environment("morph-secret-boundary-abcdefghijk");
 	process_manager_destroy(manager);
@@ -1984,12 +1985,12 @@ TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
 	EXPECT_STREQ(first.stdout_text, "prefix");
 	EXPECT_EQ(first.next_cursor.stdout_offset, 6u);
 	char *prefix NB_CLEANUP(nb_charp_cleanup) =
-		(nb_file_read_all(first.stdout_path, &file_value_2, 0, NULL) == NB_OK &&
-				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				   nb_buf_len(&file_value_2) + 1),
-			    nb_charp_steal(&file_copy_2))
+		(nb_file_read_all(first.stdout_path, &prefix_contents_buffer, 0, NULL) == NB_OK &&
+				 (prefix_contents_copy = (char *)malloc(
+					  nb_buf_len(&prefix_contents_buffer) + 1)) != NULL
+			 ? (memcpy(prefix_contents_copy, nb_buf_cstr(&prefix_contents_buffer),
+				   nb_buf_len(&prefix_contents_buffer) + 1),
+			    nb_charp_steal(&prefix_contents_copy))
 			 : NULL);
 	ASSERT_NE(prefix, nullptr);
 	EXPECT_STREQ(prefix, "prefix");
@@ -2000,12 +2001,12 @@ TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
 	EXPECT_STREQ(last.stdout_text, "[REDACTED:OPENAI_API_KEY]suffix");
 	EXPECT_STREQ(last.stdout_path, first.stdout_path);
 	char *stored NB_CLEANUP(nb_charp_cleanup) =
-		(nb_file_read_all(last.stdout_path, &file_value_3, 0, NULL) == NB_OK &&
-				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				   nb_buf_len(&file_value_3) + 1),
-			    nb_charp_steal(&file_copy_3))
+		(nb_file_read_all(last.stdout_path, &stored_contents_buffer, 0, NULL) == NB_OK &&
+				 (stored_contents_copy = (char *)malloc(
+					  nb_buf_len(&stored_contents_buffer) + 1)) != NULL
+			 ? (memcpy(stored_contents_copy, nb_buf_cstr(&stored_contents_buffer),
+				   nb_buf_len(&stored_contents_buffer) + 1),
+			    nb_charp_steal(&stored_contents_copy))
 			 : NULL);
 	ASSERT_NE(stored, nullptr);
 	EXPECT_STREQ(stored, "prefix[REDACTED:OPENAI_API_KEY]suffix");
@@ -2016,8 +2017,8 @@ TEST_F(ProcessTest, SecretsAreRedactedBeforeChunkPollAndSpoolBoundaries)
 
 TEST_F(ProcessTest, UnicodePreviewBoundariesPreserveTheCompleteSpool)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf stored_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *stored_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	process_spawn_options options{};
 	options.command = "i=0; while [ \"$i\" -lt 24000 ]; do printf '\\344\\270\\255'; "
@@ -2034,12 +2035,13 @@ TEST_F(ProcessTest, UnicodePreviewBoundariesPreserveTheCompleteSpool)
 	EXPECT_TRUE(snapshot.stdout_truncated);
 	EXPECT_FALSE(snapshot.stdout_path_truncated);
 	char *stored NB_CLEANUP(nb_charp_cleanup) =
-		(nb_file_read_all(snapshot.stdout_path, &file_value_4, 0, NULL) == NB_OK &&
-				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-				   nb_buf_len(&file_value_4) + 1),
-			    nb_charp_steal(&file_copy_4))
+		(nb_file_read_all(snapshot.stdout_path, &stored_contents_buffer, 0, NULL) ==
+					 NB_OK &&
+				 (stored_contents_copy = (char *)malloc(
+					  nb_buf_len(&stored_contents_buffer) + 1)) != NULL
+			 ? (memcpy(stored_contents_copy, nb_buf_cstr(&stored_contents_buffer),
+				   nb_buf_len(&stored_contents_buffer) + 1),
+			    nb_charp_steal(&stored_contents_copy))
 			 : NULL);
 	ASSERT_NE(stored, nullptr);
 	EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(stored), NULL), NB_UTF8_OK);

@@ -92,18 +92,21 @@ protected:
 
 	std::string Clipboard()
 	{
-		nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-		char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+		nb_buf copied_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		char *copied_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 		size_t length = 0;
-		char *bytes = (nb_file_read_all(copied.c_str(), &file_value_1, 0, NULL) == NB_OK &&
-					       (file_copy_1 = (char *)malloc(
-							nb_buf_len(&file_value_1) + 1)) != NULL
-				       ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-						 nb_buf_len(&file_value_1) + 1),
-					  *(&length) = nb_buf_len(&file_value_1),
-					  nb_charp_steal(&file_copy_1))
-				       : NULL);
+		char *bytes =
+			(nb_file_read_all(copied.c_str(), &copied_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (copied_contents_copy = (char *)malloc(
+						  nb_buf_len(&copied_contents_buffer) + 1)) != NULL
+				 ? (memcpy(copied_contents_copy,
+					   nb_buf_cstr(&copied_contents_buffer),
+					   nb_buf_len(&copied_contents_buffer) + 1),
+				    *(&length) = nb_buf_len(&copied_contents_buffer),
+				    nb_charp_steal(&copied_contents_copy))
+				 : NULL);
 		if (!bytes)
 			return {};
 		std::string result(bytes, length);

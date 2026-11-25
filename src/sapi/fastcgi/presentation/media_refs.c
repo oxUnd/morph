@@ -90,7 +90,7 @@ static void artifact_publish_ready(struct fcgi_turn_job *j, const struct fcgi_tu
 struct fcgi_turn_artifact *fcgi_media_artifact_borrow(struct fcgi_turn_job *j, const char *path,
 						      const char *kind)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char rel[512];
 	nb_buf canonical NB_CLEANUP(nb_buf_destroy) = {0};
@@ -103,8 +103,8 @@ struct fcgi_turn_artifact *fcgi_media_artifact_borrow(struct fcgi_turn_job *j, c
 
 	if (!j || !path || !kind)
 		return NULL;
-	expanded = (nb_path_expand(&file_value_1, path, NULL) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_1))
+	expanded = (nb_path_expand(&expanded_path_buffer, path, NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&expanded_path_buffer))
 			    : NULL);
 	if (!expanded)
 		return NULL;
@@ -234,8 +234,8 @@ static int append_artifact_tag(nb_buf *buf, const struct fcgi_turn_artifact *a)
 
 static int candidate_path(struct fcgi_turn_job *j, const char *token, char out[PATH_MAX])
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf output_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int output_path_status = NB_OK;
 
 	if (!token || !*token)
 		return 0;
@@ -243,12 +243,13 @@ static int candidate_path(struct fcgi_turn_job *j, const char *token, char out[P
 		snprintf(out, PATH_MAX, "%s", token);
 		return 1;
 	}
-	if (((file_status_2 = nb_path_concat(&file_value_2, bridge_output_dir(j), token)) != NB_OK
-		     ? file_status_2
-	     : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), out, PATH_MAX)) ==
-			     NB_ERR_RANGE
+	if (((output_path_status =
+		      nb_path_concat(&output_path_buffer, bridge_output_dir(j), token)) != NB_OK
+		     ? output_path_status
+	     : (output_path_status = nb_str_copy_to(nb_buf_str(&output_path_buffer), out,
+						    PATH_MAX)) == NB_ERR_RANGE
 		     ? NB_ERR_NAME_TOO_LONG
-		     : file_status_2) != 0)
+		     : output_path_status) != 0)
 		return 0;
 	return 1;
 }

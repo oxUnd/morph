@@ -241,8 +241,8 @@ static void preference_order_query_init(struct preference_order_query *out, int6
 int preference_set(struct db *db, int64_t session_id, const char *scope, const char *key,
 		   const char *value, const char *source, const char *event_token)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf token_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int token_status = NB_OK;
 
 	struct orm_scope lease NB_CLEANUP(orm_scope_cleanup) = {0};
 	struct norm_rows *rows NB_CLEANUP(orm_rows_cleanup) = NULL;
@@ -264,16 +264,16 @@ int preference_set(struct db *db, int64_t session_id, const char *scope, const c
 	}
 
 	if (!event_token || !*event_token) {
-		rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_1),
-					    nb_buf_append_cstr(&file_value_1, "pref_"))
-						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-			      ? file_status_1
-		      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), token,
-							sizeof(token))) == NB_ERR_RANGE
+		rc = ((token_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				       : !(nb_buf_clear(&token_buffer),
+					   nb_buf_append_cstr(&token_buffer, "pref_"))
+					       ? NB_ERR_NOMEM
+					       : nb_random_hex(&token_buffer, 16, NULL))) != NB_OK
+			      ? token_status
+		      : (token_status = nb_str_copy_to(nb_buf_str(&token_buffer), token,
+						       sizeof(token))) == NB_ERR_RANGE
 			      ? NB_ERR_NO_SPACE
-			      : file_status_1);
+			      : token_status);
 		if (rc != 0)
 			return rc;
 

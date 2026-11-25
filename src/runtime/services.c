@@ -479,8 +479,8 @@ char *runtime_trace_latest_current_copy(struct runtime *runtime, int *round_no, 
 int runtime_session_compress(struct runtime *runtime, int *trace_removed, int *window_removed,
 			     int *kept)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf turn_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int turn_id_status = NB_OK;
 
 	struct runtime_context *ctx = runtime ? &runtime->context : NULL;
 	struct react_context *react;
@@ -510,16 +510,16 @@ int runtime_session_compress(struct runtime *runtime, int *trace_removed, int *w
 	react->history_enabled = 1;
 	memcpy(previous_turn_id, react->turn_id, sizeof(previous_turn_id));
 	previous_turn_id_user_set = react->turn_id_user_set;
-	rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				: !(nb_buf_clear(&file_value_1),
-				    nb_buf_append_cstr(&file_value_1, "compact_"))
-					? NB_ERR_NOMEM
-					: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-		      ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), react->turn_id,
-						sizeof(react->turn_id))) == NB_ERR_RANGE
+	rc = ((turn_id_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				 : !(nb_buf_clear(&turn_id_buffer),
+				     nb_buf_append_cstr(&turn_id_buffer, "compact_"))
+					 ? NB_ERR_NOMEM
+					 : nb_random_hex(&turn_id_buffer, 16, NULL))) != NB_OK
+		      ? turn_id_status
+	      : (turn_id_status = nb_str_copy_to(nb_buf_str(&turn_id_buffer), react->turn_id,
+						 sizeof(react->turn_id))) == NB_ERR_RANGE
 		      ? NB_ERR_NO_SPACE
-		      : file_status_1);
+		      : turn_id_status);
 	if (rc != 0) {
 		memcpy(react->turn_id, previous_turn_id, sizeof(react->turn_id));
 		react->turn_id_user_set = previous_turn_id_user_set;

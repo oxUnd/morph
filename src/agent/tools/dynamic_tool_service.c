@@ -304,37 +304,38 @@ static int load_tool_from_dir(struct tool_registry *reg, struct tool_context *tc
 static int create_context_dir(const struct dynamic_tools_context *ctx, const char *name, char *dir,
 			      size_t dir_size)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf session_root_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int session_root_status = NB_OK;
+	nb_buf tool_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int tool_dir_status = NB_OK;
 
 	char session_root[PATH_MAX];
 	int rc;
 
 	if (!ctx || !ctx->session_id[0])
 		return NB_ERR_INVAL;
-	rc = ((file_status_1 = nb_path_concat(&file_value_1, ctx->cfg->session_dir,
-					      ctx->session_id)) != NB_OK
-		      ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), session_root,
-						sizeof(session_root))) == NB_ERR_RANGE
+	rc = ((session_root_status = nb_path_concat(&session_root_buffer, ctx->cfg->session_dir,
+						    ctx->session_id)) != NB_OK
+		      ? session_root_status
+	      : (session_root_status = nb_str_copy_to(nb_buf_str(&session_root_buffer),
+						      session_root, sizeof(session_root))) ==
+			      NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_1);
+		      : session_root_status);
 	if (rc < 0)
 		return rc;
-	return ((file_status_2 = nb_path_concat(&file_value_2, session_root, name)) != NB_OK
-			? file_status_2
-		: (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), dir, dir_size)) ==
+	return ((tool_dir_status = nb_path_concat(&tool_dir_buffer, session_root, name)) != NB_OK
+			? tool_dir_status
+		: (tool_dir_status = nb_str_copy_to(nb_buf_str(&tool_dir_buffer), dir, dir_size)) ==
 				NB_ERR_RANGE
 			? NB_ERR_NAME_TOO_LONG
-			: file_status_2);
+			: tool_dir_status);
 }
 
 static int service_create(const char *args_json, struct tool_result *result, void *user_data)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
+	nb_buf source_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int source_path_status = NB_OK;
 
 	struct dynamic_tools_context *ctx = user_data;
 	cJSON *root;
@@ -547,13 +548,14 @@ static int service_create(const char *args_json, struct tool_result *result, voi
 	rc = create_context_dir(ctx, dt->name, dt->dir, sizeof(dt->dir));
 	if (rc == 0) {
 		stage = "build_source_path";
-		rc = ((file_status_3 = nb_path_concat(&file_value_3, dt->dir,
-						      DYN_TOOL_SOURCE_FILE)) != NB_OK
-			      ? file_status_3
-		      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), dt->source_path,
-							sizeof(dt->source_path))) == NB_ERR_RANGE
+		rc = ((source_path_status = nb_path_concat(&source_path_buffer, dt->dir,
+							   DYN_TOOL_SOURCE_FILE)) != NB_OK
+			      ? source_path_status
+		      : (source_path_status =
+				 nb_str_copy_to(nb_buf_str(&source_path_buffer), dt->source_path,
+						sizeof(dt->source_path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_3);
+			      : source_path_status);
 	}
 	if (rc == 0) {
 		stage = "check_js";
@@ -650,14 +652,14 @@ static int dynamic_tool_delete_path_allowed(const struct dynamic_tools_context *
 					    enum tool_origin origin, const char *name,
 					    const char *dir)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_4 = NB_OK;
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_5 = NB_OK;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_6 = NB_OK;
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf session_root_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int session_root_status = NB_OK;
+	nb_buf session_tool_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int session_tool_path_status = NB_OK;
+	nb_buf persistent_tool_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int persistent_tool_path_status = NB_OK;
+	nb_buf canonical_tool_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf canonical_expected_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char expected[PATH_MAX];
 	char session_root[PATH_MAX];
@@ -668,54 +670,63 @@ static int dynamic_tool_delete_path_allowed(const struct dynamic_tools_context *
 	if (origin == TOOL_ORIGIN_DYNAMIC_SESSION) {
 		if (!ctx->session_id[0])
 			return 0;
-		rc = ((file_status_4 = nb_path_concat(&file_value_4, ctx->cfg->session_dir,
-						      ctx->session_id)) != NB_OK
-			      ? file_status_4
-		      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), session_root,
-							sizeof(session_root))) == NB_ERR_RANGE
+		rc = ((session_root_status =
+			       nb_path_concat(&session_root_buffer, ctx->cfg->session_dir,
+					      ctx->session_id)) != NB_OK
+			      ? session_root_status
+		      : (session_root_status =
+				 nb_str_copy_to(nb_buf_str(&session_root_buffer), session_root,
+						sizeof(session_root))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_4);
+			      : session_root_status);
 		if (rc < 0)
 			return 0;
-		rc = ((file_status_5 = nb_path_concat(&file_value_5, session_root, name)) != NB_OK
-			      ? file_status_5
-		      : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), expected,
-							sizeof(expected))) == NB_ERR_RANGE
+		rc = ((session_tool_path_status = nb_path_concat(&session_tool_path_buffer,
+								 session_root, name)) != NB_OK
+			      ? session_tool_path_status
+		      : (session_tool_path_status =
+				 nb_str_copy_to(nb_buf_str(&session_tool_path_buffer), expected,
+						sizeof(expected))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_5);
+			      : session_tool_path_status);
 	} else if (origin == TOOL_ORIGIN_DYNAMIC_PERSISTENT) {
-		rc = ((file_status_6 = nb_path_concat(&file_value_6, ctx->cfg->persistent_dir,
-						      name)) != NB_OK
-			      ? file_status_6
-		      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), expected,
-							sizeof(expected))) == NB_ERR_RANGE
+		rc = ((persistent_tool_path_status =
+			       nb_path_concat(&persistent_tool_path_buffer,
+					      ctx->cfg->persistent_dir, name)) != NB_OK
+			      ? persistent_tool_path_status
+		      : (persistent_tool_path_status =
+				 nb_str_copy_to(nb_buf_str(&persistent_tool_path_buffer), expected,
+						sizeof(expected))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_6);
+			      : persistent_tool_path_status);
 	} else {
 		return 0;
 	}
 	if (rc < 0)
 		return 0;
-	if (nb_path_expand(&file_value_7, dir, NULL) != NB_OK ||
-	    nb_path_canonical_missing(&file_value_7, nb_buf_cstr(&file_value_7), NULL) != NB_OK ||
-	    nb_path_expand(&file_value_8, expected, NULL) != NB_OK ||
-	    nb_path_canonical_missing(&file_value_8, nb_buf_cstr(&file_value_8), NULL) != NB_OK)
+	if (nb_path_expand(&canonical_tool_path_buffer, dir, NULL) != NB_OK ||
+	    nb_path_canonical_missing(&canonical_tool_path_buffer,
+				      nb_buf_cstr(&canonical_tool_path_buffer), NULL) != NB_OK ||
+	    nb_path_expand(&canonical_expected_path_buffer, expected, NULL) != NB_OK ||
+	    nb_path_canonical_missing(&canonical_expected_path_buffer,
+				      nb_buf_cstr(&canonical_expected_path_buffer), NULL) != NB_OK)
 		return 0;
-	return strcmp(nb_buf_cstr(&file_value_7), nb_buf_cstr(&file_value_8)) == 0;
+	return strcmp(nb_buf_cstr(&canonical_tool_path_buffer),
+		      nb_buf_cstr(&canonical_expected_path_buffer)) == 0;
 }
 
 static int service_promote(const char *args_json, struct tool_result *result, void *user_data)
 {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_9 = NB_OK;
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_10 = NB_OK;
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_11 = NB_OK;
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_12 = NB_OK;
-	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_13 = NB_OK;
+	nb_buf destination_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int destination_dir_status = NB_OK;
+	nb_buf source_metadata_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int source_metadata_path_status = NB_OK;
+	nb_buf source_script_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int source_script_path_status = NB_OK;
+	nb_buf destination_metadata_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int destination_metadata_path_status = NB_OK;
+	nb_buf destination_script_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int destination_script_path_status = NB_OK;
 
 	struct dynamic_tools_context *ctx = user_data;
 	cJSON *root;
@@ -762,49 +773,56 @@ static int service_promote(const char *args_json, struct tool_result *result, vo
 	}
 	rc = create_context_dir(ctx, name, src_dir, sizeof(src_dir));
 	if (rc == 0)
-		rc = ((file_status_9 = nb_path_concat(&file_value_9, ctx->cfg->persistent_dir,
-						      name)) != NB_OK
-			      ? file_status_9
-		      : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), dst_dir,
-							sizeof(dst_dir))) == NB_ERR_RANGE
+		rc = ((destination_dir_status = nb_path_concat(
+			       &destination_dir_buffer, ctx->cfg->persistent_dir, name)) != NB_OK
+			      ? destination_dir_status
+		      : (destination_dir_status =
+				 nb_str_copy_to(nb_buf_str(&destination_dir_buffer), dst_dir,
+						sizeof(dst_dir))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_9);
+			      : destination_dir_status);
 	if (rc == 0 && nb_file_exists(dst_dir))
 		rc = NB_ERR_EXISTS;
 	if (rc == 0)
 		rc = nb_file_mkdir(dst_dir, true, NULL);
 	if (rc == 0)
-		rc = ((file_status_10 =
-			       nb_path_concat(&file_value_10, src_dir, DYN_TOOL_META_FILE)) != NB_OK
-			      ? file_status_10
-		      : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), src_meta,
-							 sizeof(src_meta))) == NB_ERR_RANGE
+		rc = ((source_metadata_path_status = nb_path_concat(
+			       &source_metadata_path_buffer, src_dir, DYN_TOOL_META_FILE)) != NB_OK
+			      ? source_metadata_path_status
+		      : (source_metadata_path_status =
+				 nb_str_copy_to(nb_buf_str(&source_metadata_path_buffer), src_meta,
+						sizeof(src_meta))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_10);
+			      : source_metadata_path_status);
 	if (rc == 0)
-		rc = ((file_status_11 = nb_path_concat(&file_value_11, src_dir,
-						       DYN_TOOL_SOURCE_FILE)) != NB_OK
-			      ? file_status_11
-		      : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), src_js,
-							 sizeof(src_js))) == NB_ERR_RANGE
+		rc = ((source_script_path_status = nb_path_concat(
+			       &source_script_path_buffer, src_dir, DYN_TOOL_SOURCE_FILE)) != NB_OK
+			      ? source_script_path_status
+		      : (source_script_path_status =
+				 nb_str_copy_to(nb_buf_str(&source_script_path_buffer), src_js,
+						sizeof(src_js))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_11);
+			      : source_script_path_status);
 	if (rc == 0)
-		rc = ((file_status_12 =
-			       nb_path_concat(&file_value_12, dst_dir, DYN_TOOL_META_FILE)) != NB_OK
-			      ? file_status_12
-		      : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), dst_meta,
-							 sizeof(dst_meta))) == NB_ERR_RANGE
+		rc = ((destination_metadata_path_status =
+			       nb_path_concat(&destination_metadata_path_buffer, dst_dir,
+					      DYN_TOOL_META_FILE)) != NB_OK
+			      ? destination_metadata_path_status
+		      : (destination_metadata_path_status =
+				 nb_str_copy_to(nb_buf_str(&destination_metadata_path_buffer),
+						dst_meta, sizeof(dst_meta))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_12);
+			      : destination_metadata_path_status);
 	if (rc == 0)
-		rc = ((file_status_13 = nb_path_concat(&file_value_13, dst_dir,
-						       DYN_TOOL_SOURCE_FILE)) != NB_OK
-			      ? file_status_13
-		      : (file_status_13 = nb_str_copy_to(nb_buf_str(&file_value_13), dst_js,
-							 sizeof(dst_js))) == NB_ERR_RANGE
+		rc = ((destination_script_path_status =
+			       nb_path_concat(&destination_script_path_buffer, dst_dir,
+					      DYN_TOOL_SOURCE_FILE)) != NB_OK
+			      ? destination_script_path_status
+		      : (destination_script_path_status =
+				 nb_str_copy_to(nb_buf_str(&destination_script_path_buffer), dst_js,
+						sizeof(dst_js))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_13);
+			      : destination_script_path_status);
 	if (rc == 0) {
 		rc = dynamic_tool_store_copy_tool_snapshot(src_meta, src_js, dst_meta, dst_js);
 	}
@@ -822,8 +840,8 @@ static int service_promote(const char *args_json, struct tool_result *result, vo
 
 static int service_delete(const char *args_json, struct tool_result *result, void *user_data)
 {
-	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_14 = NB_OK;
+	nb_buf persistent_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int persistent_dir_status = NB_OK;
 
 	struct dynamic_tools_context *ctx = user_data;
 	struct tool_entry *entry;
@@ -904,14 +922,15 @@ static int service_delete(const char *args_json, struct tool_result *result, voi
 		char persistent_dir[PATH_MAX];
 		int load_rc;
 
-		load_rc = ((file_status_14 = nb_path_concat(
-				    &file_value_14, ctx->cfg->persistent_dir, name)) != NB_OK
-				   ? file_status_14
-			   : (file_status_14 =
-				      nb_str_copy_to(nb_buf_str(&file_value_14), persistent_dir,
-						     sizeof(persistent_dir))) == NB_ERR_RANGE
-				   ? NB_ERR_NAME_TOO_LONG
-				   : file_status_14);
+		load_rc =
+			((persistent_dir_status = nb_path_concat(
+				  &persistent_dir_buffer, ctx->cfg->persistent_dir, name)) != NB_OK
+				 ? persistent_dir_status
+			 : (persistent_dir_status = nb_str_copy_to(
+				    nb_buf_str(&persistent_dir_buffer), persistent_dir,
+				    sizeof(persistent_dir))) == NB_ERR_RANGE
+				 ? NB_ERR_NAME_TOO_LONG
+				 : persistent_dir_status);
 		if (load_rc == 0 && nb_file_exists(persistent_dir)) {
 			load_rc = load_tool_from_dir(ctx->reg, ctx->tctx, ctx->cfg, persistent_dir,
 						     TOOL_ORIGIN_DYNAMIC_PERSISTENT);
@@ -963,10 +982,10 @@ static int result_take_cjson(struct tool_result *result, cJSON **root)
 
 static int service_history(const char *args_json, struct tool_result *result, void *user_data)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_15 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_15 = NB_OK;
+	nb_buf checkpoint_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int checkpoint_dir_status = NB_OK;
 
 	struct dynamic_tools_context *ctx = user_data;
 	cJSON *args = NULL;
@@ -1007,10 +1026,10 @@ static int service_history(const char *args_json, struct tool_result *result, vo
 	cJSON_AddStringToObject(out, "name", name);
 	cJSON_AddItemToObject(out, "checkpoints", items);
 	if (nb_file_exists(history) &&
-	    ((directory_status_1 = nb_dir_scan(
+	    ((directory_scan_status = nb_dir_scan(
 		      history, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS,
 		      &dirs, NULL)) != NB_OK
-		     ? directory_status_1
+		     ? directory_scan_status
 	     : dirs.names.len > INT_MAX ? NB_ERR_RANGE
 					: (count = (int)dirs.names.len, NB_OK)) == 0) {
 		int emitted = 0;
@@ -1034,16 +1053,16 @@ static int service_history(const char *args_json, struct tool_result *result, vo
 				struct tool_checkpoint cp;
 				cJSON *item;
 
-				if (((file_status_15 = nb_path_concat(
-					      &file_value_15, history,
+				if (((checkpoint_dir_status = nb_path_concat(
+					      &checkpoint_dir_buffer, history,
 					      nb_dir_listing_name(&dirs, (size_t)(max_idx)))) !=
 						     NB_OK
-					     ? file_status_15
-				     : (file_status_15 = nb_str_copy_to(nb_buf_str(&file_value_15),
-									cp_dir, sizeof(cp_dir))) ==
-						     NB_ERR_RANGE
+					     ? checkpoint_dir_status
+				     : (checkpoint_dir_status = nb_str_copy_to(
+						nb_buf_str(&checkpoint_dir_buffer), cp_dir,
+						sizeof(cp_dir))) == NB_ERR_RANGE
 					     ? NB_ERR_NAME_TOO_LONG
-					     : file_status_15) == 0 &&
+					     : checkpoint_dir_status) == 0 &&
 				    dynamic_tool_store_read_checkpoint_meta(cp_dir, &cp) == 0) {
 					item = cJSON_CreateObject();
 					if (!item) {
@@ -1177,19 +1196,20 @@ static int service_diff(const char *args_json, struct tool_result *result, void 
 
 static int reload_persistent_if_present(struct dynamic_tools_context *ctx, const char *name)
 {
-	nb_buf file_value_16 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_16 = NB_OK;
+	nb_buf persistent_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int persistent_dir_status = NB_OK;
 
 	char persistent_dir[PATH_MAX];
 	int rc;
 
-	rc = ((file_status_16 = nb_path_concat(&file_value_16, ctx->cfg->persistent_dir, name)) !=
-			      NB_OK
-		      ? file_status_16
-	      : (file_status_16 = nb_str_copy_to(nb_buf_str(&file_value_16), persistent_dir,
-						 sizeof(persistent_dir))) == NB_ERR_RANGE
+	rc = ((persistent_dir_status = nb_path_concat(&persistent_dir_buffer,
+						      ctx->cfg->persistent_dir, name)) != NB_OK
+		      ? persistent_dir_status
+	      : (persistent_dir_status = nb_str_copy_to(nb_buf_str(&persistent_dir_buffer),
+							persistent_dir, sizeof(persistent_dir))) ==
+			      NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_16);
+		      : persistent_dir_status);
 	if (rc < 0)
 		return rc;
 	if (!nb_file_exists(persistent_dir))
@@ -1201,8 +1221,8 @@ static int reload_persistent_if_present(struct dynamic_tools_context *ctx, const
 
 static int service_rollback(const char *args_json, struct tool_result *result, void *user_data)
 {
-	nb_buf file_value_17 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_17 = NB_OK;
+	nb_buf source_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int source_path_status = NB_OK;
 
 	struct dynamic_tools_context *ctx = user_data;
 	struct tool_entry *entry;
@@ -1277,13 +1297,13 @@ static int service_rollback(const char *args_json, struct tool_result *result, v
 						  "\"checkpoint_id\":\"%s\",\"state\":\"absent\"}",
 						  name, cp.id);
 	}
-	rc = ((file_status_17 = nb_path_concat(&file_value_17, tool_dir, DYN_TOOL_SOURCE_FILE)) !=
-			      NB_OK
-		      ? file_status_17
-	      : (file_status_17 = nb_str_copy_to(nb_buf_str(&file_value_17), source_path,
-						 sizeof(source_path))) == NB_ERR_RANGE
+	rc = ((source_path_status =
+		       nb_path_concat(&source_path_buffer, tool_dir, DYN_TOOL_SOURCE_FILE)) != NB_OK
+		      ? source_path_status
+	      : (source_path_status = nb_str_copy_to(nb_buf_str(&source_path_buffer), source_path,
+						     sizeof(source_path))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_17);
+		      : source_path_status);
 	if (rc == 0)
 		rc = dynamic_tool_runner_check_js_source(source_path, &check_error);
 	if (rc < 0) {
@@ -1315,10 +1335,10 @@ int dynamic_tool_service_load_root(struct tool_registry *reg, struct tool_contex
 				   const struct config_dynamic_tools *cfg, const char *root,
 				   enum tool_origin origin)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_18 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_18 = NB_OK;
+	nb_buf tool_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int tool_path_status = NB_OK;
 
 	nb_dir_listing dirs NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	int count = 0;
@@ -1327,10 +1347,10 @@ int dynamic_tool_service_load_root(struct tool_registry *reg, struct tool_contex
 		return 0;
 	if (!nb_file_exists(root))
 		return 0;
-	if (((directory_status_1 = nb_dir_scan(
+	if (((directory_scan_status = nb_dir_scan(
 		      root, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS, &dirs,
 		      NULL)) != NB_OK
-		     ? directory_status_1
+		     ? directory_scan_status
 	     : dirs.names.len > INT_MAX ? NB_ERR_RANGE
 					: (count = (int)dirs.names.len, NB_OK)) != 0)
 		return 0;
@@ -1338,14 +1358,14 @@ int dynamic_tool_service_load_root(struct tool_registry *reg, struct tool_contex
 		char path[PATH_MAX];
 		if (nb_dir_listing_name(&dirs, (size_t)(i))[0] == '.')
 			continue;
-		if (((file_status_18 = nb_path_concat(&file_value_18, root,
-						      nb_dir_listing_name(&dirs, (size_t)(i)))) !=
+		if (((tool_path_status = nb_path_concat(&tool_path_buffer, root,
+							nb_dir_listing_name(&dirs, (size_t)(i)))) !=
 				     NB_OK
-			     ? file_status_18
-		     : (file_status_18 = nb_str_copy_to(nb_buf_str(&file_value_18), path,
-							sizeof(path))) == NB_ERR_RANGE
+			     ? tool_path_status
+		     : (tool_path_status = nb_str_copy_to(nb_buf_str(&tool_path_buffer), path,
+							  sizeof(path))) == NB_ERR_RANGE
 			     ? NB_ERR_NAME_TOO_LONG
-			     : file_status_18) != 0)
+			     : tool_path_status) != 0)
 			continue;
 		(void)load_tool_from_dir(reg, tctx, cfg, path, origin);
 	}
@@ -1357,21 +1377,22 @@ int dynamic_tool_service_load_session(struct tool_registry *reg, struct tool_con
 				      const struct config_dynamic_tools *cfg,
 				      const char *session_id)
 {
-	nb_buf file_value_19 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_19 = NB_OK;
+	nb_buf session_root_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int session_root_status = NB_OK;
 
 	char session_root[PATH_MAX];
 	int rc;
 
 	if (!cfg || !cfg->enabled || !session_id || !*session_id)
 		return 0;
-	rc = ((file_status_19 = nb_path_concat(&file_value_19, cfg->session_dir, session_id)) !=
-			      NB_OK
-		      ? file_status_19
-	      : (file_status_19 = nb_str_copy_to(nb_buf_str(&file_value_19), session_root,
-						 sizeof(session_root))) == NB_ERR_RANGE
+	rc = ((session_root_status =
+		       nb_path_concat(&session_root_buffer, cfg->session_dir, session_id)) != NB_OK
+		      ? session_root_status
+	      : (session_root_status = nb_str_copy_to(nb_buf_str(&session_root_buffer),
+						      session_root, sizeof(session_root))) ==
+			      NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_19);
+		      : session_root_status);
 	if (rc < 0)
 		return rc;
 	return dynamic_tool_service_load_root(reg, tctx, cfg, session_root,

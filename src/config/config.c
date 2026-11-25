@@ -701,12 +701,12 @@ static void load_dynamic_profile(const nb_toml_value *tbl,
 
 static void expand_path_field(char *buf, size_t len)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	if (!buf[0])
 		return;
-	char *expanded = (nb_path_expand(&file_value_1, buf, NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_1))
+	char *expanded = (nb_path_expand(&expanded_path_buffer, buf, NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&expanded_path_buffer))
 				  : NULL);
 	if (expanded) {
 		strncpy(buf, expanded, len - 1);

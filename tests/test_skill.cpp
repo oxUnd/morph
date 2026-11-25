@@ -164,29 +164,31 @@ protected:
 	}
 	void create_skill(const char *dir_name, const char *name,
 			  const char *description, const char *body_text) {
-		nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_1 = NB_OK;
-		nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_2 = NB_OK;
+		nb_buf skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int skill_dir_status = NB_OK;
+		nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int manifest_path_status = NB_OK;
 
 		char skill_dir[512];
-		ASSERT_EQ(
-			((file_status_1 = nb_path_concat(&file_value_1, tmpdir, dir_name)) != NB_OK
-				 ? file_status_1
-			 : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), skill_dir,
-							   sizeof(skill_dir))) == NB_ERR_RANGE
-				 ? NB_ERR_NAME_TOO_LONG
-				 : file_status_1),
-			0);
+		ASSERT_EQ(((skill_dir_status =
+				    nb_path_concat(&skill_dir_buffer, tmpdir, dir_name)) != NB_OK
+				   ? skill_dir_status
+			   : (skill_dir_status = nb_str_copy_to(nb_buf_str(&skill_dir_buffer),
+								skill_dir, sizeof(skill_dir))) ==
+					   NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : skill_dir_status),
+			  0);
 		mkdir(skill_dir, 0755);
 		char md_path[PATH_MAX];
-		ASSERT_EQ(((file_status_2 = nb_path_concat(&file_value_2, skill_dir, "SKILL.md")) !=
-					   NB_OK
-				   ? file_status_2
-			   : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), md_path,
-							     sizeof(md_path))) == NB_ERR_RANGE
+		ASSERT_EQ(((manifest_path_status = nb_path_concat(&manifest_path_buffer, skill_dir,
+								  "SKILL.md")) != NB_OK
+				   ? manifest_path_status
+			   : (manifest_path_status =
+				      nb_str_copy_to(nb_buf_str(&manifest_path_buffer), md_path,
+						     sizeof(md_path))) == NB_ERR_RANGE
 				   ? NB_ERR_NAME_TOO_LONG
-				   : file_status_2),
+				   : manifest_path_status),
 			  0);
 		FILE *f = fopen(md_path, "w");
 		ASSERT_NE(f, nullptr);
@@ -195,28 +197,30 @@ protected:
 		fclose(f);
 	}
 	void remove_skill(const char *dir_name) {
-		nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_3 = NB_OK;
-		nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_4 = NB_OK;
+		nb_buf skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int skill_dir_status = NB_OK;
+		nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int manifest_path_status = NB_OK;
 
 		char skill_dir[512];
-		ASSERT_EQ(
-			((file_status_3 = nb_path_concat(&file_value_3, tmpdir, dir_name)) != NB_OK
-				 ? file_status_3
-			 : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), skill_dir,
-							   sizeof(skill_dir))) == NB_ERR_RANGE
-				 ? NB_ERR_NAME_TOO_LONG
-				 : file_status_3),
-			0);
-		char md_path[PATH_MAX];
-		ASSERT_EQ(((file_status_4 = nb_path_concat(&file_value_4, skill_dir, "SKILL.md")) !=
-					   NB_OK
-				   ? file_status_4
-			   : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), md_path,
-							     sizeof(md_path))) == NB_ERR_RANGE
+		ASSERT_EQ(((skill_dir_status =
+				    nb_path_concat(&skill_dir_buffer, tmpdir, dir_name)) != NB_OK
+				   ? skill_dir_status
+			   : (skill_dir_status = nb_str_copy_to(nb_buf_str(&skill_dir_buffer),
+								skill_dir, sizeof(skill_dir))) ==
+					   NB_ERR_RANGE
 				   ? NB_ERR_NAME_TOO_LONG
-				   : file_status_4),
+				   : skill_dir_status),
+			  0);
+		char md_path[PATH_MAX];
+		ASSERT_EQ(((manifest_path_status = nb_path_concat(&manifest_path_buffer, skill_dir,
+								  "SKILL.md")) != NB_OK
+				   ? manifest_path_status
+			   : (manifest_path_status =
+				      nb_str_copy_to(nb_buf_str(&manifest_path_buffer), md_path,
+						     sizeof(md_path))) == NB_ERR_RANGE
+				   ? NB_ERR_NAME_TOO_LONG
+				   : manifest_path_status),
 			  0);
 		unlink(md_path);
 		rmdir(skill_dir);
@@ -427,8 +431,8 @@ TEST_F(SkillRegistryTest, SortedOutputPreservesRegistryLookupPointers)
 }
 
 TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_5 = NB_OK;
+	nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int manifest_path_status = NB_OK;
 
 	create_skill("dup-name", "dup-name", "First.", "A");
 	skill_discover(&reg, tmpdir);
@@ -437,13 +441,15 @@ TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
 	snprintf(skill_dir2, sizeof(skill_dir2), "%s/dup-name-2", tmpdir);
 	mkdir(skill_dir2, 0755);
 	char md_path[PATH_MAX];
-	ASSERT_EQ(((file_status_5 = nb_path_concat(&file_value_5, skill_dir2, "SKILL.md")) != NB_OK
-			   ? file_status_5
-		   : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), md_path,
-						     sizeof(md_path))) == NB_ERR_RANGE
-			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_5),
-		  0);
+	ASSERT_EQ(
+		((manifest_path_status =
+			  nb_path_concat(&manifest_path_buffer, skill_dir2, "SKILL.md")) != NB_OK
+			 ? manifest_path_status
+		 : (manifest_path_status = nb_str_copy_to(nb_buf_str(&manifest_path_buffer),
+							  md_path, sizeof(md_path))) == NB_ERR_RANGE
+			 ? NB_ERR_NAME_TOO_LONG
+			 : manifest_path_status),
+		0);
 	FILE *f = fopen(md_path, "w");
 	ASSERT_NE(f, nullptr);
 	fprintf(f, "---\nname: dup-name\ndescription: Second.\n---\nB\n");
@@ -485,29 +491,31 @@ protected:
 	}
 	void create_skill_file(const char *root_dir, const char *dir_name,
 			       const char *name, const char *body) {
-		nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_6 = NB_OK;
-		nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_7 = NB_OK;
+		nb_buf skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int skill_dir_status = NB_OK;
+		nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int manifest_path_status = NB_OK;
 
 		char skill_dir[PATH_MAX];
-		ASSERT_EQ(((file_status_6 = nb_path_concat(&file_value_6, root_dir, dir_name)) !=
-					   NB_OK
-				   ? file_status_6
-			   : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), skill_dir,
-							     sizeof(skill_dir))) == NB_ERR_RANGE
+		ASSERT_EQ(((skill_dir_status =
+				    nb_path_concat(&skill_dir_buffer, root_dir, dir_name)) != NB_OK
+				   ? skill_dir_status
+			   : (skill_dir_status = nb_str_copy_to(nb_buf_str(&skill_dir_buffer),
+								skill_dir, sizeof(skill_dir))) ==
+					   NB_ERR_RANGE
 				   ? NB_ERR_NAME_TOO_LONG
-				   : file_status_6),
+				   : skill_dir_status),
 			  0);
 		mkdir(skill_dir, 0755);
 		char md_path[PATH_MAX];
-		ASSERT_EQ(((file_status_7 = nb_path_concat(&file_value_7, skill_dir, "SKILL.md")) !=
-					   NB_OK
-				   ? file_status_7
-			   : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), md_path,
-							     sizeof(md_path))) == NB_ERR_RANGE
+		ASSERT_EQ(((manifest_path_status = nb_path_concat(&manifest_path_buffer, skill_dir,
+								  "SKILL.md")) != NB_OK
+				   ? manifest_path_status
+			   : (manifest_path_status =
+				      nb_str_copy_to(nb_buf_str(&manifest_path_buffer), md_path,
+						     sizeof(md_path))) == NB_ERR_RANGE
 				   ? NB_ERR_NAME_TOO_LONG
-				   : file_status_7),
+				   : manifest_path_status),
 			  0);
 		FILE *f = fopen(md_path, "w");
 		ASSERT_NE(f, nullptr);
@@ -516,28 +524,30 @@ protected:
 		fclose(f);
 	}
 	void remove_skill_file(const char *root_dir, const char *dir_name) {
-		nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_8 = NB_OK;
-		nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {};
-		int file_status_9 = NB_OK;
+		nb_buf skill_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int skill_dir_status = NB_OK;
+		nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		int manifest_path_status = NB_OK;
 
 		char skill_dir[PATH_MAX];
-		ASSERT_EQ(((file_status_8 = nb_path_concat(&file_value_8, root_dir, dir_name)) !=
-					   NB_OK
-				   ? file_status_8
-			   : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), skill_dir,
-							     sizeof(skill_dir))) == NB_ERR_RANGE
+		ASSERT_EQ(((skill_dir_status =
+				    nb_path_concat(&skill_dir_buffer, root_dir, dir_name)) != NB_OK
+				   ? skill_dir_status
+			   : (skill_dir_status = nb_str_copy_to(nb_buf_str(&skill_dir_buffer),
+								skill_dir, sizeof(skill_dir))) ==
+					   NB_ERR_RANGE
 				   ? NB_ERR_NAME_TOO_LONG
-				   : file_status_8),
+				   : skill_dir_status),
 			  0);
 		char md_path[PATH_MAX];
-		ASSERT_EQ(((file_status_9 = nb_path_concat(&file_value_9, skill_dir, "SKILL.md")) !=
-					   NB_OK
-				   ? file_status_9
-			   : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), md_path,
-							     sizeof(md_path))) == NB_ERR_RANGE
+		ASSERT_EQ(((manifest_path_status = nb_path_concat(&manifest_path_buffer, skill_dir,
+								  "SKILL.md")) != NB_OK
+				   ? manifest_path_status
+			   : (manifest_path_status =
+				      nb_str_copy_to(nb_buf_str(&manifest_path_buffer), md_path,
+						     sizeof(md_path))) == NB_ERR_RANGE
 				   ? NB_ERR_NAME_TOO_LONG
-				   : file_status_9),
+				   : manifest_path_status),
 			  0);
 		unlink(md_path);
 		rmdir(skill_dir);

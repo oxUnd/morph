@@ -115,8 +115,8 @@ JSValue runner_throw_cap(JSContext *ctx, const char *cap)
 
 char *runner_authorize_path_copy(JSContext *ctx, const char *path, int write)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf candidate_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf resolved_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	const char *cap = write ? "fs_write" : "fs_read";
 	const char *allow_env =
@@ -143,20 +143,20 @@ char *runner_authorize_path_copy(JSContext *ctx, const char *path, int write)
 					      write ? "output" : "work");
 			return NULL;
 		}
-		candidate = (nb_path_join(&file_value_1, root, path) == NB_OK
-				     ? strdup(nb_buf_cstr(&file_value_1))
+		candidate = (nb_path_join(&candidate_path_buffer, root, path) == NB_OK
+				     ? strdup(nb_buf_cstr(&candidate_path_buffer))
 				     : NULL);
 	}
 	if (!candidate) {
 		JS_ThrowOutOfMemory(ctx);
 		return NULL;
 	}
-	resolved =
-		(nb_path_expand(&file_value_2, candidate, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_2, nb_buf_cstr(&file_value_2), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_2))
-			 : NULL);
+	resolved = (nb_path_expand(&resolved_path_buffer, candidate, NULL) == NB_OK &&
+				    nb_path_canonical_missing(&resolved_path_buffer,
+							      nb_buf_cstr(&resolved_path_buffer),
+							      NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&resolved_path_buffer))
+			    : NULL);
 	free(candidate);
 	if (!resolved) {
 		JS_ThrowInternalError(ctx, "failed to resolve %s path", write ? "write" : "read");
@@ -342,18 +342,18 @@ static void print_exception(JSContext *ctx, int id)
 
 static int check_script(JSContext *ctx, const char *path)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf module_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	JSValue val;
 	JSValue global = JS_UNDEFINED;
 	JSValue fn = JS_UNDEFINED;
 	int rc = 0;
 
-	if (nb_file_read_all(path, &file_value_3, 0, NULL) != NB_OK)
+	if (nb_file_read_all(path, &module_contents_buffer, 0, NULL) != NB_OK)
 		return NB_ERR_NOT_FOUND;
-	val = JS_Eval(ctx, nb_buf_cstr(&file_value_3), nb_buf_len(&file_value_3), path,
-		      JS_EVAL_TYPE_GLOBAL);
-	nb_buf_destroy(&file_value_3);
+	val = JS_Eval(ctx, nb_buf_cstr(&module_contents_buffer),
+		      nb_buf_len(&module_contents_buffer), path, JS_EVAL_TYPE_GLOBAL);
+	nb_buf_destroy(&module_contents_buffer);
 	if (JS_IsException(val)) {
 		print_exception(ctx, 1);
 		return NB_ERR_INVAL;
@@ -399,7 +399,7 @@ static void runner_script_values_cleanup(struct runner_script_values *values)
 
 static int run_script(JSContext *ctx, const char *path)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf script_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char *line NB_CLEANUP(nb_charp_cleanup) = NULL;
 	size_t line_cap = 0;
@@ -418,11 +418,11 @@ static int run_script(JSContext *ctx, const char *path)
 		.request = JS_UNDEFINED,
 	};
 
-	if (nb_file_read_all(path, &file_value_4, 0, NULL) != NB_OK)
+	if (nb_file_read_all(path, &script_contents_buffer, 0, NULL) != NB_OK)
 		return NB_ERR_NOT_FOUND;
-	val = JS_Eval(ctx, nb_buf_cstr(&file_value_4), nb_buf_len(&file_value_4), path,
-		      JS_EVAL_TYPE_GLOBAL);
-	nb_buf_destroy(&file_value_4);
+	val = JS_Eval(ctx, nb_buf_cstr(&script_contents_buffer),
+		      nb_buf_len(&script_contents_buffer), path, JS_EVAL_TYPE_GLOBAL);
+	nb_buf_destroy(&script_contents_buffer);
 	if (JS_IsException(val)) {
 		print_exception(ctx, id);
 		return NB_ERR_INVAL;

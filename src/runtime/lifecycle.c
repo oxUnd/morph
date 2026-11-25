@@ -138,8 +138,8 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 					 const char *expanded_database,
 					 char source[PATH_MAX])
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_1 = NB_OK;
+	nb_buf database_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int database_path_status = NB_OK;
 
 	char *expanded = NULL;
 	char *slash;
@@ -149,12 +149,14 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 		if (expanded_database) {
 			base = expanded_database;
 		} else {
-			expanded = ((expand_status_1 = nb_path_expand(
-				&file_value_1, runtime->options.db_path, NULL)) == NB_OK
-					    ? strdup(nb_buf_cstr(&file_value_1))
+			expanded = ((database_path_status = nb_path_expand(&database_path_buffer,
+									   runtime->options.db_path,
+									   NULL)) == NB_OK
+					    ? strdup(nb_buf_cstr(&database_path_buffer))
 					    : NULL);
 			if (!expanded)
-				return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
+				return database_path_status != NB_OK ? database_path_status
+								     : NB_ERR_NOMEM;
 			base = expanded;
 		}
 	}
@@ -177,12 +179,12 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 
 static int runtime_load_config(struct runtime *runtime, struct config_file_error *error)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_2 = NB_OK;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_3 = NB_OK;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_4 = NB_OK;
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int config_path_status = NB_OK;
+	nb_buf override_output_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int override_output_dir_status = NB_OK;
+	nb_buf configured_output_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int configured_output_dir_status = NB_OK;
 
 	struct runtime_context *ctx = &runtime->context;
 	char *expanded = NULL;
@@ -192,12 +194,12 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	config_set_defaults(runtime ? runtime->options.logger : NULL, &ctx->config);
 	if (runtime->options.config_path && runtime->options.config_path[0]) {
 		expanded =
-			((expand_status_2 = nb_path_expand(&file_value_2,
-				runtime->options.config_path, NULL)) == NB_OK
-				 ? strdup(nb_buf_cstr(&file_value_2))
+			((config_path_status = nb_path_expand(
+				  &config_path_buffer, runtime->options.config_path, NULL)) == NB_OK
+				 ? strdup(nb_buf_cstr(&config_path_buffer))
 				 : NULL);
 		if (!expanded)
-			return expand_status_2 != NB_OK ? expand_status_2 : NB_ERR_NOMEM;
+			return config_path_status != NB_OK ? config_path_status : NB_ERR_NOMEM;
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
 				expanded,
@@ -221,14 +223,15 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	}
 	if (runtime->options.output_dir_override &&
 	    runtime->options.output_dir_override[0]) {
-		expanded_output =
-			((expand_status_3 = nb_path_expand(&file_value_3,
-				runtime->options.output_dir_override, NULL)) == NB_OK
-				 ? strdup(nb_buf_cstr(&file_value_3))
-				 : NULL);
+		expanded_output = ((override_output_dir_status = nb_path_expand(
+					    &override_output_dir_buffer,
+					    runtime->options.output_dir_override, NULL)) == NB_OK
+					   ? strdup(nb_buf_cstr(&override_output_dir_buffer))
+					   : NULL);
 		if (!expanded_output) {
 			free(expanded);
-			return expand_status_3 != NB_OK ? expand_status_3 : NB_ERR_NOMEM;
+			return override_output_dir_status != NB_OK ? override_output_dir_status
+								   : NB_ERR_NOMEM;
 		}
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
@@ -240,13 +243,15 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 		ctx->config.general.output_dir[
 			sizeof(ctx->config.general.output_dir) - 1] = '\0';
 	} else if (ctx->config.general.output_dir[0] == '~') {
-		expanded_output = ((expand_status_4 = nb_path_expand(&file_value_4,
-			ctx->config.general.output_dir, NULL)) == NB_OK
-					   ? strdup(nb_buf_cstr(&file_value_4))
+		expanded_output = ((configured_output_dir_status = nb_path_expand(
+					    &configured_output_dir_buffer,
+					    ctx->config.general.output_dir, NULL)) == NB_OK
+					   ? strdup(nb_buf_cstr(&configured_output_dir_buffer))
 					   : NULL);
 		if (!expanded_output) {
 			free(expanded);
-			return expand_status_4 != NB_OK ? expand_status_4 : NB_ERR_NOMEM;
+			return configured_output_dir_status != NB_OK ? configured_output_dir_status
+								     : NB_ERR_NOMEM;
 		}
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
@@ -276,9 +281,9 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 
 static int runtime_open_database(struct runtime *runtime)
 {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_5 = NB_OK;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf database_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int database_path_status = NB_OK;
+	nb_buf morph_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct runtime_context *ctx = &runtime->context;
 	char source[PATH_MAX];
@@ -306,12 +311,12 @@ static int runtime_open_database(struct runtime *runtime)
 
 	if (!runtime->options.db_path || !runtime->options.db_path[0])
 		return NB_ERR_INVAL;
-	expanded = ((expand_status_5 = nb_path_expand(&file_value_5, runtime->options.db_path,
-		NULL)) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_5))
+	expanded = ((database_path_status = nb_path_expand(&database_path_buffer,
+							   runtime->options.db_path, NULL)) == NB_OK
+			    ? strdup(nb_buf_cstr(&database_path_buffer))
 			    : NULL);
 	if (!expanded)
-		return expand_status_5 != NB_OK ? expand_status_5 : NB_ERR_NOMEM;
+		return database_path_status != NB_OK ? database_path_status : NB_ERR_NOMEM;
 	rc = runtime_sync_source_directory(runtime, expanded, source);
 	if (rc == 0)
 		rc = morph_sync_recover_db_replacements(runtime ? runtime->options.logger : NULL,
@@ -320,8 +325,8 @@ static int runtime_open_database(struct runtime *runtime)
 		free(expanded);
 		return rc;
 	}
-	dir = (nb_path_expand(&file_value_6, "~/.morph", NULL) == NB_OK
-		       ? strdup(nb_buf_cstr(&file_value_6))
+	dir = (nb_path_expand(&morph_dir_buffer, "~/.morph", NULL) == NB_OK
+		       ? strdup(nb_buf_cstr(&morph_dir_buffer))
 		       : NULL);
 	if (dir) {
 		(void)nb_file_mkdir(dir, true, NULL);
@@ -336,26 +341,27 @@ static int runtime_open_database(struct runtime *runtime)
 
 static int runtime_set_workdir(struct runtime *runtime)
 {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf canonical_workdir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_workdir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf startup_workdir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct runtime_context *ctx = &runtime->context;
 	char *resolved;
 	int rc;
 
 	if (runtime->options.workdir && runtime->options.workdir[0]) {
-		resolved =
-			(nb_path_expand(&file_value_7, runtime->options.workdir, NULL) == NB_OK &&
-					 nb_path_canonical_missing(&file_value_7,
-								   nb_buf_cstr(&file_value_7),
-								   NULL) == NB_OK
-				 ? strdup(nb_buf_cstr(&file_value_7))
-				 : NULL);
+		resolved = (nb_path_expand(&canonical_workdir_buffer, runtime->options.workdir,
+					   NULL) == NB_OK &&
+					    nb_path_canonical_missing(
+						    &canonical_workdir_buffer,
+						    nb_buf_cstr(&canonical_workdir_buffer),
+						    NULL) == NB_OK
+				    ? strdup(nb_buf_cstr(&canonical_workdir_buffer))
+				    : NULL);
 		if (!resolved)
-			resolved = (nb_path_expand(&file_value_8, runtime->options.workdir, NULL) ==
-						    NB_OK
-					    ? strdup(nb_buf_cstr(&file_value_8))
+			resolved = (nb_path_expand(&expanded_workdir_buffer,
+						   runtime->options.workdir, NULL) == NB_OK
+					    ? strdup(nb_buf_cstr(&expanded_workdir_buffer))
 					    : NULL);
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
@@ -365,13 +371,14 @@ static int runtime_set_workdir(struct runtime *runtime)
 			ctx->workdir, (sizeof(ctx->workdir) - 1) + 1);
 		free(resolved);
 	} else if (runtime->startup_workdir_ready && runtime->startup_workdir[0]) {
-		resolved =
-			(nb_path_expand(&file_value_9, runtime->startup_workdir, NULL) == NB_OK &&
-					 nb_path_canonical_missing(&file_value_9,
-								   nb_buf_cstr(&file_value_9),
-								   NULL) == NB_OK
-				 ? strdup(nb_buf_cstr(&file_value_9))
-				 : NULL);
+		resolved = (nb_path_expand(&startup_workdir_buffer, runtime->startup_workdir,
+					   NULL) == NB_OK &&
+					    nb_path_canonical_missing(
+						    &startup_workdir_buffer,
+						    nb_buf_cstr(&startup_workdir_buffer),
+						    NULL) == NB_OK
+				    ? strdup(nb_buf_cstr(&startup_workdir_buffer))
+				    : NULL);
 		(void)nb_str_copy_to(
 			nb_str_from_parts(
 				resolved ? resolved : runtime->startup_workdir,
@@ -846,8 +853,8 @@ int runtime_execute_turn(struct runtime *runtime,
 			 struct runtime_result *result)
 
 {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_10 = NB_OK;
+	nb_buf turn_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int turn_id_status = NB_OK;
 
 	struct runtime_request effective;
 	char turn_id[64];
@@ -858,17 +865,17 @@ int runtime_execute_turn(struct runtime *runtime,
 		return NB_ERR_INVAL;
 	effective = *request;
 	if (!effective.turn_id || !effective.turn_id[0]) {
-		int rc = ((file_status_10 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					     : !(nb_buf_clear(&file_value_10),
-						 nb_buf_append_cstr(&file_value_10, "turn_"))
+		int rc = ((turn_id_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+					     : !(nb_buf_clear(&turn_id_buffer),
+						 nb_buf_append_cstr(&turn_id_buffer, "turn_"))
 						     ? NB_ERR_NOMEM
-						     : nb_random_hex(&file_value_10, 16, NULL))) !=
+						     : nb_random_hex(&turn_id_buffer, 16, NULL))) !=
 					  NB_OK
-				  ? file_status_10
-			  : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), turn_id,
+				  ? turn_id_status
+			  : (turn_id_status = nb_str_copy_to(nb_buf_str(&turn_id_buffer), turn_id,
 							     sizeof(turn_id))) == NB_ERR_RANGE
 				  ? NB_ERR_NO_SPACE
-				  : file_status_10);
+				  : turn_id_status);
 
 		if (rc != 0)
 			return rc;

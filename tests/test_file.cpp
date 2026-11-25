@@ -40,19 +40,20 @@ protected:
 };
 
 TEST_F(FileTest, WriteAndRead) {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *file_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *data = "hello world";
 	int rc = nb_file_write_all(test_file, data, strlen(data), NULL);
 	EXPECT_EQ(rc, 0);
 	size_t len = 0;
-	char *buf = (nb_file_read_all(test_file, &file_value_1, 0, NULL) == NB_OK &&
-				     (file_copy_1 =
-					      (char *)malloc(nb_buf_len(&file_value_1) + 1)) != NULL
-			     ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				       nb_buf_len(&file_value_1) + 1),
-				*(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
+	char *buf = (nb_file_read_all(test_file, &file_contents_buffer, 0, NULL) == NB_OK &&
+				     (file_contents_copy = (char *)malloc(
+					      nb_buf_len(&file_contents_buffer) + 1)) != NULL
+			     ? (memcpy(file_contents_copy, nb_buf_cstr(&file_contents_buffer),
+				       nb_buf_len(&file_contents_buffer) + 1),
+				*(&len) = nb_buf_len(&file_contents_buffer),
+				nb_charp_steal(&file_contents_copy))
 			     : NULL);
 	ASSERT_NE(buf, nullptr);
 	EXPECT_EQ(len, strlen(data));
@@ -61,17 +62,17 @@ TEST_F(FileTest, WriteAndRead) {
 }
 
 TEST_F(FileTest, ReadNonexistent) {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf missing_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *missing_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
-	char *buf =
-		(nb_file_read_all("/tmp/nonexistent_file_12345", &file_value_2, 0, NULL) == NB_OK &&
-				 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-				   nb_buf_len(&file_value_2) + 1),
-			    nb_charp_steal(&file_copy_2))
-			 : NULL);
+	char *buf = (nb_file_read_all("/tmp/nonexistent_file_12345", &missing_contents_buffer, 0,
+				      NULL) == NB_OK &&
+				     (missing_contents_copy = (char *)malloc(
+					      nb_buf_len(&missing_contents_buffer) + 1)) != NULL
+			     ? (memcpy(missing_contents_copy, nb_buf_cstr(&missing_contents_buffer),
+				       nb_buf_len(&missing_contents_buffer) + 1),
+				nb_charp_steal(&missing_contents_copy))
+			     : NULL);
 	EXPECT_EQ(buf, nullptr);
 }
 
@@ -98,10 +99,10 @@ TEST_F(FileTest, Exists) {
 }
 
 TEST_F(FileTest, ExpandPath) {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf home_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
-	char *expanded = (nb_path_expand(&file_value_3, "~/test", NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_3))
+	char *expanded = (nb_path_expand(&home_path_buffer, "~/test", NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&home_path_buffer))
 				  : NULL);
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_NE(expanded[0], '~');
@@ -110,10 +111,10 @@ TEST_F(FileTest, ExpandPath) {
 }
 
 TEST_F(FileTest, ExpandPathNotHome) {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf absolute_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
-	char *expanded = (nb_path_expand(&file_value_4, "/absolute/path", NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_4))
+	char *expanded = (nb_path_expand(&absolute_path_buffer, "/absolute/path", NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&absolute_path_buffer))
 				  : NULL);
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_STREQ(expanded, "/absolute/path");
@@ -121,55 +122,57 @@ TEST_F(FileTest, ExpandPathNotHome) {
 }
 
 TEST_F(FileTest, PathJoinBasic) {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_5 = NB_OK;
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int joined_path_status = NB_OK;
 
 	char path[128];
-	int rc = ((file_status_5 = nb_path_concat(&file_value_5, "/tmp/morph", "file.txt")) != NB_OK
-			  ? file_status_5
-		  : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), path,
-						    sizeof(path))) == NB_ERR_RANGE
+	int rc = ((joined_path_status =
+			   nb_path_concat(&joined_path_buffer, "/tmp/morph", "file.txt")) != NB_OK
+			  ? joined_path_status
+		  : (joined_path_status = nb_str_copy_to(nb_buf_str(&joined_path_buffer), path,
+							 sizeof(path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_5);
+			  : joined_path_status);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(path, "/tmp/morph/file.txt");
 }
 
 TEST_F(FileTest, PathJoinAvoidsDoubleSlash) {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_6 = NB_OK;
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int joined_path_status = NB_OK;
 
 	char path[128];
-	int rc = ((file_status_6 = nb_path_concat(&file_value_6, "/tmp/morph/", "/file.txt")) !=
-				  NB_OK
-			  ? file_status_6
-		  : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), path,
-						    sizeof(path))) == NB_ERR_RANGE
+	int rc = ((joined_path_status =
+			   nb_path_concat(&joined_path_buffer, "/tmp/morph/", "/file.txt")) != NB_OK
+			  ? joined_path_status
+		  : (joined_path_status = nb_str_copy_to(nb_buf_str(&joined_path_buffer), path,
+							 sizeof(path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_6);
+			  : joined_path_status);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(path, "/tmp/morph/file.txt");
 }
 
 TEST_F(FileTest, PathJoinTooLong) {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_7 = NB_OK;
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int joined_path_status = NB_OK;
 
 	char path[8];
-	int rc = ((file_status_7 = nb_path_concat(&file_value_7, "/tmp/morph", "file.txt")) != NB_OK
-			  ? file_status_7
-		  : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), path,
-						    sizeof(path))) == NB_ERR_RANGE
+	int rc = ((joined_path_status =
+			   nb_path_concat(&joined_path_buffer, "/tmp/morph", "file.txt")) != NB_OK
+			  ? joined_path_status
+		  : (joined_path_status = nb_str_copy_to(nb_buf_str(&joined_path_buffer), path,
+							 sizeof(path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_7);
+			  : joined_path_status);
 	EXPECT_EQ(rc, NB_ERR_NAME_TOO_LONG);
 }
 
 TEST_F(FileTest, PathJoinAlloc) {
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
-	char *path = (nb_path_concat(&file_value_8, "/tmp/morph", "file.txt") == NB_OK
-			      ? strdup(nb_buf_cstr(&file_value_8))
+	char *path = (nb_path_concat(&joined_path_buffer, "/tmp/morph", "file.txt") == NB_OK
+			      ? strdup(nb_buf_cstr(&joined_path_buffer))
 			      : NULL);
 	ASSERT_NE(path, nullptr);
 	EXPECT_STREQ(path, "/tmp/morph/file.txt");
@@ -177,79 +180,80 @@ TEST_F(FileTest, PathJoinAlloc) {
 }
 
 TEST_F(FileTest, PathFullKeepsAbsolute) {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_9 = NB_OK;
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int joined_path_status = NB_OK;
 
 	char path[128];
-	int rc = ((file_status_9 = nb_path_join(&file_value_9, "/tmp/base", "/var/file.txt")) !=
-				  NB_OK
-			  ? file_status_9
-		  : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), path,
-						    sizeof(path))) == NB_ERR_RANGE
+	int rc = ((joined_path_status =
+			   nb_path_join(&joined_path_buffer, "/tmp/base", "/var/file.txt")) != NB_OK
+			  ? joined_path_status
+		  : (joined_path_status = nb_str_copy_to(nb_buf_str(&joined_path_buffer), path,
+							 sizeof(path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_9);
+			  : joined_path_status);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(path, "/var/file.txt");
 }
 
 TEST_F(FileTest, PathFullJoinsRelative) {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_10 = NB_OK;
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int joined_path_status = NB_OK;
 
 	char path[128];
-	int rc = ((file_status_10 = nb_path_join(&file_value_10, "/tmp/base", "file.txt")) != NB_OK
-			  ? file_status_10
-		  : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), path,
-						     sizeof(path))) == NB_ERR_RANGE
+	int rc = ((joined_path_status =
+			   nb_path_join(&joined_path_buffer, "/tmp/base", "file.txt")) != NB_OK
+			  ? joined_path_status
+		  : (joined_path_status = nb_str_copy_to(nb_buf_str(&joined_path_buffer), path,
+							 sizeof(path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_10);
+			  : joined_path_status);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(path, "/tmp/base/file.txt");
 }
 
 TEST_F(FileTest, PathAppendSuffix) {
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_11 = NB_OK;
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int joined_path_status = NB_OK;
 
 	char path[128] = "/tmp/morph/session";
-	int rc = ((file_status_11 = (nb_buf_clear(&file_value_11),
-				     nb_buf_printf(&file_value_11, "%s%s", path, ".json")
-					     ? NB_OK
-					     : NB_ERR_NOMEM)) != NB_OK
-			  ? file_status_11
-		  : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), path,
-						     sizeof(path))) == NB_ERR_RANGE
+	int rc = ((joined_path_status = (nb_buf_clear(&joined_path_buffer),
+					 nb_buf_printf(&joined_path_buffer, "%s%s", path, ".json")
+						 ? NB_OK
+						 : NB_ERR_NOMEM)) != NB_OK
+			  ? joined_path_status
+		  : (joined_path_status = nb_str_copy_to(nb_buf_str(&joined_path_buffer), path,
+							 sizeof(path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_11);
+			  : joined_path_status);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(path, "/tmp/morph/session.json");
 }
 
 TEST_F(FileTest, PathJoinAppendSuffix) {
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_12 = NB_OK;
+	nb_buf joined_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int joined_path_status = NB_OK;
 
 	char path[128];
-	int rc = ((file_status_12 =
-			   (nb_path_concat(&file_value_12, "/tmp/morph", "session") != NB_OK ||
-					    !nb_buf_append_cstr(&file_value_12, ".json")
+	int rc = ((joined_path_status =
+			   (nb_path_concat(&joined_path_buffer, "/tmp/morph", "session") != NB_OK ||
+					    !nb_buf_append_cstr(&joined_path_buffer, ".json")
 				    ? NB_ERR_NOMEM
 				    : NB_OK)) != NB_OK
-			  ? file_status_12
-		  : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), path,
-						     sizeof(path))) == NB_ERR_RANGE
+			  ? joined_path_status
+		  : (joined_path_status = nb_str_copy_to(nb_buf_str(&joined_path_buffer), path,
+							 sizeof(path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_12);
+			  : joined_path_status);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(path, "/tmp/morph/session.json");
 }
 
 TEST_F(FileTest, PathAppendAlloc) {
-	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf suffixed_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
-	char *path = (nb_buf_clear(&file_value_13),
-		      nb_buf_printf(&file_value_13, "%s%s", "/tmp/morph/session", ".json")
-			      ? strdup(nb_buf_cstr(&file_value_13))
+	char *path = (nb_buf_clear(&suffixed_path_buffer),
+		      nb_buf_printf(&suffixed_path_buffer, "%s%s", "/tmp/morph/session", ".json")
+			      ? strdup(nb_buf_cstr(&suffixed_path_buffer))
 			      : NULL);
 	ASSERT_NE(path, nullptr);
 	EXPECT_STREQ(path, "/tmp/morph/session.json");
@@ -282,7 +286,7 @@ TEST_F(FileTest, WriteEmpty) {
 }
 
 TEST_F(FileTest, ListFiles) {
-	int directory_status_1 = NB_OK;
+	int file_scan_status = NB_OK;
 
 	const char *d = "/tmp/ma_test_list";
 	nb_file_mkdir(d, true, NULL);
@@ -291,10 +295,10 @@ TEST_F(FileTest, ListFiles) {
 	nb_file_write_all("/tmp/ma_test_list/m_mid.txt", "m", 1, NULL);
 	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {};
 	int n = 0;
-	int rc = ((directory_status_1 = nb_dir_scan(
+	int rc = ((file_scan_status = nb_dir_scan(
 			   d, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 			   &names, NULL)) != NB_OK
-			  ? directory_status_1
+			  ? file_scan_status
 		  : names.names.len > INT_MAX ? NB_ERR_RANGE
 					      : (n = (int)names.names.len, NB_OK));
 	EXPECT_EQ(rc, 0);
@@ -310,16 +314,16 @@ TEST_F(FileTest, ListFiles) {
 }
 
 TEST_F(FileTest, ListFilesEmptyDir) {
-	int directory_status_1 = NB_OK;
+	int file_scan_status = NB_OK;
 
 	const char *d = "/tmp/ma_test_empty";
 	nb_file_mkdir(d, true, NULL);
 	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {};
 	int n = 999;
-	int rc = ((directory_status_1 = nb_dir_scan(
+	int rc = ((file_scan_status = nb_dir_scan(
 			   d, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 			   &names, NULL)) != NB_OK
-			  ? directory_status_1
+			  ? file_scan_status
 		  : names.names.len > INT_MAX ? NB_ERR_RANGE
 					      : (n = (int)names.names.len, NB_OK));
 	EXPECT_EQ(rc, 0);
@@ -329,22 +333,22 @@ TEST_F(FileTest, ListFilesEmptyDir) {
 }
 
 TEST_F(FileTest, ListFilesNoDir) {
-	int directory_status_1 = NB_OK;
+	int file_scan_status = NB_OK;
 
 	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {};
 	int n = 0;
-	int rc = ((directory_status_1 = nb_dir_scan("/tmp/nonexistent_xyz_12345",
-						    NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
-							    NB_DIR_SCAN_FOLLOW_LINKS,
-						    &names, NULL)) != NB_OK
-			  ? directory_status_1
+	int rc = ((file_scan_status = nb_dir_scan("/tmp/nonexistent_xyz_12345",
+						  NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
+							  NB_DIR_SCAN_FOLLOW_LINKS,
+						  &names, NULL)) != NB_OK
+			  ? file_scan_status
 		  : names.names.len > INT_MAX ? NB_ERR_RANGE
 					      : (n = (int)names.names.len, NB_OK));
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(FileTest, ListFilesSkipsDirs) {
-	int directory_status_1 = NB_OK;
+	int file_scan_status = NB_OK;
 
 	const char *d = "/tmp/ma_test_skip";
 	nb_file_mkdir(d, true, NULL);
@@ -352,10 +356,10 @@ TEST_F(FileTest, ListFilesSkipsDirs) {
 	nb_file_mkdir("/tmp/ma_test_skip/subdir", true, NULL);
 	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {};
 	int n = 0;
-	int rc = ((directory_status_1 = nb_dir_scan(
+	int rc = ((file_scan_status = nb_dir_scan(
 			   d, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 			   &names, NULL)) != NB_OK
-			  ? directory_status_1
+			  ? file_scan_status
 		  : names.names.len > INT_MAX ? NB_ERR_RANGE
 					      : (n = (int)names.names.len, NB_OK));
 	EXPECT_EQ(rc, 0);
@@ -368,13 +372,14 @@ TEST_F(FileTest, ListFilesSkipsDirs) {
 }
 
 TEST_F(FileTest, ResolvePathAbsolute) {
-	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	char *resolved =
-		(nb_path_expand(&file_value_14, "/tmp", NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_14, nb_buf_cstr(&file_value_14), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_14))
+		(nb_path_expand(&canonical_path_buffer, "/tmp", NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_path_buffer,
+							   nb_buf_cstr(&canonical_path_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_path_buffer))
 			 : NULL);
 	ASSERT_NE(resolved, nullptr);
 	EXPECT_NE(resolved[0], '\0');
@@ -382,13 +387,14 @@ TEST_F(FileTest, ResolvePathAbsolute) {
 }
 
 TEST_F(FileTest, ResolvePathHome) {
-	nb_buf file_value_15 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	char *resolved =
-		(nb_path_expand(&file_value_15, "~/test_resolve", NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_15, nb_buf_cstr(&file_value_15), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_15))
+		(nb_path_expand(&canonical_path_buffer, "~/test_resolve", NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_path_buffer,
+							   nb_buf_cstr(&canonical_path_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_path_buffer))
 			 : NULL);
 	ASSERT_NE(resolved, nullptr);
 	EXPECT_NE(resolved[0], '~');
@@ -397,13 +403,14 @@ TEST_F(FileTest, ResolvePathHome) {
 }
 
 TEST_F(FileTest, PathIsWithinBasic) {
-	nb_buf file_value_16 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	char *resolved =
-		(nb_path_expand(&file_value_16, "/tmp", NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_16, nb_buf_cstr(&file_value_16), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_16))
+		(nb_path_expand(&canonical_path_buffer, "/tmp", NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_path_buffer,
+							   nb_buf_cstr(&canonical_path_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_path_buffer))
 			 : NULL);
 	ASSERT_NE(resolved, nullptr);
 	char path_buf[512];
@@ -430,13 +437,14 @@ TEST_F(FileTest, PathIsWithinNull) {
 }
 
 TEST_F(FileTest, ResolvePathNull) {
-	nb_buf file_value_17 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	char *resolved =
-		(nb_path_expand(&file_value_17, NULL, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_17, nb_buf_cstr(&file_value_17), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_17))
+		(nb_path_expand(&canonical_path_buffer, NULL, NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_path_buffer,
+							   nb_buf_cstr(&canonical_path_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_path_buffer))
 			 : NULL);
 	EXPECT_EQ(resolved, nullptr);
 }
@@ -464,8 +472,8 @@ TEST_F(FileTest, ListsRejectOccupiedOwnersAndPreserveContentsOnFailure)
 
 TEST_F(FileTest, CopiedNamesSurviveDirectoryEntryRemoval)
 {
-	int directory_status_1 = NB_OK;
-	int directory_status_2 = NB_OK;
+	int file_scan_status = NB_OK;
+	int directory_scan_status = NB_OK;
 
 	const std::string file = directory + "/copied.txt";
 	const std::string child = directory + "/copied-dir";
@@ -475,19 +483,19 @@ TEST_F(FileTest, CopiedNamesSurviveDirectoryEntryRemoval)
 	nb_dir_listing dirs NB_CLEANUP(nb_dir_listing_destroy) = {};
 	int file_count = 999;
 	int dir_count = 999;
-	ASSERT_EQ(((directory_status_1 = nb_dir_scan(directory.c_str(),
-						     NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
-							     NB_DIR_SCAN_FOLLOW_LINKS,
-						     &files, NULL)) != NB_OK
-			   ? directory_status_1
+	ASSERT_EQ(((file_scan_status = nb_dir_scan(directory.c_str(),
+						   NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
+							   NB_DIR_SCAN_FOLLOW_LINKS,
+						   &files, NULL)) != NB_OK
+			   ? file_scan_status
 		   : files.names.len > INT_MAX ? NB_ERR_RANGE
 					       : (file_count = (int)files.names.len, NB_OK)),
 		  0);
-	ASSERT_EQ(((directory_status_2 = nb_dir_scan(directory.c_str(),
-						     NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
-							     NB_DIR_SCAN_FOLLOW_LINKS,
-						     &dirs, NULL)) != NB_OK
-			   ? directory_status_2
+	ASSERT_EQ(((directory_scan_status = nb_dir_scan(directory.c_str(),
+							NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								NB_DIR_SCAN_FOLLOW_LINKS,
+							&dirs, NULL)) != NB_OK
+			   ? directory_scan_status
 		   : dirs.names.len > INT_MAX ? NB_ERR_RANGE
 					      : (dir_count = (int)dirs.names.len, NB_OK)),
 		  0);

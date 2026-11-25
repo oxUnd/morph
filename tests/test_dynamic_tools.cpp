@@ -569,8 +569,8 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesFileReadByDefault)
 
 TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf metadata_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *metadata_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string file = root + "/note.txt";
@@ -591,13 +591,16 @@ TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 			root + "/session/sess/read_profile/tool.json";
 		size_t meta_len = 0;
 		char *meta =
-			(nb_file_read_all(meta_path.c_str(), &file_value_1, 0, NULL) == NB_OK &&
-					 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
-								       1)) != NULL
-				 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-					   nb_buf_len(&file_value_1) + 1),
-				    *(&meta_len) = nb_buf_len(&file_value_1),
-				    nb_charp_steal(&file_copy_1))
+			(nb_file_read_all(meta_path.c_str(), &metadata_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (metadata_contents_copy = (char *)malloc(
+						  nb_buf_len(&metadata_contents_buffer) + 1)) !=
+						 NULL
+				 ? (memcpy(metadata_contents_copy,
+					   nb_buf_cstr(&metadata_contents_buffer),
+					   nb_buf_len(&metadata_contents_buffer) + 1),
+				    *(&meta_len) = nb_buf_len(&metadata_contents_buffer),
+				    nb_charp_steal(&metadata_contents_copy))
 				 : NULL);
 
 		ASSERT_NE(meta, nullptr);
@@ -616,8 +619,8 @@ TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 
 TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf written_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *written_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	std::string workdir = root + "/work";
 	std::string output_dir = root + "/configured-output";
@@ -660,13 +663,15 @@ TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
 	{
 		size_t len = 0;
 		char *written =
-			(nb_file_read_all(output.c_str(), &file_value_2, 0, NULL) == NB_OK &&
-					 (file_copy_2 = (char *)malloc(nb_buf_len(&file_value_2) +
-								       1)) != NULL
-				 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-					   nb_buf_len(&file_value_2) + 1),
-				    *(&len) = nb_buf_len(&file_value_2),
-				    nb_charp_steal(&file_copy_2))
+			(nb_file_read_all(output.c_str(), &written_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (written_contents_copy = (char *)malloc(
+						  nb_buf_len(&written_contents_buffer) + 1)) != NULL
+				 ? (memcpy(written_contents_copy,
+					   nb_buf_cstr(&written_contents_buffer),
+					   nb_buf_len(&written_contents_buffer) + 1),
+				    *(&len) = nb_buf_len(&written_contents_buffer),
+				    nb_charp_steal(&written_contents_copy))
 				 : NULL);
 
 		ASSERT_NE(written, nullptr);
@@ -1650,8 +1655,8 @@ TEST_F(DynamicToolsTest, DefinitionReadCopyAndUpdateUseTheSameSourceErrors)
 
 TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMetadata)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf copied_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *copied_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const std::string dir = root + "/definition";
 	const std::string meta = dir + "/tool.json";
@@ -1680,12 +1685,12 @@ TEST_F(DynamicToolsTest, DefinitionCopyUsesCommittedSourceAndPreservesUnknownMet
 	EXPECT_EQ(cJSON_GetObjectItem(extension, "version")->valueint, 7);
 	dynamic_tool_store_definition_cleanup(&definition);
 	char *copied =
-		(nb_file_read_all(copy_source.c_str(), &file_value_3, 0, NULL) == NB_OK &&
-				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				   nb_buf_len(&file_value_3) + 1),
-			    nb_charp_steal(&file_copy_3))
+		(nb_file_read_all(copy_source.c_str(), &copied_contents_buffer, 0, NULL) == NB_OK &&
+				 (copied_contents_copy = (char *)malloc(
+					  nb_buf_len(&copied_contents_buffer) + 1)) != NULL
+			 ? (memcpy(copied_contents_copy, nb_buf_cstr(&copied_contents_buffer),
+				   nb_buf_len(&copied_contents_buffer) + 1),
+			    nb_charp_steal(&copied_contents_copy))
 			 : NULL);
 	ASSERT_NE(copied, nullptr);
 	EXPECT_STREQ(copied, "committed source");

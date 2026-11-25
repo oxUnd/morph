@@ -35,8 +35,8 @@ static void config_edit_context_destroy(void *user_data)
 
 static int path_equal_config(const char *path, const char *config_path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char *a;
 	char *b;
@@ -44,10 +44,11 @@ static int path_equal_config(const char *path, const char *config_path)
 
 	if (!path || !config_path)
 		return 0;
-	a = (nb_path_expand(&file_value_1, path, NULL) == NB_OK ? strdup(nb_buf_cstr(&file_value_1))
-								: NULL);
-	b = (nb_path_expand(&file_value_2, config_path, NULL) == NB_OK
-		     ? strdup(nb_buf_cstr(&file_value_2))
+	a = (nb_path_expand(&expanded_path_buffer, path, NULL) == NB_OK
+		     ? strdup(nb_buf_cstr(&expanded_path_buffer))
+		     : NULL);
+	b = (nb_path_expand(&config_path_buffer, config_path, NULL) == NB_OK
+		     ? strdup(nb_buf_cstr(&config_path_buffer))
 		     : NULL);
 	if (!a || !b) {
 		free(a);
@@ -160,10 +161,10 @@ static int build_content_from_patch(const char *old_content,
 				    const char *patch, char **out,
 				    char *error, size_t error_size)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf stage_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int stage_path_status = NB_OK;
+	nb_buf staged_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *staged_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	nb_buf directory NB_CLEANUP(nb_buf_cleanup) = {0};
 	char stage_path[PATH_MAX];
@@ -182,13 +183,13 @@ static int build_content_from_patch(const char *old_content,
 	if (rc != NB_OK)
 		return rc;
 	const char *temp_dir = nb_buf_cstr(&directory);
-	rc = ((file_status_3 = nb_path_concat(&file_value_3, temp_dir, CONFIG_EDIT_PATCH_FILE)) !=
-			      NB_OK
-		      ? file_status_3
-	      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), stage_path,
-						sizeof(stage_path))) == NB_ERR_RANGE
+	rc = ((stage_path_status = nb_path_concat(&stage_path_buffer, temp_dir,
+						  CONFIG_EDIT_PATCH_FILE)) != NB_OK
+		      ? stage_path_status
+	      : (stage_path_status = nb_str_copy_to(nb_buf_str(&stage_path_buffer), stage_path,
+						    sizeof(stage_path))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_3);
+		      : stage_path_status);
 	if (rc == 0)
 		rc = nb_file_write_all(stage_path, old_content, strlen(old_content), NULL);
 	if (rc == 0 && chmod(stage_path, 0600) != 0)
@@ -204,12 +205,13 @@ static int build_content_from_patch(const char *old_content,
 		rc = NB_ERR_PERMISSION;
 	}
 	if (rc == 0) {
-		*out = (nb_file_read_all(stage_path, &file_value_4, 0, NULL) == NB_OK &&
-					(file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) +
-								      1)) != NULL
-				? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-					  nb_buf_len(&file_value_4) + 1),
-				   nb_charp_steal(&file_copy_4))
+		*out = (nb_file_read_all(stage_path, &staged_contents_buffer, 0, NULL) == NB_OK &&
+					(staged_contents_copy = (char *)malloc(
+						 nb_buf_len(&staged_contents_buffer) + 1)) != NULL
+				? (memcpy(staged_contents_copy,
+					  nb_buf_cstr(&staged_contents_buffer),
+					  nb_buf_len(&staged_contents_buffer) + 1),
+				   nb_charp_steal(&staged_contents_copy))
 				: NULL);
 		if (!*out)
 			rc = NB_ERR_IO;
@@ -223,16 +225,16 @@ static int build_content_from_patch(const char *old_content,
 
 static int content_unchanged(const char *path, int existed, const char *expected)
 {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf current_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *current_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char *current =
-		(nb_file_read_all(path, &file_value_5, 0, NULL) == NB_OK &&
-				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
-				   nb_buf_len(&file_value_5) + 1),
-			    nb_charp_steal(&file_copy_5))
+		(nb_file_read_all(path, &current_contents_buffer, 0, NULL) == NB_OK &&
+				 (current_contents_copy = (char *)malloc(
+					  nb_buf_len(&current_contents_buffer) + 1)) != NULL
+			 ? (memcpy(current_contents_copy, nb_buf_cstr(&current_contents_buffer),
+				   nb_buf_len(&current_contents_buffer) + 1),
+			    nb_charp_steal(&current_contents_copy))
 			 : NULL);
 	int unchanged;
 
@@ -260,12 +262,12 @@ static void config_edit_lock_cleanup(int *fd)
 static int config_edit_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	int read_status_7 = NB_OK;
-	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf original_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int original_contents_status = NB_OK;
+	char *original_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf written_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *written_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct config_edit_context *ctx = user_data;
 	cJSON *root NB_CLEANUP(cJSON_DeleteOwner) = NULL;
@@ -324,8 +326,8 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		rc = rc != 0 ? rc : NB_ERR_PERMISSION;
 		return rc;
 	}
-	target_expanded = (nb_path_expand(&file_value_6, ctx->config_path, NULL) == NB_OK
-				   ? strdup(nb_buf_cstr(&file_value_6))
+	target_expanded = (nb_path_expand(&config_path_buffer, ctx->config_path, NULL) == NB_OK
+				   ? strdup(nb_buf_cstr(&config_path_buffer))
 				   : NULL);
 	if (!target_expanded) {
 		rc = NB_ERR_NOMEM;
@@ -348,16 +350,20 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 		}
 		existed = 1;
 		mode = target_stat.st_mode & 0777;
-		old_content = ((read_status_7 = nb_file_read_all(target_expanded, &file_value_7, 0,
-			NULL)) == NB_OK &&
-					       (file_copy_7 = (char *)malloc(
-							nb_buf_len(&file_value_7) + 1)) != NULL
-				       ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
-						 nb_buf_len(&file_value_7) + 1),
-					  nb_charp_steal(&file_copy_7))
-				       : NULL);
+		old_content =
+			((original_contents_status = nb_file_read_all(
+				  target_expanded, &original_contents_buffer, 0, NULL)) == NB_OK &&
+					 (original_contents_copy = (char *)malloc(
+						  nb_buf_len(&original_contents_buffer) + 1)) !=
+						 NULL
+				 ? (memcpy(original_contents_copy,
+					   nb_buf_cstr(&original_contents_buffer),
+					   nb_buf_len(&original_contents_buffer) + 1),
+				    nb_charp_steal(&original_contents_copy))
+				 : NULL);
 		if (!old_content) {
-			rc = read_status_7 != NB_OK ? read_status_7 : NB_ERR_NOMEM;
+			rc = original_contents_status != NB_OK ? original_contents_status
+							       : NB_ERR_NOMEM;
 			return rc;
 		}
 	} else if (errno != ENOENT) {
@@ -496,12 +502,12 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	if (rc != 0)
 		return rc;
 	written_content =
-		(nb_file_read_all(target_expanded, &file_value_8, 0, NULL) == NB_OK &&
-				 (file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
-				   nb_buf_len(&file_value_8) + 1),
-			    nb_charp_steal(&file_copy_8))
+		(nb_file_read_all(target_expanded, &written_contents_buffer, 0, NULL) == NB_OK &&
+				 (written_contents_copy = (char *)malloc(
+					  nb_buf_len(&written_contents_buffer) + 1)) != NULL
+			 ? (memcpy(written_contents_copy, nb_buf_cstr(&written_contents_buffer),
+				   nb_buf_len(&written_contents_buffer) + 1),
+			    nb_charp_steal(&written_contents_copy))
 			 : NULL);
 	if (!written_content ||
 	    validate_config_content(written_content, errbuf,

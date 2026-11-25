@@ -100,16 +100,16 @@ protected:
 static int test_path_join(char *dst, size_t size, const char *root,
 			  const char *rel)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_1 = NB_OK;
+	nb_buf destination_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int destination_path_status = NB_OK;
 
-	return ((file_status_1 = nb_path_concat(&file_value_1, root, rel && rel[0] ? rel : ".")) !=
-				NB_OK
-			? file_status_1
-		: (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), dst, size)) ==
-				NB_ERR_RANGE
+	return ((destination_path_status = nb_path_concat(&destination_path_buffer, root,
+							  rel && rel[0] ? rel : ".")) != NB_OK
+			? destination_path_status
+		: (destination_path_status = nb_str_copy_to(nb_buf_str(&destination_path_buffer),
+							    dst, size)) == NB_ERR_RANGE
 			? NB_ERR_NAME_TOO_LONG
-			: file_status_1);
+			: destination_path_status);
 }
 
 static int test_copy_file(const char *src, const char *dst)
@@ -192,8 +192,8 @@ static int test_backend_stat(void *user_data, const char *rel,
 static int test_backend_list(void *user_data, const char *rel_dir,
 			     morph_sync_backend_list_cb cb, void *cb_data)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_2 = NB_OK;
+	nb_buf child_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int child_path_status = NB_OK;
 
 	char path[PATH_MAX];
 	DIR *dir;
@@ -209,12 +209,13 @@ static int test_backend_list(void *user_data, const char *rel_dir,
 		struct stat sb;
 		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
 			continue;
-		(void)((file_status_2 = nb_path_concat(&file_value_2, path, ent->d_name)) != NB_OK
-			       ? file_status_2
-		       : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), child,
-							 sizeof(child))) == NB_ERR_RANGE
+		(void)((child_path_status =
+				nb_path_concat(&child_path_buffer, path, ent->d_name)) != NB_OK
+			       ? child_path_status
+		       : (child_path_status = nb_str_copy_to(nb_buf_str(&child_path_buffer), child,
+							     sizeof(child))) == NB_ERR_RANGE
 			       ? NB_ERR_NAME_TOO_LONG
-			       : file_status_2);
+			       : child_path_status);
 		if (stat(child, &sb) != 0)
 			continue;
 		int rc = cb(ent->d_name, S_ISDIR(sb.st_mode), cb_data);
@@ -267,8 +268,8 @@ static int test_backend_ensure_dir(void *user_data, const char *remote_rel_dir)
 }
 
 TEST_F(SyncTest, CopiesLocalFileToRemote) {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf copied_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *copied_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	char dst[PATH_MAX];
@@ -278,14 +279,13 @@ TEST_F(SyncTest, CopiesLocalFileToRemote) {
 		0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	snprintf(dst, sizeof(dst), "%s/data/config.toml", remote);
-	char *text =
-		(nb_file_read_all(dst, &file_value_3, 0, NULL) == NB_OK &&
-				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				   nb_buf_len(&file_value_3) + 1),
-			    nb_charp_steal(&file_copy_3))
-			 : NULL);
+	char *text = (nb_file_read_all(dst, &copied_contents_buffer, 0, NULL) == NB_OK &&
+				      (copied_contents_copy = (char *)malloc(
+					       nb_buf_len(&copied_contents_buffer) + 1)) != NULL
+			      ? (memcpy(copied_contents_copy, nb_buf_cstr(&copied_contents_buffer),
+					nb_buf_len(&copied_contents_buffer) + 1),
+				 nb_charp_steal(&copied_contents_copy))
+			      : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "a=1\n");
 	free(text);
@@ -293,8 +293,8 @@ TEST_F(SyncTest, CopiesLocalFileToRemote) {
 }
 
 TEST_F(SyncTest, CopiesLocalFileThroughRemoteBackend) {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf remote_config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *remote_config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	struct morph_sync_backend backend = {
@@ -316,13 +316,14 @@ TEST_F(SyncTest, CopiesLocalFileThroughRemoteBackend) {
 	int rc = morph_sync_once(&cfg, &st);
 	ASSERT_EQ(rc, 0) << st.last_error;
 	char *text =
-		(nb_file_read_all((std::string(remote) + "/config.toml").c_str(), &file_value_4, 0,
-				  NULL) == NB_OK &&
-				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-				   nb_buf_len(&file_value_4) + 1),
-			    nb_charp_steal(&file_copy_4))
+		(nb_file_read_all((std::string(remote) + "/config.toml").c_str(),
+				  &remote_config_contents_buffer, 0, NULL) == NB_OK &&
+				 (remote_config_contents_copy = (char *)malloc(
+					  nb_buf_len(&remote_config_contents_buffer) + 1)) != NULL
+			 ? (memcpy(remote_config_contents_copy,
+				   nb_buf_cstr(&remote_config_contents_buffer),
+				   nb_buf_len(&remote_config_contents_buffer) + 1),
+			    nb_charp_steal(&remote_config_contents_copy))
 			 : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "backend");
@@ -331,8 +332,8 @@ TEST_F(SyncTest, CopiesLocalFileThroughRemoteBackend) {
 }
 
 TEST_F(SyncTest, CopiesRemoteBackendFileToLocal) {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf local_config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *local_config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	struct morph_sync_backend backend = {
@@ -352,13 +353,14 @@ TEST_F(SyncTest, CopiesRemoteBackendFileToLocal) {
 		  0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	char *text =
-		(nb_file_read_all((std::string(local) + "/config.toml").c_str(), &file_value_5, 0,
-				  NULL) == NB_OK &&
-				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
-				   nb_buf_len(&file_value_5) + 1),
-			    nb_charp_steal(&file_copy_5))
+		(nb_file_read_all((std::string(local) + "/config.toml").c_str(),
+				  &local_config_contents_buffer, 0, NULL) == NB_OK &&
+				 (local_config_contents_copy = (char *)malloc(
+					  nb_buf_len(&local_config_contents_buffer) + 1)) != NULL
+			 ? (memcpy(local_config_contents_copy,
+				   nb_buf_cstr(&local_config_contents_buffer),
+				   nb_buf_len(&local_config_contents_buffer) + 1),
+			    nb_charp_steal(&local_config_contents_copy))
 			 : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "remote-backend");
@@ -415,18 +417,19 @@ TEST_F(SyncTest, FailedSnapshotPublishIsNotReportedAsSuccess) {
 }
 
 TEST_F(SyncTest, BackupPathOverflowPreservesExistingTruncatedPrefix) {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf remote_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf existing_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *existing_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const std::string staging_suffix = "/.morph-sync/staging";
 	const size_t directory_size = static_cast<size_t>(PATH_MAX) - 3;
 	const size_t root_size = directory_size - staging_suffix.size();
 	char *canonical_remote NB_CLEANUP(nb_charp_cleanup) =
-		(nb_path_expand(&file_value_6, remote, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_6, nb_buf_cstr(&file_value_6), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_6))
+		(nb_path_expand(&remote_path_buffer, remote, NULL) == NB_OK &&
+				 nb_path_canonical_missing(&remote_path_buffer,
+							   nb_buf_cstr(&remote_path_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&remote_path_buffer))
 			 : NULL);
 	ASSERT_NE(canonical_remote, nullptr);
 	std::string deep_root = canonical_remote;
@@ -449,12 +452,12 @@ TEST_F(SyncTest, BackupPathOverflowPreservesExistingTruncatedPrefix) {
 	EXPECT_EQ(sync_db_backup_create_one(&cfg, "data.db", "unused.db", &status, 1),
 		  NB_ERR_NAME_TOO_LONG);
 	char *text NB_CLEANUP(nb_charp_cleanup) =
-		(nb_file_read_all(existing.c_str(), &file_value_7, 0, NULL) == NB_OK &&
-				 (file_copy_7 = (char *)malloc(nb_buf_len(&file_value_7) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
-				   nb_buf_len(&file_value_7) + 1),
-			    nb_charp_steal(&file_copy_7))
+		(nb_file_read_all(existing.c_str(), &existing_contents_buffer, 0, NULL) == NB_OK &&
+				 (existing_contents_copy = (char *)malloc(
+					  nb_buf_len(&existing_contents_buffer) + 1)) != NULL
+			 ? (memcpy(existing_contents_copy, nb_buf_cstr(&existing_contents_buffer),
+				   nb_buf_len(&existing_contents_buffer) + 1),
+			    nb_charp_steal(&existing_contents_copy))
 			 : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "keep");
@@ -462,8 +465,8 @@ TEST_F(SyncTest, BackupPathOverflowPreservesExistingTruncatedPrefix) {
 }
 
 TEST_F(SyncTest, CopiesRemoteFileToLocal) {
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf output_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *output_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	char dir[PATH_MAX];
@@ -474,22 +477,21 @@ TEST_F(SyncTest, CopiesRemoteFileToLocal) {
 	snprintf(src, sizeof(src), "%s/item.txt", dir);
 	ASSERT_EQ(nb_file_write_all(src, "remote", 6, NULL), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
-	char *text =
-		(nb_file_read_all((std::string(local) + "/output/item.txt").c_str(), &file_value_8,
-				  0, NULL) == NB_OK &&
-				 (file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
-				   nb_buf_len(&file_value_8) + 1),
-			    nb_charp_steal(&file_copy_8))
-			 : NULL);
+	char *text = (nb_file_read_all((std::string(local) + "/output/item.txt").c_str(),
+				       &output_contents_buffer, 0, NULL) == NB_OK &&
+				      (output_contents_copy = (char *)malloc(
+					       nb_buf_len(&output_contents_buffer) + 1)) != NULL
+			      ? (memcpy(output_contents_copy, nb_buf_cstr(&output_contents_buffer),
+					nb_buf_len(&output_contents_buffer) + 1),
+				 nb_charp_steal(&output_contents_copy))
+			      : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "remote");
 	free(text);
 }
 
 TEST_F(SyncTest, KeepsBothCopiesOnConflict) {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
 	struct morph_sync_status st;
 	char remote_file[PATH_MAX];
@@ -506,10 +508,10 @@ TEST_F(SyncTest, KeepsBothCopiesOnConflict) {
 	EXPECT_GE(st.conflicts, 1);
 	nb_dir_listing files NB_CLEANUP(nb_dir_listing_destroy) = {};
 	int count = 0;
-	ASSERT_EQ(((directory_status_1 = nb_dir_scan(
+	ASSERT_EQ(((directory_scan_status = nb_dir_scan(
 			    local, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 			    &files, NULL)) != NB_OK
-			   ? directory_status_1
+			   ? directory_scan_status
 		   : files.names.len > INT_MAX ? NB_ERR_RANGE
 					       : (count = (int)files.names.len, NB_OK)),
 		  0);
@@ -524,7 +526,7 @@ TEST_F(SyncTest, KeepsBothCopiesOnConflict) {
 }
 
 TEST_F(SyncTest, SoftDeletesIntoTrash) {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
 	struct morph_sync_status st;
 	char remote_file[PATH_MAX];
@@ -543,11 +545,11 @@ TEST_F(SyncTest, SoftDeletesIntoTrash) {
 	snprintf(trash_dir, sizeof(trash_dir), "%s/.morph-sync/trash", remote);
 	nb_dir_listing files NB_CLEANUP(nb_dir_listing_destroy) = {};
 	int count = 0;
-	ASSERT_EQ(((directory_status_1 = nb_dir_scan(trash_dir,
-						     NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
-							     NB_DIR_SCAN_FOLLOW_LINKS,
-						     &files, NULL)) != NB_OK
-			   ? directory_status_1
+	ASSERT_EQ(((directory_scan_status = nb_dir_scan(trash_dir,
+							NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
+								NB_DIR_SCAN_FOLLOW_LINKS,
+							&files, NULL)) != NB_OK
+			   ? directory_scan_status
 		   : files.names.len > INT_MAX ? NB_ERR_RANGE
 					       : (count = (int)files.names.len, NB_OK)),
 		  0);
@@ -556,8 +558,8 @@ TEST_F(SyncTest, SoftDeletesIntoTrash) {
 }
 
 TEST_F(SyncTest, DoesNotOverwriteLocalDatabaseFromRemote) {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_9 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf database_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *database_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	char data_root[PATH_MAX];
@@ -573,13 +575,13 @@ TEST_F(SyncTest, DoesNotOverwriteLocalDatabaseFromRemote) {
 	ASSERT_EQ(nb_file_write_all(remote_db, "remote-db", 9, NULL), 0);
 	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
 	char *text =
-		(nb_file_read_all((std::string(local) + "/data.db").c_str(), &file_value_9, 0,
-				  NULL) == NB_OK &&
-				 (file_copy_9 = (char *)malloc(nb_buf_len(&file_value_9) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_9, nb_buf_cstr(&file_value_9),
-				   nb_buf_len(&file_value_9) + 1),
-			    nb_charp_steal(&file_copy_9))
+		(nb_file_read_all((std::string(local) + "/data.db").c_str(),
+				  &database_contents_buffer, 0, NULL) == NB_OK &&
+				 (database_contents_copy = (char *)malloc(
+					  nb_buf_len(&database_contents_buffer) + 1)) != NULL
+			 ? (memcpy(database_contents_copy, nb_buf_cstr(&database_contents_buffer),
+				   nb_buf_len(&database_contents_buffer) + 1),
+			    nb_charp_steal(&database_contents_copy))
 			 : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "local-db");
@@ -898,8 +900,8 @@ TEST_F(SyncTest, PrepareProtectsUncheckpointedLiveWalState) {
 }
 
 TEST_F(SyncTest, RecoversCrashAfterCurrentDatabaseWasMovedAside) {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_10 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf journal_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *journal_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	struct morph_sync_backup *backups = nullptr;
@@ -917,12 +919,12 @@ TEST_F(SyncTest, RecoversCrashAfterCurrentDatabaseWasMovedAside) {
 		&plan), 0);
 	ASSERT_EQ(std::rename(plan.target, plan.rollback), 0);
 	char *text =
-		(nb_file_read_all(plan.journal, &file_value_10, 0, NULL) == NB_OK &&
-				 (file_copy_10 = (char *)malloc(nb_buf_len(&file_value_10) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_10, nb_buf_cstr(&file_value_10),
-				   nb_buf_len(&file_value_10) + 1),
-			    nb_charp_steal(&file_copy_10))
+		(nb_file_read_all(plan.journal, &journal_contents_buffer, 0, NULL) == NB_OK &&
+				 (journal_contents_copy = (char *)malloc(
+					  nb_buf_len(&journal_contents_buffer) + 1)) != NULL
+			 ? (memcpy(journal_contents_copy, nb_buf_cstr(&journal_contents_buffer),
+				   nb_buf_len(&journal_contents_buffer) + 1),
+			    nb_charp_steal(&journal_contents_copy))
 			 : NULL);
 	ASSERT_NE(text, nullptr);
 	cJSON *json = cJSON_Parse(text);
@@ -970,8 +972,8 @@ TEST_F(SyncTest, RejectsChangedStagingDatabaseBeforeReplacement) {
 }
 
 TEST_F(SyncTest, RejectsTamperedRestorePlanAndSnapshotPathTraversal) {
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_11 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf manifest_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *manifest_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	struct morph_sync_backup *backups = nullptr;
@@ -999,12 +1001,12 @@ TEST_F(SyncTest, RejectsTamperedRestorePlanAndSnapshotPathTraversal) {
 		 "%s/.morph-sync/db/v1/snapshots/%s.json", remote,
 		 backups[0].snapshot_id);
 	char *text =
-		(nb_file_read_all(manifest, &file_value_11, 0, NULL) == NB_OK &&
-				 (file_copy_11 = (char *)malloc(nb_buf_len(&file_value_11) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_11, nb_buf_cstr(&file_value_11),
-				   nb_buf_len(&file_value_11) + 1),
-			    nb_charp_steal(&file_copy_11))
+		(nb_file_read_all(manifest, &manifest_contents_buffer, 0, NULL) == NB_OK &&
+				 (manifest_contents_copy = (char *)malloc(
+					  nb_buf_len(&manifest_contents_buffer) + 1)) != NULL
+			 ? (memcpy(manifest_contents_copy, nb_buf_cstr(&manifest_contents_buffer),
+				   nb_buf_len(&manifest_contents_buffer) + 1),
+			    nb_charp_steal(&manifest_contents_copy))
 			 : NULL);
 	ASSERT_NE(text, nullptr);
 	cJSON *json = cJSON_Parse(text);
@@ -1023,8 +1025,8 @@ TEST_F(SyncTest, RejectsTamperedRestorePlanAndSnapshotPathTraversal) {
 }
 
 TEST_F(SyncTest, IgnoresUntrustedRecoveryJournalWithoutTouchingTarget) {
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_12 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf original_journal_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *original_journal_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	struct morph_sync_backup *backups = nullptr;
@@ -1040,12 +1042,15 @@ TEST_F(SyncTest, IgnoresUntrustedRecoveryJournalWithoutTouchingTarget) {
 	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
 	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
 		&plan), 0);
-	original = (nb_file_read_all(plan.journal, &file_value_12, 0, NULL) == NB_OK &&
-				    (file_copy_12 =
-					     (char *)malloc(nb_buf_len(&file_value_12) + 1)) != NULL
-			    ? (memcpy(file_copy_12, nb_buf_cstr(&file_value_12),
-				      nb_buf_len(&file_value_12) + 1),
-			       nb_charp_steal(&file_copy_12))
+	original = (nb_file_read_all(plan.journal, &original_journal_contents_buffer, 0, NULL) ==
+					    NB_OK &&
+				    (original_journal_contents_copy = (char *)malloc(
+					     nb_buf_len(&original_journal_contents_buffer) + 1)) !=
+					    NULL
+			    ? (memcpy(original_journal_contents_copy,
+				      nb_buf_cstr(&original_journal_contents_buffer),
+				      nb_buf_len(&original_journal_contents_buffer) + 1),
+			       nb_charp_steal(&original_journal_contents_copy))
 			    : NULL);
 	ASSERT_NE(original, nullptr);
 	cJSON *json = cJSON_Parse(original);
@@ -1067,8 +1072,8 @@ TEST_F(SyncTest, IgnoresUntrustedRecoveryJournalWithoutTouchingTarget) {
 }
 
 TEST_F(SyncTest, RejectsCorruptDatabaseChunkWithoutPublishingRestore) {
-	int directory_status_1 = NB_OK;
-	int directory_status_2 = NB_OK;
+	int directory_scan_status = NB_OK;
+	int object_scan_status = NB_OK;
 
 	struct morph_sync_status st;
 	struct morph_sync_backup *backups = nullptr;
@@ -1091,11 +1096,11 @@ TEST_F(SyncTest, RejectsCorruptDatabaseChunkWithoutPublishingRestore) {
 	ASSERT_EQ(count, 1);
 	snprintf(object_root, sizeof(object_root), "%s/.morph-sync/db/v1/objects",
 		 remote);
-	ASSERT_EQ(((directory_status_1 = nb_dir_scan(object_root,
-						     NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
-							     NB_DIR_SCAN_FOLLOW_LINKS,
-						     &prefixes, NULL)) != NB_OK
-			   ? directory_status_1
+	ASSERT_EQ(((directory_scan_status = nb_dir_scan(object_root,
+							NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								NB_DIR_SCAN_FOLLOW_LINKS,
+							&prefixes, NULL)) != NB_OK
+			   ? directory_scan_status
 		   : prefixes.names.len > INT_MAX
 			   ? NB_ERR_RANGE
 			   : (prefix_count = (int)prefixes.names.len, NB_OK)),
@@ -1103,11 +1108,11 @@ TEST_F(SyncTest, RejectsCorruptDatabaseChunkWithoutPublishingRestore) {
 	ASSERT_GT(prefix_count, 0);
 	snprintf(prefix_path, sizeof(prefix_path), "%s/%s", object_root,
 		 nb_dir_listing_name(&prefixes, (size_t)(0)));
-	ASSERT_EQ(((directory_status_2 = nb_dir_scan(prefix_path,
+	ASSERT_EQ(((object_scan_status = nb_dir_scan(prefix_path,
 						     NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
 							     NB_DIR_SCAN_FOLLOW_LINKS,
 						     &objects, NULL)) != NB_OK
-			   ? directory_status_2
+			   ? object_scan_status
 		   : objects.names.len > INT_MAX ? NB_ERR_RANGE
 						 : (object_count = (int)objects.names.len, NB_OK)),
 		  0);
@@ -1199,13 +1204,13 @@ TEST_F(SyncTest, ImportsLegacySqliteConflictCopiesAsBackupVersions) {
 }
 
 TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
-	int directory_status_1 = NB_OK;
-	int directory_status_2 = NB_OK;
-	int directory_status_3 = NB_OK;
-	int directory_status_4 = NB_OK;
+	int directory_scan_status = NB_OK;
+	int object_scan_status = NB_OK;
+	int remaining_prefix_scan_status = NB_OK;
+	int remaining_object_scan_status = NB_OK;
 
-	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_13 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf manifest_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *manifest_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	struct morph_sync_backup *backups = nullptr;
@@ -1232,12 +1237,12 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 		 "%s/.morph-sync/db/v1/snapshots/%s.json", remote,
 		 backups[1].snapshot_id);
 	char *text =
-		(nb_file_read_all(manifest, &file_value_13, 0, NULL) == NB_OK &&
-				 (file_copy_13 = (char *)malloc(nb_buf_len(&file_value_13) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_13, nb_buf_cstr(&file_value_13),
-				   nb_buf_len(&file_value_13) + 1),
-			    nb_charp_steal(&file_copy_13))
+		(nb_file_read_all(manifest, &manifest_contents_buffer, 0, NULL) == NB_OK &&
+				 (manifest_contents_copy = (char *)malloc(
+					  nb_buf_len(&manifest_contents_buffer) + 1)) != NULL
+			 ? (memcpy(manifest_contents_copy, nb_buf_cstr(&manifest_contents_buffer),
+				   nb_buf_len(&manifest_contents_buffer) + 1),
+			    nb_charp_steal(&manifest_contents_copy))
 			 : NULL);
 	ASSERT_NE(text, nullptr);
 	cJSON *json = cJSON_Parse(text);
@@ -1254,11 +1259,11 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 
 	snprintf(object_root, sizeof(object_root), "%s/.morph-sync/db/v1/objects",
 		 remote);
-	ASSERT_EQ(((directory_status_1 = nb_dir_scan(object_root,
-						     NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
-							     NB_DIR_SCAN_FOLLOW_LINKS,
-						     &prefixes, NULL)) != NB_OK
-			   ? directory_status_1
+	ASSERT_EQ(((directory_scan_status = nb_dir_scan(object_root,
+							NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								NB_DIR_SCAN_FOLLOW_LINKS,
+							&prefixes, NULL)) != NB_OK
+			   ? directory_scan_status
 		   : prefixes.names.len > INT_MAX
 			   ? NB_ERR_RANGE
 			   : (prefix_count = (int)prefixes.names.len, NB_OK)),
@@ -1269,11 +1274,11 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 		int object_count = 0;
 		snprintf(directory, sizeof(directory), "%s/%s", object_root,
 			 nb_dir_listing_name(&prefixes, (size_t)(i)));
-		ASSERT_EQ(((directory_status_2 = nb_dir_scan(directory,
+		ASSERT_EQ(((object_scan_status = nb_dir_scan(directory,
 							     NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
 								     NB_DIR_SCAN_FOLLOW_LINKS,
 							     &objects, NULL)) != NB_OK
-				   ? directory_status_2
+				   ? object_scan_status
 			   : objects.names.len > INT_MAX
 				   ? NB_ERR_RANGE
 				   : (object_count = (int)objects.names.len, NB_OK)),
@@ -1296,26 +1301,26 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 	nb_dir_listing_destroy(&prefixes);
 	prefix_count = 0;
 	int remaining_objects = 0;
-	ASSERT_EQ(((directory_status_3 = nb_dir_scan(object_root,
-						     NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
-							     NB_DIR_SCAN_FOLLOW_LINKS,
-						     &prefixes, NULL)) != NB_OK
-			   ? directory_status_3
-		   : prefixes.names.len > INT_MAX
-			   ? NB_ERR_RANGE
-			   : (prefix_count = (int)prefixes.names.len, NB_OK)),
-		  0);
+	ASSERT_EQ(
+		((remaining_prefix_scan_status = nb_dir_scan(object_root,
+							     NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								     NB_DIR_SCAN_FOLLOW_LINKS,
+							     &prefixes, NULL)) != NB_OK
+			 ? remaining_prefix_scan_status
+		 : prefixes.names.len > INT_MAX ? NB_ERR_RANGE
+						: (prefix_count = (int)prefixes.names.len, NB_OK)),
+		0);
 	for (int i = 0; i < prefix_count; i++) {
 		char directory[PATH_MAX];
 		nb_dir_listing objects NB_CLEANUP(nb_dir_listing_destroy) = {};
 		int object_count = 0;
 		snprintf(directory, sizeof(directory), "%s/%s", object_root,
 			 nb_dir_listing_name(&prefixes, (size_t)(i)));
-		ASSERT_EQ(((directory_status_4 = nb_dir_scan(directory,
-							     NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
-								     NB_DIR_SCAN_FOLLOW_LINKS,
-							     &objects, NULL)) != NB_OK
-				   ? directory_status_4
+		ASSERT_EQ(((remaining_object_scan_status = nb_dir_scan(
+				    directory,
+				    NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
+				    &objects, NULL)) != NB_OK
+				   ? remaining_object_scan_status
 			   : objects.names.len > INT_MAX
 				   ? NB_ERR_RANGE
 				   : (object_count = (int)objects.names.len, NB_OK)),
@@ -1328,8 +1333,8 @@ TEST_F(SyncTest, RetentionKeepsLatestSnapshotAndCollectsOldChunks) {
 }
 
 TEST_F(SyncTest, RestoreTrashClearsTombstone) {
-	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_14 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct morph_sync_status st;
 	char remote_file[PATH_MAX];
@@ -1348,15 +1353,14 @@ TEST_F(SyncTest, RestoreTrashClearsTombstone) {
 		  0);
 	EXPECT_EQ(QueryInt("SELECT tombstone FROM entries WHERE path='config.toml'"),
 		  0);
-	char *text =
-		(nb_file_read_all((std::string(local) + "/config.toml").c_str(), &file_value_14, 0,
-				  NULL) == NB_OK &&
-				 (file_copy_14 = (char *)malloc(nb_buf_len(&file_value_14) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_14, nb_buf_cstr(&file_value_14),
-				   nb_buf_len(&file_value_14) + 1),
-			    nb_charp_steal(&file_copy_14))
-			 : NULL);
+	char *text = (nb_file_read_all((std::string(local) + "/config.toml").c_str(),
+				       &config_contents_buffer, 0, NULL) == NB_OK &&
+				      (config_contents_copy = (char *)malloc(
+					       nb_buf_len(&config_contents_buffer) + 1)) != NULL
+			      ? (memcpy(config_contents_copy, nb_buf_cstr(&config_contents_buffer),
+					nb_buf_len(&config_contents_buffer) + 1),
+				 nb_charp_steal(&config_contents_copy))
+			      : NULL);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "base");
 	free(text);

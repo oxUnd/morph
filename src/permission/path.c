@@ -26,7 +26,7 @@ int permission_path_resolve_absolute(const char *path, char *resolved, size_t si
 int permission_path_resolve_existing_directory(const char *path, int create, char *resolved,
 					       size_t size)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char *expanded;
 	struct stat st;
@@ -34,10 +34,10 @@ int permission_path_resolve_existing_directory(const char *path, int create, cha
 
 	if (!path || !*path || !resolved || !size)
 		return NB_ERR_INVAL;
-	rc = nb_path_expand(&file_value_2, path, NULL);
+	rc = nb_path_expand(&expanded_path_buffer, path, NULL);
 	if (rc != NB_OK)
 		return rc;
-	expanded = strdup(nb_buf_cstr(&file_value_2));
+	expanded = strdup(nb_buf_cstr(&expanded_path_buffer));
 	if (!expanded)
 		return NB_ERR_NOMEM;
 	if (!nb_path_is_absolute(expanded)) {
@@ -68,16 +68,16 @@ const char *tool_path_access_name(unsigned int access)
 int tool_context_resolve_directory_access(const char *path, unsigned int access, char *resolved,
 					  size_t resolved_size)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	if (!path || !*path || !access || (access & ~(unsigned int)TOOL_PATH_ACCESS_ALL) ||
 	    !resolved || !resolved_size)
 		return NB_ERR_INVAL;
-	int rc = nb_path_expand(&file_value_3, path, NULL);
+	int rc = nb_path_expand(&expanded_path_buffer, path, NULL);
 	if (rc != NB_OK)
 		return rc;
-	char *expanded NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&file_value_3));
+	char *expanded NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&expanded_path_buffer));
 
 	if (!expanded)
 		return NB_ERR_NOMEM;
@@ -86,10 +86,10 @@ int tool_context_resolve_directory_access(const char *path, unsigned int access,
 
 		return rc;
 	}
-	rc = nb_path_canonical_missing(&file_value_4, expanded, NULL);
+	rc = nb_path_canonical_missing(&canonical_path_buffer, expanded, NULL);
 	if (rc != NB_OK)
 		return rc;
-	const char *canonical = nb_buf_cstr(&file_value_4);
+	const char *canonical = nb_buf_cstr(&canonical_path_buffer);
 	struct stat st;
 	rc = 0;
 

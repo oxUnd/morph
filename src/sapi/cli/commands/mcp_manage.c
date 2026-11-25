@@ -515,17 +515,17 @@ static int cli_mcp_manage_mcp_apply(struct nb_log *logger,
 				    const struct cli_mcp_manage_mcp_options *options, int argc,
 				    char **argv, const char *path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	nb_err parse_error = {0};
 	char *text NB_CLEANUP(nb_charp_cleanup) =
-		(nb_file_read_all(path, &file_value_1, 0, NULL) == NB_OK &&
-				 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				   nb_buf_len(&file_value_1) + 1),
-			    nb_charp_steal(&file_copy_1))
+		(nb_file_read_all(path, &config_contents_buffer, 0, NULL) == NB_OK &&
+				 (config_contents_copy = (char *)malloc(
+					  nb_buf_len(&config_contents_buffer) + 1)) != NULL
+			 ? (memcpy(config_contents_copy, nb_buf_cstr(&config_contents_buffer),
+				   nb_buf_len(&config_contents_buffer) + 1),
+			    nb_charp_steal(&config_contents_copy))
 			 : NULL);
 	nb_toml *parsed NB_CLEANUP(nb_toml_cleanup) = {0};
 	const nb_toml_value *servers = {0};
@@ -630,8 +630,8 @@ static int cli_mcp_manage_mcp_apply(struct nb_log *logger,
 
 int cli_mcp_manage_run(struct nb_log *logger, int argc, char **argv, const char *config_path)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf lock_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct cli_mcp_manage_mcp_options options;
 	char *path;
@@ -656,18 +656,18 @@ int cli_mcp_manage_run(struct nb_log *logger, int argc, char **argv, const char 
 		return 2;
 	}
 
-	path = (nb_path_expand(&file_value_2,
+	path = (nb_path_expand(&config_path_buffer,
 			       options.config ? options.config : "~/.morph/config.toml",
 			       NULL) == NB_OK
-			? strdup(nb_buf_cstr(&file_value_2))
+			? strdup(nb_buf_cstr(&config_path_buffer))
 			: NULL);
 	if (!path)
 		return cli_management_error(NB_ERR_NOMEM, "configuration path");
 
-	lock_path =
-		(nb_buf_clear(&file_value_3), nb_buf_printf(&file_value_3, "%s%s", path, ".lock")
-						      ? strdup(nb_buf_cstr(&file_value_3))
-						      : NULL);
+	lock_path = (nb_buf_clear(&lock_path_buffer),
+		     nb_buf_printf(&lock_path_buffer, "%s%s", path, ".lock")
+			     ? strdup(nb_buf_cstr(&lock_path_buffer))
+			     : NULL);
 	if (!lock_path) {
 		free(path);
 		return cli_management_error(NB_ERR_NOMEM, "configuration lock");

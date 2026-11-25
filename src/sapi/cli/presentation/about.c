@@ -31,10 +31,10 @@
 
 int cli_about_print(struct cli_application *ctx, const char *config_path)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf extension_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct utsname uts;
 	int rc = 0;
@@ -45,9 +45,9 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 	config_set_defaults(ctx ? ctx->logger : NULL, &cfg);
 
 	char *cfg_path =
-		(nb_path_expand(&file_value_1, config_path ? config_path : "~/.morph/config.toml",
-				NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_1))
+		(nb_path_expand(&config_path_buffer,
+				config_path ? config_path : "~/.morph/config.toml", NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&config_path_buffer))
 			 : NULL);
 	if (cfg_path) {
 		rc = config_load(ctx ? ctx->logger : NULL, &cfg, cfg_path);
@@ -75,16 +75,16 @@ int cli_about_print(struct cli_application *ctx, const char *config_path)
 	int ext_count = 0;
 	nb_dir_listing ext_dirs NB_CLEANUP(nb_dir_listing_destroy) = {0};
 	char *exts_path =
-		(nb_path_expand(&file_value_2, cfg.ext.dir[0] ? cfg.ext.dir : "~/.morph/exts",
-				NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_2))
+		(nb_path_expand(&extension_dir_buffer,
+				cfg.ext.dir[0] ? cfg.ext.dir : "~/.morph/exts", NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&extension_dir_buffer))
 			 : NULL);
 	if (exts_path) {
-		(void)((directory_status_1 = nb_dir_scan(exts_path,
-							 NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
-								 NB_DIR_SCAN_FOLLOW_LINKS,
-							 &ext_dirs, NULL)) != NB_OK
-			       ? directory_status_1
+		(void)((directory_scan_status = nb_dir_scan(exts_path,
+							    NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN |
+								    NB_DIR_SCAN_FOLLOW_LINKS,
+							    &ext_dirs, NULL)) != NB_OK
+			       ? directory_scan_status
 		       : ext_dirs.names.len > INT_MAX
 			       ? NB_ERR_RANGE
 			       : (ext_count = (int)ext_dirs.names.len, NB_OK));

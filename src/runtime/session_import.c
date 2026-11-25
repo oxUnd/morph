@@ -36,12 +36,12 @@ int runtime_sync_import_backup(struct runtime *runtime,
 	const struct morph_sync_config *cfg, const char *snapshot_id,
 	struct runtime_session_import_result *result)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
+	nb_buf import_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int import_dir_status = NB_OK;
+	nb_buf import_token_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int import_token_status = NB_OK;
+	nb_buf import_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int import_path_status = NB_OK;
 
 	struct morph_sync_backup *backups = NULL;
 	char origin[MORPH_SYNC_DEVICE_ID_MAX] = { 0 };
@@ -68,33 +68,35 @@ int runtime_sync_import_backup(struct runtime *runtime,
 	morph_sync_backups_free(backups);
 	if (!origin[0])
 		return NB_ERR_NOT_FOUND;
-	rc = ((file_status_1 =
-		       nb_path_concat(&file_value_1, cfg->sync_dir, ".morph-sync/import")) != NB_OK
-		      ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), directory,
-						sizeof(directory))) == NB_ERR_RANGE
+	rc = ((import_dir_status = nb_path_concat(&import_dir_buffer, cfg->sync_dir,
+						  ".morph-sync/import")) != NB_OK
+		      ? import_dir_status
+	      : (import_dir_status = nb_str_copy_to(nb_buf_str(&import_dir_buffer), directory,
+						    sizeof(directory))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_1);
+		      : import_dir_status);
 	if (rc == 0)
 		rc = nb_file_mkdir(directory, true, NULL);
 	if (rc == 0)
-		rc = ((file_status_2 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_2),
-					    nb_buf_append_cstr(&file_value_2, "session_"))
-						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_2, 16, NULL))) != NB_OK
-			      ? file_status_2
-		      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), token,
-							sizeof(token))) == NB_ERR_RANGE
+		rc = ((import_token_status =
+			       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				: !(nb_buf_clear(&import_token_buffer),
+				    nb_buf_append_cstr(&import_token_buffer, "session_"))
+					? NB_ERR_NOMEM
+					: nb_random_hex(&import_token_buffer, 16, NULL))) != NB_OK
+			      ? import_token_status
+		      : (import_token_status = nb_str_copy_to(nb_buf_str(&import_token_buffer),
+							      token, sizeof(token))) == NB_ERR_RANGE
 			      ? NB_ERR_NO_SPACE
-			      : file_status_2);
+			      : import_token_status);
 	if (rc == 0)
-		rc = ((file_status_3 = nb_path_concat(&file_value_3, directory, token)) != NB_OK
-			      ? file_status_3
-		      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), path,
-							sizeof(path))) == NB_ERR_RANGE
+		rc = ((import_path_status =
+			       nb_path_concat(&import_path_buffer, directory, token)) != NB_OK
+			      ? import_path_status
+		      : (import_path_status = nb_str_copy_to(nb_buf_str(&import_path_buffer), path,
+							     sizeof(path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_3);
+			      : import_path_status);
 	if (rc != 0)
 		return rc;
 	rc = morph_sync_restore_db(cfg, snapshot_id, path);

@@ -13,8 +13,8 @@
 
 int ext_load_so(struct ext *ex, const char *path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf rule_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int rule_path_status = NB_OK;
 
 	if (!ex || !path)
 		return NB_ERR_INVAL;
@@ -22,12 +22,13 @@ int ext_load_so(struct ext *ex, const char *path)
 		return NB_ERR_EXISTS;
 
 	char full_path[PATH_MAX];
-	int rc = ((file_status_1 = nb_path_concat(&file_value_1, path, ex->manifest.entry)) != NB_OK
-			  ? file_status_1
-		  : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), full_path,
-						    sizeof(full_path))) == NB_ERR_RANGE
+	int rc = ((rule_path_status =
+			   nb_path_concat(&rule_path_buffer, path, ex->manifest.entry)) != NB_OK
+			  ? rule_path_status
+		  : (rule_path_status = nb_str_copy_to(nb_buf_str(&rule_path_buffer), full_path,
+						       sizeof(full_path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_1);
+			  : rule_path_status);
 	if (rc < 0)
 		return rc;
 
@@ -88,19 +89,20 @@ int ext_load_so(struct ext *ex, const char *path)
 
 int ext_load_exec(struct ext *ex, const char *path)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf rule_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int rule_path_status = NB_OK;
 
 	if (!ex || !path)
 		return NB_ERR_INVAL;
 
 	char full_path[PATH_MAX];
-	int rc = ((file_status_2 = nb_path_concat(&file_value_2, path, ex->manifest.entry)) != NB_OK
-			  ? file_status_2
-		  : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), full_path,
-						    sizeof(full_path))) == NB_ERR_RANGE
+	int rc = ((rule_path_status =
+			   nb_path_concat(&rule_path_buffer, path, ex->manifest.entry)) != NB_OK
+			  ? rule_path_status
+		  : (rule_path_status = nb_str_copy_to(nb_buf_str(&rule_path_buffer), full_path,
+						       sizeof(full_path))) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_2);
+			  : rule_path_status);
 	if (rc < 0)
 		return rc;
 

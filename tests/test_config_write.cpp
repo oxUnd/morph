@@ -139,8 +139,8 @@ TEST_F(ConfigEditTest, WritesApprovedValidToml)
 
 TEST_F(ConfigEditTest, FullAccessWritesWithoutApproval)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *config_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct approval_state state = { TOOL_OP_DENY, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
@@ -161,13 +161,15 @@ TEST_F(ConfigEditTest, FullAccessWritesWithoutApproval)
 
 		ASSERT_EQ(rc, 0) << out;
 		EXPECT_EQ(state.calls, 0);
-		char *edited = (nb_file_read_all(config_path, &file_value_1, 0, NULL) == NB_OK &&
-						(file_copy_1 = (char *)malloc(
-							 nb_buf_len(&file_value_1) + 1)) != NULL
-					? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-						  nb_buf_len(&file_value_1) + 1),
-					   nb_charp_steal(&file_copy_1))
-					: NULL);
+		char *edited =
+			(nb_file_read_all(config_path, &config_contents_buffer, 0, NULL) == NB_OK &&
+					 (config_contents_copy = (char *)malloc(
+						  nb_buf_len(&config_contents_buffer) + 1)) != NULL
+				 ? (memcpy(config_contents_copy,
+					   nb_buf_cstr(&config_contents_buffer),
+					   nb_buf_len(&config_contents_buffer) + 1),
+				    nb_charp_steal(&config_contents_copy))
+				 : NULL);
 		ASSERT_NE(edited, nullptr);
 		EXPECT_STREQ(edited, toml);
 		std::free(edited);
@@ -176,8 +178,8 @@ TEST_F(ConfigEditTest, FullAccessWritesWithoutApproval)
 
 TEST_F(ConfigEditTest, RestrictedAccessNeverDeniesWithoutWriting)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_2 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf current_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *current_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
@@ -198,13 +200,16 @@ TEST_F(ConfigEditTest, RestrictedAccessNeverDeniesWithoutWriting)
 
 		EXPECT_EQ(rc, NB_ERR_PERMISSION) << out;
 		EXPECT_EQ(state.calls, 0);
-		char *current = (nb_file_read_all(config_path, &file_value_2, 0, NULL) == NB_OK &&
-						 (file_copy_2 = (char *)malloc(
-							  nb_buf_len(&file_value_2) + 1)) != NULL
-					 ? (memcpy(file_copy_2, nb_buf_cstr(&file_value_2),
-						   nb_buf_len(&file_value_2) + 1),
-					    nb_charp_steal(&file_copy_2))
-					 : NULL);
+		char *current =
+			(nb_file_read_all(config_path, &current_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (current_contents_copy = (char *)malloc(
+						  nb_buf_len(&current_contents_buffer) + 1)) != NULL
+				 ? (memcpy(current_contents_copy,
+					   nb_buf_cstr(&current_contents_buffer),
+					   nb_buf_len(&current_contents_buffer) + 1),
+				    nb_charp_steal(&current_contents_copy))
+				 : NULL);
 		ASSERT_NE(current, nullptr);
 		EXPECT_STREQ(current, original);
 		std::free(current);
@@ -303,10 +308,10 @@ TEST_F(ConfigEditTest, DeniedApprovalDoesNotWrite)
 
 TEST_F(ConfigEditTest, PatchPreservesFormattingAndCreatesBackup)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_3 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf edited_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *edited_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf backup_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *backup_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
@@ -329,21 +334,21 @@ TEST_F(ConfigEditTest, PatchPreservesFormattingAndCreatesBackup)
 	EXPECT_EQ(rc, 0) << out;
 	EXPECT_EQ(state.calls, 1);
 	char *edited =
-		(nb_file_read_all(config_path, &file_value_3, 0, NULL) == NB_OK &&
-				 (file_copy_3 = (char *)malloc(nb_buf_len(&file_value_3) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_3, nb_buf_cstr(&file_value_3),
-				   nb_buf_len(&file_value_3) + 1),
-			    nb_charp_steal(&file_copy_3))
+		(nb_file_read_all(config_path, &edited_contents_buffer, 0, NULL) == NB_OK &&
+				 (edited_contents_copy = (char *)malloc(
+					  nb_buf_len(&edited_contents_buffer) + 1)) != NULL
+			 ? (memcpy(edited_contents_copy, nb_buf_cstr(&edited_contents_buffer),
+				   nb_buf_len(&edited_contents_buffer) + 1),
+			    nb_charp_steal(&edited_contents_copy))
 			 : NULL);
 	char *backup =
-		(nb_file_read_all((std::string(config_path) + ".bak").c_str(), &file_value_4, 0,
-				  NULL) == NB_OK &&
-				 (file_copy_4 = (char *)malloc(nb_buf_len(&file_value_4) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-				   nb_buf_len(&file_value_4) + 1),
-			    nb_charp_steal(&file_copy_4))
+		(nb_file_read_all((std::string(config_path) + ".bak").c_str(),
+				  &backup_contents_buffer, 0, NULL) == NB_OK &&
+				 (backup_contents_copy = (char *)malloc(
+					  nb_buf_len(&backup_contents_buffer) + 1)) != NULL
+			 ? (memcpy(backup_contents_copy, nb_buf_cstr(&backup_contents_buffer),
+				   nb_buf_len(&backup_contents_buffer) + 1),
+			    nb_charp_steal(&backup_contents_copy))
 			 : NULL);
 	ASSERT_NE(edited, nullptr);
 	ASSERT_NE(backup, nullptr);
@@ -358,8 +363,8 @@ TEST_F(ConfigEditTest, PatchPreservesFormattingAndCreatesBackup)
 
 TEST_F(ConfigEditTest, RejectsPatchForAnotherFile)
 {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf current_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *current_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
@@ -379,12 +384,12 @@ TEST_F(ConfigEditTest, RejectsPatchForAnotherFile)
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("only update config.toml"), std::string::npos);
 	char *current =
-		(nb_file_read_all(config_path, &file_value_5, 0, NULL) == NB_OK &&
-				 (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
-				   nb_buf_len(&file_value_5) + 1),
-			    nb_charp_steal(&file_copy_5))
+		(nb_file_read_all(config_path, &current_contents_buffer, 0, NULL) == NB_OK &&
+				 (current_contents_copy = (char *)malloc(
+					  nb_buf_len(&current_contents_buffer) + 1)) != NULL
+			 ? (memcpy(current_contents_copy, nb_buf_cstr(&current_contents_buffer),
+				   nb_buf_len(&current_contents_buffer) + 1),
+			    nb_charp_steal(&current_contents_copy))
 			 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
@@ -393,8 +398,8 @@ TEST_F(ConfigEditTest, RejectsPatchForAnotherFile)
 
 TEST_F(ConfigEditTest, RejectsInvalidPatchedConfigBeforeApproval)
 {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_6 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf current_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *current_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
@@ -414,12 +419,12 @@ TEST_F(ConfigEditTest, RejectsInvalidPatchedConfigBeforeApproval)
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("react.max_iterations"), std::string::npos);
 	char *current =
-		(nb_file_read_all(config_path, &file_value_6, 0, NULL) == NB_OK &&
-				 (file_copy_6 = (char *)malloc(nb_buf_len(&file_value_6) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_6, nb_buf_cstr(&file_value_6),
-				   nb_buf_len(&file_value_6) + 1),
-			    nb_charp_steal(&file_copy_6))
+		(nb_file_read_all(config_path, &current_contents_buffer, 0, NULL) == NB_OK &&
+				 (current_contents_copy = (char *)malloc(
+					  nb_buf_len(&current_contents_buffer) + 1)) != NULL
+			 ? (memcpy(current_contents_copy, nb_buf_cstr(&current_contents_buffer),
+				   nb_buf_len(&current_contents_buffer) + 1),
+			    nb_charp_steal(&current_contents_copy))
 			 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
@@ -428,8 +433,8 @@ TEST_F(ConfigEditTest, RejectsInvalidPatchedConfigBeforeApproval)
 
 TEST_F(ConfigEditTest, DetectsConcurrentConfigChange)
 {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_7 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf current_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *current_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *original = "[general]\ndefault_session = \"before\"\n";
 	const char *concurrent = "[general]\ndefault_session = \"other\"\n";
@@ -449,12 +454,12 @@ TEST_F(ConfigEditTest, DetectsConcurrentConfigChange)
 	EXPECT_EQ(state.calls, 1);
 	EXPECT_NE(out.find("changed during approval"), std::string::npos);
 	char *current =
-		(nb_file_read_all(config_path, &file_value_7, 0, NULL) == NB_OK &&
-				 (file_copy_7 = (char *)malloc(nb_buf_len(&file_value_7) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_7, nb_buf_cstr(&file_value_7),
-				   nb_buf_len(&file_value_7) + 1),
-			    nb_charp_steal(&file_copy_7))
+		(nb_file_read_all(config_path, &current_contents_buffer, 0, NULL) == NB_OK &&
+				 (current_contents_copy = (char *)malloc(
+					  nb_buf_len(&current_contents_buffer) + 1)) != NULL
+			 ? (memcpy(current_contents_copy, nb_buf_cstr(&current_contents_buffer),
+				   nb_buf_len(&current_contents_buffer) + 1),
+			    nb_charp_steal(&current_contents_copy))
 			 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, concurrent);
@@ -477,8 +482,8 @@ TEST_F(ConfigEditTest, RequiresApprovalContext)
 
 TEST_F(ConfigEditTest, RejectsSymlinkConfig)
 {
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
-	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf other_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	char *other_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
 	tool_context_set_operation_approval(tctx, approval_cb, &state);
@@ -495,14 +500,13 @@ TEST_F(ConfigEditTest, RejectsSymlinkConfig)
 	EXPECT_EQ(rc, NB_ERR_LOOP);
 	EXPECT_EQ(state.calls, 0);
 	EXPECT_NE(out.find("not a symlink"), std::string::npos);
-	char *current =
-		(nb_file_read_all(other_path, &file_value_8, 0, NULL) == NB_OK &&
-				 (file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
-					 NULL
-			 ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
-				   nb_buf_len(&file_value_8) + 1),
-			    nb_charp_steal(&file_copy_8))
-			 : NULL);
+	char *current = (nb_file_read_all(other_path, &other_contents_buffer, 0, NULL) == NB_OK &&
+					 (other_contents_copy = (char *)malloc(
+						  nb_buf_len(&other_contents_buffer) + 1)) != NULL
+				 ? (memcpy(other_contents_copy, nb_buf_cstr(&other_contents_buffer),
+					   nb_buf_len(&other_contents_buffer) + 1),
+				    nb_charp_steal(&other_contents_copy))
+				 : NULL);
 	ASSERT_NE(current, nullptr);
 	EXPECT_STREQ(current, original);
 	std::free(current);

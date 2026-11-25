@@ -62,8 +62,8 @@ static int executable_dir(char *dst, size_t dst_size)
 
 int morph_executable_find(char *dst, size_t dst_size, const char *name)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf resource_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int resource_path_status = NB_OK;
 
 	char dir[PATH_MAX];
 	char path[PATH_MAX];
@@ -75,11 +75,12 @@ int morph_executable_find(char *dst, size_t dst_size, const char *name)
 	rc = executable_dir(dir, sizeof(dir));
 	if (rc != 0)
 		return rc;
-	rc = ((file_status_1 = nb_path_concat(&file_value_1, dir, name)) != NB_OK ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), path, sizeof(path))) ==
-			      NB_ERR_RANGE
+	rc = ((resource_path_status = nb_path_concat(&resource_path_buffer, dir, name)) != NB_OK
+		      ? resource_path_status
+	      : (resource_path_status = nb_str_copy_to(nb_buf_str(&resource_path_buffer), path,
+						       sizeof(path))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_1);
+		      : resource_path_status);
 	if (rc != 0)
 		return rc;
 	if (access(path, X_OK) != 0)
@@ -93,8 +94,8 @@ int morph_executable_find(char *dst, size_t dst_size, const char *name)
 static int find_under_root(char *dst, size_t dst_size,
 			   const char *root, const char *relative_path)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf resource_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int resource_path_status = NB_OK;
 
 	char path[PATH_MAX];
 	nb_buf resolved NB_CLEANUP(nb_buf_destroy) = {0};
@@ -102,12 +103,13 @@ static int find_under_root(char *dst, size_t dst_size,
 
 	if (!root || !root[0])
 		return NB_ERR_NOT_FOUND;
-	rc = ((file_status_2 = nb_path_concat(&file_value_2, root, relative_path)) != NB_OK
-		      ? file_status_2
-	      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), path, sizeof(path))) ==
-			      NB_ERR_RANGE
+	rc = ((resource_path_status = nb_path_concat(&resource_path_buffer, root, relative_path)) !=
+			      NB_OK
+		      ? resource_path_status
+	      : (resource_path_status = nb_str_copy_to(nb_buf_str(&resource_path_buffer), path,
+						       sizeof(path))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_2);
+		      : resource_path_status);
 	if (rc != 0)
 		return rc;
 	if (nb_path_canonical(&resolved, path, NULL) != NB_OK)
@@ -123,8 +125,8 @@ static int find_under_root(char *dst, size_t dst_size,
 static int find_installed(char *dst, size_t dst_size,
 			  const char *relative_path)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
+	nb_buf resource_root_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int resource_root_status = NB_OK;
 
 	char dir[PATH_MAX];
 	char root[PATH_MAX];
@@ -133,12 +135,13 @@ static int find_installed(char *dst, size_t dst_size,
 	rc = executable_dir(dir, sizeof(dir));
 	if (rc != 0)
 		return rc;
-	rc = ((file_status_3 = nb_path_concat(&file_value_3, dir, "../share/morph")) != NB_OK
-		      ? file_status_3
-	      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), root, sizeof(root))) ==
-			      NB_ERR_RANGE
+	rc = ((resource_root_status =
+		       nb_path_concat(&resource_root_buffer, dir, "../share/morph")) != NB_OK
+		      ? resource_root_status
+	      : (resource_root_status = nb_str_copy_to(nb_buf_str(&resource_root_buffer), root,
+						       sizeof(root))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_3);
+		      : resource_root_status);
 	if (rc != 0)
 		return rc;
 	rc = find_under_root(dst, dst_size, root, relative_path);

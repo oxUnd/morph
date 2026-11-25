@@ -24,10 +24,10 @@
 
 int ext_load(struct nb_log *logger, struct ext *ex, const char *dir_path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int manifest_path_status = NB_OK;
+	nb_buf fallback_manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int fallback_manifest_path_status = NB_OK;
 
 	if (!ex || !dir_path)
 		return NB_ERR_INVAL;
@@ -42,24 +42,26 @@ int ext_load(struct nb_log *logger, struct ext *ex, const char *dir_path)
 	loaded.logger = logger;
 	memcpy(loaded.path, dir_path, strlen(dir_path) + 1);
 	char manifest_path[PATH_MAX];
-	int rc =
-		((file_status_1 = nb_path_concat(&file_value_1, dir_path, "manifest.toml")) != NB_OK
-			 ? file_status_1
-		 : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), manifest_path,
-						   sizeof(manifest_path))) == NB_ERR_RANGE
-			 ? NB_ERR_NAME_TOO_LONG
-			 : file_status_1);
+	int rc = ((manifest_path_status = nb_path_concat(&manifest_path_buffer, dir_path,
+							 "manifest.toml")) != NB_OK
+			  ? manifest_path_status
+		  : (manifest_path_status = nb_str_copy_to(nb_buf_str(&manifest_path_buffer),
+							   manifest_path, sizeof(manifest_path))) ==
+				  NB_ERR_RANGE
+			  ? NB_ERR_NAME_TOO_LONG
+			  : manifest_path_status);
 	if (rc != 0)
 		return rc;
 	struct stat info;
 	if (stat(manifest_path, &info) != 0) {
-		rc = ((file_status_2 = nb_path_concat(&file_value_2, dir_path, "morph-ext.toml")) !=
-				      NB_OK
-			      ? file_status_2
-		      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), manifest_path,
-							sizeof(manifest_path))) == NB_ERR_RANGE
+		rc = ((fallback_manifest_path_status = nb_path_concat(
+			       &fallback_manifest_path_buffer, dir_path, "morph-ext.toml")) != NB_OK
+			      ? fallback_manifest_path_status
+		      : (fallback_manifest_path_status = nb_str_copy_to(
+				 nb_buf_str(&fallback_manifest_path_buffer), manifest_path,
+				 sizeof(manifest_path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_2);
+			      : fallback_manifest_path_status);
 		if (rc != 0)
 			return rc;
 		if (stat(manifest_path, &info) != 0) {
@@ -158,17 +160,17 @@ int ext_manifest_supports_front(const struct ext_manifest *m,
 
 static char *ext_resolve_sandbox_path(const char *path)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf absolute_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char cwd[PATH_MAX];
 	char *expanded;
 	char *absolute;
 	char *resolved;
 
-	expanded = (nb_path_expand(&file_value_3, path, NULL) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_3))
+	expanded = (nb_path_expand(&expanded_path_buffer, path, NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&expanded_path_buffer))
 			    : NULL);
 	if (!expanded)
 		return NULL;
@@ -179,19 +181,19 @@ static char *ext_resolve_sandbox_path(const char *path)
 			free(expanded);
 			return NULL;
 		}
-		absolute = (nb_path_join(&file_value_4, cwd, expanded) == NB_OK
-				    ? strdup(nb_buf_cstr(&file_value_4))
+		absolute = (nb_path_join(&absolute_path_buffer, cwd, expanded) == NB_OK
+				    ? strdup(nb_buf_cstr(&absolute_path_buffer))
 				    : NULL);
 		free(expanded);
 		if (!absolute)
 			return NULL;
 	}
-	resolved =
-		(nb_path_expand(&file_value_5, absolute, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_5, nb_buf_cstr(&file_value_5), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_5))
-			 : NULL);
+	resolved = (nb_path_expand(&canonical_path_buffer, absolute, NULL) == NB_OK &&
+				    nb_path_canonical_missing(&canonical_path_buffer,
+							      nb_buf_cstr(&canonical_path_buffer),
+							      NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&canonical_path_buffer))
+			    : NULL);
 	free(absolute);
 	return resolved;
 }

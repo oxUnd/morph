@@ -42,24 +42,25 @@ struct plan *plan_by_id_borrow(struct plan_registry *reg, const char *id)
 
 static int plan_generate_id(struct plan_registry *reg, char *id, size_t size)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf plan_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int plan_id_status = NB_OK;
 
 	int rc;
 
 	if (!reg || !id || size < PLAN_ID_MAX)
 		return NB_ERR_INVAL;
 	for (int tries = 0; tries < 16; tries++) {
-		rc = ((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					: !(nb_buf_clear(&file_value_1),
-					    nb_buf_append_cstr(&file_value_1, "pln_"))
-						? NB_ERR_NOMEM
-						: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-			      ? file_status_1
-		      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), id, size)) ==
+		rc = ((plan_id_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+					 : !(nb_buf_clear(&plan_id_buffer),
+					     nb_buf_append_cstr(&plan_id_buffer, "pln_"))
+						 ? NB_ERR_NOMEM
+						 : nb_random_hex(&plan_id_buffer, 16, NULL))) !=
+				      NB_OK
+			      ? plan_id_status
+		      : (plan_id_status = nb_str_copy_to(nb_buf_str(&plan_id_buffer), id, size)) ==
 				      NB_ERR_RANGE
 			      ? NB_ERR_NO_SPACE
-			      : file_status_1);
+			      : plan_id_status);
 		if (rc < 0)
 			return rc;
 		if (!plan_by_id_borrow(reg, id))

@@ -20,8 +20,8 @@
 
 int cli_media_attach_image(struct cli_application *ctx, const char *path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_1 = NB_OK;
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expanded_path_status = NB_OK;
 
 	char *expanded;
 	const struct config *config;
@@ -32,11 +32,12 @@ int cli_media_attach_image(struct cli_application *ctx, const char *path)
 	if (!ctx || !path || !path[0])
 		return NB_ERR_INVAL;
 
-	expanded = ((expand_status_1 = nb_path_expand(&file_value_1, path, NULL)) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_1))
-			    : NULL);
+	expanded =
+		((expanded_path_status = nb_path_expand(&expanded_path_buffer, path, NULL)) == NB_OK
+			 ? strdup(nb_buf_cstr(&expanded_path_buffer))
+			 : NULL);
 	if (!expanded)
-		return expand_status_1 != NB_OK ? expand_status_1 : NB_ERR_NOMEM;
+		return expanded_path_status != NB_OK ? expanded_path_status : NB_ERR_NOMEM;
 
 	if (!nb_file_exists(expanded)) {
 		CMD_ERROR(ctx, "file not found: %s", expanded);
@@ -104,8 +105,8 @@ static int cli_media_play_video(struct cli_application *ctx, const char *path)
 
 int cli_media_handle_path(struct cli_application *ctx, const char *input, int *handled)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_2 = NB_OK;
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expanded_path_status = NB_OK;
 
 	char *copy;
 	char *expanded;
@@ -130,12 +131,13 @@ int cli_media_handle_path(struct cli_application *ctx, const char *input, int *h
 		return 0;
 	}
 
-	expanded = ((expand_status_2 = nb_path_expand(&file_value_2, argv[0], NULL)) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_2))
+	expanded = ((expanded_path_status = nb_path_expand(&expanded_path_buffer, argv[0], NULL)) ==
+				    NB_OK
+			    ? strdup(nb_buf_cstr(&expanded_path_buffer))
 			    : NULL);
 	free(copy);
 	if (!expanded)
-		return expand_status_2 != NB_OK ? expand_status_2 : NB_ERR_NOMEM;
+		return expanded_path_status != NB_OK ? expanded_path_status : NB_ERR_NOMEM;
 
 	if (!nb_file_exists(expanded)) {
 		free(expanded);
@@ -158,9 +160,9 @@ int cli_media_handle_path(struct cli_application *ctx, const char *input, int *h
 }
 static int cli_media_command_render(struct cli_application *ctx, int argc, char **argv)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_4 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *file_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *path = cli_cmd_arg_borrow(argc, argv, 1);
 	if (!path) {
@@ -168,8 +170,8 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 		return NB_ERR_INVAL;
 	}
 
-	char *expanded = (nb_path_expand(&file_value_3, path, NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_3))
+	char *expanded = (nb_path_expand(&expanded_path_buffer, path, NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&expanded_path_buffer))
 				  : NULL);
 	if (!nb_file_exists(expanded)) {
 		CMD_ERROR(ctx, "file not found: %s", expanded);
@@ -218,14 +220,15 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 		CMD_OK(ctx, "image: %s (%dx%d)", expanded, w, h);
 	} else {
 		size_t len = 0;
-		char *text = (nb_file_read_all(expanded, &file_value_4, 0, NULL) == NB_OK &&
-					      (file_copy_4 = (char *)malloc(
-						       nb_buf_len(&file_value_4) + 1)) != NULL
-				      ? (memcpy(file_copy_4, nb_buf_cstr(&file_value_4),
-						nb_buf_len(&file_value_4) + 1),
-					 *(&len) = nb_buf_len(&file_value_4),
-					 nb_charp_steal(&file_copy_4))
-				      : NULL);
+		char *text =
+			(nb_file_read_all(expanded, &file_contents_buffer, 0, NULL) == NB_OK &&
+					 (file_contents_copy = (char *)malloc(
+						  nb_buf_len(&file_contents_buffer) + 1)) != NULL
+				 ? (memcpy(file_contents_copy, nb_buf_cstr(&file_contents_buffer),
+					   nb_buf_len(&file_contents_buffer) + 1),
+				    *(&len) = nb_buf_len(&file_contents_buffer),
+				    nb_charp_steal(&file_contents_copy))
+				 : NULL);
 		if (!text) {
 			CMD_ERROR(ctx, "failed to read file: %s", expanded);
 			free(expanded);

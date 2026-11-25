@@ -300,27 +300,29 @@ static int git_fetch_source(const struct ext_source *src, const char *repo_dir,
 
 static int find_manifest_path(const char *dir, char *dst, size_t dst_size)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int manifest_path_status = NB_OK;
+	nb_buf fallback_manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int fallback_manifest_path_status = NB_OK;
 
-	int rc = ((file_status_1 = nb_path_concat(&file_value_1, dir, "manifest.toml")) != NB_OK
-			  ? file_status_1
-		  : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), dst, dst_size)) ==
-				  NB_ERR_RANGE
+	int rc = ((manifest_path_status =
+			   nb_path_concat(&manifest_path_buffer, dir, "manifest.toml")) != NB_OK
+			  ? manifest_path_status
+		  : (manifest_path_status = nb_str_copy_to(nb_buf_str(&manifest_path_buffer), dst,
+							   dst_size)) == NB_ERR_RANGE
 			  ? NB_ERR_NAME_TOO_LONG
-			  : file_status_1);
+			  : manifest_path_status);
 	if (rc < 0)
 		return rc;
 	if (nb_file_exists(dst))
 		return 0;
-	rc = ((file_status_2 = nb_path_concat(&file_value_2, dir, "morph-ext.toml")) != NB_OK
-		      ? file_status_2
-	      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), dst, dst_size)) ==
-			      NB_ERR_RANGE
+	rc = ((fallback_manifest_path_status = nb_path_concat(&fallback_manifest_path_buffer, dir,
+							      "morph-ext.toml")) != NB_OK
+		      ? fallback_manifest_path_status
+	      : (fallback_manifest_path_status = nb_str_copy_to(
+			 nb_buf_str(&fallback_manifest_path_buffer), dst, dst_size)) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_2);
+		      : fallback_manifest_path_status);
 	if (rc < 0)
 		return rc;
 	if (nb_file_exists(dst))
@@ -378,15 +380,15 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 			       const char *directory, const struct ext_install_options *opts,
 			       struct ext_install_result *result)
 {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_6 = NB_OK;
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_7 = NB_OK;
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_8 = NB_OK;
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_10 = NB_OK;
+	nb_buf repository_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int repository_dir_status = NB_OK;
+	nb_buf package_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int package_dir_status = NB_OK;
+	nb_buf entry_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int entry_path_status = NB_OK;
+	nb_buf install_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf target_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int target_dir_status = NB_OK;
 
 	char repo_dir[PATH_MAX];
 	char package_dir[PATH_MAX];
@@ -400,12 +402,13 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 	const char *install_dir = opts && opts->install_dir ?
 		opts->install_dir : "~/.morph/exts";
 
-	rc = ((file_status_6 = nb_path_concat(&file_value_6, directory, "repo")) != NB_OK
-		      ? file_status_6
-	      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), repo_dir,
-						sizeof(repo_dir))) == NB_ERR_RANGE
+	rc = ((repository_dir_status = nb_path_concat(&repository_dir_buffer, directory, "repo")) !=
+			      NB_OK
+		      ? repository_dir_status
+	      : (repository_dir_status = nb_str_copy_to(nb_buf_str(&repository_dir_buffer),
+							repo_dir, sizeof(repo_dir))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_6);
+		      : repository_dir_status);
 	if (rc < 0)
 		return rc;
 	rc = git_fetch_source(src, repo_dir, opts ? opts->github_base_url : NULL,
@@ -414,13 +417,14 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 		return rc;
 
 	if (src->subdir[0])
-		rc = ((file_status_7 = nb_path_concat(&file_value_7, repo_dir, src->subdir)) !=
-				      NB_OK
-			      ? file_status_7
-		      : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), package_dir,
-							sizeof(package_dir))) == NB_ERR_RANGE
+		rc = ((package_dir_status =
+			       nb_path_concat(&package_dir_buffer, repo_dir, src->subdir)) != NB_OK
+			      ? package_dir_status
+		      : (package_dir_status = nb_str_copy_to(nb_buf_str(&package_dir_buffer),
+							     package_dir, sizeof(package_dir))) ==
+				      NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_7);
+			      : package_dir_status);
 	else
 		rc = copy_part(package_dir, sizeof(package_dir),
 			       repo_dir, strlen(repo_dir));
@@ -451,12 +455,13 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 			return rc;
 	}
 
-	rc = ((file_status_8 = nb_path_concat(&file_value_8, package_dir, m.entry)) != NB_OK
-		      ? file_status_8
-	      : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), entry_path,
-						sizeof(entry_path))) == NB_ERR_RANGE
+	rc = ((entry_path_status = nb_path_concat(&entry_path_buffer, package_dir, m.entry)) !=
+			      NB_OK
+		      ? entry_path_status
+	      : (entry_path_status = nb_str_copy_to(nb_buf_str(&entry_path_buffer), entry_path,
+						    sizeof(entry_path))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_8);
+		      : entry_path_status);
 	if (rc < 0)
 		return rc;
 	if (!nb_file_exists(entry_path)) {
@@ -465,8 +470,8 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 	}
 
 	char *expanded_install NB_CLEANUP(nb_charp_cleanup) =
-		(nb_path_expand(&file_value_9, install_dir, NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_9))
+		(nb_path_expand(&install_dir_buffer, install_dir, NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&install_dir_buffer))
 			 : NULL);
 	if (!expanded_install) {
 		rc = NB_ERR_NOMEM;
@@ -474,13 +479,14 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 	}
 	rc = nb_file_mkdir(expanded_install, true, NULL);
 	if (rc == 0)
-		rc = ((file_status_10 = nb_path_concat(&file_value_10, expanded_install, m.name)) !=
-				      NB_OK
-			      ? file_status_10
-		      : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), target_dir,
-							 sizeof(target_dir))) == NB_ERR_RANGE
+		rc = ((target_dir_status = nb_path_concat(&target_dir_buffer, expanded_install,
+							  m.name)) != NB_OK
+			      ? target_dir_status
+		      : (target_dir_status = nb_str_copy_to(nb_buf_str(&target_dir_buffer),
+							    target_dir, sizeof(target_dir))) ==
+				      NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_10);
+			      : target_dir_status);
 	nb_charp_cleanup(&expanded_install);
 	if (rc < 0)
 		return rc;
@@ -533,7 +539,7 @@ static int ext_install_package(struct nb_log *logger, const struct ext_source *s
 int ext_install_source(struct nb_log *logger, const char *source,
 		       const struct ext_install_options *opts, struct ext_install_result *result)
 {
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf temporary_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct ext_source src;
 	char temporary[PATH_MAX];
@@ -549,12 +555,13 @@ int ext_install_source(struct nb_log *logger, const char *source,
 		return rc;
 	if (!tmp_base || !tmp_base[0])
 		tmp_base = "/tmp";
-	rc = nb_file_temp_dir(&file_value_11, tmp_base, "morph-ext-", NULL);
+	rc = nb_file_temp_dir(&temporary_path_buffer, tmp_base, "morph-ext-", NULL);
 	if (rc == NB_OK)
-		rc = nb_str_copy_to(nb_buf_str(&file_value_11), temporary, sizeof(temporary));
+		rc = nb_str_copy_to(nb_buf_str(&temporary_path_buffer), temporary,
+				    sizeof(temporary));
 	if (rc != NB_OK) {
-		if (!nb_buf_empty(&file_value_11))
-			(void)nb_file_remove_all(nb_buf_cstr(&file_value_11), 0, NULL);
+		if (!nb_buf_empty(&temporary_path_buffer))
+			(void)nb_file_remove_all(nb_buf_cstr(&temporary_path_buffer), 0, NULL);
 		return rc == NB_ERR_RANGE ? NB_ERR_NAME_TOO_LONG : rc;
 	}
 

@@ -57,16 +57,17 @@ protected:
 
 	std::string read_file(const char *name)
 	{
-		nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-		char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+		nb_buf file_contents_buffer NB_CLEANUP(nb_buf_destroy) = {};
+		char *file_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 		char *content =
-			(nb_file_read_all(path(name).c_str(), &file_value_1, 0, NULL) == NB_OK &&
-					 (file_copy_1 = (char *)malloc(nb_buf_len(&file_value_1) +
-								       1)) != NULL
-				 ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-					   nb_buf_len(&file_value_1) + 1),
-				    nb_charp_steal(&file_copy_1))
+			(nb_file_read_all(path(name).c_str(), &file_contents_buffer, 0, NULL) ==
+						 NB_OK &&
+					 (file_contents_copy = (char *)malloc(
+						  nb_buf_len(&file_contents_buffer) + 1)) != NULL
+				 ? (memcpy(file_contents_copy, nb_buf_cstr(&file_contents_buffer),
+					   nb_buf_len(&file_contents_buffer) + 1),
+				    nb_charp_steal(&file_contents_copy))
 				 : NULL);
 		EXPECT_NE(content, nullptr);
 		std::string value = content ? content : "";

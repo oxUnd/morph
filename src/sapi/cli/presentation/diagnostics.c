@@ -77,12 +77,12 @@ static void cli_diagnostics_print_config_warning(const struct config_validation_
 
 void cli_diagnostics_config_error(struct cli_application *ctx, const char *config_path, int rc)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path : "~/.morph/config.toml";
-	char *expanded = (nb_path_expand(&file_value_1, requested, NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_1))
+	char *expanded = (nb_path_expand(&config_path_buffer, requested, NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&config_path_buffer))
 				  : NULL);
 	const char *display = expanded ? expanded : requested;
 	int validation_rc = expanded ? config_validate_file(expanded, &error) : NB_ERR_INVAL;
@@ -100,12 +100,12 @@ void cli_diagnostics_config_error(struct cli_application *ctx, const char *confi
 
 int cli_diagnostics_preflight(struct cli_application *ctx, const char *config_path)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path : "~/.morph/config.toml";
-	char *expanded = (nb_path_expand(&file_value_2, requested, NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_2))
+	char *expanded = (nb_path_expand(&config_path_buffer, requested, NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&config_path_buffer))
 				  : NULL);
 	int rc;
 

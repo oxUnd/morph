@@ -177,7 +177,7 @@ TEST_F(ToolContextTest, CommandPathResolutionNeverApprovesATruncatedPath)
 
 TEST_F(ToolContextTest, PermissionSnapshotOwnsPathsAfterGrantsAndContextAreDestroyed)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf canonical_directory_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	char directory[] = "/tmp/morph_grant_snapshot_XXXXXX";
 	struct tool_permission_snapshot snapshot NB_CLEANUP(tool_permission_snapshot_cleanup) = {};
@@ -194,10 +194,11 @@ TEST_F(ToolContextTest, PermissionSnapshotOwnsPathsAfterGrantsAndContextAreDestr
 	ASSERT_EQ(tool_context_permission_snapshot_create(context, "test", &snapshot), 0);
 	tool_context_destroy(context);
 	char *canonical =
-		(nb_path_expand(&file_value_1, directory, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_1, nb_buf_cstr(&file_value_1), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_1))
+		(nb_path_expand(&canonical_directory_buffer, directory, NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_directory_buffer,
+							   nb_buf_cstr(&canonical_directory_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_directory_buffer))
 			 : NULL);
 	ASSERT_NE(canonical, nullptr);
 	for (int i = 0; i < snapshot.write.count; i++)
@@ -288,11 +289,11 @@ TEST_F(ToolContextTest, ParsesComplexEnvironmentPrefix)
 
 TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_2 = NB_OK;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_3 = NB_OK;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf once_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int once_dir_status = NB_OK;
+	nb_buf session_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int session_dir_status = NB_OK;
+	nb_buf canonical_session_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	char dir_template[] = "/tmp/morph_cli_grant_XXXXXX";
 	char *base = mkdtemp(dir_template);
@@ -302,19 +303,21 @@ TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
 	char resolved[PATH_MAX];
 
 	ASSERT_NE(base, nullptr);
-	ASSERT_EQ(((file_status_2 = nb_path_concat(&file_value_2, base, "once")) != NB_OK
-			   ? file_status_2
-		   : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), once_dir,
-						     sizeof(once_dir))) == NB_ERR_RANGE
+	ASSERT_EQ(((once_dir_status = nb_path_concat(&once_dir_buffer, base, "once")) != NB_OK
+			   ? once_dir_status
+		   : (once_dir_status = nb_str_copy_to(nb_buf_str(&once_dir_buffer), once_dir,
+						       sizeof(once_dir))) == NB_ERR_RANGE
 			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_2),
+			   : once_dir_status),
 		  0);
-	ASSERT_EQ(((file_status_3 = nb_path_concat(&file_value_3, base, "session")) != NB_OK
-			   ? file_status_3
-		   : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), session_dir,
-						     sizeof(session_dir))) == NB_ERR_RANGE
+	ASSERT_EQ(((session_dir_status = nb_path_concat(&session_dir_buffer, base, "session")) !=
+				   NB_OK
+			   ? session_dir_status
+		   : (session_dir_status = nb_str_copy_to(nb_buf_str(&session_dir_buffer),
+							  session_dir, sizeof(session_dir))) ==
+				   NB_ERR_RANGE
 			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_3),
+			   : session_dir_status),
 		  0);
 	struct tool_context *tctx = tool_context_create(NULL, "/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
@@ -331,10 +334,11 @@ TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
 	ASSERT_EQ(tool_context_permission_snapshot_create(tctx, "/usr/bin/demo", &snapshot), 0);
 	ASSERT_EQ(snapshot.write.count, 1);
 	char *expected =
-		(nb_path_expand(&file_value_4, session_dir, NULL) == NB_OK &&
+		(nb_path_expand(&canonical_session_dir_buffer, session_dir, NULL) == NB_OK &&
 				 nb_path_canonical_missing(
-					 &file_value_4, nb_buf_cstr(&file_value_4), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_4))
+					 &canonical_session_dir_buffer,
+					 nb_buf_cstr(&canonical_session_dir_buffer), NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_session_dir_buffer))
 			 : NULL);
 	ASSERT_NE(expected, nullptr);
 	EXPECT_STREQ(snapshot.write.paths[0], expected);
@@ -474,7 +478,7 @@ TEST_F(ToolContextTest, AddWriteAllowedDirDuplicate) {
 }
 
 TEST_F(ToolContextTest, AuthorizeReadRelativeWithinWorkdir) {
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	const char *work = "/tmp/morph_tctx_work";
 	const char *path = "/tmp/morph_tctx_work/in.txt";
@@ -488,10 +492,11 @@ TEST_F(ToolContextTest, AuthorizeReadRelativeWithinWorkdir) {
 					     sizeof(resolved));
 	EXPECT_EQ(rc, 0);
 	char *expected =
-		(nb_path_expand(&file_value_5, path, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_5, nb_buf_cstr(&file_value_5), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_5))
+		(nb_path_expand(&canonical_path_buffer, path, NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_path_buffer,
+							   nb_buf_cstr(&canonical_path_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_path_buffer))
 			 : NULL);
 	ASSERT_NE(expected, nullptr);
 	EXPECT_STREQ(resolved, expected);
@@ -542,7 +547,7 @@ TEST_F(ToolContextTest, AuthorizeReadSymlinkEscapeDenied) {
 }
 
 TEST_F(ToolContextTest, AuthorizeReadApprovalAllow) {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf secret_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	std::string prefix = "/tmp/morph-tctx-approval-" + std::to_string(getpid());
 	std::string work_path = prefix + "-work";
@@ -559,12 +564,12 @@ TEST_F(ToolContextTest, AuthorizeReadApprovalAllow) {
 					     secret, resolved,
 					     sizeof(resolved));
 	EXPECT_EQ(rc, 0);
-	char *expected =
-		(nb_path_expand(&file_value_6, secret, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_6, nb_buf_cstr(&file_value_6), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_6))
-			 : NULL);
+	char *expected = (nb_path_expand(&secret_path_buffer, secret, NULL) == NB_OK &&
+					  nb_path_canonical_missing(
+						  &secret_path_buffer,
+						  nb_buf_cstr(&secret_path_buffer), NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&secret_path_buffer))
+				  : NULL);
 	ASSERT_NE(expected, nullptr);
 	EXPECT_STREQ(resolved, expected);
 	free(expected);
@@ -831,12 +836,12 @@ TEST_F(ToolContextTest, MissingTemporaryDirectoryPermissionIsAlreadyAllowed)
 
 TEST_F(ToolContextTest, ApprovedMissingDirectoryIsCreatedAndGranted)
 {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_7 = NB_OK;
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_8 = NB_OK;
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_9 = NB_OK;
+	nb_buf parent_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int parent_path_status = NB_OK;
+	nb_buf nested_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int nested_path_status = NB_OK;
+	nb_buf cache_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int cache_path_status = NB_OK;
 
 	char cwd[PATH_MAX];
 	char parent[PATH_MAX];
@@ -848,21 +853,22 @@ TEST_F(ToolContextTest, ApprovedMissingDirectoryIsCreatedAndGranted)
 	ASSERT_EQ(workspace.status(), NB_OK);
 	ASSERT_EQ(nb_str_copy_to(workspace.path(), cwd, sizeof(cwd)), NB_OK);
 	ASSERT_FALSE(permission_temporary_path_is_default(cwd));
-	ASSERT_EQ(((file_status_7 =
-			    nb_path_concat(&file_value_7, cwd, "morph_permission_XXXXXX")) != NB_OK
-			   ? file_status_7
-		   : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), parent,
-						     sizeof(parent))) == NB_ERR_RANGE
+	ASSERT_EQ(((parent_path_status = nb_path_concat(&parent_path_buffer, cwd,
+							"morph_permission_XXXXXX")) != NB_OK
+			   ? parent_path_status
+		   : (parent_path_status = nb_str_copy_to(nb_buf_str(&parent_path_buffer), parent,
+							  sizeof(parent))) == NB_ERR_RANGE
 			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_7),
+			   : parent_path_status),
 		  0);
 	ASSERT_NE(mkdtemp(parent), nullptr);
-	ASSERT_EQ(((file_status_8 = nb_path_concat(&file_value_8, parent, "cache/nested")) != NB_OK
-			   ? file_status_8
-		   : (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), nested,
-						     sizeof(nested))) == NB_ERR_RANGE
+	ASSERT_EQ(((nested_path_status =
+			    nb_path_concat(&nested_path_buffer, parent, "cache/nested")) != NB_OK
+			   ? nested_path_status
+		   : (nested_path_status = nb_str_copy_to(nb_buf_str(&nested_path_buffer), nested,
+							  sizeof(nested))) == NB_ERR_RANGE
 			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_8),
+			   : nested_path_status),
 		  0);
 	tctx = tool_context_create(NULL, "/var", "/var");
 	ASSERT_NE(tctx, nullptr);
@@ -875,13 +881,14 @@ TEST_F(ToolContextTest, ApprovedMissingDirectoryIsCreatedAndGranted)
 	tool_context_destroy(tctx);
 	ASSERT_EQ(rmdir(nested), 0);
 	char cache[PATH_MAX];
-	ASSERT_EQ(((file_status_9 = nb_path_concat(&file_value_9, parent, "cache")) != NB_OK
-			   ? file_status_9
-		   : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), cache,
-						     sizeof(cache))) == NB_ERR_RANGE
-			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_9),
-		  0);
+	ASSERT_EQ(
+		((cache_path_status = nb_path_concat(&cache_path_buffer, parent, "cache")) != NB_OK
+			 ? cache_path_status
+		 : (cache_path_status = nb_str_copy_to(nb_buf_str(&cache_path_buffer), cache,
+						       sizeof(cache))) == NB_ERR_RANGE
+			 ? NB_ERR_NAME_TOO_LONG
+			 : cache_path_status),
+		0);
 	ASSERT_EQ(rmdir(cache), 0);
 	ASSERT_EQ(rmdir(parent), 0);
 }
@@ -945,7 +952,7 @@ TEST_F(ToolContextTest, PersistentCommandGrantLoadsInNewContext)
 
 TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
 {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf state_dir_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
 	const char *db_path = "/tmp/morph_tctx_write_grants.db";
 	const char *state_dir = "/var/tmp/morph_lark_state";
@@ -979,12 +986,12 @@ TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
 		resolved, sizeof(resolved)), 0);
 	ASSERT_EQ(tool_context_permission_snapshot_create(second, "lark-cli", &snapshot), 0);
 	ASSERT_EQ(snapshot.write.count, 1);
-	char *expected =
-		(nb_path_expand(&file_value_10, state_dir, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_10, nb_buf_cstr(&file_value_10), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_10))
-			 : NULL);
+	char *expected = (nb_path_expand(&state_dir_buffer, state_dir, NULL) == NB_OK &&
+					  nb_path_canonical_missing(&state_dir_buffer,
+								    nb_buf_cstr(&state_dir_buffer),
+								    NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&state_dir_buffer))
+				  : NULL);
 	ASSERT_NE(expected, nullptr);
 	EXPECT_STREQ(snapshot.write.paths[0], expected);
 	free(expected);
@@ -1174,8 +1181,8 @@ TEST_F(ToolContextTest, CustomTmpdirPermissionRequestDoesNotPrompt)
 
 TEST_F(ToolContextTest, RequestedAlwaysGrantSurvivesTurnAndReload)
 {
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_11 = NB_OK;
+	nb_buf allowed_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int allowed_path_status = NB_OK;
 
 	char cwd[PATH_MAX];
 	char path[PATH_MAX];
@@ -1183,13 +1190,13 @@ TEST_F(ToolContextTest, RequestedAlwaysGrantSurvivesTurnAndReload)
 	ASSERT_EQ(workspace.status(), NB_OK);
 	ASSERT_EQ(nb_str_copy_to(workspace.path(), cwd, sizeof(cwd)), NB_OK);
 	ASSERT_FALSE(permission_temporary_path_is_default(cwd));
-	ASSERT_EQ(((file_status_11 = nb_path_concat(&file_value_11, cwd,
-						    "morph_always_request_XXXXXX")) != NB_OK
-			   ? file_status_11
-		   : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), path,
-						      sizeof(path))) == NB_ERR_RANGE
+	ASSERT_EQ(((allowed_path_status = nb_path_concat(&allowed_path_buffer, cwd,
+							 "morph_always_request_XXXXXX")) != NB_OK
+			   ? allowed_path_status
+		   : (allowed_path_status = nb_str_copy_to(nb_buf_str(&allowed_path_buffer), path,
+							   sizeof(path))) == NB_ERR_RANGE
 			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_11),
+			   : allowed_path_status),
 		  0);
 	ASSERT_NE(mkdtemp(path), nullptr);
 	struct db db = {};
@@ -1384,8 +1391,8 @@ TEST_F(ToolContextTest, NonPathApprovalReturnsActualVerdict)
 
 TEST_F(ToolContextTest, PersistentDirectoryGrantsAreSharedAndProjectScoped)
 {
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_12 = NB_OK;
+	nb_buf denied_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int denied_path_status = NB_OK;
 
 	char cwd[PATH_MAX];
 	char path[PATH_MAX];
@@ -1393,13 +1400,13 @@ TEST_F(ToolContextTest, PersistentDirectoryGrantsAreSharedAndProjectScoped)
 	ASSERT_EQ(workspace.status(), NB_OK);
 	ASSERT_EQ(nb_str_copy_to(workspace.path(), cwd, sizeof(cwd)), NB_OK);
 	ASSERT_FALSE(permission_temporary_path_is_default(cwd));
-	ASSERT_EQ(((file_status_12 = nb_path_concat(&file_value_12, cwd,
-						    "morph_directory_persistent_XXXXXX")) != NB_OK
-			   ? file_status_12
-		   : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), path,
-						      sizeof(path))) == NB_ERR_RANGE
+	ASSERT_EQ(((denied_path_status = nb_path_concat(
+			    &denied_path_buffer, cwd, "morph_directory_persistent_XXXXXX")) != NB_OK
+			   ? denied_path_status
+		   : (denied_path_status = nb_str_copy_to(nb_buf_str(&denied_path_buffer), path,
+							  sizeof(path))) == NB_ERR_RANGE
 			   ? NB_ERR_NAME_TOO_LONG
-			   : file_status_12),
+			   : denied_path_status),
 		  0);
 	ASSERT_NE(mkdtemp(path), nullptr);
 	std::string file = std::string(path) + "/file";

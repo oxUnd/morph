@@ -181,10 +181,10 @@ TEST(RenderVideo, PreviewFallsBackToClickableFileLink) {
 /* ---- render command: path expansion ---- */
 
 TEST(RenderPath, TildeExpansion) {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf home_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
-	char *expanded = (nb_path_expand(&file_value_1, "~/test.txt", NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_1))
+	char *expanded = (nb_path_expand(&home_path_buffer, "~/test.txt", NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&home_path_buffer))
 				  : NULL);
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_NE(strstr(expanded, "/test.txt"), nullptr);
@@ -192,10 +192,10 @@ TEST(RenderPath, TildeExpansion) {
 }
 
 TEST(RenderPath, AbsolutePath) {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
+	nb_buf absolute_path_buffer NB_CLEANUP(nb_buf_destroy) = {};
 
-	char *expanded = (nb_path_expand(&file_value_2, "/tmp/test.txt", NULL) == NB_OK
-				  ? strdup(nb_buf_cstr(&file_value_2))
+	char *expanded = (nb_path_expand(&absolute_path_buffer, "/tmp/test.txt", NULL) == NB_OK
+				  ? strdup(nb_buf_cstr(&absolute_path_buffer))
 				  : NULL);
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_STREQ(expanded, "/tmp/test.txt");

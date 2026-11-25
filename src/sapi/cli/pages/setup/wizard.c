@@ -388,9 +388,9 @@ static int cli_wizard_collect_plain(struct cli_setup_state *state, const char *p
 static int cli_wizard_load_existing(const char *path, struct cli_setup_state *state,
 				    char **original)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int read_status_1 = NB_OK;
-	char *file_copy_1 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf original_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int original_contents_status = NB_OK;
+	char *original_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	nb_err parse_error = {0};
 	struct stat st;
@@ -407,15 +407,18 @@ static int cli_wizard_load_existing(const char *path, struct cli_setup_state *st
 		return NB_ERR_TOO_BIG;
 
 	size_t len;
-	*original = ((read_status_1 = nb_file_read_all(path, &file_value_1, 0, NULL)) == NB_OK &&
-				     (file_copy_1 =
-					      (char *)malloc(nb_buf_len(&file_value_1) + 1)) != NULL
-			     ? (memcpy(file_copy_1, nb_buf_cstr(&file_value_1),
-				       nb_buf_len(&file_value_1) + 1),
-				*(&len) = nb_buf_len(&file_value_1), nb_charp_steal(&file_copy_1))
-			     : NULL);
+	*original =
+		((original_contents_status =
+			  nb_file_read_all(path, &original_contents_buffer, 0, NULL)) == NB_OK &&
+				 (original_contents_copy = (char *)malloc(
+					  nb_buf_len(&original_contents_buffer) + 1)) != NULL
+			 ? (memcpy(original_contents_copy, nb_buf_cstr(&original_contents_buffer),
+				   nb_buf_len(&original_contents_buffer) + 1),
+			    *(&len) = nb_buf_len(&original_contents_buffer),
+			    nb_charp_steal(&original_contents_copy))
+			 : NULL);
 	if (!*original)
-		return read_status_1 != NB_OK ? read_status_1 : NB_ERR_NOMEM;
+		return original_contents_status != NB_OK ? original_contents_status : NB_ERR_NOMEM;
 
 	if (memchr(*original, '\0', len) ||
 	    nb_utf8_validate(nb_str_from_parts(*original, len), NULL))
@@ -493,30 +496,30 @@ static int cli_wizard_unique_file(const char *path, const char *suffix, const ch
 static int cli_wizard_role_snapshot(const char *path, int role, const char *text, char **snapshot,
 				    int *created)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_6 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf prompt_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf prompt_base_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf prompt_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf current_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *current_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	*snapshot = NULL;
 	*created = 0;
-	char *directory =
-		(nb_buf_clear(&file_value_3), nb_buf_printf(&file_value_3, "%s%s", path, ".prompts")
-						      ? strdup(nb_buf_cstr(&file_value_3))
-						      : NULL);
+	char *directory = (nb_buf_clear(&prompt_dir_buffer),
+			   nb_buf_printf(&prompt_dir_buffer, "%s%s", path, ".prompts")
+				   ? strdup(nb_buf_cstr(&prompt_dir_buffer))
+				   : NULL);
 	if (!directory)
 		return NB_ERR_NOMEM;
 
 	int rc = nb_file_mkdir(directory, true, NULL);
-	char *base = rc == 0 ? (nb_path_concat(&file_value_4, directory,
+	char *base = rc == 0 ? (nb_path_concat(&prompt_base_path_buffer, directory,
 					       cli_setup_role_get(role).id) == NB_OK
-					? strdup(nb_buf_cstr(&file_value_4))
+					? strdup(nb_buf_cstr(&prompt_base_path_buffer))
 					: NULL)
 			     : NULL;
-	char *named = base ? (nb_buf_clear(&file_value_5),
-			      nb_buf_printf(&file_value_5, "%s%s", base, ".md")
-				      ? strdup(nb_buf_cstr(&file_value_5))
+	char *named = base ? (nb_buf_clear(&prompt_path_buffer),
+			      nb_buf_printf(&prompt_path_buffer, "%s%s", base, ".md")
+				      ? strdup(nb_buf_cstr(&prompt_path_buffer))
 				      : NULL)
 			   : NULL;
 	if (rc == 0 && !named)
@@ -527,12 +530,15 @@ static int cli_wizard_role_snapshot(const char *path, int role, const char *text
 		if (lstat(named, &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0 &&
 		    (size_t)st.st_size == strlen(text)) {
 			char *current =
-				(nb_file_read_all(named, &file_value_6, 0, NULL) == NB_OK &&
-						 (file_copy_6 = (char *)malloc(
-							  nb_buf_len(&file_value_6) + 1)) != NULL
-					 ? (memcpy(file_copy_6, nb_buf_cstr(&file_value_6),
-						   nb_buf_len(&file_value_6) + 1),
-					    nb_charp_steal(&file_copy_6))
+				(nb_file_read_all(named, &current_contents_buffer, 0, NULL) ==
+							 NB_OK &&
+						 (current_contents_copy = (char *)malloc(
+							  nb_buf_len(&current_contents_buffer) +
+							  1)) != NULL
+					 ? (memcpy(current_contents_copy,
+						   nb_buf_cstr(&current_contents_buffer),
+						   nb_buf_len(&current_contents_buffer) + 1),
+					    nb_charp_steal(&current_contents_copy))
 					 : NULL);
 			int same = current && strcmp(current, text) == 0;
 			free(current);
@@ -565,17 +571,17 @@ static int cli_wizard_role_snapshot(const char *path, int role, const char *text
 static int cli_wizard_publish_setup(const char *path, const char *original, const char *text,
 				    FILE *output)
 {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf lock_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf current_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *current_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	if (!original)
 		return cli_wizard_save_config(path, text, 0, NULL);
 
-	char *lock_path =
-		(nb_buf_clear(&file_value_7), nb_buf_printf(&file_value_7, "%s%s", path, ".lock")
-						      ? strdup(nb_buf_cstr(&file_value_7))
-						      : NULL);
+	char *lock_path = (nb_buf_clear(&lock_path_buffer),
+			   nb_buf_printf(&lock_path_buffer, "%s%s", path, ".lock")
+				   ? strdup(nb_buf_cstr(&lock_path_buffer))
+				   : NULL);
 	if (!lock_path)
 		return NB_ERR_NOMEM;
 
@@ -589,14 +595,17 @@ static int cli_wizard_publish_setup(const char *path, const char *original, cons
 	if (rc == 0 && !S_ISREG(st.st_mode))
 		rc = NB_ERR_INVAL;
 
-	char *current = rc == 0 ? (nb_file_read_all(path, &file_value_8, 0, NULL) == NB_OK &&
-						   (file_copy_8 = (char *)malloc(
-							    nb_buf_len(&file_value_8) + 1)) != NULL
-					   ? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
-						     nb_buf_len(&file_value_8) + 1),
-					      nb_charp_steal(&file_copy_8))
-					   : NULL)
-				: NULL;
+	char *current =
+		rc == 0 ? (nb_file_read_all(path, &current_contents_buffer, 0, NULL) == NB_OK &&
+					   (current_contents_copy = (char *)malloc(
+						    nb_buf_len(&current_contents_buffer) + 1)) !=
+						   NULL
+				   ? (memcpy(current_contents_copy,
+					     nb_buf_cstr(&current_contents_buffer),
+					     nb_buf_len(&current_contents_buffer) + 1),
+				      nb_charp_steal(&current_contents_copy))
+				   : NULL)
+			: NULL;
 	if (rc == 0 && (!current || strcmp(current, original) != 0))
 		rc = NB_ERR_STALE;
 
@@ -619,8 +628,8 @@ static int cli_wizard_publish_setup(const char *path, const char *original, cons
 static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path,
 				 const char *original, FILE *output)
 {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_9 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf published_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *published_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	const char *names[] = {"text", "vision", "image", "video"};
 	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++)
@@ -725,13 +734,16 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 
 	if (rc != 0 && snapshot && snapshot_created) {
 		/* A directory sync failure can follow a successful atomic replacement. */
-		char *published = (nb_file_read_all(path, &file_value_9, 0, NULL) == NB_OK &&
-						   (file_copy_9 = (char *)malloc(
-							    nb_buf_len(&file_value_9) + 1)) != NULL
-					   ? (memcpy(file_copy_9, nb_buf_cstr(&file_value_9),
-						     nb_buf_len(&file_value_9) + 1),
-					      nb_charp_steal(&file_copy_9))
-					   : NULL);
+		char *published =
+			(nb_file_read_all(path, &published_contents_buffer, 0, NULL) == NB_OK &&
+					 (published_contents_copy = (char *)malloc(
+						  nb_buf_len(&published_contents_buffer) + 1)) !=
+						 NULL
+				 ? (memcpy(published_contents_copy,
+					   nb_buf_cstr(&published_contents_buffer),
+					   nb_buf_len(&published_contents_buffer) + 1),
+				    nb_charp_steal(&published_contents_copy))
+				 : NULL);
 		if (!published || !merged || strcmp(published, merged) != 0)
 			unlink(snapshot);
 
@@ -748,21 +760,22 @@ static int cli_wizard_save_setup(struct cli_setup_state *state, const char *path
 static int cli_wizard_setup_run(struct cli_application *ctx, const char *path, FILE *input,
 				FILE *output, int reconfigure)
 {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf absolute_config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	struct cli_setup_state state = {.reconfigure = reconfigure};
 	char *original = NULL;
 	char current[PATH_MAX];
-	char *expanded = path ? (nb_path_expand(&file_value_10, path, NULL) == NB_OK
-					 ? strdup(nb_buf_cstr(&file_value_10))
+	char *expanded = path ? (nb_path_expand(&expanded_config_path_buffer, path, NULL) == NB_OK
+					 ? strdup(nb_buf_cstr(&expanded_config_path_buffer))
 					 : NULL)
 			      : NULL;
-	char *full = expanded && getcwd(current, sizeof(current))
-			     ? (nb_path_join(&file_value_11, current, expanded) == NB_OK
-					? strdup(nb_buf_cstr(&file_value_11))
-					: NULL)
-			     : NULL;
+	char *full =
+		expanded && getcwd(current, sizeof(current))
+			? (nb_path_join(&absolute_config_path_buffer, current, expanded) == NB_OK
+				   ? strdup(nb_buf_cstr(&absolute_config_path_buffer))
+				   : NULL)
+			: NULL;
 	free(expanded);
 	if (!full)
 		return NB_ERR_INVAL;
@@ -868,16 +881,16 @@ int cli_setup_command(struct cli_application *ctx, int argc, char **argv, const 
 
 int cli_setup_if_missing(struct cli_application *ctx, const char *path, int interactive)
 {
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_12 = NB_OK;
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int config_path_status = NB_OK;
 
 	char *expanded =
-		((expand_status_12 = nb_path_expand(&file_value_12,
-			path ? path : "~/.morph/config.toml", NULL)) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_12))
+		((config_path_status = nb_path_expand(
+			  &config_path_buffer, path ? path : "~/.morph/config.toml", NULL)) == NB_OK
+			 ? strdup(nb_buf_cstr(&config_path_buffer))
 			 : NULL);
 	if (!expanded)
-		return expand_status_12 != NB_OK ? expand_status_12 : NB_ERR_NOMEM;
+		return config_path_status != NB_OK ? config_path_status : NB_ERR_NOMEM;
 
 	struct stat st;
 	if (lstat(expanded, &st) == 0) {

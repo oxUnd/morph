@@ -51,8 +51,8 @@ static void runtime_ext_move(struct ext *destination, struct ext *source)
 static void runtime_register_guardrail_extension(struct runtime_context *ctx, struct ext *extension,
 						 const char *path)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf entry_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int entry_path_status = NB_OK;
 
 	enum guardrail_hook hook = GUARDRAIL_HOOK_OUTPUT;
 	struct guardrail_rule *rule;
@@ -69,14 +69,13 @@ static void runtime_register_guardrail_extension(struct runtime_context *ctx, st
 				extension->manifest.action_text[0] ? extension->manifest.action_text
 								   : NULL);
 	rule = guardrail_rule_borrow(&ctx->react->guardrail, extension->manifest.name);
-	if (!rule ||
-	    ((file_status_1 = nb_path_concat(&file_value_1, path, extension->manifest.entry)) !=
-			     NB_OK
-		     ? file_status_1
-	     : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), entry, sizeof(entry))) ==
-			     NB_ERR_RANGE
-		     ? NB_ERR_NAME_TOO_LONG
-		     : file_status_1) != 0)
+	if (!rule || ((entry_path_status = nb_path_concat(&entry_path_buffer, path,
+							  extension->manifest.entry)) != NB_OK
+			      ? entry_path_status
+		      : (entry_path_status = nb_str_copy_to(nb_buf_str(&entry_path_buffer), entry,
+							    sizeof(entry))) == NB_ERR_RANGE
+			      ? NB_ERR_NAME_TOO_LONG
+			      : entry_path_status) != 0)
 		return;
 	(void)nb_str_copy_to(
 		nb_str_from_parts(entry, nb_utf8_clamp_bytes(entry, sizeof(rule->ext_entry) - 1)),
@@ -91,11 +90,11 @@ static void runtime_register_guardrail_extension(struct runtime_context *ctx, st
 
 int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
+	nb_buf extension_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int manifest_path_status = NB_OK;
 
 	char directory[PATH_MAX] = {0};
 	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
@@ -105,10 +104,10 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 
 	if (!ctx)
 		return NB_ERR_INVAL;
-	expanded = (nb_path_expand(&file_value_2,
+	expanded = (nb_path_expand(&extension_dir_buffer,
 				   ctx->config.ext.dir[0] ? ctx->config.ext.dir : "~/.morph/exts",
 				   NULL) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_2))
+			    ? strdup(nb_buf_cstr(&extension_dir_buffer))
 			    : NULL);
 	(void)nb_str_copy_to(nb_str_from_parts(expanded ? expanded : "exts",
 					       nb_utf8_clamp_bytes(expanded ? expanded : "exts",
@@ -117,10 +116,10 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 	free(expanded);
 	if (!nb_file_exists(directory))
 		(void)nb_file_mkdir(directory, true, NULL);
-	rc = ((directory_status_1 = nb_dir_scan(
+	rc = ((directory_scan_status = nb_dir_scan(
 		       directory, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS,
 		       &names, NULL)) != NB_OK
-		      ? directory_status_1
+		      ? directory_scan_status
 	      : names.names.len > INT_MAX ? NB_ERR_RANGE
 					  : (count = (int)names.names.len, NB_OK));
 	if (rc != 0)
@@ -132,14 +131,14 @@ int runtime_extensions_load(struct runtime_context *ctx, const char *front_name)
 		struct tool_spec spec;
 
 		if (nb_dir_listing_name(&names, (size_t)(i))[0] == '.' ||
-		    ((file_status_3 = nb_path_concat(&file_value_3, directory,
-						     nb_dir_listing_name(&names, (size_t)(i)))) !=
-				     NB_OK
-			     ? file_status_3
-		     : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), path,
-						       sizeof(path))) == NB_ERR_RANGE
+		    ((manifest_path_status =
+			      nb_path_concat(&manifest_path_buffer, directory,
+					     nb_dir_listing_name(&names, (size_t)(i)))) != NB_OK
+			     ? manifest_path_status
+		     : (manifest_path_status = nb_str_copy_to(nb_buf_str(&manifest_path_buffer),
+							      path, sizeof(path))) == NB_ERR_RANGE
 			     ? NB_ERR_NAME_TOO_LONG
-			     : file_status_3) != 0)
+			     : manifest_path_status) != 0)
 			continue;
 		memset(&loaded, 0, sizeof(loaded));
 		if (ext_load(ctx ? ctx->logger : NULL, &loaded, path) != 0 || !loaded.enabled) {

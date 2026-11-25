@@ -34,21 +34,22 @@ static bool is_lower_hex_string(const char *s)
 
 TEST(UtilId, RandomIdUsesPrefixAndHex)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_1 = NB_OK;
+	nb_buf prefixed_id_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int prefixed_id_status = NB_OK;
 
 	char id[64];
 
-	ASSERT_EQ(((file_status_1 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				     : !(nb_buf_clear(&file_value_1),
-					 nb_buf_append_cstr(&file_value_1, "turn_"))
-					     ? NB_ERR_NOMEM
-					     : nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-			   ? file_status_1
-		   : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), id, sizeof(id))) ==
-				   NB_ERR_RANGE
+	ASSERT_EQ(((prefixed_id_status =
+			    ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			     : !(nb_buf_clear(&prefixed_id_buffer),
+				 nb_buf_append_cstr(&prefixed_id_buffer, "turn_"))
+				     ? NB_ERR_NOMEM
+				     : nb_random_hex(&prefixed_id_buffer, 16, NULL))) != NB_OK
+			   ? prefixed_id_status
+		   : (prefixed_id_status = nb_str_copy_to(nb_buf_str(&prefixed_id_buffer), id,
+							  sizeof(id))) == NB_ERR_RANGE
 			   ? NB_ERR_NO_SPACE
-			   : file_status_1),
+			   : prefixed_id_status),
 		  0);
 	EXPECT_EQ(strncmp(id, "turn_", 5), 0);
 	EXPECT_EQ(strlen(id), 37u);
@@ -57,21 +58,22 @@ TEST(UtilId, RandomIdUsesPrefixAndHex)
 
 TEST(UtilId, RandomIdNbytesControlsHexLength)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_2 = NB_OK;
+	nb_buf prefixed_id_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int prefixed_id_status = NB_OK;
 
 	char id[16];
 
-	ASSERT_EQ(((file_status_2 =
-			    ((4) == 0 || (4) > 16 ? NB_ERR_INVAL
-			     : !(nb_buf_clear(&file_value_2), nb_buf_append_cstr(&file_value_2, ""))
-				     ? NB_ERR_NOMEM
-				     : nb_random_hex(&file_value_2, 4, NULL))) != NB_OK
-			   ? file_status_2
-		   : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), id, sizeof(id))) ==
-				   NB_ERR_RANGE
+	ASSERT_EQ(((prefixed_id_status = ((4) == 0 || (4) > 16 ? NB_ERR_INVAL
+					  : !(nb_buf_clear(&prefixed_id_buffer),
+					      nb_buf_append_cstr(&prefixed_id_buffer, ""))
+						  ? NB_ERR_NOMEM
+						  : nb_random_hex(&prefixed_id_buffer, 4, NULL))) !=
+				   NB_OK
+			   ? prefixed_id_status
+		   : (prefixed_id_status = nb_str_copy_to(nb_buf_str(&prefixed_id_buffer), id,
+							  sizeof(id))) == NB_ERR_RANGE
 			   ? NB_ERR_NO_SPACE
-			   : file_status_2),
+			   : prefixed_id_status),
 		  0);
 	EXPECT_EQ(strlen(id), 8u);
 	EXPECT_TRUE(is_lower_hex_string(id));
@@ -79,73 +81,82 @@ TEST(UtilId, RandomIdNbytesControlsHexLength)
 
 TEST(UtilId, RejectsInvalidArgsAndSmallBuffer)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_3 = NB_OK;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_4 = NB_OK;
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_5 = NB_OK;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_6 = NB_OK;
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {};
-	int file_status_7 = NB_OK;
+	nb_buf missing_prefix_id_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int missing_prefix_id_status = NB_OK;
+	nb_buf missing_destination_id_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int missing_destination_id_status = NB_OK;
+	nb_buf small_destination_id_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int small_destination_id_status = NB_OK;
+	nb_buf empty_id_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int empty_id_status = NB_OK;
+	nb_buf maximum_id_buffer NB_CLEANUP(nb_buf_destroy) = {};
+	int maximum_id_status = NB_OK;
 
 	char id[8];
 
-	EXPECT_EQ(((file_status_3 = (nullptr == nullptr || (16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				     : !(nb_buf_clear(&file_value_3),
-					 nb_buf_append_cstr(&file_value_3, nullptr))
-					     ? NB_ERR_NOMEM
-					     : nb_random_hex(&file_value_3, 16, NULL))) != NB_OK
-			   ? file_status_3
-		   : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), id, sizeof(id))) ==
-				   NB_ERR_RANGE
+	EXPECT_EQ(
+		((missing_prefix_id_status =
+			  (nullptr == nullptr || (16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			   : !(nb_buf_clear(&missing_prefix_id_buffer),
+			       nb_buf_append_cstr(&missing_prefix_id_buffer, nullptr))
+				   ? NB_ERR_NOMEM
+				   : nb_random_hex(&missing_prefix_id_buffer, 16, NULL))) != NB_OK
+			 ? missing_prefix_id_status
+		 : (missing_prefix_id_status = nb_str_copy_to(nb_buf_str(&missing_prefix_id_buffer),
+							      id, sizeof(id))) == NB_ERR_RANGE
+			 ? NB_ERR_NO_SPACE
+			 : missing_prefix_id_status),
+		NB_ERR_INVAL);
+	EXPECT_EQ(((missing_destination_id_status =
+			    ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			     : !(nb_buf_clear(&missing_destination_id_buffer),
+				 nb_buf_append_cstr(&missing_destination_id_buffer, "turn_"))
+				     ? NB_ERR_NOMEM
+				     : nb_random_hex(&missing_destination_id_buffer, 16, NULL))) !=
+				   NB_OK
+			   ? missing_destination_id_status
+		   : (missing_destination_id_status =
+			      nb_str_copy_to(nb_buf_str(&missing_destination_id_buffer), nullptr,
+					     64)) == NB_ERR_RANGE
 			   ? NB_ERR_NO_SPACE
-			   : file_status_3),
+			   : missing_destination_id_status),
 		  NB_ERR_INVAL);
-	EXPECT_EQ(((file_status_4 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				     : !(nb_buf_clear(&file_value_4),
-					 nb_buf_append_cstr(&file_value_4, "turn_"))
-					     ? NB_ERR_NOMEM
-					     : nb_random_hex(&file_value_4, 16, NULL))) != NB_OK
-			   ? file_status_4
-		   : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), nullptr, 64)) ==
-				   NB_ERR_RANGE
+	EXPECT_EQ(((small_destination_id_status =
+			    ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			     : !(nb_buf_clear(&small_destination_id_buffer),
+				 nb_buf_append_cstr(&small_destination_id_buffer, "turn_"))
+				     ? NB_ERR_NOMEM
+				     : nb_random_hex(&small_destination_id_buffer, 16, NULL))) !=
+				   NB_OK
+			   ? small_destination_id_status
+		   : (small_destination_id_status =
+			      nb_str_copy_to(nb_buf_str(&small_destination_id_buffer), id,
+					     sizeof(id))) == NB_ERR_RANGE
 			   ? NB_ERR_NO_SPACE
-			   : file_status_4),
-		  NB_ERR_INVAL);
-	EXPECT_EQ(((file_status_5 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				     : !(nb_buf_clear(&file_value_5),
-					 nb_buf_append_cstr(&file_value_5, "turn_"))
-					     ? NB_ERR_NOMEM
-					     : nb_random_hex(&file_value_5, 16, NULL))) != NB_OK
-			   ? file_status_5
-		   : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), id, sizeof(id))) ==
-				   NB_ERR_RANGE
-			   ? NB_ERR_NO_SPACE
-			   : file_status_5),
+			   : small_destination_id_status),
 		  NB_ERR_NO_SPACE);
-	EXPECT_EQ(((file_status_6 =
-			    ((0) == 0 || (0) > 16 ? NB_ERR_INVAL
-			     : !(nb_buf_clear(&file_value_6), nb_buf_append_cstr(&file_value_6, ""))
-				     ? NB_ERR_NOMEM
-				     : nb_random_hex(&file_value_6, 0, NULL))) != NB_OK
-			   ? file_status_6
-		   : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), id, sizeof(id))) ==
-				   NB_ERR_RANGE
+	EXPECT_EQ(((empty_id_status = ((0) == 0 || (0) > 16 ? NB_ERR_INVAL
+				       : !(nb_buf_clear(&empty_id_buffer),
+					   nb_buf_append_cstr(&empty_id_buffer, ""))
+					       ? NB_ERR_NOMEM
+					       : nb_random_hex(&empty_id_buffer, 0, NULL))) != NB_OK
+			   ? empty_id_status
+		   : (empty_id_status = nb_str_copy_to(nb_buf_str(&empty_id_buffer), id,
+						       sizeof(id))) == NB_ERR_RANGE
 			   ? NB_ERR_NO_SPACE
-			   : file_status_6),
+			   : empty_id_status),
 		  NB_ERR_INVAL);
-	EXPECT_EQ(((file_status_7 =
-			    ((17) == 0 || (17) > 16 ? NB_ERR_INVAL
-			     : !(nb_buf_clear(&file_value_7), nb_buf_append_cstr(&file_value_7, ""))
-				     ? NB_ERR_NOMEM
-				     : nb_random_hex(&file_value_7, 17, NULL))) != NB_OK
-			   ? file_status_7
-		   : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), id, sizeof(id))) ==
-				   NB_ERR_RANGE
+	EXPECT_EQ(((maximum_id_status = ((17) == 0 || (17) > 16 ? NB_ERR_INVAL
+					 : !(nb_buf_clear(&maximum_id_buffer),
+					     nb_buf_append_cstr(&maximum_id_buffer, ""))
+						 ? NB_ERR_NOMEM
+						 : nb_random_hex(&maximum_id_buffer, 17, NULL))) !=
+				   NB_OK
+			   ? maximum_id_status
+		   : (maximum_id_status = nb_str_copy_to(nb_buf_str(&maximum_id_buffer), id,
+							 sizeof(id))) == NB_ERR_RANGE
 			   ? NB_ERR_NO_SPACE
-			   : file_status_7),
+			   : maximum_id_status),
 		  NB_ERR_INVAL);
 }
 

@@ -205,10 +205,10 @@ int tool_context_command_name(const char *command, char *out,
 int tool_context_command_principal(const char *command, char *out,
 				   size_t out_size)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf program_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf candidate_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int candidate_path_status = NB_OK;
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char program[PATH_MAX];
 	const char *path;
@@ -220,12 +220,13 @@ int tool_context_command_principal(const char *command, char *out,
 	if (rc != 0)
 		return rc;
 	if (strchr(program, '/')) {
-		char *resolved = (nb_path_expand(&file_value_1, program, NULL) == NB_OK &&
-						  nb_path_canonical_missing(
-							  &file_value_1, nb_buf_cstr(&file_value_1),
-							  NULL) == NB_OK
-					  ? strdup(nb_buf_cstr(&file_value_1))
-					  : NULL);
+		char *resolved =
+			(nb_path_expand(&program_path_buffer, program, NULL) == NB_OK &&
+					 nb_path_canonical_missing(
+						 &program_path_buffer,
+						 nb_buf_cstr(&program_path_buffer), NULL) == NB_OK
+				 ? strdup(nb_buf_cstr(&program_path_buffer))
+				 : NULL);
 		if (!resolved)
 			return NB_ERR_NOT_FOUND;
 		snprintf(out, out_size, "%s", resolved);
@@ -245,20 +246,23 @@ int tool_context_command_principal(const char *command, char *out,
 			char candidate[PATH_MAX];
 			char *resolved;
 
-			if (((file_status_2 = nb_path_concat(&file_value_2, dir, program)) != NB_OK
-				     ? file_status_2
-			     : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), candidate,
-							       sizeof(candidate))) == NB_ERR_RANGE
+			if (((candidate_path_status =
+				      nb_path_concat(&candidate_path_buffer, dir, program)) != NB_OK
+				     ? candidate_path_status
+			     : (candidate_path_status = nb_str_copy_to(
+					nb_buf_str(&candidate_path_buffer), candidate,
+					sizeof(candidate))) == NB_ERR_RANGE
 				     ? NB_ERR_NAME_TOO_LONG
-				     : file_status_2) != 0 ||
+				     : candidate_path_status) != 0 ||
 			    access(candidate, X_OK) != 0)
 				continue;
 			resolved =
-				(nb_path_expand(&file_value_3, candidate, NULL) == NB_OK &&
+				(nb_path_expand(&canonical_path_buffer, candidate, NULL) == NB_OK &&
 						 nb_path_canonical_missing(
-							 &file_value_3, nb_buf_cstr(&file_value_3),
+							 &canonical_path_buffer,
+							 nb_buf_cstr(&canonical_path_buffer),
 							 NULL) == NB_OK
-					 ? strdup(nb_buf_cstr(&file_value_3))
+					 ? strdup(nb_buf_cstr(&canonical_path_buffer))
 					 : NULL);
 			if (resolved) {
 				snprintf(out, out_size, "%s", resolved);
@@ -275,26 +279,27 @@ int tool_context_command_principal(const char *command, char *out,
 
 static void resolve_into(char *dst, size_t dst_size, const char *src)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	if (!src || !*src) {
 		dst[0] = '\0';
 		return;
 	}
 	char *resolved =
-		(nb_path_expand(&file_value_4, src, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_4, nb_buf_cstr(&file_value_4), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_4))
+		(nb_path_expand(&canonical_path_buffer, src, NULL) == NB_OK &&
+				 nb_path_canonical_missing(&canonical_path_buffer,
+							   nb_buf_cstr(&canonical_path_buffer),
+							   NULL) == NB_OK
+			 ? strdup(nb_buf_cstr(&canonical_path_buffer))
 			 : NULL);
 	if (resolved) {
 		strncpy(dst, resolved, dst_size - 1);
 		dst[dst_size - 1] = '\0';
 		free(resolved);
 	} else {
-		char *expanded = (nb_path_expand(&file_value_5, src, NULL) == NB_OK
-					  ? strdup(nb_buf_cstr(&file_value_5))
+		char *expanded = (nb_path_expand(&expanded_path_buffer, src, NULL) == NB_OK
+					  ? strdup(nb_buf_cstr(&expanded_path_buffer))
 					  : NULL);
 		if (expanded) {
 			strncpy(dst, expanded, dst_size - 1);
@@ -358,11 +363,11 @@ static int resolve_user_path(struct tool_context *tctx,
 			     char *resolved,
 			     size_t resolved_size)
 {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_6 = NB_OK;
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_7 = NB_OK;
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expanded_path_status = NB_OK;
+	nb_buf candidate_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int candidate_path_status = NB_OK;
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char candidate[PATH_MAX];
 	const char *base;
@@ -372,29 +377,33 @@ static int resolve_user_path(struct tool_context *tctx,
 	if (!tctx || !path || !resolved || resolved_size == 0)
 		return NB_ERR_INVAL;
 
-	expanded = ((expand_status_6 = nb_path_expand(&file_value_6, path, NULL)) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_6))
-			    : NULL);
+	expanded =
+		((expanded_path_status = nb_path_expand(&expanded_path_buffer, path, NULL)) == NB_OK
+			 ? strdup(nb_buf_cstr(&expanded_path_buffer))
+			 : NULL);
 	if (!expanded)
-		return expand_status_6 != NB_OK ? expand_status_6 : NB_ERR_NOMEM;
+		return expanded_path_status != NB_OK ? expanded_path_status : NB_ERR_NOMEM;
 
 	base = path_op_is_read(op) ? tctx->workdir : tctx->output_dir;
 	if ((!base || !*base) && !nb_path_is_absolute(expanded))
 		base = "";
-	if (((file_status_7 = nb_path_join(&file_value_7, base, expanded)) != NB_OK ? file_status_7
-	     : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), candidate,
-					       sizeof(candidate))) == NB_ERR_RANGE
+	if (((candidate_path_status = nb_path_join(&candidate_path_buffer, base, expanded)) != NB_OK
+		     ? candidate_path_status
+	     : (candidate_path_status = nb_str_copy_to(nb_buf_str(&candidate_path_buffer),
+						       candidate, sizeof(candidate))) ==
+			     NB_ERR_RANGE
 		     ? NB_ERR_NAME_TOO_LONG
-		     : file_status_7) != 0) {
+		     : candidate_path_status) != 0) {
 		free(expanded);
 		return NB_ERR_NAME_TOO_LONG;
 	}
 	free(expanded);
 
-	rp = (nb_path_expand(&file_value_8, candidate, NULL) == NB_OK &&
-			      nb_path_canonical_missing(&file_value_8, nb_buf_cstr(&file_value_8),
+	rp = (nb_path_expand(&canonical_path_buffer, candidate, NULL) == NB_OK &&
+			      nb_path_canonical_missing(&canonical_path_buffer,
+							nb_buf_cstr(&canonical_path_buffer),
 							NULL) == NB_OK
-		      ? strdup(nb_buf_cstr(&file_value_8))
+		      ? strdup(nb_buf_cstr(&canonical_path_buffer))
 		      : NULL);
 	if (!rp)
 		return NB_ERR_NOT_FOUND;
@@ -406,19 +415,19 @@ static int resolve_user_path(struct tool_context *tctx,
 static int add_allowed_dir(char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX],
 			   int *count, const char *dir)
 {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf canonical_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	char *resolved;
 	const char *to_store;
 
 	if (!dirs || !count || !dir)
 		return NB_ERR_INVAL;
-	resolved =
-		(nb_path_expand(&file_value_9, dir, NULL) == NB_OK &&
-				 nb_path_canonical_missing(
-					 &file_value_9, nb_buf_cstr(&file_value_9), NULL) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_9))
-			 : NULL);
+	resolved = (nb_path_expand(&canonical_dir_buffer, dir, NULL) == NB_OK &&
+				    nb_path_canonical_missing(&canonical_dir_buffer,
+							      nb_buf_cstr(&canonical_dir_buffer),
+							      NULL) == NB_OK
+			    ? strdup(nb_buf_cstr(&canonical_dir_buffer))
+			    : NULL);
 	to_store = resolved ? resolved : dir;
 	for (int i = 0; i < *count; i++) {
 		if (strcmp(dirs[i], to_store) == 0) {
@@ -663,23 +672,23 @@ static int tool_context_reload_persistent_grants_locked(struct tool_context *tct
 static int tool_context_set_grant_store_locked(struct tool_context *tctx, struct db *db,
 				 const char *project_root)
 {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_10 = NB_OK;
+	nb_buf project_root_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int project_root_status = NB_OK;
 
 	char *resolved;
 	int rc;
 
 	if (!tctx || !db || !project_root || !*project_root)
 		return NB_ERR_INVAL;
-	resolved =
-		((expand_status_10 = nb_path_expand(&file_value_10, project_root, NULL)) == NB_OK &&
-				 (expand_status_10 = nb_path_canonical_missing(
-					 &file_value_10, nb_buf_cstr(&file_value_10),
-						NULL)) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_10))
-			 : NULL);
+	resolved = ((project_root_status =
+			     nb_path_expand(&project_root_buffer, project_root, NULL)) == NB_OK &&
+				    (project_root_status = nb_path_canonical_missing(
+					     &project_root_buffer,
+					     nb_buf_cstr(&project_root_buffer), NULL)) == NB_OK
+			    ? strdup(nb_buf_cstr(&project_root_buffer))
+			    : NULL);
 	if (!resolved)
-		return expand_status_10 != NB_OK ? expand_status_10 : NB_ERR_NOMEM;
+		return project_root_status != NB_OK ? project_root_status : NB_ERR_NOMEM;
 	snprintf(tctx->grant_project_root, sizeof(tctx->grant_project_root),
 		 "%s", resolved);
 	free(resolved);
@@ -740,8 +749,8 @@ static int persistent_path_is_allowed(const struct tool_context *tctx,
 static int tool_context_add_builtin_path_locked(struct tool_context *tctx,
 				 enum tool_path_op op, const char *path)
 {
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_11 = NB_OK;
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int canonical_path_status = NB_OK;
 
 	struct tool_builtin_path *entry;
 	struct stat st;
@@ -752,15 +761,15 @@ static int tool_context_add_builtin_path_locked(struct tool_context *tctx,
 		return NB_ERR_INVAL;
 	if (stat(path, &st) != 0)
 		return nb_status_from_errno(errno, NULL);
-	canonical =
-		((expand_status_11 = nb_path_expand(&file_value_11, path, NULL)) == NB_OK &&
-				 (expand_status_11 = nb_path_canonical_missing(
-					 &file_value_11, nb_buf_cstr(&file_value_11),
-						NULL)) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_11))
-			 : NULL);
+	canonical = ((canonical_path_status = nb_path_expand(&canonical_path_buffer, path, NULL)) ==
+					     NB_OK &&
+				     (canonical_path_status = nb_path_canonical_missing(
+					      &canonical_path_buffer,
+					      nb_buf_cstr(&canonical_path_buffer), NULL)) == NB_OK
+			     ? strdup(nb_buf_cstr(&canonical_path_buffer))
+			     : NULL);
 	if (!canonical)
-		return expand_status_11 != NB_OK ? expand_status_11 : NB_ERR_NOMEM;
+		return canonical_path_status != NB_OK ? canonical_path_status : NB_ERR_NOMEM;
 	operations = 1u << (unsigned int)op;
 	if (op == TOOL_PATH_READ && S_ISDIR(st.st_mode))
 		operations |= 1u << TOOL_PATH_LIST;
@@ -1254,8 +1263,8 @@ static int request_command_path(struct tool_context *tctx, enum tool_path_op ope
 				const char *principal, const char *command, const char *path,
 				char *resolved, size_t resolved_size)
 {
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_12 = NB_OK;
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expanded_path_status = NB_OK;
 
 	char local[PATH_MAX];
 	char *expanded = NULL;
@@ -1270,11 +1279,12 @@ static int request_command_path(struct tool_context *tctx, enum tool_path_op ope
 		resolved_size = sizeof(local);
 	}
 	if (operation == TOOL_PATH_WRITE) {
-		expanded = ((expand_status_12 = nb_path_expand(&file_value_12, path, NULL)) == NB_OK
-				    ? strdup(nb_buf_cstr(&file_value_12))
+		expanded = ((expanded_path_status =
+				     nb_path_expand(&expanded_path_buffer, path, NULL)) == NB_OK
+				    ? strdup(nb_buf_cstr(&expanded_path_buffer))
 				    : NULL);
 		if (!expanded)
-			return expand_status_12 != NB_OK ? expand_status_12 : NB_ERR_NOMEM;
+			return expanded_path_status != NB_OK ? expanded_path_status : NB_ERR_NOMEM;
 		path = expanded;
 	}
 	rc = permission_path_resolve_absolute(path, resolved, resolved_size);
@@ -1426,10 +1436,10 @@ static int tool_context_add_exec_profile_path_locked(struct tool_context *tctx,
 				       enum tool_path_op op,
 				       const char *path)
 {
-	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_13 = NB_OK;
-	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {0};
-	int expand_status_14 = NB_OK;
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int expanded_path_status = NB_OK;
+	nb_buf canonical_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int canonical_path_status = NB_OK;
 
 	char (*dirs)[TOOL_CONTEXT_ALLOW_PATH_MAX];
 	char *expanded;
@@ -1449,11 +1459,12 @@ static int tool_context_add_exec_profile_path_locked(struct tool_context *tctx,
 	} else {
 		return NB_ERR_INVAL;
 	}
-	expanded = ((expand_status_13 = nb_path_expand(&file_value_13, path, NULL)) == NB_OK
-			    ? strdup(nb_buf_cstr(&file_value_13))
-			    : NULL);
+	expanded =
+		((expanded_path_status = nb_path_expand(&expanded_path_buffer, path, NULL)) == NB_OK
+			 ? strdup(nb_buf_cstr(&expanded_path_buffer))
+			 : NULL);
 	if (!expanded)
-		return expand_status_13 != NB_OK ? expand_status_13 : NB_ERR_NOMEM;
+		return expanded_path_status != NB_OK ? expanded_path_status : NB_ERR_NOMEM;
 	if (!nb_path_is_absolute(expanded)) {
 		free(expanded);
 		return NB_ERR_INVAL;
@@ -1468,16 +1479,16 @@ static int tool_context_add_exec_profile_path_locked(struct tool_context *tctx,
 		free(expanded);
 		return NB_ERR_NOT_DIR;
 	}
-	resolved =
-		((expand_status_14 = nb_path_expand(&file_value_14, expanded, NULL)) == NB_OK &&
-				 (expand_status_14 = nb_path_canonical_missing(
-					 &file_value_14, nb_buf_cstr(&file_value_14),
-						NULL)) == NB_OK
-			 ? strdup(nb_buf_cstr(&file_value_14))
-			 : NULL);
+	resolved = ((canonical_path_status =
+			     nb_path_expand(&canonical_path_buffer, expanded, NULL)) == NB_OK &&
+				    (canonical_path_status = nb_path_canonical_missing(
+					     &canonical_path_buffer,
+					     nb_buf_cstr(&canonical_path_buffer), NULL)) == NB_OK
+			    ? strdup(nb_buf_cstr(&canonical_path_buffer))
+			    : NULL);
 	free(expanded);
 	if (!resolved)
-		return expand_status_14 != NB_OK ? expand_status_14 : NB_ERR_NOMEM;
+		return canonical_path_status != NB_OK ? canonical_path_status : NB_ERR_NOMEM;
 	rc = add_allowed_dir(dirs, count, resolved);
 	free(resolved);
 	return rc;

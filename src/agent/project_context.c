@@ -76,21 +76,22 @@ static int read_guidance(const char *path, size_t budget, char **text)
 static int append_directory(struct nb_log *logger, nb_buf *buf, const char *directory, int global,
 			    size_t budget, size_t *used)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf context_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int context_path_status = NB_OK;
 
 	static const char *const names[] = { "AGENTS.override.md", "AGENTS.md" };
 
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
 		char path[PATH_MAX];
 		char *body NB_CLEANUP(nb_charp_cleanup) = NULL;
-		int rc = ((file_status_1 = nb_path_concat(&file_value_1, directory, names[i])) !=
-					  NB_OK
-				  ? file_status_1
-			  : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), path,
-							    sizeof(path))) == NB_ERR_RANGE
+		int rc = ((context_path_status = nb_path_concat(&context_path_buffer, directory,
+								names[i])) != NB_OK
+				  ? context_path_status
+			  : (context_path_status = nb_str_copy_to(nb_buf_str(&context_path_buffer),
+								  path, sizeof(path))) ==
+					  NB_ERR_RANGE
 				  ? NB_ERR_NAME_TOO_LONG
-				  : file_status_1);
+				  : context_path_status);
 
 		if (rc != 0)
 			return rc;

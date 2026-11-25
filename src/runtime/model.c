@@ -23,7 +23,7 @@ static void model_lock_cleanup(nb_file_lock **lock)
 
 static int model_save_mode(struct runtime *runtime, int ultra)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	const char *path = runtime->context.config_path;
 	if (!*path)
@@ -39,11 +39,11 @@ static int model_save_mode(struct runtime *runtime, int ultra)
 	rc = nb_file_lock_acquire(nb_buf_cstr(&lock_path), true, false, &lock, NULL);
 	if (rc != NB_OK)
 		return rc;
-	rc = nb_file_read_all(path, &file_value_1, 0, NULL);
+	rc = nb_file_read_all(path, &config_contents_buffer, 0, NULL);
 	if (rc != NB_OK)
 		return rc;
 	char *after NB_CLEANUP(nb_charp_cleanup) = NULL;
-	rc = config_text_merge_copy(nb_buf_cstr(&file_value_1),
+	rc = config_text_merge_copy(nb_buf_cstr(&config_contents_buffer),
 				    ultra ? "[agents]\nmulti_agent_mode = \"proactive\"\n"
 					  : "[agents]\nmulti_agent_mode = \"explicit\"\n",
 				    &after);

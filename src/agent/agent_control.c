@@ -1950,8 +1950,8 @@ static int spawn_agent(struct agent_control *control, const cJSON *args,
 		       const struct tool_runtime_context *runtime, const char *sender, int64_t root,
 		       cJSON *out)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
+	nb_buf session_name_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int session_name_status = NB_OK;
 
 	const char *name = string_arg(args, "task_name");
 	const char *message = string_arg(args, "message");
@@ -2011,16 +2011,18 @@ static int spawn_agent(struct agent_control *control, const cJSON *args,
 		return NB_ERR_NOMEM;
 	struct session session = {0};
 	char session_name[96];
-	int rc = ((file_status_3 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-				    : !(nb_buf_clear(&file_value_3),
-					nb_buf_append_cstr(&file_value_3, "agent_"))
-					    ? NB_ERR_NOMEM
-					    : nb_random_hex(&file_value_3, 16, NULL))) != NB_OK
-			  ? file_status_3
-		  : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), session_name,
-						    sizeof(session_name))) == NB_ERR_RANGE
+	int rc = ((session_name_status =
+			   ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+			    : !(nb_buf_clear(&session_name_buffer),
+				nb_buf_append_cstr(&session_name_buffer, "agent_"))
+				    ? NB_ERR_NOMEM
+				    : nb_random_hex(&session_name_buffer, 16, NULL))) != NB_OK
+			  ? session_name_status
+		  : (session_name_status = nb_str_copy_to(nb_buf_str(&session_name_buffer),
+							  session_name, sizeof(session_name))) ==
+				  NB_ERR_RANGE
 			  ? NB_ERR_NO_SPACE
-			  : file_status_3);
+			  : session_name_status);
 	if (rc == 0)
 		rc = session_create_with_workdir(control->db, session_name, agent->model,
 						 runtime->workdir, &session);

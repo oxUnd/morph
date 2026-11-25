@@ -21,10 +21,10 @@
 static int cli_skill_store_scan_directory(struct nb_log *logger, const char *path,
 					  nb_vec *candidates, int depth)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf skill_manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int skill_manifest_path_status = NB_OK;
+	nb_buf child_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int child_path_status = NB_OK;
 
 	char skill_md[PATH_MAX];
 	struct stat st;
@@ -34,12 +34,14 @@ static int cli_skill_store_scan_directory(struct nb_log *logger, const char *pat
 	if (depth > CLI_SKILL_STORE_TREE_DEPTH_MAX)
 		return NB_ERR_LOOP;
 
-	rc = ((file_status_1 = nb_path_concat(&file_value_1, path, "SKILL.md")) != NB_OK
-		      ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), skill_md,
-						sizeof(skill_md))) == NB_ERR_RANGE
+	rc = ((skill_manifest_path_status =
+		       nb_path_concat(&skill_manifest_path_buffer, path, "SKILL.md")) != NB_OK
+		      ? skill_manifest_path_status
+	      : (skill_manifest_path_status =
+			 nb_str_copy_to(nb_buf_str(&skill_manifest_path_buffer), skill_md,
+					sizeof(skill_md))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_1);
+		      : skill_manifest_path_status);
 	if (rc != 0)
 		return rc;
 
@@ -89,12 +91,12 @@ static int cli_skill_store_scan_directory(struct nb_log *logger, const char *pat
 		if (strcmp(name, ".git") == 0 || strncmp(name, ".morph-install-", 15) == 0)
 			continue;
 
-		rc = ((file_status_2 = nb_path_concat(&file_value_2, path, name)) != NB_OK
-			      ? file_status_2
-		      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), child,
-							sizeof(child))) == NB_ERR_RANGE
+		rc = ((child_path_status = nb_path_concat(&child_path_buffer, path, name)) != NB_OK
+			      ? child_path_status
+		      : (child_path_status = nb_str_copy_to(nb_buf_str(&child_path_buffer), child,
+							    sizeof(child))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_2);
+			      : child_path_status);
 		if (rc == 0 && lstat(child, &st) != 0)
 			rc = (nb_status_from_errno(errno, NULL));
 
@@ -178,8 +180,8 @@ int cli_skill_store_remove(const char *path)
 
 static int cli_skill_store_digest_tree(blake3_hasher *hasher, const char *path, int depth)
 {
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_6 = NB_OK;
+	nb_buf child_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int child_path_status = NB_OK;
 
 	struct stat st;
 	nb_dir_listing names NB_CLEANUP(nb_dir_listing_destroy) = {0};
@@ -255,12 +257,12 @@ static int cli_skill_store_digest_tree(blake3_hasher *hasher, const char *path, 
 			continue;
 
 		blake3_hasher_update(hasher, name, strlen(name) + 1);
-		rc = ((file_status_6 = nb_path_concat(&file_value_6, path, name)) != NB_OK
-			      ? file_status_6
-		      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), child,
-							sizeof(child))) == NB_ERR_RANGE
+		rc = ((child_path_status = nb_path_concat(&child_path_buffer, path, name)) != NB_OK
+			      ? child_path_status
+		      : (child_path_status = nb_str_copy_to(nb_buf_str(&child_path_buffer), child,
+							    sizeof(child))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_6);
+			      : child_path_status);
 		if (rc == 0)
 			rc = cli_skill_store_digest_tree(hasher, child, depth + 1);
 	}
@@ -288,30 +290,30 @@ int cli_skill_store_digest(const char *path, char digest[CLI_SKILL_STORE_DIGEST_
 
 cJSON *cli_skill_store_metadata_copy(const char *path)
 {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_7 = NB_OK;
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_8 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int manifest_path_status = NB_OK;
+	nb_buf manifest_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *manifest_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char file[PATH_MAX];
 	char *text;
 	cJSON *metadata;
 
-	if (((file_status_7 = nb_path_concat(&file_value_7, path,
-					     CLI_SKILL_STORE_INSTALL_METADATA)) != NB_OK
-		     ? file_status_7
-	     : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), file, sizeof(file))) ==
-			     NB_ERR_RANGE
+	if (((manifest_path_status = nb_path_concat(&manifest_path_buffer, path,
+						    CLI_SKILL_STORE_INSTALL_METADATA)) != NB_OK
+		     ? manifest_path_status
+	     : (manifest_path_status = nb_str_copy_to(nb_buf_str(&manifest_path_buffer), file,
+						      sizeof(file))) == NB_ERR_RANGE
 		     ? NB_ERR_NAME_TOO_LONG
-		     : file_status_7) != 0)
+		     : manifest_path_status) != 0)
 		return NULL;
 
-	text = (nb_file_read_all(file, &file_value_8, 0, NULL) == NB_OK &&
-				(file_copy_8 = (char *)malloc(nb_buf_len(&file_value_8) + 1)) !=
-					NULL
-			? (memcpy(file_copy_8, nb_buf_cstr(&file_value_8),
-				  nb_buf_len(&file_value_8) + 1),
-			   nb_charp_steal(&file_copy_8))
+	text = (nb_file_read_all(file, &manifest_contents_buffer, 0, NULL) == NB_OK &&
+				(manifest_contents_copy = (char *)malloc(
+					 nb_buf_len(&manifest_contents_buffer) + 1)) != NULL
+			? (memcpy(manifest_contents_copy, nb_buf_cstr(&manifest_contents_buffer),
+				  nb_buf_len(&manifest_contents_buffer) + 1),
+			   nb_charp_steal(&manifest_contents_copy))
 			: NULL);
 	if (!text)
 		return NULL;
@@ -350,15 +352,15 @@ int cli_skill_store_unmodified(const char *path, const cJSON *metadata)
 int cli_skill_store_install(const char *root, const struct cli_skill_candidate *candidate,
 			    cJSON *metadata, int replace)
 {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_9 = NB_OK;
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_11 = NB_OK;
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_12 = NB_OK;
-	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_13 = NB_OK;
+	nb_buf target_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int target_path_status = NB_OK;
+	nb_buf temporary_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf stage_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int stage_path_status = NB_OK;
+	nb_buf backup_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int backup_path_status = NB_OK;
+	nb_buf metadata_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int metadata_path_status = NB_OK;
 
 	char temporary[PATH_MAX], stage[PATH_MAX], target[PATH_MAX];
 	char backup[PATH_MAX], metadata_path[PATH_MAX];
@@ -369,12 +371,13 @@ int cli_skill_store_install(const char *root, const struct cli_skill_candidate *
 	int moved = 0;
 	int rc;
 
-	rc = ((file_status_9 = nb_path_concat(&file_value_9, root, candidate->fm.name)) != NB_OK
-		      ? file_status_9
-	      : (file_status_9 = nb_str_copy_to(nb_buf_str(&file_value_9), target,
-						sizeof(target))) == NB_ERR_RANGE
+	rc = ((target_path_status =
+		       nb_path_concat(&target_path_buffer, root, candidate->fm.name)) != NB_OK
+		      ? target_path_status
+	      : (target_path_status = nb_str_copy_to(nb_buf_str(&target_path_buffer), target,
+						     sizeof(target))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_9);
+		      : target_path_status);
 	if (rc != 0)
 		return rc;
 
@@ -398,31 +401,33 @@ int cli_skill_store_install(const char *root, const struct cli_skill_candidate *
 			return rc;
 	}
 
-	rc = nb_file_temp_dir(&file_value_10, root, ".morph-install-", NULL);
+	rc = nb_file_temp_dir(&temporary_path_buffer, root, ".morph-install-", NULL);
 	if (rc == NB_OK)
-		rc = nb_str_copy_to(nb_buf_str(&file_value_10), temporary, sizeof(temporary));
+		rc = nb_str_copy_to(nb_buf_str(&temporary_path_buffer), temporary,
+				    sizeof(temporary));
 
 	if (rc != NB_OK) {
-		if (!nb_buf_empty(&file_value_10))
-			(void)nb_file_remove_all(nb_buf_cstr(&file_value_10), 0, NULL);
+		if (!nb_buf_empty(&temporary_path_buffer))
+			(void)nb_file_remove_all(nb_buf_cstr(&temporary_path_buffer), 0, NULL);
 
 		return rc == NB_ERR_RANGE ? NB_ERR_NAME_TOO_LONG : rc;
 	}
 
-	rc = ((file_status_11 = nb_path_concat(&file_value_11, temporary, "skill")) != NB_OK
-		      ? file_status_11
-	      : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), stage,
-						 sizeof(stage))) == NB_ERR_RANGE
+	rc = ((stage_path_status = nb_path_concat(&stage_path_buffer, temporary, "skill")) != NB_OK
+		      ? stage_path_status
+	      : (stage_path_status = nb_str_copy_to(nb_buf_str(&stage_path_buffer), stage,
+						    sizeof(stage))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_11);
+		      : stage_path_status);
 	if (rc == 0)
-		rc = ((file_status_12 = nb_path_concat(&file_value_12, temporary, "previous")) !=
-				      NB_OK
-			      ? file_status_12
-		      : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), backup,
-							 sizeof(backup))) == NB_ERR_RANGE
+		rc = ((backup_path_status =
+			       nb_path_concat(&backup_path_buffer, temporary, "previous")) != NB_OK
+			      ? backup_path_status
+		      : (backup_path_status = nb_str_copy_to(nb_buf_str(&backup_path_buffer),
+							     backup, sizeof(backup))) ==
+				      NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_12);
+			      : backup_path_status);
 
 	if (rc == 0)
 		rc = cli_skill_store_copy(candidate->path, stage);
@@ -440,13 +445,15 @@ int cli_skill_store_install(const char *root, const struct cli_skill_candidate *
 	}
 
 	if (rc == 0)
-		rc = ((file_status_13 = nb_path_concat(&file_value_13, stage,
-						       CLI_SKILL_STORE_INSTALL_METADATA)) != NB_OK
-			      ? file_status_13
-		      : (file_status_13 = nb_str_copy_to(nb_buf_str(&file_value_13), metadata_path,
-							 sizeof(metadata_path))) == NB_ERR_RANGE
+		rc = ((metadata_path_status = nb_path_concat(&metadata_path_buffer, stage,
+							     CLI_SKILL_STORE_INSTALL_METADATA)) !=
+				      NB_OK
+			      ? metadata_path_status
+		      : (metadata_path_status =
+				 nb_str_copy_to(nb_buf_str(&metadata_path_buffer), metadata_path,
+						sizeof(metadata_path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_13);
+			      : metadata_path_status);
 
 	if (rc == 0)
 		rc = nb_file_write_all_atomic(

@@ -96,7 +96,7 @@ static void permission_file_lock_cleanup(nb_file_lock **lock)
 
 static int permission_save_policy(struct runtime *runtime, const struct permission_policy *policy)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf config_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	nb_buf patch NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf lock_path NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -115,7 +115,7 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 	if (rc == NB_OK)
 		rc = nb_file_lock_acquire(nb_buf_cstr(&lock_path), true, false, &lock, NULL);
 	if (rc == NB_OK)
-		rc = nb_file_read_all(path, &file_value_1, 0, NULL);
+		rc = nb_file_read_all(path, &config_contents_buffer, 0, NULL);
 	if (rc == 0)
 		rc = (nb_buf_init(&patch), nb_buf_reserve(&patch, 128) ? 0 : NB_ERR_NOMEM);
 	if (rc == 0)
@@ -128,7 +128,7 @@ static int permission_save_policy(struct runtime *runtime, const struct permissi
 			      ? 0
 			      : NB_ERR_NOMEM);
 	if (rc == 0)
-		rc = config_text_merge_copy(nb_buf_cstr(&file_value_1),
+		rc = config_text_merge_copy(nb_buf_cstr(&config_contents_buffer),
 					    nb_buf_cstr(&patch), &after);
 	if (rc == 0)
 		rc = config_validate_text(after, &validation);

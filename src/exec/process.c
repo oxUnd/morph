@@ -848,8 +848,8 @@ int process_spawn(struct process_manager *manager,
 			  char session_id[PROCESS_SESSION_ID_MAX],
 			  struct process_snapshot *snapshot)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf session_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int session_id_status = NB_OK;
 
 	struct process_session *session;
 	/*
@@ -891,16 +891,16 @@ int process_spawn(struct process_manager *manager,
 	session->state = PROCESS_STARTING;
 	session->timeout_ms = options->timeout_ms;
 	session->started_ms = process_now_ms();
-	rc = ((file_status_1 =
-		       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-			: !(nb_buf_clear(&file_value_1), nb_buf_append_cstr(&file_value_1, "proc_"))
-				? NB_ERR_NOMEM
-				: nb_random_hex(&file_value_1, 16, NULL))) != NB_OK
-		      ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), session->id,
-						sizeof(session->id))) == NB_ERR_RANGE
+	rc = ((session_id_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				    : !(nb_buf_clear(&session_id_buffer),
+					nb_buf_append_cstr(&session_id_buffer, "proc_"))
+					    ? NB_ERR_NOMEM
+					    : nb_random_hex(&session_id_buffer, 16, NULL))) != NB_OK
+		      ? session_id_status
+	      : (session_id_status = nb_str_copy_to(nb_buf_str(&session_id_buffer), session->id,
+						    sizeof(session->id))) == NB_ERR_RANGE
 		      ? NB_ERR_NO_SPACE
-		      : file_status_1);
+		      : session_id_status);
 	if (rc == 0)
 		rc = stream_init(&session->stdout_stream);
 	if (rc == 0)

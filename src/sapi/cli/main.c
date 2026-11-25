@@ -22,11 +22,11 @@
 
 int main(int argc, char *argv[])
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_4 = NB_OK;
+	nb_buf config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf absolute_config_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf log_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf log_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int log_path_status = NB_OK;
 
 	struct cli_application ctx = {0};
 	struct cli_application *startup_ctx = &ctx;
@@ -57,18 +57,19 @@ int main(int argc, char *argv[])
 	if (options.command_index) {
 		char *command = argv[options.command_index];
 		char current[PATH_MAX];
-		char *expanded =
-			options.config_path
-				? (nb_path_expand(&file_value_1, options.config_path, NULL) == NB_OK
-					   ? strdup(nb_buf_cstr(&file_value_1))
-					   : NULL)
-				: NULL;
+		char *expanded = options.config_path
+					 ? (nb_path_expand(&config_path_buffer, options.config_path,
+							   NULL) == NB_OK
+						    ? strdup(nb_buf_cstr(&config_path_buffer))
+						    : NULL)
+					 : NULL;
 		char *management_config =
 			options.config_path
 				? (expanded && getcwd(current, sizeof(current))
-					   ? (nb_path_join(&file_value_2, current, expanded) ==
-							      NB_OK
-						      ? strdup(nb_buf_cstr(&file_value_2))
+					   ? (nb_path_join(&absolute_config_path_buffer, current,
+							   expanded) == NB_OK
+						      ? strdup(nb_buf_cstr(
+								&absolute_config_path_buffer))
 						      : NULL)
 					   : NULL)
 				: NULL;
@@ -124,20 +125,21 @@ int main(int argc, char *argv[])
 		return cli_about_print(startup_ctx, options.config_path) == 0 ? 0 : 1;
 	}
 
-	log_dir = (nb_path_expand(&file_value_3, "~/.morph/log", NULL) == NB_OK
-			   ? strdup(nb_buf_cstr(&file_value_3))
+	log_dir = (nb_path_expand(&log_dir_buffer, "~/.morph/log", NULL) == NB_OK
+			   ? strdup(nb_buf_cstr(&log_dir_buffer))
 			   : NULL);
 	if (!log_dir)
 		return 1;
 
 	rc = nb_file_mkdir(log_dir, true, NULL);
 	if (rc == 0)
-		rc = ((file_status_4 = nb_path_concat(&file_value_4, log_dir, "agent.log")) != NB_OK
-			      ? file_status_4
-		      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), log_path,
-							sizeof(log_path))) == NB_ERR_RANGE
+		rc = ((log_path_status = nb_path_concat(&log_path_buffer, log_dir, "agent.log")) !=
+				      NB_OK
+			      ? log_path_status
+		      : (log_path_status = nb_str_copy_to(nb_buf_str(&log_path_buffer), log_path,
+							  sizeof(log_path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_4);
+			      : log_path_status);
 
 	free(log_dir);
 	if (rc != 0) {

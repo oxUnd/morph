@@ -629,7 +629,7 @@ static int validate_permission_profiles(const nb_toml_value *react,
 static int validate_active_permission_directories(const nb_toml_value *root,
 						  struct config_validation_error *error)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
+	nb_buf expanded_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
 
 	static const char *const keys[] = {
 		"workspace_roots", "write_paths", "delete_paths"
@@ -656,9 +656,9 @@ static int validate_active_permission_directories(const nb_toml_value *root,
 				const nb_toml_value *item = nb_toml_array_get(paths, (size_t)(j));
 				char path[CONFIG_MAX_KEY_LEN];
 				char *expanded =
-					(nb_path_expand(&file_value_1, nb_toml_string(item).ptr,
-							NULL) == NB_OK
-						 ? strdup(nb_buf_cstr(&file_value_1))
+					(nb_path_expand(&expanded_path_buffer,
+							nb_toml_string(item).ptr, NULL) == NB_OK
+						 ? strdup(nb_buf_cstr(&expanded_path_buffer))
 						 : NULL);
 				struct stat st;
 				int stat_rc;

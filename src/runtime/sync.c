@@ -197,30 +197,31 @@ int runtime_sync_running(const struct runtime *runtime)
 static int runtime_sync_manifest_path(struct runtime *runtime, char *path,
 				      size_t size)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf metadata_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int metadata_dir_status = NB_OK;
+	nb_buf manifest_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int manifest_path_status = NB_OK;
 
 	char metadata[PATH_MAX];
 	int rc;
 	if (!runtime || !path || size == 0 ||
 	    !runtime->context.config.sync.dir[0])
 		return NB_ERR_INVAL;
-	rc = ((file_status_1 = nb_path_concat(&file_value_1, runtime->context.config.sync.dir,
-					      ".morph-sync")) != NB_OK
-		      ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), metadata,
-						sizeof(metadata))) == NB_ERR_RANGE
+	rc = ((metadata_dir_status =
+		       nb_path_concat(&metadata_dir_buffer, runtime->context.config.sync.dir,
+				      ".morph-sync")) != NB_OK
+		      ? metadata_dir_status
+	      : (metadata_dir_status = nb_str_copy_to(nb_buf_str(&metadata_dir_buffer), metadata,
+						      sizeof(metadata))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_1);
-	return rc == 0 ? ((file_status_2 =
-				   nb_path_concat(&file_value_2, metadata, "manifest.db")) != NB_OK
-				  ? file_status_2
-			  : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), path,
-							    size)) == NB_ERR_RANGE
+		      : metadata_dir_status);
+	return rc == 0 ? ((manifest_path_status = nb_path_concat(&manifest_path_buffer, metadata,
+								 "manifest.db")) != NB_OK
+				  ? manifest_path_status
+			  : (manifest_path_status = nb_str_copy_to(
+				     nb_buf_str(&manifest_path_buffer), path, size)) == NB_ERR_RANGE
 				  ? NB_ERR_NAME_TOO_LONG
-				  : file_status_2)
+				  : manifest_path_status)
 		       : rc;
 }
 

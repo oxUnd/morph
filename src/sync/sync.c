@@ -48,16 +48,17 @@ static int ensure_parent_dir(const char *path)
 static int sync_path_join(char *dst, size_t size, const char *a,
 			  const char *b)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf destination_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int destination_path_status = NB_OK;
 
 	int rc;
 
-	rc = ((file_status_1 = nb_path_concat(&file_value_1, a, b)) != NB_OK ? file_status_1
-	      : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), dst, size)) ==
-			      NB_ERR_RANGE
+	rc = ((destination_path_status = nb_path_concat(&destination_path_buffer, a, b)) != NB_OK
+		      ? destination_path_status
+	      : (destination_path_status = nb_str_copy_to(nb_buf_str(&destination_path_buffer), dst,
+							  size)) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_1);
+		      : destination_path_status);
 	if (rc != 0)
 		return rc;
 	return 0;
@@ -256,8 +257,8 @@ static int scan_remote_backend_dir(nb_vec *pairs, const struct morph_sync_config
 
 static int remote_scan_list_cb(const char *name, int is_dir, void *user_data)
 {
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf child_relative_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int child_relative_path_status = NB_OK;
 
 	struct remote_scan_ctx *ctx = user_data;
 	char child_rel[PATH_MAX];
@@ -266,12 +267,14 @@ static int remote_scan_list_cb(const char *name, int is_dir, void *user_data)
 	if (!ctx || ctx->rc != 0 || !name || !name[0])
 		return ctx ? ctx->rc : NB_ERR_INVAL;
 	if (ctx->rel_dir[0]) {
-		rc = ((file_status_2 = nb_path_concat(&file_value_2, ctx->rel_dir, name)) != NB_OK
-			      ? file_status_2
-		      : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), child_rel,
-							sizeof(child_rel))) == NB_ERR_RANGE
+		rc = ((child_relative_path_status = nb_path_concat(&child_relative_path_buffer,
+								   ctx->rel_dir, name)) != NB_OK
+			      ? child_relative_path_status
+		      : (child_relative_path_status =
+				 nb_str_copy_to(nb_buf_str(&child_relative_path_buffer), child_rel,
+						sizeof(child_rel))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_2);
+			      : child_relative_path_status);
 	} else {
 		(void)nb_str_copy_to(
 			nb_str_from_parts((name), strnlen((name), sizeof(child_rel) - 1)),
@@ -292,8 +295,8 @@ static int remote_scan_list_cb(const char *name, int is_dir, void *user_data)
 
 static int scan_dir(nb_vec *pairs, const char *root, const char *rel_dir, int remote_side)
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
+	nb_buf child_relative_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int child_relative_path_status = NB_OK;
 
 	char full[PATH_MAX];
 	nb_dir *dir NB_CLEANUP(nb_dir_cleanup) = NULL;
@@ -318,14 +321,14 @@ static int scan_dir(nb_vec *pairs, const char *root, const char *rel_dir, int re
 		    strcmp(ent->name, "..") == 0)
 			continue;
 		if (rel_dir[0]) {
-			rc = ((file_status_3 =
-				       nb_path_concat(&file_value_3, rel_dir, ent->name)) != NB_OK
-				      ? file_status_3
-			      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3),
-								child_rel, sizeof(child_rel))) ==
-					      NB_ERR_RANGE
+			rc = ((child_relative_path_status = nb_path_concat(
+				       &child_relative_path_buffer, rel_dir, ent->name)) != NB_OK
+				      ? child_relative_path_status
+			      : (child_relative_path_status = nb_str_copy_to(
+					 nb_buf_str(&child_relative_path_buffer), child_rel,
+					 sizeof(child_rel))) == NB_ERR_RANGE
 				      ? NB_ERR_NAME_TOO_LONG
-				      : file_status_3);
+				      : child_relative_path_status);
 		} else {
 			rc = nb_str_copy_to(nb_str_from_cstr(ent->name), child_rel,
 					    sizeof(child_rel));
@@ -1048,10 +1051,10 @@ static void sync_file_lock_cleanup(nb_file_lock **lock)
 int morph_sync_once(const struct morph_sync_config *cfg,
 		    struct morph_sync_status *status)
 {
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_4 = NB_OK;
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_5 = NB_OK;
+	nb_buf metadata_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int metadata_dir_status = NB_OK;
+	nb_buf run_lock_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int run_lock_path_status = NB_OK;
 
 	char path[PATH_MAX];
 	int rc;
@@ -1061,25 +1064,26 @@ int morph_sync_once(const struct morph_sync_config *cfg,
 		memset(status, 0, sizeof(*status));
 	if (!cfg || !cfg->source_dir[0])
 		return NB_ERR_INVAL;
-	rc = ((file_status_4 = nb_path_concat(&file_value_4, cfg->source_dir, ".morph-sync")) !=
-			      NB_OK
-		      ? file_status_4
-	      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), path, sizeof(path))) ==
-			      NB_ERR_RANGE
+	rc = ((metadata_dir_status = nb_path_concat(&metadata_dir_buffer, cfg->source_dir,
+						    ".morph-sync")) != NB_OK
+		      ? metadata_dir_status
+	      : (metadata_dir_status = nb_str_copy_to(nb_buf_str(&metadata_dir_buffer), path,
+						      sizeof(path))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_4);
+		      : metadata_dir_status);
 	if (rc == 0)
 		rc = nb_file_mkdir(path, true, NULL);
 	if (rc == 0)
-		rc = ((file_status_5 = (nb_buf_clear(&file_value_5),
-					nb_buf_printf(&file_value_5, "%s%s", path, "/run.lock")
-						? NB_OK
-						: NB_ERR_NOMEM)) != NB_OK
-			      ? file_status_5
-		      : (file_status_5 = nb_str_copy_to(nb_buf_str(&file_value_5), path,
-							sizeof(path))) == NB_ERR_RANGE
+		rc = ((run_lock_path_status =
+			       (nb_buf_clear(&run_lock_path_buffer),
+				nb_buf_printf(&run_lock_path_buffer, "%s%s", path, "/run.lock")
+					? NB_OK
+					: NB_ERR_NOMEM)) != NB_OK
+			      ? run_lock_path_status
+		      : (run_lock_path_status = nb_str_copy_to(nb_buf_str(&run_lock_path_buffer),
+							       path, sizeof(path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_5);
+			      : run_lock_path_status);
 	if (rc != 0)
 		return rc;
 	rc = nb_file_lock_acquire(path, true, true, &lock, NULL);

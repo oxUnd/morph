@@ -93,15 +93,16 @@ static int ensure_parent(const char *path)
 static int store_path(const struct morph_sync_config *cfg, const char *rel,
 		      char out[PATH_MAX])
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
+	nb_buf store_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int store_path_status = NB_OK;
 
-	return ((file_status_1 = nb_path_concat(&file_value_1, cfg->sync_dir, rel)) != NB_OK
-			? file_status_1
-		: (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), out, PATH_MAX)) ==
-				NB_ERR_RANGE
+	return ((store_path_status = nb_path_concat(&store_path_buffer, cfg->sync_dir, rel)) !=
+				NB_OK
+			? store_path_status
+		: (store_path_status = nb_str_copy_to(nb_buf_str(&store_path_buffer), out,
+						      PATH_MAX)) == NB_ERR_RANGE
 			? NB_ERR_NAME_TOO_LONG
-			: file_status_1);
+			: store_path_status);
 }
 
 static int store_stat(const struct morph_sync_config *cfg, const char *rel,
@@ -170,47 +171,49 @@ int sync_db_is_sqlite(const char *path)
 static int device_id_get(const struct morph_sync_config *cfg,
 			 char out[MORPH_SYNC_DEVICE_ID_MAX])
 {
-	nb_buf file_value_3 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_3 = NB_OK;
-	nb_buf file_value_4 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_4 = NB_OK;
-	nb_buf file_value_5 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_5 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_6 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_6 = NB_OK;
+	nb_buf metadata_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int metadata_dir_status = NB_OK;
+	nb_buf device_id_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int device_id_path_status = NB_OK;
+	nb_buf device_id_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *device_id_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf device_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int device_id_status = NB_OK;
 
 	char directory[PATH_MAX];
 	char path[PATH_MAX];
 	char *stored;
 	int rc;
 
-	rc = ((file_status_3 = nb_path_concat(&file_value_3, cfg->source_dir, ".morph-sync")) !=
-			      NB_OK
-		      ? file_status_3
-	      : (file_status_3 = nb_str_copy_to(nb_buf_str(&file_value_3), directory,
-						sizeof(directory))) == NB_ERR_RANGE
+	rc = ((metadata_dir_status = nb_path_concat(&metadata_dir_buffer, cfg->source_dir,
+						    ".morph-sync")) != NB_OK
+		      ? metadata_dir_status
+	      : (metadata_dir_status = nb_str_copy_to(nb_buf_str(&metadata_dir_buffer), directory,
+						      sizeof(directory))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_3);
+		      : metadata_dir_status);
 	if (rc != 0)
 		return rc;
 	rc = nb_file_mkdir(directory, true, NULL);
 	if (rc != 0)
 		return rc;
-	rc = ((file_status_4 = nb_path_concat(&file_value_4, directory, "device-id")) != NB_OK
-		      ? file_status_4
-	      : (file_status_4 = nb_str_copy_to(nb_buf_str(&file_value_4), path, sizeof(path))) ==
-			      NB_ERR_RANGE
+	rc = ((device_id_path_status =
+		       nb_path_concat(&device_id_path_buffer, directory, "device-id")) != NB_OK
+		      ? device_id_path_status
+	      : (device_id_path_status = nb_str_copy_to(nb_buf_str(&device_id_path_buffer), path,
+							sizeof(path))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_4);
+		      : device_id_path_status);
 	if (rc != 0)
 		return rc;
-	stored = (nb_file_read_all(path, &file_value_5, 0, NULL) == NB_OK &&
-				  (file_copy_5 = (char *)malloc(nb_buf_len(&file_value_5) + 1)) !=
-					  NULL
-			  ? (memcpy(file_copy_5, nb_buf_cstr(&file_value_5),
-				    nb_buf_len(&file_value_5) + 1),
-			     nb_charp_steal(&file_copy_5))
-			  : NULL);
+	stored =
+		(nb_file_read_all(path, &device_id_contents_buffer, 0, NULL) == NB_OK &&
+				 (device_id_contents_copy = (char *)malloc(
+					  nb_buf_len(&device_id_contents_buffer) + 1)) != NULL
+			 ? (memcpy(device_id_contents_copy, nb_buf_cstr(&device_id_contents_buffer),
+				   nb_buf_len(&device_id_contents_buffer) + 1),
+			    nb_charp_steal(&device_id_contents_copy))
+			 : NULL);
 	if (stored) {
 		stored[strcspn(stored, "\r\n")] = '\0';
 		if (stored[0]) {
@@ -223,16 +226,16 @@ static int device_id_get(const struct morph_sync_config *cfg,
 		}
 		free(stored);
 	}
-	rc = ((file_status_6 =
-		       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-			: !(nb_buf_clear(&file_value_6), nb_buf_append_cstr(&file_value_6, "dev_"))
-				? NB_ERR_NOMEM
-				: nb_random_hex(&file_value_6, 16, NULL))) != NB_OK
-		      ? file_status_6
-	      : (file_status_6 = nb_str_copy_to(nb_buf_str(&file_value_6), out,
-						MORPH_SYNC_DEVICE_ID_MAX)) == NB_ERR_RANGE
+	rc = ((device_id_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				   : !(nb_buf_clear(&device_id_buffer),
+				       nb_buf_append_cstr(&device_id_buffer, "dev_"))
+					   ? NB_ERR_NOMEM
+					   : nb_random_hex(&device_id_buffer, 16, NULL))) != NB_OK
+		      ? device_id_status
+	      : (device_id_status = nb_str_copy_to(nb_buf_str(&device_id_buffer), out,
+						   MORPH_SYNC_DEVICE_ID_MAX)) == NB_ERR_RANGE
 		      ? NB_ERR_NO_SPACE
-		      : file_status_6);
+		      : device_id_status);
 	if (rc != 0)
 		return rc;
 	return nb_file_write_all(path, out, strlen(out), NULL);
@@ -241,40 +244,41 @@ static int device_id_get(const struct morph_sync_config *cfg,
 static int db_cursor_path(const struct morph_sync_config *cfg,
 			  const char *database_key, char out[PATH_MAX])
 {
-	nb_buf file_value_7 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_7 = NB_OK;
-	nb_buf file_value_8 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_8 = NB_OK;
+	nb_buf database_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int database_dir_status = NB_OK;
+	nb_buf database_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int database_path_status = NB_OK;
 
 	char directory[PATH_MAX];
 	int rc;
 
-	rc = ((file_status_7 = nb_path_concat(&file_value_7, cfg->source_dir,
-					      ".morph-sync/db-state")) != NB_OK
-		      ? file_status_7
-	      : (file_status_7 = nb_str_copy_to(nb_buf_str(&file_value_7), directory,
-						sizeof(directory))) == NB_ERR_RANGE
+	rc = ((database_dir_status = nb_path_concat(&database_dir_buffer, cfg->source_dir,
+						    ".morph-sync/db-state")) != NB_OK
+		      ? database_dir_status
+	      : (database_dir_status = nb_str_copy_to(nb_buf_str(&database_dir_buffer), directory,
+						      sizeof(directory))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_7);
+		      : database_dir_status);
 	if (rc != 0)
 		return rc;
 	rc = nb_file_mkdir(directory, true, NULL);
 	if (rc != 0)
 		return rc;
-	return ((file_status_8 = nb_path_concat(&file_value_8, directory, database_key)) != NB_OK
-			? file_status_8
-		: (file_status_8 = nb_str_copy_to(nb_buf_str(&file_value_8), out, PATH_MAX)) ==
-				NB_ERR_RANGE
+	return ((database_path_status =
+			 nb_path_concat(&database_path_buffer, directory, database_key)) != NB_OK
+			? database_path_status
+		: (database_path_status = nb_str_copy_to(nb_buf_str(&database_path_buffer), out,
+							 PATH_MAX)) == NB_ERR_RANGE
 			? NB_ERR_NAME_TOO_LONG
-			: file_status_8);
+			: database_path_status);
 }
 
 static int db_cursor_matches(const struct morph_sync_config *cfg,
 			     const char *database_key, const char *device,
 			     const char *database_hash)
 {
-	nb_buf file_value_9 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_9 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf stored_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *stored_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char path[PATH_MAX];
 	char expected[MORPH_SYNC_DEVICE_ID_MAX + MORPH_SYNC_HASH_LEN + 2];
@@ -283,12 +287,12 @@ static int db_cursor_matches(const struct morph_sync_config *cfg,
 
 	if (db_cursor_path(cfg, database_key, path) != 0)
 		return 0;
-	stored = (nb_file_read_all(path, &file_value_9, 0, NULL) == NB_OK &&
-				  (file_copy_9 = (char *)malloc(nb_buf_len(&file_value_9) + 1)) !=
-					  NULL
-			  ? (memcpy(file_copy_9, nb_buf_cstr(&file_value_9),
-				    nb_buf_len(&file_value_9) + 1),
-			     nb_charp_steal(&file_copy_9))
+	stored = (nb_file_read_all(path, &stored_contents_buffer, 0, NULL) == NB_OK &&
+				  (stored_contents_copy = (char *)malloc(
+					   nb_buf_len(&stored_contents_buffer) + 1)) != NULL
+			  ? (memcpy(stored_contents_copy, nb_buf_cstr(&stored_contents_buffer),
+				    nb_buf_len(&stored_contents_buffer) + 1),
+			     nb_charp_steal(&stored_contents_copy))
 			  : NULL);
 	if (!stored)
 		return 0;
@@ -319,38 +323,38 @@ static int db_cursor_put(const struct morph_sync_config *cfg,
 static int staging_path(const struct morph_sync_config *cfg, const char *suffix,
 			char out[PATH_MAX])
 {
-	nb_buf file_value_10 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_10 = NB_OK;
-	nb_buf file_value_11 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_11 = NB_OK;
+	nb_buf temporary_dir_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int temporary_dir_status = NB_OK;
+	nb_buf random_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int random_id_status = NB_OK;
 
 	char directory[PATH_MAX];
 	char random_id[64];
 	int rc;
 
 	out[0] = '\0';
-	rc = ((file_status_10 = nb_path_concat(&file_value_10, cfg->sync_dir,
-					       ".morph-sync/staging")) != NB_OK
-		      ? file_status_10
-	      : (file_status_10 = nb_str_copy_to(nb_buf_str(&file_value_10), directory,
-						 sizeof(directory))) == NB_ERR_RANGE
+	rc = ((temporary_dir_status = nb_path_concat(&temporary_dir_buffer, cfg->sync_dir,
+						     ".morph-sync/staging")) != NB_OK
+		      ? temporary_dir_status
+	      : (temporary_dir_status = nb_str_copy_to(nb_buf_str(&temporary_dir_buffer), directory,
+						       sizeof(directory))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_10);
+		      : temporary_dir_status);
 	if (rc != 0)
 		return rc;
 	rc = nb_file_mkdir(directory, true, NULL);
 	if (rc != 0)
 		return rc;
-	rc = ((file_status_11 =
-		       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-			: !(nb_buf_clear(&file_value_11), nb_buf_append_cstr(&file_value_11, "db_"))
-				? NB_ERR_NOMEM
-				: nb_random_hex(&file_value_11, 16, NULL))) != NB_OK
-		      ? file_status_11
-	      : (file_status_11 = nb_str_copy_to(nb_buf_str(&file_value_11), random_id,
-						 sizeof(random_id))) == NB_ERR_RANGE
+	rc = ((random_id_status = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				   : !(nb_buf_clear(&random_id_buffer),
+				       nb_buf_append_cstr(&random_id_buffer, "db_"))
+					   ? NB_ERR_NOMEM
+					   : nb_random_hex(&random_id_buffer, 16, NULL))) != NB_OK
+		      ? random_id_status
+	      : (random_id_status = nb_str_copy_to(nb_buf_str(&random_id_buffer), random_id,
+						   sizeof(random_id))) == NB_ERR_RANGE
 		      ? NB_ERR_NO_SPACE
-		      : file_status_11);
+		      : random_id_status);
 	if (rc != 0)
 		return rc;
 	int length = snprintf(out, PATH_MAX, "%s/%s%s", directory, random_id,
@@ -373,8 +377,8 @@ static int json_add_string(cJSON *object, const char *name, const char *value)
 static int snapshot_include_display(const struct morph_sync_config *cfg,
 				    const char *rel, const char *snapshot)
 {
-	nb_buf file_value_12 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_12 = NB_OK;
+	nb_buf source_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int source_path_status = NB_OK;
 
 	char source[PATH_MAX];
 	struct backup_staging staging NB_CLEANUP(backup_staging_cleanup) = {0};
@@ -384,13 +388,13 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 
 	if (strcmp(rel, "data.db") != 0)
 		return 0;
-	rc = ((file_status_12 = nb_path_concat(&file_value_12, cfg->source_dir, "ui-history.db")) !=
-			      NB_OK
-		      ? file_status_12
-	      : (file_status_12 = nb_str_copy_to(nb_buf_str(&file_value_12), source,
-						 sizeof(source))) == NB_ERR_RANGE
+	rc = ((source_path_status = nb_path_concat(&source_path_buffer, cfg->source_dir,
+						   "ui-history.db")) != NB_OK
+		      ? source_path_status
+	      : (source_path_status = nb_str_copy_to(nb_buf_str(&source_path_buffer), source,
+						     sizeof(source))) == NB_ERR_RANGE
 		      ? NB_ERR_NAME_TOO_LONG
-		      : file_status_12);
+		      : source_path_status);
 	if (rc != 0)
 		return rc;
 	if (stat(source, &st) != 0) {
@@ -410,8 +414,8 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *rel,
 			      const char *path, struct morph_sync_status *status, int update_cursor)
 {
-	nb_buf file_value_13 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_13 = NB_OK;
+	nb_buf version_id_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int version_id_status = NB_OK;
 
 	struct backup_staging staging NB_CLEANUP(backup_staging_cleanup) = {0};
 	char object_rel[PATH_MAX];
@@ -458,17 +462,18 @@ int sync_db_backup_create_one(const struct morph_sync_config *cfg, const char *r
 					       database_hash))
 		return rc;
 	if (update_cursor) {
-		rc = ((file_status_13 = ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
-					 : !(nb_buf_clear(&file_value_13),
-					     nb_buf_append_cstr(&file_value_13, "ver_"))
-						 ? NB_ERR_NOMEM
-						 : nb_random_hex(&file_value_13, 16, NULL))) !=
-				      NB_OK
-			      ? file_status_13
-		      : (file_status_13 = nb_str_copy_to(nb_buf_str(&file_value_13), version_id,
-							 sizeof(version_id))) == NB_ERR_RANGE
+		rc = ((version_id_status =
+			       ((16) == 0 || (16) > 16 ? NB_ERR_INVAL
+				: !(nb_buf_clear(&version_id_buffer),
+				    nb_buf_append_cstr(&version_id_buffer, "ver_"))
+					? NB_ERR_NOMEM
+					: nb_random_hex(&version_id_buffer, 16, NULL))) != NB_OK
+			      ? version_id_status
+		      : (version_id_status = nb_str_copy_to(nb_buf_str(&version_id_buffer),
+							    version_id, sizeof(version_id))) ==
+				      NB_ERR_RANGE
 			      ? NB_ERR_NO_SPACE
-			      : file_status_13);
+			      : version_id_status);
 		if (rc != 0)
 			return rc;
 	} else {
@@ -588,10 +593,10 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 			  const char *rel, const char *path,
 			  struct morph_sync_status *status)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
-	nb_buf file_value_14 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_14 = NB_OK;
+	nb_buf conflict_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int conflict_path_status = NB_OK;
 
 	char directory[PATH_MAX];
 	char prefix[PATH_MAX];
@@ -619,10 +624,10 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 	if (snprintf(prefix, sizeof(prefix), "%s.conflict.", base) >=
 	    (int)sizeof(prefix))
 		return NB_ERR_NAME_TOO_LONG;
-	rc = ((directory_status_1 = nb_dir_scan(
+	rc = ((directory_scan_status = nb_dir_scan(
 		       directory, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 		       &names, NULL)) != NB_OK
-		      ? directory_status_1
+		      ? directory_scan_status
 	      : names.names.len > INT_MAX ? NB_ERR_RANGE
 					  : (count = (int)names.names.len, NB_OK));
 	if (rc == NB_ERR_NOT_FOUND)
@@ -630,14 +635,15 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 	for (int i = 0; rc == 0 && i < count; i++) {
 		if (strncmp(nb_dir_listing_name(&names, (size_t)(i)), prefix, strlen(prefix)) != 0)
 			continue;
-		rc = ((file_status_14 = nb_path_concat(&file_value_14, directory,
-						       nb_dir_listing_name(&names, (size_t)(i)))) !=
-				      NB_OK
-			      ? file_status_14
-		      : (file_status_14 = nb_str_copy_to(nb_buf_str(&file_value_14), conflict_path,
-							 sizeof(conflict_path))) == NB_ERR_RANGE
+		rc = ((conflict_path_status =
+			       nb_path_concat(&conflict_path_buffer, directory,
+					      nb_dir_listing_name(&names, (size_t)(i)))) != NB_OK
+			      ? conflict_path_status
+		      : (conflict_path_status =
+				 nb_str_copy_to(nb_buf_str(&conflict_path_buffer), conflict_path,
+						sizeof(conflict_path))) == NB_ERR_RANGE
 			      ? NB_ERR_NAME_TOO_LONG
-			      : file_status_14);
+			      : conflict_path_status);
 		if (rc == 0 && sync_db_is_sqlite(conflict_path))
 			rc = sync_db_backup_create_one(cfg, rel, conflict_path, status, 0);
 	}
@@ -653,10 +659,10 @@ static int snapshot_id_valid(const char *snapshot_id)
 static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 			 cJSON **out)
 {
-	nb_buf file_value_15 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_15 NB_CLEANUP(nb_charp_cleanup) = NULL;
-	nb_buf file_value_16 NB_CLEANUP(nb_buf_destroy) = {0};
-	char *file_copy_16 NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf local_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *local_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
+	nb_buf direct_contents_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	char *direct_contents_copy NB_CLEANUP(nb_charp_cleanup) = NULL;
 
 	char rel[PATH_MAX];
 	char local[PATH_MAX] = { 0 };
@@ -674,24 +680,25 @@ static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 		rc = store_get(cfg, rel, local);
 		if (rc != 0)
 			return rc;
-		text = (nb_file_read_all(local, &file_value_15, 0, NULL) == NB_OK &&
-					(file_copy_15 = (char *)malloc(nb_buf_len(&file_value_15) +
-								       1)) != NULL
-				? (memcpy(file_copy_15, nb_buf_cstr(&file_value_15),
-					  nb_buf_len(&file_value_15) + 1),
-				   nb_charp_steal(&file_copy_15))
+		text = (nb_file_read_all(local, &local_contents_buffer, 0, NULL) == NB_OK &&
+					(local_contents_copy = (char *)malloc(
+						 nb_buf_len(&local_contents_buffer) + 1)) != NULL
+				? (memcpy(local_contents_copy, nb_buf_cstr(&local_contents_buffer),
+					  nb_buf_len(&local_contents_buffer) + 1),
+				   nb_charp_steal(&local_contents_copy))
 				: NULL);
 		(void)unlink(local);
 	} else {
 		rc = store_path(cfg, rel, direct);
 		if (rc != 0)
 			return rc;
-		text = (nb_file_read_all(direct, &file_value_16, 0, NULL) == NB_OK &&
-					(file_copy_16 = (char *)malloc(nb_buf_len(&file_value_16) +
-								       1)) != NULL
-				? (memcpy(file_copy_16, nb_buf_cstr(&file_value_16),
-					  nb_buf_len(&file_value_16) + 1),
-				   nb_charp_steal(&file_copy_16))
+		text = (nb_file_read_all(direct, &direct_contents_buffer, 0, NULL) == NB_OK &&
+					(direct_contents_copy = (char *)malloc(
+						 nb_buf_len(&direct_contents_buffer) + 1)) != NULL
+				? (memcpy(direct_contents_copy,
+					  nb_buf_cstr(&direct_contents_buffer),
+					  nb_buf_len(&direct_contents_buffer) + 1),
+				   nb_charp_steal(&direct_contents_copy))
 				: NULL);
 	}
 	if (!text)
@@ -790,7 +797,7 @@ int morph_sync_backups(const struct morph_sync_config *cfg,
 			const char *path, struct morph_sync_backup **out,
 			int *count)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
 	struct snapshot_scan scan;
 	nb_vec items;
@@ -819,12 +826,12 @@ int morph_sync_backups(const struct morph_sync_config *cfg,
 	} else {
 		rc = store_path(cfg, DB_SNAPSHOT_DIR, directory);
 		if (rc == 0)
-			rc = ((directory_status_1 =
+			rc = ((directory_scan_status =
 				       nb_dir_scan(directory,
 						   NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
 							   NB_DIR_SCAN_FOLLOW_LINKS,
 						   &names, NULL)) != NB_OK
-				      ? directory_status_1
+				      ? directory_scan_status
 			      : names.names.len > INT_MAX
 				      ? NB_ERR_RANGE
 				      : (name_count = (int)names.names.len, NB_OK));
@@ -1038,7 +1045,7 @@ static int retention_remote_cb(const char *name, int is_dir, void *user_data)
 
 static int retention_collect(const struct morph_sync_config *cfg, nb_vec *snapshots)
 {
-	int directory_status_1 = NB_OK;
+	int directory_scan_status = NB_OK;
 
 	struct retention_scan scan;
 	char directory[PATH_MAX];
@@ -1057,10 +1064,10 @@ static int retention_collect(const struct morph_sync_config *cfg, nb_vec *snapsh
 	rc = store_path(cfg, DB_SNAPSHOT_DIR, directory);
 	if (rc != 0)
 		return rc;
-	rc = ((directory_status_1 = nb_dir_scan(
+	rc = ((directory_scan_status = nb_dir_scan(
 		       directory, NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT | NB_DIR_SCAN_FOLLOW_LINKS,
 		       &names, NULL)) != NB_OK
-		      ? directory_status_1
+		      ? directory_scan_status
 	      : names.names.len > INT_MAX ? NB_ERR_RANGE
 					  : (count = (int)names.names.len, NB_OK));
 	if (rc == NB_ERR_NOT_FOUND)
@@ -1181,8 +1188,8 @@ static int object_prefix_cb(const char *name, int is_dir, void *user_data)
 
 static int object_gc_local(struct object_gc *gc)
 {
-	int directory_status_1 = NB_OK;
-	int directory_status_2 = NB_OK;
+	int directory_scan_status = NB_OK;
+	int object_scan_status = NB_OK;
 
 	char root[PATH_MAX];
 	nb_dir_listing prefixes NB_CLEANUP(nb_dir_listing_destroy) = {0};
@@ -1192,10 +1199,10 @@ static int object_gc_local(struct object_gc *gc)
 	rc = store_path(gc->cfg, DB_OBJECT_DIR, root);
 	if (rc != 0)
 		return rc;
-	rc = ((directory_status_1 = nb_dir_scan(
+	rc = ((directory_scan_status = nb_dir_scan(
 		       root, NB_DIR_SCAN_DIRS | NB_DIR_SCAN_HIDDEN | NB_DIR_SCAN_FOLLOW_LINKS,
 		       &prefixes, NULL)) != NB_OK
-		      ? directory_status_1
+		      ? directory_scan_status
 	      : prefixes.names.len > INT_MAX ? NB_ERR_RANGE
 					     : (prefix_count = (int)prefixes.names.len, NB_OK));
 	if (rc == NB_ERR_NOT_FOUND)
@@ -1212,12 +1219,12 @@ static int object_gc_local(struct object_gc *gc)
 		}
 		rc = store_path(gc->cfg, gc->directory, directory);
 		if (rc == 0)
-			rc = ((directory_status_2 =
+			rc = ((object_scan_status =
 				       nb_dir_scan(directory,
 						   NB_DIR_SCAN_FILES | NB_DIR_SCAN_SORT |
 							   NB_DIR_SCAN_FOLLOW_LINKS,
 						   &names, NULL)) != NB_OK
-				      ? directory_status_2
+				      ? object_scan_status
 			      : names.names.len > INT_MAX ? NB_ERR_RANGE
 							  : (count = (int)names.names.len, NB_OK));
 		for (int j = 0; rc == 0 && j < count; j++)

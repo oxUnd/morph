@@ -1026,10 +1026,10 @@ static int bpe_merge_count(const struct bpe_encoder *enc,
 struct bpe_encoder *bpe_encoder_create(struct nb_log *logger, enum bpe_encoding encoding,
 				       const char *vocab_dir)
 {
-	nb_buf file_value_1 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_1 = NB_OK;
-	nb_buf file_value_2 NB_CLEANUP(nb_buf_destroy) = {0};
-	int file_status_2 = NB_OK;
+	nb_buf vocab_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int vocab_path_status = NB_OK;
+	nb_buf resource_path_buffer NB_CLEANUP(nb_buf_destroy) = {0};
+	int resource_path_status = NB_OK;
 
 	const char *filename = (encoding == BPE_O200K_BASE)
 		? "o200k_base.tiktoken" : "cl100k_base.tiktoken";
@@ -1038,12 +1038,12 @@ struct bpe_encoder *bpe_encoder_create(struct nb_log *logger, enum bpe_encoding 
 	const char *found_path = NULL;
 
 	if (vocab_dir &&
-	    ((file_status_1 = nb_path_concat(&file_value_1, vocab_dir, filename)) != NB_OK
-		     ? file_status_1
-	     : (file_status_1 = nb_str_copy_to(nb_buf_str(&file_value_1), path, sizeof(path))) ==
-			     NB_ERR_RANGE
+	    ((vocab_path_status = nb_path_concat(&vocab_path_buffer, vocab_dir, filename)) != NB_OK
+		     ? vocab_path_status
+	     : (vocab_path_status = nb_str_copy_to(nb_buf_str(&vocab_path_buffer), path,
+						   sizeof(path))) == NB_ERR_RANGE
 		     ? NB_ERR_NAME_TOO_LONG
-		     : file_status_1) == 0) {
+		     : vocab_path_status) == 0) {
 		FILE *fp = fopen(path, "r");
 		if (fp) {
 			fclose(fp);
@@ -1054,12 +1054,14 @@ struct bpe_encoder *bpe_encoder_create(struct nb_log *logger, enum bpe_encoding 
 	if (!found_path) {
 		char relative[PATH_MAX];
 
-		if (((file_status_2 = nb_path_concat(&file_value_2, "tiktoken", filename)) != NB_OK
-			     ? file_status_2
-		     : (file_status_2 = nb_str_copy_to(nb_buf_str(&file_value_2), relative,
-						       sizeof(relative))) == NB_ERR_RANGE
+		if (((resource_path_status =
+			      nb_path_concat(&resource_path_buffer, "tiktoken", filename)) != NB_OK
+			     ? resource_path_status
+		     : (resource_path_status = nb_str_copy_to(nb_buf_str(&resource_path_buffer),
+							      relative, sizeof(relative))) ==
+				     NB_ERR_RANGE
 			     ? NB_ERR_NAME_TOO_LONG
-			     : file_status_2) == 0 &&
+			     : resource_path_status) == 0 &&
 		    morph_data_find(path, sizeof(path), relative) == 0)
 			found_path = path;
 	}
