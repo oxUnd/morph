@@ -33,6 +33,14 @@ def composer(terminal, expected=''):
     return row
 
 
+PERMISSION_CHIP_BACKGROUND = {
+    'perm: ask': '5f5f87',
+    'perm: auto': '005f87',
+    'perm: full': 'af87ff',
+    'perm: read_only': '444444',
+}
+
+
 def permission_footer(terminal, expected):
     wait_for(terminal, lambda: any(expected in line for line in terminal.screen.display))
     row = max(i for i, line in enumerate(terminal.screen.display)
@@ -42,6 +50,18 @@ def permission_footer(terminal, expected):
     assert expected in footer, text
     assert sum('perm: ' in line for line in terminal.screen.display) == 1, text
     assert 'perm: ?' not in footer, text
+    background = PERMISSION_CHIP_BACKGROUND.get(expected)
+    if background:
+        start = footer.index(expected)
+        assert start >= 1, footer
+        cells = terminal.screen.buffer[row + 2]
+        # A narrow footer can clip the chip's trailing pad; the text and the
+        # leading pad always carry the preset background.
+        painted = range(start - 1, start + len(expected))
+        assert all(cells[i].bg == background for i in painted), (
+            footer, [cells[i].bg for i in painted])
+        if expected == 'perm: full':
+            assert cells[start].bold, footer
     return footer
 
 
