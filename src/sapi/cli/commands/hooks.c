@@ -17,6 +17,13 @@ static const char *cli_hooks_hook_field(const cJSON *row, const char *key)
 	return cJSON_IsString(value) ? value->valuestring : "";
 }
 
+static int cli_hooks_on_owner(int argc, char **argv)
+{
+	return argc == 1 || (argc == 2 &&
+		(!strcmp(argv[1], "list") || !strcmp(argv[1], "review-all"))) ||
+		(argc == 3 && !strcmp(argv[1], "review"));
+}
+
 static int cli_hooks_command_hooks(struct cli_application *ctx, int argc, char **argv)
 {
 	cJSON *rows NB_CLEANUP(cJSON_DeleteOwner) = NULL;
@@ -120,7 +127,7 @@ struct cli_command_group cli_hook_commands(void)
 {
 	static const struct cli_command commands[] = {
 		{"/hooks", cli_hooks_command_hooks, "Review and manage lifecycle hooks",
-		 "/hooks [list|check|project|review <id>|<action> <id> <digest>]"},
+		 "/hooks [list|check|project|review <id>|<action> <id> <digest>]", cli_hooks_on_owner},
 	};
 
 	return (struct cli_command_group){commands, 1, "Runtime"};

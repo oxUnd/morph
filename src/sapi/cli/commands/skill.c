@@ -252,8 +252,8 @@ static int cli_skill_command_skill(struct cli_application *ctx, int argc, char *
 }
 
 static const struct cli_command cli_skill_entries[] = {
-	{"/skill", cli_skill_command_skill, "List or manage skills", "/skill list"},
-	{"/sk", cli_skill_command_skill, "Alias for /skill", "/sk list"},
+	{"/skill", cli_skill_command_skill, "List or manage skills", "/skill list", NULL},
+	{"/sk", cli_skill_command_skill, "Alias for /skill", "/sk list", NULL},
 };
 
 struct cli_command_group cli_skill_commands(void)

@@ -7,9 +7,19 @@
 #include "sapi/cli/components/selector.h"
 #include "sapi/cli/models/composer.h"
 #include "sapi/cli/services/sessions.h"
+#include "sapi/cli/services/event_queue.h"
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include <nothing/tui/terminal/text.h>
+
+static int cli_model_publish_mode(struct cli_application *ctx, void *opaque)
+{
+	int ultra = *(const int *)opaque;
+	cli_composer_model_set_ultra(&ctx->composer, ultra, cli_output_color_enabled(ctx));
+	ctx->input_status.updated = 0;
+	CMD_OK(ctx, "model mode: %s", ultra ? "ultra" : "normal");
+	return 0;
+}
 
 int cli_model_set_mode(struct cli_application *ctx, int ultra)
 {
@@ -26,9 +36,8 @@ int cli_model_set_mode(struct cli_application *ctx, int ultra)
 	} else
 		rc = runtime_model_set_ultra(ctx->runtime, ultra);
 	if (!rc) {
-		cli_composer_model_set_ultra(&ctx->composer, ultra, cli_output_color_enabled(ctx));
-		ctx->input_status.updated = 0;
-		CMD_OK(ctx, "model mode: %s", ultra ? "ultra" : "normal");
+		return ctx->events ? cli_event_queue_call_owner(ctx, cli_model_publish_mode,
+			&ultra) : cli_model_publish_mode(ctx, &ultra);
 	} else {
 		CMD_ERROR(ctx, "model mode change failed: %s",
 			  nb_err_str(morph_error_descriptions(), MORPH_ERROR_COUNT, rc));

@@ -63,6 +63,42 @@
 - **Scheduled tasks** `src/runtime/task_*.c`. See `docs/scheduled-tasks.md`.
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
 
+## UI Responsiveness
+
+- Treat the CLI owner thread as an event/render thread. Network calls, model
+  execution, MCP connection/discovery/capability enumeration, extension builds,
+  compression, large file operations and unbounded waits belong on workers.
+  A backend that stops responding must not prevent typing, scrolling, resizing,
+  cancellation or terminal restoration.
+- Slash commands default to the command worker. Their registry `on_owner`
+  predicate is an explicit exception for bounded navigation/presentation actions,
+  never a list of command names maintained by the chat page. Aliases of one
+  handler must share its execution policy. Mixed commands classify by arguments;
+  opening `/history` does not authorize running `/history --repair` on the UI.
+  The dispatcher must reject a worker command invoked directly from the UI.
+- Workers return owned data/events or marshal short presentation callbacks to
+  the owner. Do not move blocking work into an owner callback, mutate native
+  controls from a worker, run a nested event loop or drain an unlimited producer
+  queue to simulate responsiveness.
+- Every synchronous request wait has a monotonic total deadline and shutdown
+  handling. Repeated receive timeouts or unrelated events must not restart that
+  deadline. Legacy owner-side control exchanges are bounded to 100 ms; this is
+  a containment limit, not permission to perform slow work there. New slow UI
+  requests use asynchronous completion and preserve the current draft/view.
+- Cancellation names the owning request/turn, wakes frontend waiters and reaches
+  supported backend operations. Never free worker-borrowed data or detach a
+  thread that still owns application/runtime state. A cancellation request is
+  not evidence that previously completed side effects were undone. Keep late
+  responses isolated from replacement requests and preserve permission checks.
+- Changes to command execution/waiting must run
+  `cli_command_responsiveness_pty_integration`, affected command/panel PTY tests,
+  `CliCommandRegistryTest.*`, relevant runtime cancellation tests and
+  `cli_application_layout_conventions`, in addition to the source convention
+  checks. Hold a real mock backend without replying and verify visible editing,
+  scrolling, cancellation, failure/timeout recovery and clean exit at 120, 80
+  and 60 columns. A test that releases the backend before checking the draft
+  does not establish responsiveness.
+
 ## Permission Semantics Checks
 - When adding or changing tool authorization, check the combined semantics of
   access, approval, reviewer, operation flags and cached grants. Verify Ask,

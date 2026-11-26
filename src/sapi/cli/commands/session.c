@@ -556,22 +556,22 @@ static int cli_session_command_history(struct cli_application *ctx, int argc, ch
 
 static const struct cli_command cli_session_entries[] = {
 	{"/sessions", cli_session_command_sessions, "List sessions and execution status",
-	 "/sessions"},
-	{"/new", cli_session_command_new, "Create a new session", "/new [name]"},
-	{"/n", cli_session_command_new, "Alias for /new", "/n [name]"},
-	{"/resume", cli_session_command_resume, "Choose a session to resume", "/resume [name|id]"},
+	 "/sessions", cli_command_owner_always},
+	{"/new", cli_session_command_new, "Create a new session", "/new [name]", cli_command_owner_always},
+	{"/n", cli_session_command_new, "Alias for /new", "/n [name]", cli_command_owner_always},
+	{"/resume", cli_session_command_resume, "Choose a session to resume", "/resume [name|id]", cli_command_owner_always},
 	{"/switch", cli_session_command_switch, "Switch to another session",
-	 "/switch <name|id|^N>"},
-	{"/s", cli_session_command_switch, "Alias for /switch", "/s <name|id|^N>"},
-	{"/rename", cli_session_command_rename, "Rename current session", "/rename <new_name>"},
-	{"/rn", cli_session_command_rename, "Alias for /rename", "/rn <new_name>"},
-	{"/delete", cli_session_command_delete, "Delete a session", "/delete <name|id>"},
-	{"/del", cli_session_command_delete, "Alias for /delete", "/del <name|id>"},
+	 "/switch <name|id|^N>", cli_command_owner_always},
+	{"/s", cli_session_command_switch, "Alias for /switch", "/s <name|id|^N>", cli_command_owner_always},
+	{"/rename", cli_session_command_rename, "Rename current session", "/rename <new_name>", NULL},
+	{"/rn", cli_session_command_rename, "Alias for /rename", "/rn <new_name>", NULL},
+	{"/delete", cli_session_command_delete, "Delete a session", "/delete <name|id>", NULL},
+	{"/del", cli_session_command_delete, "Alias for /delete", "/del <name|id>", NULL},
 	{"/history", cli_session_command_history, "Inspect full history and context membership",
 	 "/history [n|--all|--messages|--model|--last-request|--entry N "
-	 "[--stored]|--diagnose|--repair|--export path]"},
+	 "[--stored]|--diagnose|--repair|--export path]", cli_command_owner_without_arguments},
 	{"/hi", cli_session_command_history, "Alias for /history",
-	 "/hi [n|--all|--messages|--model|--last-request|--entry N [--stored]]"},
+	 "/hi [n|--all|--messages|--model|--last-request|--entry N [--stored]]", cli_command_owner_without_arguments},
 };
 
 struct cli_command_group cli_session_commands(void)

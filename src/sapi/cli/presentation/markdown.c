@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/markdown.h"
+#include "sapi/cli/services/event_queue.h"
 #include <nb/err.h>
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
@@ -232,7 +233,9 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 		int rc = (nb_buf_append(&text, bytes, len) ? 0 : NB_ERR_NOMEM);
 		if (!rc)
-			rc = cli_chat_output(output->ctx, nb_buf_cstr(&text));
+			rc = cli_event_queue_is_owner(output->ctx) ?
+				cli_chat_output(output->ctx, nb_buf_cstr(&text)) :
+				cli_event_queue_post_output(output->ctx, nb_buf_cstr(&text));
 
 		output->prefix_pending = 0;
 		cli_output_track_tail(&output->trailing_newlines, bytes, len);

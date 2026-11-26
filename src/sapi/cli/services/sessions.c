@@ -15,6 +15,7 @@
 #include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/services/turn.h"
+#include "sapi/cli/services/command_job.h"
 #include "runtime/client.h"
 #include "runtime/runtime.h"
 #include <nb/cleanup.h>
@@ -28,6 +29,9 @@
 #include <string.h>
 
 #define CLI_SESSIONS_PUMP_BUDGET 128
+#define CLI_SESSIONS_OWNER_REQUEST_TIMEOUT_MS 100
+#define CLI_SESSIONS_WORKER_REQUEST_TIMEOUT_MS (30 * 60 * 1000)
+#define CLI_SESSIONS_REQUEST_CANCEL_POLL_NS INT64_C(50000000)
 
 struct cli_sessions_prompt {
 	char *display;
@@ -752,11 +756,40 @@ static int cli_sessions_request_wait(struct cli_application *ctx,
 		return rc;
 
 	struct cli_sessions *sessions = ctx->sessions;
+	int64_t deadline = nb_time_monotonic_ms() + CLI_SESSIONS_WORKER_REQUEST_TIMEOUT_MS;
 	nb_mutex_lock(sessions->completion_lock);
-	while (!waiter.done && !sessions->stopping)
-		nb_cond_wait(sessions->completion, sessions->completion_lock);
+	while (!waiter.done && !sessions->stopping) {
+		if (cli_command_job_is_current(ctx->input_job) &&
+		    nb_cancel_requested(&ctx->input_job->cancel)) {
+			int cancel_rc = runtime_client_cancel_request(sessions->client, waiter.id);
+			if (cancel_rc && cancel_rc != NB_ERR_NOT_FOUND &&
+			    cancel_rc != NB_ERR_UNSUPPORTED && cancel_rc != NB_ERR_CLOSED)
+				nb_log_write(ctx->logger, NB_LOG_DEBUG,
+					"Could not cancel runtime request: %d", cancel_rc);
 
-	rc = waiter.done ? waiter.result : NB_ERR_CANCELLED;
+			rc = NB_ERR_CANCELLED;
+			break;
+		}
+
+		if (nb_time_monotonic_ms() >= deadline) {
+			runtime_client_cancel_request(sessions->client, waiter.id);
+			rc = NB_ERR_TIMEOUT;
+			break;
+		}
+
+		int wait_rc = nb_cond_timedwait(sessions->completion,
+			sessions->completion_lock, CLI_SESSIONS_REQUEST_CANCEL_POLL_NS);
+		if (wait_rc && wait_rc != NB_ERR_TIMEOUT) {
+			rc = wait_rc;
+			break;
+		}
+	}
+
+	if (waiter.done)
+		rc = waiter.result;
+	else if (sessions->stopping)
+		rc = NB_ERR_CANCELLED;
+
 	for (size_t i = 0; i < sessions->waiters.len; i++) {
 		struct cli_sessions_waiter *registered =
 			*(struct cli_sessions_waiter **)nb_vec_at(&sessions->waiters, i);
@@ -797,9 +830,18 @@ int cli_sessions_request(struct cli_application *ctx, const char *method,
 		return rc;
 
 	sessions->request_depth++;
+	int64_t deadline = nb_time_monotonic_ms() + CLI_SESSIONS_OWNER_REQUEST_TIMEOUT_MS;
 	for (;;) {
 		struct runtime_message *message NB_CLEANUP(runtime_message_cleanup) = NULL;
-		rc = runtime_client_receive(sessions->client, 100, &message);
+		int64_t remaining = deadline - nb_time_monotonic_ms();
+		if (remaining <= 0) {
+			rc = NB_ERR_TIMEOUT;
+			nb_log_write(ctx->logger, NB_LOG_DEBUG,
+				"UI request %s exceeded its bounded control deadline", method);
+			break;
+		}
+
+		rc = runtime_client_receive(sessions->client, (int)remaining, &message);
 		if (rc == NB_ERR_AGAIN || rc == NB_ERR_TIMEOUT)
 			continue;
 

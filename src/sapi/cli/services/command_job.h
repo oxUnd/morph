@@ -5,6 +5,7 @@
 #include <nb/err.h>
 #include <nb/vec.h>
 #include <nb/cleanup.h>
+#include <nb/cancel.h>
 #include <stdint.h>
 
 struct react_action;
@@ -18,6 +19,8 @@ struct cli_command_job {
 	cli_command_job_fn fn;
 	void *user_data;
 	nb_thread *thread;
+	nb_thread_id worker_id;
+	struct nb_cancel cancel;
 	nb_mutex *mutex;
 	int active;
 	int done;
@@ -36,6 +39,8 @@ int cli_command_job_start_fn(struct cli_command_job *job, struct cli_application
 			     const char *input, cli_command_job_fn fn, void *user_data);
 int cli_command_job_done(struct cli_command_job *job);
 int cli_command_job_finish(struct cli_command_job *job);
+int cli_command_job_is_current(const struct cli_command_job *job);
+void cli_command_job_cancel(struct cli_command_job *job);
 /* Only expedited prompts interrupt in-flight work. */
 int cli_command_job_prompt_pending(void *opaque);
 int cli_command_job_expedite_prompts(struct cli_command_job *job);

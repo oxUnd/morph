@@ -19,6 +19,9 @@ static void *cli_command_job_run(void *opaque)
 	struct cli_command_job *job = opaque;
 	int result;
 
+	nb_mutex_lock(job->mutex);
+	job->worker_id = nb_thread_current_id();
+	nb_mutex_unlock(job->mutex);
 	result = job->fn(job->ctx, job->input, job->user_data);
 	nb_mutex_lock(job->mutex);
 	job->result = result;
@@ -45,6 +48,7 @@ int cli_command_job_init(struct cli_command_job *job)
 
 	memset(job, 0, sizeof(*job));
 	nb_atomic_i64_init(&job->prompts_revision, 0);
+	nb_cancel_init(&job->cancel);
 	rc = ((job->mutex = nb_mutex_new(0)) ? NB_OK : NB_ERR_NOMEM);
 	if (rc != 0)
 		return rc;
@@ -103,6 +107,7 @@ int cli_command_job_start_fn(struct cli_command_job *job, struct cli_application
 	job->user_data = user_data;
 	job->done = 0;
 	job->result = 0;
+	nb_cancel_reset(&job->cancel);
 	job->active = 1;
 	thread_rc = nb_thread_create(&job->thread, cli_command_job_run, job, NULL);
 	if (thread_rc != 0) {
@@ -113,6 +118,23 @@ int cli_command_job_start_fn(struct cli_command_job *job, struct cli_application
 	}
 
 	return 0;
+}
+
+int cli_command_job_is_current(const struct cli_command_job *job)
+{
+	if (!job || !job->active)
+		return 0;
+
+	nb_mutex_lock(job->mutex);
+	int current = nb_thread_id_equal(job->worker_id, nb_thread_current_id());
+	nb_mutex_unlock(job->mutex);
+	return current;
+}
+
+void cli_command_job_cancel(struct cli_command_job *job)
+{
+	if (job && job->active)
+		nb_cancel_request(&job->cancel);
 }
 
 int cli_command_job_done(struct cli_command_job *job)

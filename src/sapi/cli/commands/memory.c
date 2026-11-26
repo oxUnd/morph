@@ -64,6 +64,11 @@ static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *sco
 	return NB_ERR_INVAL;
 }
 
+static int cli_memory_on_owner(int argc, char **argv)
+{
+	return argc == 1 || (argc == 2 && !strcmp(argv[1], "view"));
+}
+
 static int cli_memory_command_memory(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
@@ -221,9 +226,9 @@ static int cli_memory_command_memory(struct cli_application *ctx, int argc, char
 
 static const struct cli_command cli_memory_entries[] = {
 	{"/memory", cli_memory_command_memory, "Browse memory, sources and background work",
-	 "/memory [view|show|history|explain|set|unset|clear|jobs]"},
+	 "/memory [view|show|history|explain|set|unset|clear|jobs]", cli_memory_on_owner},
 	{"/mem", cli_memory_command_memory, "Alias for /memory",
-	 "/mem [show|clear] [all|facts|past_tasks|tips]"},
+	 "/mem [show|clear] [all|facts|past_tasks|tips]", cli_memory_on_owner},
 };
 
 struct cli_command_group cli_memory_commands(void)

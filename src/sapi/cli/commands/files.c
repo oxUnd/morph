@@ -31,7 +31,7 @@ struct cli_command_group cli_files_commands(void)
 {
 	static const struct cli_command cli_files_entries[] = {
 		{"/side", cli_files_command, "Open files and diffs in the sidebar",
-		 "/side [path]"},
+		 "/side [path]", cli_command_owner_always},
 	};
 	return (struct cli_command_group){
 		.entries = cli_files_entries,

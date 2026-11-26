@@ -136,6 +136,45 @@ Paths such as `components/` and `presentation/` below are relative to this direc
   command recall, and the absence of stale/duplicate composer backgrounds in PTY
   tests whenever command submission or display routing changes.
 
+## Command Execution and Responsiveness
+
+- All newly registered commands run on the command worker unless their
+  `on_owner(argc, argv)` predicate explicitly selects a bounded UI action.
+  Keep the policy in command registration, reuse it for aliases and distinguish
+  panel opening from data processing subcommands. Do not add background-command
+  name checks to `pages/chat.c`. `cli_command_dispatch()` enforces this boundary
+  even when a caller bypasses chat submission.
+- UI actions may mount/dismiss native pages, change focus or present already
+  prepared data. They must not connect to MCP, execute a model, build an
+  extension, compress history, wait for a process or perform large file work.
+  Slash dispatch must not run turn preparation or scheduled tasks as hidden
+  synchronous preflight on the owner.
+- Keep the composer editable and the feed scrollable while a command runs.
+  Esc/Ctrl+C must remain dispatchable. Background failure, timeout and startup
+  failure must release command state and leave drafts intact. Do not silently
+  discard an attempted submission while busy; retain it for retry.
+- Use `cli_event_queue_call_owner()` for short native presentation updates and
+  queued owned output/events for asynchronous delivery. Borrowed report arrays
+  may cross a synchronous owner call only while the worker retains their owners.
+  The worker must not change composer, permission/status cache or native view
+  state directly. Never wait for that worker from an owner callback it needs.
+- Runtime responses are correlated by request ID. Worker waits observe command
+  cancellation, shutdown and a monotonic total deadline. MCP management goes
+  through the runtime client so cancellation/shutdown can interrupt transport
+  waits. Cancel only the submitting client's request; do not interrupt unrelated
+  sessions or weaken access/approval/reviewer policy.
+- Legacy owner control requests have a 100 ms total limit, including unrelated
+  messages. Keep new slow operations asynchronous instead of increasing the
+  limit or looping on timeout. A timed-out accepted mutation may still complete;
+  do not announce rollback or automatically retry it.
+- Before finishing a related change, run the registered
+  `cli_command_responsiveness_pty_integration` at 120/80/60 columns, covering a
+  backend that waits, exits, times out or is cancelled. Assert the unsent draft
+  and wheel-scroll frames while the backend is still held, then assert recovery
+  and clean exit. Run slash/panel/MCP/extension regressions and registry alias
+  policy tests as appropriate. Keep assertions synchronized to visible results;
+  successful eventual output alone does not prove responsiveness.
+
 ## Verification
 
 - Run `cli_application_layout_conventions` after changing CLI ownership,

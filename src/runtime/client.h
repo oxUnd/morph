@@ -40,6 +40,10 @@ int runtime_client_open(struct runtime *runtime,
  * Success accepts the request; its response arrives on the receive channel. */
 int runtime_client_request_copy(struct runtime_client *client,
 	const struct runtime_command *command);
+/* Cooperatively cancel an owned MCP management request. Its response remains
+ * authoritative; completed side effects are not rolled back. Other operations
+ * return UNSUPPORTED and turns use their named interruption protocol. */
+int runtime_client_cancel_request(struct runtime_client *client, const char *id);
 /* Replies resolve server requests independently of normal request capacity. */
 int runtime_client_reply_copy(struct runtime_client *client,
 	const struct runtime_reply *reply);

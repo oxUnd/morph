@@ -1,6 +1,7 @@
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/presentation/history.h"
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/feed.h"
@@ -42,6 +43,14 @@ void cli_session_history_print_resume_hint(struct cli_application *ctx)
 				       workdir);
 }
 
+static int cli_session_restore_on_owner(struct cli_application *ctx, void *data)
+{
+	if (data)
+		return NB_ERR_INVAL;
+
+	return cli_session_history_restore(ctx);
+}
+
 int cli_session_history_restore(struct cli_application *ctx)
 {
 	struct model_history_item *items;
@@ -51,6 +60,9 @@ int cli_session_history_restore(struct cli_application *ctx)
 
 	if (!ctx || !ctx->runtime)
 		return NB_ERR_INVAL;
+
+	if (ctx->events && !cli_event_queue_is_owner(ctx))
+		return cli_event_queue_call_owner(ctx, cli_session_restore_on_owner, NULL);
 
 	/* Session commands retain their existing plain and NDJSON contracts. */
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)

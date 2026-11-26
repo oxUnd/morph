@@ -142,9 +142,9 @@ struct cli_command_group cli_agent_commands(void)
 {
 	static const struct cli_command commands[] = {
 		{"/subagents", cli_agents_command_subagents, "Switch agent threads, follow up or interrupt",
-		 "/subagents [/root/name]"},
+		 "/subagents [/root/name]", cli_command_owner_always},
 		{"/agents", cli_agents_command_agents, "Open the full-screen agent browser",
-		 "/agents [/root/name]"},
+		 "/agents [/root/name]", cli_command_owner_always},
 	};
 	return (struct cli_command_group){commands, (int)(sizeof(commands) / sizeof(commands[0])),
 					  "Runtime"};

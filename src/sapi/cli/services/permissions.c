@@ -2,6 +2,7 @@
 
 #include "sapi/cli/application.h"
 #include "sapi/cli/services/sessions.h"
+#include "sapi/cli/services/event_queue.h"
 #include "runtime/runtime.h"
 #include <nb/cleanup.h>
 #include <stdio.h>
@@ -12,13 +13,24 @@ static int cli_permissions_use_client(const struct cli_application *ctx)
 	return ctx->sessions && cli_sessions_current_id(ctx) > 0;
 }
 
+static int cli_permissions_policy_publish_on_owner(struct cli_application *ctx, void *opaque)
+{
+	const struct permission_policy *policy = opaque;
+	ctx->input_status.permissions = *policy;
+	ctx->input_status.permissions_ready = 1;
+	ctx->input_status.updated = 0;
+	return 0;
+}
+
 static int cli_permissions_policy_publish(struct cli_application *ctx,
 					  const struct permission_policy *policy, int result)
 {
-	if (!result) {
-		ctx->input_status.permissions = *policy;
-		ctx->input_status.permissions_ready = 1;
-	}
+	if (!result && ctx->events)
+		return cli_event_queue_call_owner(ctx, cli_permissions_policy_publish_on_owner,
+			(void *)policy);
+
+	if (!result)
+		return cli_permissions_policy_publish_on_owner(ctx, (void *)policy);
 
 	return result;
 }
@@ -57,9 +69,6 @@ int cli_permissions_policy_update(struct cli_application *ctx,
 
 	if (!cli_permissions_use_client(ctx)) {
 		int rc = runtime_permission_set_policy(ctx->runtime, policy);
-		if (!rc)
-			ctx->input_status.updated = 0;
-
 		return cli_permissions_policy_publish(ctx, policy, rc);
 	}
 
@@ -73,9 +82,6 @@ int cli_permissions_policy_update(struct cli_application *ctx,
 		return NB_ERR_NOMEM;
 
 	int rc = cli_sessions_request_current(ctx, "permission.update", params, &result);
-	if (!rc)
-		ctx->input_status.updated = 0;
-
 	return cli_permissions_policy_publish(ctx, policy, rc);
 }
 

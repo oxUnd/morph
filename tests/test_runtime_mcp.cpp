@@ -3,6 +3,7 @@
 
 extern "C" {
 #include "runtime/runtime_internal.h"
+#include "runtime/client.h"
 #include "http/request.h"
 }
 
@@ -155,6 +156,63 @@ done
 		std::ofstream marker(directory + "/" + name + ".release");
 	}
 };
+
+static void runtime_mcp_client_cleanup(struct runtime_client **owner)
+{
+	runtime_client_close(*owner);
+	*owner = nullptr;
+}
+
+TEST_F(RuntimeMcpBackgroundTest, ClientCancelsOnlyItsOwnStalledManagementRequest)
+{
+	server("manual", 30, false);
+	ASSERT_EQ(open(), 0);
+	struct runtime_client *client NB_CLEANUP(runtime_mcp_client_cleanup) = nullptr;
+	struct runtime_client *observer NB_CLEANUP(runtime_mcp_client_cleanup) = nullptr;
+	ASSERT_EQ(runtime_client_open(instance, nullptr, &client), 0);
+	struct runtime_client_options observer_options = {};
+	observer_options.capabilities = RUNTIME_CLIENT_READ;
+	ASSERT_EQ(runtime_client_open(instance, &observer_options, &observer), 0);
+
+	cJSON *params NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	ASSERT_NE(params, nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(params, "name", "manual"), nullptr);
+	struct runtime_command read_command = {"read-capabilities", "mcp.tools.list", params};
+	ASSERT_EQ(runtime_client_request_copy(observer, &read_command), 0);
+	struct runtime_message *denied NB_CLEANUP(runtime_message_cleanup) = nullptr;
+	ASSERT_EQ(runtime_client_receive(observer, 2000, &denied), 0);
+	ASSERT_NE(denied, nullptr);
+	EXPECT_EQ(denied->error_code, NB_ERR_NOT_PERMITTED);
+	EXPECT_FALSE(std::filesystem::exists(directory + "/manual.started"));
+
+	struct runtime_command command = {"slow-connect", "mcp.connect", params};
+	EXPECT_EQ(runtime_client_request_copy(client, &command), 0);
+	EXPECT_TRUE(wait([&] {
+		return std::filesystem::exists(directory + "/manual.started");
+	}));
+	EXPECT_EQ(runtime_client_cancel_request(observer, "slow-connect"), NB_ERR_NOT_FOUND);
+	auto started = McpClock::now();
+	EXPECT_EQ(runtime_client_cancel_request(client, "slow-connect"), 0);
+	struct runtime_message *response NB_CLEANUP(runtime_message_cleanup) = nullptr;
+	EXPECT_EQ(runtime_client_receive(client, 2000, &response), 0);
+	if (response) {
+		EXPECT_EQ(response->kind, RUNTIME_MESSAGE_RESPONSE);
+		EXPECT_STREQ(response->id, "slow-connect");
+		EXPECT_EQ(response->error_code, NB_ERR_CANCELLED);
+	}
+
+	EXPECT_LT(McpClock::now() - started, std::chrono::seconds(2));
+	EXPECT_EQ(runtime_client_cancel_request(client, "slow-connect"), NB_ERR_NOT_FOUND);
+	runtime_message_cleanup(&response);
+	release("manual");
+	EXPECT_EQ(runtime_client_request_copy(client, &command), 0);
+	EXPECT_EQ(runtime_client_receive(client, 2000, &response), 0);
+	if (response) {
+		EXPECT_STREQ(response->id, "slow-connect");
+		EXPECT_EQ(response->error_code, 0);
+	}
+
+}
 
 TEST_F(RuntimeMcpBackgroundTest, ReturnsBeforeSlowServersAndConnectsIndependently)
 {

@@ -45,7 +45,7 @@ struct cli_command_group cli_share_commands(void)
 {
 	static const struct cli_command commands[] = {
 		{"/share", cli_share_command_share, "Save the latest conversation as offline HTML",
-		 "/share"},
+		 "/share", NULL},
 	};
 	return (struct cli_command_group){
 		.entries = commands,

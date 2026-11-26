@@ -15,6 +15,7 @@
 #include "sapi/cli/commands/rewind.h"
 #include "sapi/cli/commands/session.h"
 #include "sapi/cli/commands/share.h"
+#include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/commands/skill.h"
 #include "sapi/cli/commands/sync.h"
 #include "sapi/cli/commands/tasks.h"
@@ -243,6 +244,33 @@ static int cli_registry_arguments_create(char *input, nb_vec *arguments)
 	return 0;
 }
 
+int cli_command_owner_always(int argc, char **argv)
+{
+	return argc > 0 && argv;
+}
+
+int cli_command_owner_without_arguments(int argc, char **argv)
+{
+	return argc == 1 && argv;
+}
+
+int cli_command_runs_on_owner(const struct cli_command *command, const char *input)
+{
+	if (!command || !input)
+		return NB_ERR_INVAL;
+
+	if (!command->on_owner)
+		return 0;
+
+	char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(input);
+	nb_vec arguments NB_CLEANUP(nb_vec_cleanup) = {0};
+	if (!copy)
+		return NB_ERR_NOMEM;
+
+	int rc = cli_registry_arguments_create(copy, &arguments);
+	return rc ? rc : command->on_owner((int)(arguments.len - 1), (char **)arguments.data);
+}
+
 const char *cli_cmd_arg_borrow(int argc, char **argv, int idx)
 {
 	return (idx >= 0 && idx < argc) ? argv[idx] : NULL;
@@ -300,7 +328,13 @@ int cli_command_dispatch(struct cli_application *ctx, const char *input)
 		CMD_ERROR(ctx, "unknown command: %s. Try /help", argv[0]);
 		rc = NB_ERR_NOT_FOUND;
 	} else {
-		rc = e->handler(ctx, argc, argv);
+		int owner = ctx && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
+			cli_application_tui_borrow(ctx) && cli_event_queue_is_owner(ctx);
+		if (owner && (!e->on_owner || !e->on_owner(argc, argv))) {
+			CMD_ERROR(ctx, "this command requires background execution");
+			rc = NB_ERR_NOT_PERMITTED;
+		} else
+			rc = e->handler(ctx, argc, argv);
 	}
 
 	if (!capture_active)

@@ -377,8 +377,8 @@ static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **arg
 }
 
 static const struct cli_command cli_ext_entries[] = {
-	{"/ext", cli_ext_command_ext, "List or manage tools and exts", "/ext list"},
-	{"/x", cli_ext_command_ext, "Alias for /ext", "/x list"},
+	{"/ext", cli_ext_command_ext, "List or manage tools and exts", "/ext list", NULL},
+	{"/x", cli_ext_command_ext, "Alias for /ext", "/x list", NULL},
 };
 
 struct cli_command_group cli_ext_commands(void)

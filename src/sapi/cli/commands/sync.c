@@ -348,6 +348,12 @@ static int cli_sync_command_replace_db(struct cli_application *ctx, const char *
 	return 0;
 }
 
+static int cli_sync_on_owner(int argc, char **argv)
+{
+	return argc >= 2 && !strcmp(argv[1], "restore-db") &&
+		(argc <= 3 || !strcmp(argv[3], "--yes") || !strcmp(argv[3], "-y"));
+}
+
 static int cli_sync_cmd(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg_borrow(argc, argv, 1);
@@ -397,7 +403,7 @@ struct cli_command_group cli_sync_commands(void)
 		{"/sync", cli_sync_cmd, "Manage .morph directory sync",
 		 "/sync [status|now|conflicts|restore <trash-id>|"
 		 "backups [path]|restore-db <snapshot-id> "
-		 "[destination|--yes]]"},
+		 "[destination|--yes]]", cli_sync_on_owner},
 	};
 
 	return (struct cli_command_group){

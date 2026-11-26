@@ -873,6 +873,69 @@ static int protocol_skill(struct runtime *runtime, const char *method, const cJS
 	return protocol_commit(out, &json);
 }
 
+struct protocol_mcp_descriptors {
+	void *items;
+};
+
+static void protocol_mcp_descriptors_cleanup(struct protocol_mcp_descriptors *descriptors)
+{
+	runtime_mcp_list_free(descriptors->items);
+}
+
+static int protocol_mcp_items(struct runtime *runtime, const char *method, const char *name,
+	cJSON *json)
+{
+	if (!name)
+		return NB_ERR_INVAL;
+
+	struct protocol_mcp_descriptors descriptors NB_CLEANUP(protocol_mcp_descriptors_cleanup) =
+		{0};
+	struct mcp_tool_desc *tools = NULL;
+	struct mcp_resource_desc *resources = NULL;
+	struct mcp_prompt_desc *prompts = NULL;
+	int count = 0;
+	int rc;
+	if (!strcmp(method, "mcp.tools.list")) {
+		rc = runtime_mcp_list_tools(runtime, name, &tools, &count);
+		descriptors.items = tools;
+	} else if (!strcmp(method, "mcp.resources.list")) {
+		rc = runtime_mcp_list_resources(runtime, name, &resources, &count);
+		descriptors.items = resources;
+	} else {
+		rc = runtime_mcp_list_prompts(runtime, name, &prompts, &count);
+		descriptors.items = prompts;
+	}
+
+	if (rc)
+		return rc;
+
+	cJSON *items = cJSON_AddArrayToObject(json, "items");
+	if (!items)
+		return NB_ERR_NOMEM;
+
+	for (int i = 0; i < count; i++) {
+		const char *label = tools ? tools[i].name : resources ? resources[i].name :
+			prompts[i].name;
+		const char *description = tools ? tools[i].description : resources ?
+			resources[i].description : prompts[i].description;
+		cJSON *item = cJSON_CreateObject();
+		if (!item)
+			return NB_ERR_NOMEM;
+
+		if (!cJSON_AddItemToArray(items, item)) {
+			cJSON_Delete(item);
+			return NB_ERR_NOMEM;
+		}
+
+		if (!cJSON_AddStringToObject(item, "name", label ? label : "") ||
+		    !cJSON_AddStringToObject(item, "description", description ? description : "") ||
+		    (resources && !cJSON_AddStringToObject(item, "uri", resources[i].uri)))
+			return NB_ERR_NOMEM;
+	}
+
+	return 0;
+}
+
 static int protocol_mcp(struct runtime *runtime, const char *method, const cJSON *params,
 			cJSON **out)
 {
@@ -883,7 +946,10 @@ static int protocol_mcp(struct runtime *runtime, const char *method, const cJSON
 	if (!json)
 		return NB_ERR_NOMEM;
 
-	if (!strcmp(method, "mcp.connect"))
+	if (!strcmp(method, "mcp.tools.list") || !strcmp(method, "mcp.resources.list") ||
+	    !strcmp(method, "mcp.prompts.list"))
+		rc = protocol_mcp_items(runtime, method, name, json);
+	else if (!strcmp(method, "mcp.connect"))
 		rc = name ? runtime_mcp_connect(runtime, name) : NB_ERR_INVAL;
 	else if (!strcmp(method, "mcp.disconnect"))
 		rc = name ? runtime_mcp_disconnect(runtime, name) : NB_ERR_INVAL;
@@ -983,6 +1049,9 @@ static int protocol_info(struct runtime *runtime, cJSON **out)
 				     "checkpoint.preview",
 				     "checkpoint.restore",
 				     "mcp.list",
+				     "mcp.tools.list",
+				     "mcp.resources.list",
+				     "mcp.prompts.list",
 				     "mcp.connect",
 				     "mcp.disconnect",
 				     "mcp.discover",

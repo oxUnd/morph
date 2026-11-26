@@ -828,10 +828,10 @@ static int cli_tasks_command_inbox(struct cli_application *ctx, int argc, char *
 
 static const struct cli_command cli_tasks_entries[] = {
 	{"/tasks", cli_tasks_command_tasks, "Manage scheduled tasks",
-	 "/tasks [list|show|add|every|update|cancel|run]"},
+	 "/tasks [list|show|add|every|update|cancel|run]", NULL},
 	{"/todo", cli_tasks_command_tasks, "Alias for /tasks",
-	 "/todo [list|show|add|every|update|cancel|run]"},
-	{"/inbox", cli_tasks_command_inbox, "Show task notifications", "/inbox [list|read]"},
+	 "/todo [list|show|add|every|update|cancel|run]", NULL},
+	{"/inbox", cli_tasks_command_inbox, "Show task notifications", "/inbox [list|read]", NULL},
 };
 
 struct cli_command_group cli_task_commands(void)

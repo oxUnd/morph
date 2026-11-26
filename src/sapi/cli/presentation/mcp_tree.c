@@ -4,6 +4,7 @@
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/list.h"
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/services/event_queue.h"
 #include "runtime/runtime.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
@@ -291,11 +292,29 @@ int cli_mcp_tree_items_render(nb_buf *out, const char *kind, const char *server,
 	return rc;
 }
 
+struct cli_mcp_tree_delivery {
+	const struct runtime_mcp_status *servers;
+	const struct cli_mcp_tree_item *items;
+	const char *kind;
+	const char *server;
+	size_t count;
+};
+
+static int cli_mcp_tree_deliver(struct cli_application *ctx, void *opaque)
+{
+	const struct cli_mcp_tree_delivery *delivery = opaque;
+	return delivery->kind ? cli_chat_mcp_items(ctx, delivery->kind,
+		delivery->server, delivery->items, delivery->count) :
+		cli_chat_mcp_servers(ctx, delivery->servers, delivery->count);
+}
+
 int cli_mcp_tree_write(struct cli_application *ctx, const struct runtime_mcp_status *servers,
 	size_t count)
 {
-	if (cli_chat_active(ctx))
-		return cli_chat_mcp_servers(ctx, servers, count);
+	if (cli_chat_active(ctx)) {
+		struct cli_mcp_tree_delivery delivery = {.servers = servers, .count = count};
+		return cli_event_queue_call_owner(ctx, cli_mcp_tree_deliver, &delivery);
+	}
 
 	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = cli_list_columns() - (int)CLI_CONTENT_RIGHT_PADDING;
@@ -310,8 +329,11 @@ int cli_mcp_tree_write(struct cli_application *ctx, const struct runtime_mcp_sta
 int cli_mcp_tree_items_write(struct cli_application *ctx, const char *kind, const char *server,
 	const struct cli_mcp_tree_item *items, size_t count)
 {
-	if (cli_chat_active(ctx))
-		return cli_chat_mcp_items(ctx, kind, server, items, count);
+	if (cli_chat_active(ctx)) {
+		struct cli_mcp_tree_delivery delivery = {
+			.items = items, .kind = kind, .server = server, .count = count};
+		return cli_event_queue_call_owner(ctx, cli_mcp_tree_deliver, &delivery);
+	}
 
 	nb_buf rendered NB_CLEANUP(nb_buf_cleanup) = {0};
 	int columns = cli_list_columns() - (int)CLI_CONTENT_RIGHT_PADDING;

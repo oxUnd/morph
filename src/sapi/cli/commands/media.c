@@ -248,10 +248,10 @@ static int cli_media_command_render(struct cli_application *ctx, int argc, char 
 }
 
 static const struct cli_command cli_media_entries[] = {
-	{"/image", cli_media_command_image, "Inject an image into context", "/image <file_path>"},
+	{"/image", cli_media_command_image, "Inject an image into context", "/image <file_path>", NULL},
 	{"/render", cli_media_command_render, "Render a file (image/video/markdown)",
-	 "/render <file_path>"},
-	{"/r", cli_media_command_render, "Alias for /render", "/r <file_path>"},
+	 "/render <file_path>", NULL},
+	{"/r", cli_media_command_render, "Alias for /render", "/r <file_path>", NULL},
 };
 
 struct cli_command_group cli_media_commands(void)

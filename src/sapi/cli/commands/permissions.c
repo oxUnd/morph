@@ -300,6 +300,22 @@ static int cli_permissions_clear_show(struct cli_application *ctx, int all_proje
 	return rc;
 }
 
+static int cli_permissions_on_owner(int argc, char **argv)
+{
+	if (argc == 1)
+		return 1;
+
+	if (strcmp(argv[1], "clear"))
+		return 0;
+
+	for (int i = 2; i < argc; i++) {
+		if (!strcmp(argv[i], "--yes"))
+			return 0;
+	}
+
+	return 1;
+}
+
 static int cli_permissions_command_permissions(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *action = cli_cmd_arg_borrow(argc, argv, 1);
@@ -414,9 +430,9 @@ static const struct cli_command cli_permissions_entries[] = {
 	{"/permissions", cli_permissions_command_permissions,
 	 "Configure access, approval and reviewer; manage grants",
 	 "/permissions [status|mode <ask|auto|full|read_only>|set <access> <approval> <reviewer>|list|revoke <id|program>|"
-	 "clear [--all-projects] [--yes]]"},
+	 "clear [--all-projects] [--yes]]", cli_permissions_on_owner},
 	{"/perms", cli_permissions_command_permissions, "Alias for /permissions",
-	 "/perms [list|revoke <id|program>|clear]"},
+	 "/perms [list|revoke <id|program>|clear]", cli_permissions_on_owner},
 };
 
 struct cli_command_group cli_permission_commands(void)

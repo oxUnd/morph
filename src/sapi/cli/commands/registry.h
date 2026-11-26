@@ -9,6 +9,8 @@ struct cli_command {
 	int (*handler)(struct cli_application *ctx, int argc, char **argv);
 	const char *desc;
 	const char *usage;
+	/* NULL runs on the command worker. Only bounded UI actions opt in. */
+	int (*on_owner)(int argc, char **argv);
 };
 
 struct cli_command_group {
@@ -23,6 +25,9 @@ const char *cli_cmd_arg_borrow(int argc, char **argv, int idx);
 /* Mutates input; reports NB_ERR_TOO_BIG if argv cannot hold every argument plus NUL. */
 int cli_argv_split(const char *input, char **argv, int max_args);
 int cli_command_dispatch(struct cli_application *ctx, const char *input);
+int cli_command_runs_on_owner(const struct cli_command *command, const char *input);
+int cli_command_owner_always(int argc, char **argv);
+int cli_command_owner_without_arguments(int argc, char **argv);
 void cli_print_help(struct cli_application *ctx);
 char *cli_command_completion_generator(const char *text, int state);
 

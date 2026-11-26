@@ -89,6 +89,48 @@ static int cli_test_write_png(const char *path)
 	return written == sizeof(png) ? 0 : -1;
 }
 
+TEST(CliCommandRegistryTest, DefaultsToWorkerAndRoutesMixedCommandsByArguments)
+{
+	const struct cli_command unclassified = {};
+	EXPECT_EQ(cli_command_runs_on_owner(&unclassified, "/future-command"), 0);
+	for (const char *input : {"/mcp connect slow", "/mcp resources slow", "/compress",
+	     "/cp", "/ext install github:owner/repo", "/history --diagnose",
+	     "/permissions status", "/model status", "/memory show", "/sync now"}) {
+		const struct cli_command *command = cli_command_find_input_borrow(input);
+		ASSERT_NE(command, nullptr) << input;
+		EXPECT_EQ(cli_command_runs_on_owner(command, input), 0) << input;
+	}
+
+	for (const char *input : {"/help", "/quit", "/q", "/model", "/m", "/history",
+	     "/hi", "/permissions", "/perms", "/side", "/resume", "/new session"}) {
+		const struct cli_command *command = cli_command_find_input_borrow(input);
+		ASSERT_NE(command, nullptr) << input;
+		EXPECT_EQ(cli_command_runs_on_owner(command, input), 1) << input;
+	}
+}
+
+TEST(CliCommandRegistryTest, EveryAliasSharesItsHandlersExecutionPolicy)
+{
+	std::vector<const struct cli_command *> commands;
+	for (int index = 0;; index++) {
+		char *name NB_CLEANUP(nb_charp_cleanup) = cli_command_completion_generator("/", index);
+		if (!name)
+			break;
+
+		const struct cli_command *command = cli_command_find_borrow(name);
+		ASSERT_NE(command, nullptr);
+		for (const auto *previous : commands) {
+			if (command->handler == previous->handler)
+				EXPECT_EQ(command->on_owner, previous->on_owner)
+					<< command->name << " / " << previous->name;
+		}
+
+		commands.push_back(command);
+	}
+
+	EXPECT_GT(commands.size(), 20u);
+}
+
 TEST(CliMediaInputTest, RemovesLegacyMediaCommands)
 {
 

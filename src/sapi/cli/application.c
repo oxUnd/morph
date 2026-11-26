@@ -201,6 +201,7 @@ static void cli_application_prepare_termination(struct nt_application *base, int
 	(void)cli_event_queue_stop_owner_calls(ctx);
 	cli_sessions_stop(ctx);
 	if (ctx->input_job && ctx->input_job->active) {
+		cli_command_job_cancel(ctx->input_job);
 		runtime_cancel_turn(ctx->runtime);
 		int job_result = cli_command_job_finish(ctx->input_job);
 		if (ctx->turn_active)

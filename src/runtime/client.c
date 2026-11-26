@@ -251,6 +251,7 @@ int runtime_client_enqueue_locked(struct runtime_client *client,
 int runtime_client_respond_locked(struct runtime_client_request_node *request,
 	int64_t session_id, const char *turn_id, cJSON **data, int error_code)
 {
+	request->completed = 1;
 	struct runtime_message *message NB_CLEANUP(runtime_message_cleanup) =
 		runtime_client_message_create(RUNTIME_MESSAGE_RESPONSE, request->id,
 			request->method, session_id, turn_id, 0, data ? *data : NULL, error_code);
@@ -279,13 +280,11 @@ static void request_destroy(struct runtime_client_request_node *request)
 	if (!request)
 		return;
 
-	free(request->id);
-	free(request->method);
-	cJSON_Delete(request->params);
 	if (request->retained) {
 		struct runtime_client_service *service = request->client->service;
 
 		nb_mutex_lock(service->lock);
+		nb_queue_remove(&request->control_node);
 		client_release_locked(request->client);
 		int destroy = service_release_ready_locked(service);
 		nb_mutex_unlock(service->lock);
@@ -293,6 +292,9 @@ static void request_destroy(struct runtime_client_request_node *request)
 			service_destroy(service);
 	}
 
+	free(request->id);
+	free(request->method);
+	cJSON_Delete(request->params);
 	free(request);
 }
 
@@ -308,6 +310,9 @@ static unsigned request_capability(const char *method)
 	    !strcmp(method, "agent.interrupt") || !strcmp(method, "process.write") ||
 	    !strcmp(method, "process.stop"))
 		return RUNTIME_CLIENT_EXECUTE;
+
+	if (!strncmp(method, "mcp.", 4) && strcmp(method, "mcp.list"))
+		return RUNTIME_CLIENT_MANAGE;
 
 	if (strstr(method, ".get") || strstr(method, ".list") || strstr(method, ".read") ||
 	    strstr(method, ".preview") || !strcmp(method, "runtime.info") ||
@@ -376,14 +381,33 @@ static int request_reads_manager_metadata(const char *method)
 		!strcmp(method, "history.list") || !strcmp(method, "history.read");
 }
 
+struct request_mcp_interrupt {
+	struct runtime_client_request_node *request;
+	struct mcp_client *client;
+};
+
+static int request_interrupted(void *opaque)
+{
+	const struct request_mcp_interrupt *scope = opaque;
+	return runtime_client_service_interrupted(scope->request->client->service) ||
+		(!scope->client->request_context && nb_cancel_requested(&scope->request->cancel));
+}
+
+static int request_mcp_cancellable(const char *method)
+{
+	return !strcmp(method, "mcp.connect") || !strcmp(method, "mcp.discover") ||
+		!strcmp(method, "mcp.tools.list") || !strcmp(method, "mcp.resources.list") ||
+		!strcmp(method, "mcp.prompts.list");
+}
+
 static int dispatch_domain(struct runtime_client_service *service, struct runtime *target,
 	struct runtime_client_request_node *request, cJSON **result)
 {
 	struct mcp_client *client = NULL;
 	int (*previous_check)(void *) = NULL;
 	void *previous_data = NULL;
-	if (!strcmp(request->method, "mcp.connect") ||
-	    !strcmp(request->method, "mcp.discover")) {
+	struct request_mcp_interrupt interrupt = {.request = request};
+	if (request_mcp_cancellable(request->method)) {
 		client = mcp_registry_borrow(&target->context.mcp,
 			runtime_client_json_string(request->params, "name"));
 		struct runtime_mcp_job *job = runtime_mcp_job_find(target, client);
@@ -396,18 +420,24 @@ static int dispatch_domain(struct runtime_client_service *service, struct runtim
 		}
 
 		if (client) {
+			nb_mutex_lock(client->lock);
+			interrupt.client = client;
 			previous_check = client->interrupt_check;
 			previous_data = client->interrupt_user_data;
-			client->interrupt_check = runtime_client_service_interrupted;
-			client->interrupt_user_data = service;
+			client->interrupt_check = request_interrupted;
+			client->interrupt_user_data = &interrupt;
+			nb_mutex_unlock(client->lock);
 		}
 	}
 
 	int rc = runtime_client_service_interrupted(service) ? NB_ERR_CLOSED :
+		nb_cancel_requested(&request->cancel) ? NB_ERR_CANCELLED :
 		runtime_protocol_dispatch(target, request->method, request->params, result);
 	if (client) {
+		nb_mutex_lock(client->lock);
 		client->interrupt_check = previous_check;
 		client->interrupt_user_data = previous_data;
+		nb_mutex_unlock(client->lock);
 	}
 
 	return rc;
@@ -1011,6 +1041,7 @@ int runtime_client_open(struct runtime *runtime,
 	client->user_id = strdup(options && options->user_id ? options->user_id : "local");
 	client->requests = nb_map_new();
 	nb_queue_init(&client->messages);
+	nb_queue_init(&client->request_controls);
 	struct runtime_client_subscription subscription = {0};
 	nb_vec_init(&client->subscriptions, sizeof(subscription));
 	if (!client->user_id || !client->requests) {
@@ -1057,6 +1088,7 @@ int runtime_client_request_copy(struct runtime_client *client,
 		return NB_ERR_NOMEM;
 
 	request->client = client;
+	nb_cancel_init(&request->cancel);
 	request->id = strdup(command->id);
 	request->method = strdup(command->method);
 	request->params = command->params ? cJSON_Duplicate(command->params, 1) :
@@ -1086,6 +1118,7 @@ int runtime_client_request_copy(struct runtime_client *client,
 		client->pending_requests++;
 		client->references++;
 		request->retained = 1;
+		nb_queue_insert_tail(&client->request_controls, &request->control_node);
 		if (strcmp(command->method, "turn.start") &&
 		    strcmp(command->method, "turn.interrupt") &&
 		    strcmp(command->method, "turn.steer") &&
@@ -1112,6 +1145,34 @@ int runtime_client_request_copy(struct runtime_client *client,
 
 	request_destroy(request);
 
+	return rc;
+}
+
+int runtime_client_cancel_request(struct runtime_client *client, const char *id)
+{
+	if (!client || !id || !*id)
+		return NB_ERR_INVAL;
+
+	struct runtime_client_service *service = client->service;
+	nb_mutex_lock(service->lock);
+	int rc = client->closed || service->stopping ? NB_ERR_CLOSED : NB_ERR_NOT_FOUND;
+	if (rc == NB_ERR_NOT_FOUND) {
+		nb_queue *node;
+		NB_QUEUE_FOREACH(node, &client->request_controls) {
+			struct runtime_client_request_node *request = NB_QUEUE_DATA(node,
+				struct runtime_client_request_node, control_node);
+			if (request->completed || strcmp(request->id, id))
+				continue;
+
+			rc = request_mcp_cancellable(request->method) ? NB_OK : NB_ERR_UNSUPPORTED;
+			if (!rc)
+				nb_cancel_request(&request->cancel);
+
+			break;
+		}
+	}
+
+	nb_mutex_unlock(service->lock);
 	return rc;
 }
 

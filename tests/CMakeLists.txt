@@ -368,6 +368,12 @@ if(Python3_Interpreter_FOUND)
 				$<TARGET_FILE:morph-cli-pty-driver> $<TARGET_FILE:morph>)
 		set_tests_properties(cli_mcp_tree_pty_integration PROPERTIES
 			SKIP_RETURN_CODE 77 TIMEOUT 90)
+		add_test(NAME cli_command_responsiveness_pty_integration
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_cli_command_responsiveness_pty.py
+				$<TARGET_FILE:morph>)
+		set_tests_properties(cli_command_responsiveness_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 120)
 		add_test(NAME cli_resume_scale_pty_integration
 			COMMAND ${Python3_EXECUTABLE}
 				${CMAKE_CURRENT_SOURCE_DIR}/test_cli_resume_scale_pty.py

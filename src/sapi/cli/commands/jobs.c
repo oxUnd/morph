@@ -61,7 +61,7 @@ struct cli_command_group cli_job_commands(void)
 {
 	static const struct cli_command commands[] = {
 		{"/jobs", cli_jobs_command_jobs, "Inspect background commands",
-		 "/jobs [id|stop id]"},
+		 "/jobs [id|stop id]", cli_command_owner_always},
 	};
 	return (struct cli_command_group){commands, (int)(sizeof(commands) / sizeof(commands[0])),
 					  "Runtime"};

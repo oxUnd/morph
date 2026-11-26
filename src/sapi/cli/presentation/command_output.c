@@ -2,6 +2,7 @@
 #include "sapi/cli/presentation/tree.h"
 #include <nb/err.h>
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/components/skill_tree.h"
 
 #include "sapi/cli/application.h"
@@ -541,9 +542,27 @@ void cli_help_end(struct cli_application *ctx)
 			  "\n" ANSI_DIM "Use /help <command> for details." ANSI_RESET "\n");
 }
 
+struct cli_command_output_skill_delivery {
+	const struct cli_skill_list_row *rows;
+	size_t count;
+	int active_count;
+};
+
+static int cli_command_output_skill_deliver(struct cli_application *ctx, void *opaque)
+{
+	const struct cli_command_output_skill_delivery *delivery = opaque;
+	return cli_skill_list_render(ctx, delivery->rows, delivery->count,
+		delivery->active_count);
+}
+
 int cli_skill_list_render(struct cli_application *ctx, const struct cli_skill_list_row *rows,
 			  size_t count, int active_count)
 {
+	if (ctx && ctx->events && !cli_event_queue_is_owner(ctx)) {
+		struct cli_command_output_skill_delivery delivery = {rows, count, active_count};
+		return cli_event_queue_call_owner(ctx, cli_command_output_skill_deliver, &delivery);
+	}
+
 	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {0};
 	cli_output_printf(ctx, "\n" ANSI_BOLD ANSI_CYAN CLI_FEED_MESSAGE " Skills %zu" ANSI_DIM
 			  " · %d active" ANSI_RESET "\n", count, active_count);
@@ -653,7 +672,7 @@ int cli_tool_list_render(struct cli_application *ctx, const struct cli_tool_list
 
 void cli_command_print_cancelled(struct cli_application *ctx)
 {
-	cli_output_printf(ctx, ANSI_DIM "  cancelled" ANSI_RESET "\n");
+	cli_output_printf(ctx, ANSI_DIM CLI_FEED_CANCELLED " cancelled" ANSI_RESET "\n");
 }
 
 void cli_command_print_tree_note(struct cli_application *ctx, const char *text)

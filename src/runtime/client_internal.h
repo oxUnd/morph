@@ -4,6 +4,7 @@
 #include "runtime/client.h"
 #include "runtime/runtime.h"
 #include <nb/buf.h>
+#include <nb/cancel.h>
 #include <nb/map.h>
 #include <nb/queue.h>
 #include <nb/thread.h>
@@ -26,11 +27,14 @@ struct runtime_client_message_node {
 
 struct runtime_client_request_node {
 	nb_queue node;
+	nb_queue control_node;
+	struct nb_cancel cancel;
 	struct runtime_client *client;
 	char *id;
 	char *method;
 	cJSON *params;
 	int retained;
+	int completed;
 };
 
 struct runtime_client_subscription {
@@ -44,6 +48,7 @@ struct runtime_client {
 	nb_queue messages;
 	nb_vec subscriptions;
 	nb_map *requests;
+	nb_queue request_controls;
 	struct runtime_client_options options;
 	char *user_id;
 	size_t message_events;

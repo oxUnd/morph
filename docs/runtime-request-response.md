@@ -304,6 +304,22 @@ to release its retained message channel resources.
 when no message arrives and `NB_ERR_CLOSED` after shutdown and queue draining.
 A negative timeout waits until a message or shutdown.
 
+`runtime_client_cancel_request(client, id)` cooperatively cancels that client's
+MCP connection, discovery or capability-list request. It does not consume the
+response or cancel another client's request with the same ID. A completed or
+unknown request returns `NB_ERR_NOT_FOUND`; other operation kinds return
+`NB_ERR_UNSUPPORTED` and turns retain their named interruption protocol. The
+operation's response is authoritative when cancellation races completion;
+completed side effects are not rolled back. Cancellation and shutdown are
+checked by both stdio and HTTP transport waits. Active request controls remain
+runtime-owned until the operation retires, independently of a frontend waiter.
+
+MCP capability queries use `mcp.tools.list`, `mcp.resources.list` and
+`mcp.prompts.list` with a server `name`. They return an `items` array containing
+`name`, `description` and, for resources, `uri`. These requests may connect the
+configured server and execute outside the frontend event thread.
+They require `RUNTIME_CLIENT_MANAGE`; inspecting `mcp.list` remains read-only.
+
 ## Persistent execution records
 
 [`persistence/orm/runtime_store.h`](../src/persistence/orm/runtime_store.h) owns typed

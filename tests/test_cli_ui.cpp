@@ -13,6 +13,7 @@ extern "C" {
 #include "sapi/cli/application.h"
 #include "sapi/cli/adapters/protocol/interaction.h"
 #include "sapi/cli/services/command_job.h"
+#include "sapi/cli/commands/registry.h"
 #include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/services/event_queue.h"
 #include "agent/tool_context.h"
@@ -467,6 +468,29 @@ TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
 	worker.join();
 	EXPECT_EQ(call_rc, 73);
 	EXPECT_EQ(ran_on_owner, 1);
+}
+
+static void cli_ui_application_cleanup(struct nt_application **owner)
+{
+	nt_application_deinit(*owner);
+	*owner = nullptr;
+}
+
+TEST_F(CliUiTest, OwnerCannotBypassBackgroundCommandDispatch)
+{
+	struct nt_application *app NB_CLEANUP(cli_ui_application_cleanup) = &ctx.base;
+	struct nt_application_options options = {};
+	options.input = stdin;
+	options.output = stdout;
+	ASSERT_EQ(nt_application_init(app, &options), 0);
+	nb_buf output NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_output_capture_begin(&ctx, &output), 0);
+	EXPECT_EQ(cli_command_dispatch(&ctx, "/mcp connect missing"), NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(cli_command_dispatch(&ctx, "/cp"), NB_ERR_NOT_PERMITTED);
+	EXPECT_EQ(cli_command_dispatch(&ctx, "/help /share"), 0);
+	cli_output_capture_end(&ctx);
+	EXPECT_NE(std::string(nb_buf_cstr(&output)).find("background execution"), std::string::npos);
+	EXPECT_NE(std::string(nb_buf_cstr(&output)).find("offline HTML"), std::string::npos);
 }
 
 TEST_F(CliUiTest, CommandWaitPumpsSynchronousOwnerCall)

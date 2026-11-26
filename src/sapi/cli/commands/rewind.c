@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/rewind.h"
+#include "sapi/cli/commands/registry.h"
 #include <nb/err.h>
 #include "sapi/cli/presentation/output.h"
 #include "runtime/runtime.h"
@@ -8,6 +9,7 @@
 #include "sapi/cli/pages/setup/controls.h"
 #include "sapi/cli/presentation/rewind.h"
 #include "sapi/cli/services/command_job.h"
+#include "sapi/cli/services/event_queue.h"
 #include "sapi/cli/services/session_restore.h"
 #include "sapi/cli/services/checkpoints.h"
 #include "sapi/cli/presentation/list.h"
@@ -154,7 +156,8 @@ static int cli_rewind_command(struct cli_application *ctx, int argc, char **argv
 	if (!ctx || !ctx->runtime)
 		return NB_ERR_INVAL;
 
-	if (ctx->turn_active || (ctx->input_job && ctx->input_job->active)) {
+	if (ctx->turn_active || (ctx->input_job && ctx->input_job->active &&
+	    cli_event_queue_is_owner(ctx))) {
 		CMD_ERROR(ctx, "wait for the active turn before rewinding");
 		return NB_ERR_BUSY;
 	}
@@ -206,7 +209,7 @@ struct cli_command_group cli_rewind_commands(void)
 {
 	static const struct cli_command commands[] = {
 		{"/rewind", cli_rewind_command, "Restore a turn checkpoint",
-		 "/rewind [list|preview <id>|code <id>|conversation <id>|both <id>]"},
+		 "/rewind [list|preview <id>|code <id>|conversation <id>|both <id>]", cli_command_owner_without_arguments},
 	};
 	return (struct cli_command_group){commands, (int)(sizeof(commands) / sizeof(commands[0])),
 					  "Session"};

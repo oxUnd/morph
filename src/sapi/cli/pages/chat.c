@@ -1,4 +1,5 @@
 #include "sapi/cli/pages/chat.h"
+#include "sapi/cli/presentation/command_output.h"
 
 #include "sapi/cli/components/shortcut_hint.h"
 
@@ -868,10 +869,26 @@ int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
 	return cli_chat_page_error(page);
 }
 
+struct cli_chat_media_delivery {
+	const char *type;
+	const char *path;
+};
+
+static int cli_chat_media_deliver(struct cli_application *ctx, void *opaque)
+{
+	const struct cli_chat_media_delivery *delivery = opaque;
+	return cli_chat_media(ctx, delivery->type, delivery->path);
+}
+
 int cli_chat_media(struct cli_application *ctx, const char *type, const char *path)
 {
 	if (!cli_chat_active(ctx) || !type || !path)
 		return NB_ERR_INVAL;
+
+	if (!cli_event_queue_is_owner(ctx)) {
+		struct cli_chat_media_delivery delivery = {type, path};
+		return cli_event_queue_call_owner(ctx, cli_chat_media_deliver, &delivery);
+	}
 
 	struct cli_chat_page *page = ctx->chat;
 	cli_chat_files_session(page);
@@ -1253,8 +1270,10 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 	if (nb_str_is_empty(nb_str_trim(nb_str_from_cstr(text))))
 		return nt_text_field_set_text(page->editor, "");
 
-	if (page->command_running)
+	if (page->command_running) {
+		CMD_ERROR(ctx, "command is still running; press Esc to cancel or retry later");
 		return 0;
+	}
 
 	char *input NB_CLEANUP(nb_charp_cleanup) = strdup(text);
 	if (!input)
@@ -1282,6 +1301,10 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 	if (input[0] == '/') {
 		cli_presentation_command_input(ctx, input);
 		const struct cli_command *command = cli_command_find_input_borrow(input);
+		int on_owner = command ? cli_command_runs_on_owner(command, input) : 0;
+		if (on_owner < 0)
+			return on_owner;
+
 		int busy = ctx->input_job->active || cli_sessions_active(ctx);
 		int navigation = !strcmp(input, "/new") || !strncmp(input, "/new ", 5) ||
 			!strcmp(input, "/n") || !strncmp(input, "/n ", 3) ||
@@ -1302,11 +1325,12 @@ static int cli_chat_page_submit(struct cli_chat_page *page, const char *text)
 			}
 		} else if (ctx->input_job->active && !strcmp(input, "/recap"))
 			(void)cli_recap_start(ctx, 0);
-		else if (!ctx->input_job->active && command &&
-			 (!strcmp(command->name, "/compress") || !strcmp(command->name, "/ext"))) {
+		else if (!ctx->input_job->active && !on_owner) {
 			rc = cli_command_job_start(ctx->input_job, ctx, input);
 			if (!rc)
 				page->command_running = 1;
+			else
+				CMD_ERROR(ctx, "could not start command: %s", nb_status_str(rc));
 		} else
 			(void)ctx->input_execute(ctx, input);
 
@@ -1608,6 +1632,9 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 			(void)cli_sessions_interrupt(ctx,
 				key == 27 && cli_jobs_model_waiting(ctx->jobs));
 		else if (ctx->input_job->active) {
+			if (page->command_running)
+				cli_command_job_cancel(ctx->input_job);
+
 			if (key == 27 && cli_command_job_expedite_prompts(ctx->input_job))
 				return 1;
 
@@ -2349,6 +2376,13 @@ static void cli_chat_page_finish_job(struct cli_application *ctx)
 	(void)cli_event_queue_drain(ctx);
 	if (ctx->chat->command_running) {
 		ctx->chat->command_running = 0;
+		if (result == NB_ERR_CANCELLED || result == NB_ERR_INTERRUPTED)
+			cli_command_print_cancelled(ctx);
+		else if (result < 0 && (!ctx->chat->command_group ||
+		    nt_view_child_count(ctx->chat->command_group) <= 1))
+			CMD_ERROR(ctx, "command failed: %s", nb_err_str(
+				morph_error_descriptions(), MORPH_ERROR_COUNT, result));
+
 		cli_presentation_command_end(ctx);
 		return;
 	}
@@ -2520,8 +2554,10 @@ static int cli_chat_page_event(void *data, struct nt_application *app,
 				nt_view_controller(nt_window_root_view(nt_application_window(app))), 0);
 		else if (cli_sessions_active(ctx))
 			(void)cli_sessions_interrupt(ctx, 0);
-		else if (ctx->input_job->active)
+		else if (ctx->input_job->active) {
+			cli_command_job_cancel(ctx->input_job);
 			runtime_cancel_turn(ctx->runtime);
+		}
 	}
 
 	if (nb_atomic_int_exchange(&ctx->resized, 0))
