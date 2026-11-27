@@ -73,8 +73,10 @@ def run(driver, port, columns):
                                 for message in body.get('messages', []) if message['role'] == 'system'))
             primary = next(release for _, release in pair if release is not child)
             wait_for(terminal, lambda: 'Agents: 1 running' in '\n'.join(terminal.screen.display))
-            wait_for(terminal, lambda: any('└ ◉ /root/worker' in line for line in terminal.screen.display))
-            active_row = next(line for line in terminal.screen.display if '└ ◉ /root/worker' in line)
+            wait_for(terminal, lambda: any('  └ /root/worker' in line for line in terminal.screen.display))
+            active_row = next(line for line in terminal.screen.display if '  └ /root/worker' in line)
+            agent_row = terminal.screen.display.index(active_row)
+            assert terminal.screen.buffer[agent_row][2].fg == '8a8a8a'
             assert 'CHILD_ACTIVITY_TASK' not in active_row
             working = next(line for line in terminal.screen.display if 'Working' in line)
             assert 'Agents: 1 running' in working, '\n'.join(terminal.screen.display)
@@ -90,6 +92,21 @@ def run(driver, port, columns):
                 terminal.pump(.3)
                 visible = '\n'.join(stable_rows(terminal))
                 assert visible.count('Waiting for agents') == 1, visible
+            terminal.send('CLICK_FEED_DRAFT')
+            wait_for(terminal, lambda: 'CLICK_FEED_DRAFT' in '\n'.join(terminal.screen.display))
+            row = next(i for i, line in enumerate(terminal.screen.display)
+                       if '  └ /root/worker' in line)
+            column = terminal.screen.display[row].index('/root/worker') + 1
+            terminal.send(f'\x1b[<0;{column};{row + 1}M\x1b[<0;{column};{row + 1}m')
+            wait_for(terminal, lambda: hasattr(terminal.screen, '_main_screen'))
+            wait_for(terminal, lambda: 'morph / subagents / worker' in '\n'.join(terminal.screen.display))
+            terminal.send('\x1b')
+            wait_for(terminal, lambda: any(line.strip() == 'morph / subagents'
+                                         for line in terminal.screen.display))
+            terminal.send('\x1b')
+            wait_for(terminal, lambda: chat_visible(terminal))
+            wait_for(terminal, lambda: 'CLICK_FEED_DRAFT' in '\n'.join(terminal.screen.display))
+            terminal.send('\x15')
             terminal.send('/agents\r')
             wait_for(terminal, lambda: any('Agents (1)' in row for row in terminal.screen.display))
             assert hasattr(terminal.screen, '_main_screen')

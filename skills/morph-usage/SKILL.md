@@ -65,6 +65,14 @@ Do not assume an older installed binary supports unreleased source changes.
 - Explain the actual HTTP status and provider detail when available. A 400
   protocol/config error is not evidence of a network outage or a reason to keep retrying.
 
+## Multi-agent CLI
+
+Live sub-agent activity and waiting status appear inside the CLI composer.
+Multiple agents use flat gray `└` rows aligned with the `Working` text, without
+circle markers before their paths.
+Click an agent path to open its feed;
+`/subagents /root/name` opens the same feed by command.
+
 ## Editing the Active Config
 
 1. Inspect the current config and prepare a minimal edit to the requested settings.

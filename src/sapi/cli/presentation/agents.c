@@ -285,13 +285,7 @@ int cli_agents_rows(nb_buf *out, const struct agent_info *agents, int count, int
 		if (out->len)
 			(void)nb_buf_append_char(out, '\n');
 
-		cli_agents_append(out, shown + 1 == active ? "  └ " : "  ├ ", 4,
-				  styled ? ANSI_DIM : "");
-		cli_agents_append(out, agent->status == AGENT_RUNNING ? CLI_FEED_RUNNING
-							    : CLI_FEED_PENDING, 1,
-				  styled ? (agent->status == AGENT_RUNNING ? ANSI_CYAN : ANSI_DIM)
-					 : "");
-		(void)nb_buf_append_cstr(out, " ");
+		cli_agents_append(out, "  └ ", 4, styled ? CLI_AGENT_CONNECTOR_COLOR : "");
 		int name_width = columns / 2;
 		if (name_width > 28)
 			name_width = 28;
@@ -302,7 +296,7 @@ int cli_agents_rows(nb_buf *out, const struct agent_info *agents, int count, int
 
 		cli_agents_append(out, name, name_width, styled ? CLI_COMMAND_COLOR : "");
 		(void)nb_buf_append_cstr(out, "  ");
-		cli_agents_append(out, nb_buf_cstr(&activity), columns - name_width - 9,
+		cli_agents_append(out, nb_buf_cstr(&activity), columns - name_width - 7,
 				  styled ? ANSI_DIM : "");
 		if (!nb_buf_ok(out))
 			return nb_buf_status(out);
@@ -318,7 +312,8 @@ int cli_agents_rows(nb_buf *out, const struct agent_info *agents, int count, int
 		if (!nb_buf_printf(&activity, "  └ +%d more · /agents", active - shown))
 			return nb_buf_status(&activity);
 
-		cli_agents_append(out, nb_buf_cstr(&activity), columns - 1, styled ? ANSI_DIM : "");
+		cli_agents_append(out, nb_buf_cstr(&activity), columns - 1,
+				  styled ? CLI_AGENT_CONNECTOR_COLOR : "");
 		shown++;
 	}
 

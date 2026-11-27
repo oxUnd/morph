@@ -479,6 +479,10 @@ max_threads and max_depth default to 6 and 2. The model decides which tasks
 can usefully run in parallel when proactive delegation is enabled.
 /subagents opens the thread overview: Enter views an agent,
 Tab or Left/Right switches, f sends a follow-up, k interrupts, and Esc returns.
+Live agent activity and waiting status appear inside the composer. Multiple
+agents use flat gray elbow-line rows aligned with the Working text, without
+circle markers before their paths;
+click an agent path to open its feed.
 Children compile and test in MORPH_AGENT_SCRATCH with scoped workspace writes.
 An optional weighted token budget covers the session tree. Enable it under
 [features.rollout_budget] and configure its limit and reminder thresholds.

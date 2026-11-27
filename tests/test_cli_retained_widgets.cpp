@@ -918,7 +918,7 @@ TEST_F(CliRetainedWidgetsTest, ComposerUltraWavePaintsOnlyTruePaddingAndPreserve
 	const std::string initial = frame;
 	const int initial_x = cursor_x, initial_y = cursor_y;
 	EXPECT_NE(frame.find("\033[48;5;237m"), std::string::npos);
-	const struct nt_view_options options = nt_view_options(component);
+	const struct nt_view_options options = nt_view_options(nt_view_child(component, 0));
 	EXPECT_EQ(options.padding.top, 1);
 	EXPECT_EQ(options.padding.bottom, 1);
 	EXPECT_EQ(options.padding.right, 0);

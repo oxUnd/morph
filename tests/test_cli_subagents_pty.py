@@ -391,7 +391,7 @@ def run(driver, port, columns):
             releases.append(integrated)
             integrated.delta = {'content': 'ROOT_VERIFIED_FINAL'}
             integrated.set()
-            wait_for(terminal, lambda: 'ROOT_VERIFIED_FINAL' in terminal.raw
+            wait_for(terminal, lambda: 'ROOT_VERIFIED_FINAL' in visible(terminal)
                      and 'Working ·' not in visible(terminal))
             restored_composer(terminal, 'ROOT_VERIFIED_FINAL', 'PRESERVED_ROOT_DRAFT',
                               command=terminal.subagents_command)

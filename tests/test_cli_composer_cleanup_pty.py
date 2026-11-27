@@ -95,6 +95,9 @@ class ComposerFrameStream:
         clipped_message_padding = (self.color and len(prompts) - 1 < self.submissions
                                    and not rows[0].strip())
         for row in range(screen.lines):
+            # The footer owns permission chips with intentional backgrounds.
+            if row == footers[0]:
+                continue
             backgrounds = [screen.buffer[row][column].bg for column in range(screen.columns)]
             if self.color and (row in painted or (row == 0 and clipped_message_padding
                                                   and any(bg != 'default' for bg in backgrounds))):

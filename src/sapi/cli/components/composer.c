@@ -10,9 +10,15 @@
 struct cli_composer {
 	struct nt_view base;
 	struct nt_view *editor;
+	struct nt_view *input;
 	struct cli_composer_model *model;
 	int styled;
 	struct nt_component_state *frame;
+};
+
+struct cli_composer_input {
+	struct nt_view base;
+	struct cli_composer *composer;
 };
 
 static int cli_composer_decorate(void *data, const char *text, size_t offset,
@@ -47,20 +53,80 @@ static int cli_composer_atomic_range(void *data, const char *text, size_t cursor
 	return 0;
 }
 
+static int cli_composer_activity_height(struct cli_composer *composer, int width, int *height)
+{
+	*height = 0;
+	for (size_t i = 0; i < nt_view_child_count(&composer->base); i++) {
+		struct nt_view *child = nt_view_child(&composer->base, i);
+		if (child == composer->input || nt_view_is_hidden(child))
+			continue;
+
+		struct nt_view_size size;
+		int rc = nt_view_measure(child, width, &size);
+		if (rc)
+			return rc;
+
+		*height += size.height;
+	}
+
+	return 0;
+}
+
 static int cli_composer_measure(struct nt_view *view, int width, struct nt_view_size *size)
 {
-	return nt_view_measure(((struct cli_composer *)view)->editor, width, size);
+	struct cli_composer *composer = (struct cli_composer *)view;
+	int activity = 0;
+	int rc = cli_composer_activity_height(composer, width, &activity);
+	if (!rc)
+		rc = nt_view_measure(composer->input, width, size);
+
+	if (!rc) {
+		size->height += activity;
+		if (activity && width > size->width)
+			size->width = width;
+	}
+
+	return rc;
 }
 
 static int cli_composer_layout(struct nt_view *view)
 {
-	return nt_view_arrange(((struct cli_composer *)view)->editor, nt_view_content_rect(view));
+	struct cli_composer *composer = (struct cli_composer *)view;
+	struct nt_view_rect content = nt_view_content_rect(view);
+	struct nt_view_size editor;
+	int rc = nt_view_measure(composer->input, content.width, &editor);
+	if (rc)
+		return rc;
+
+	int available = content.height > editor.height ? content.height - editor.height : 0;
+	for (size_t i = 0; i < nt_view_child_count(view); i++) {
+		struct nt_view *child = nt_view_child(view, i);
+		if (child == composer->input || nt_view_is_hidden(child))
+			continue;
+
+		struct nt_view_size size;
+		rc = nt_view_measure(child, content.width, &size);
+		if (rc)
+			return rc;
+
+		int height = size.height < available ? size.height : available;
+		rc = nt_view_arrange(child, (struct nt_view_rect){
+			content.x, content.y, content.width, height});
+		if (rc)
+			return rc;
+
+		content.y += height;
+		content.height -= height;
+		available -= height;
+	}
+
+	return nt_view_arrange(composer->input, content);
 }
 
 static int cli_composer_draw_padding(struct nt_view *view, enum nt_view_edge edge,
 				     struct nt_canvas *canvas)
 {
-	struct cli_composer *composer = (struct cli_composer *)view;
+	struct cli_composer *composer = ((struct cli_composer_input *)view)->composer;
 	if (composer->styled) {
 		int rc = nt_canvas_fill_styled(canvas, &canvas->style);
 		if (rc)
@@ -92,13 +158,31 @@ static int cli_composer_draw_padding(struct nt_view *view, enum nt_view_edge edg
 	return 0;
 }
 
+static int cli_composer_input_measure(struct nt_view *view, int width, struct nt_view_size *size)
+{
+	return nt_view_measure(nt_view_child(view, 0), width, size);
+}
+
+static int cli_composer_input_layout(struct nt_view *view)
+{
+	return nt_view_arrange(nt_view_child(view, 0), nt_view_content_rect(view));
+}
+
+static const struct nt_view_class cli_composer_input_class = {
+	.superclass = &nt_view_base_class,
+	.instance_size = sizeof(struct cli_composer_input),
+	.kind = "cli_composer_input",
+	.measure = cli_composer_input_measure,
+	.layout = cli_composer_input_layout,
+	.draw_padding = cli_composer_draw_padding,
+};
+
 static const struct nt_view_class cli_composer_class = {
 	.superclass = &nt_view_base_class,
 	.instance_size = sizeof(struct cli_composer),
 	.kind = "cli_composer",
 	.measure = cli_composer_measure,
 	.layout = cli_composer_layout,
-	.draw_padding = cli_composer_draw_padding,
 };
 
 int cli_composer_fit(struct nt_view *view, int width, int height, int preceding_separator)
@@ -112,11 +196,17 @@ int cli_composer_fit(struct nt_view *view, int width, int height, int preceding_
 	if (rc)
 		return rc;
 
-	int spacing = height > editor.height ? height - editor.height : 0;
+	int activity = 0;
+	rc = cli_composer_activity_height(composer, width, &activity);
+	if (rc)
+		return rc;
+
+	int required = editor.height + activity;
+	int spacing = height > required ? height - required : 0;
 	rc = nt_view_set_margin(
 		view, (struct nt_view_insets){.top = spacing >= 3 && !preceding_separator ? 1 : 0});
 	if (!rc)
-		rc = nt_view_set_padding(view,
+		rc = nt_view_set_padding(composer->input,
 					 (struct nt_view_insets){.top = spacing >= 2 ? 1 : 0,
 								 .bottom = spacing >= 1 ? 1 : 0});
 
@@ -156,14 +246,14 @@ struct nt_view *cli_composer_add_borrow(struct nt_builder *builder, struct nt_vi
 	}
 
 	*editor_borrow = NULL;
-	struct nt_view_options options = {
-		.margin = {.top = 1}, .padding = {.top = 1, .bottom = 1}, .max_height = 8};
+	struct nt_view_options options = {.padding = {.top = 1, .bottom = 1}};
 	if (styled)
 		options.style.background =
 			(struct nt_color){NT_COLOR_INDEXED, CLI_INPUT_BACKGROUND_INDEX};
 
 	struct cli_composer *composer =
-		(struct cli_composer *)nt_view_add(builder, parent, &cli_composer_class, &options);
+		(struct cli_composer *)nt_view_add(builder, parent, &cli_composer_class,
+				&(struct nt_view_options){.margin = {.top = 1}});
 	if (!composer)
 		return NULL;
 
@@ -171,9 +261,15 @@ struct nt_view *cli_composer_add_borrow(struct nt_builder *builder, struct nt_vi
 	composer->styled = styled;
 	struct nt_view *view = &composer->base;
 	nt_builder_fail(builder, nt_view_use_state_int(view, -1, &composer->frame));
+	composer->input = nt_view_add(builder, view, &cli_composer_input_class, &options);
+	if (!composer->input)
+		return NULL;
+
+	((struct cli_composer_input *)composer->input)->composer = composer;
+
 	const struct nt_view_options editor_options = {.max_height = 6};
 	struct nt_view *editor = nt_text_field_add(
-		builder, view, &(struct nt_text_field_options){.limit = 1024u * 1024u},
+		builder, composer->input, &(struct nt_text_field_options){.limit = 1024u * 1024u},
 		&editor_options);
 	composer->editor = editor;
 	if (editor) {

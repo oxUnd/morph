@@ -35,6 +35,7 @@
 #include "sapi/cli/models/jobs.h"
 #include "sapi/cli/models/transcript.h"
 #include "sapi/cli/pages/resume.h"
+#include "sapi/cli/pages/subagents.h"
 #include "sapi/cli/pages/model.h"
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/agents.h"
@@ -62,6 +63,7 @@
 
 #include <nb/cleanup.h>
 #include <nb/err.h>
+#include <nb/utf8.h>
 #include <nb/map.h>
 #include <nb/str.h>
 #include <nb/time.h>
@@ -1708,6 +1710,45 @@ static int cli_chat_update_queue(struct cli_application *ctx)
 	return rc;
 }
 
+static int cli_chat_agent_pointer(void *data, const struct nt_view_event *event)
+{
+	struct cli_chat_page *page = data;
+	if (!event->input || event->input->mouse.action != NT_MOUSE_PRESS ||
+	    event->input->mouse.button != NT_MOUSE_LEFT)
+		return 0;
+
+	struct nt_view_rect frame = nt_view_frame(page->agents);
+	int row = event->input->mouse.y - frame.y;
+	int column = event->input->mouse.x - frame.x;
+	if (nt_view_is_hidden(page->agents) || row < 0 || row >= frame.height)
+		return 0;
+
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	int shown = 0;
+	for (int i = 0; i < ctx->agents.count && shown < 3; i++) {
+		const struct agent_info *agent = &ctx->agents.items[i];
+		if (agent->status != AGENT_RUNNING && agent->status != AGENT_PENDING)
+			continue;
+
+		int width = page->activity_columns / 2;
+		if (width > 28)
+			width = 28;
+
+		int actual = (int)nb_utf8_width_cstr(agent->id);
+		if (width > actual)
+			width = actual;
+
+		if (shown == row && column >= 4 && column < 4 + width) {
+			int rc = cli_subagents_show(ctx, agent->id);
+			return rc ? rc : NT_VIEW_EVENT_STOP;
+		}
+
+		shown++;
+	}
+
+	return 0;
+}
+
 static int cli_chat_update_agents(struct cli_application *ctx, int columns, int styled, int resized)
 {
 	struct cli_chat_page *page = ctx->chat;
@@ -2017,8 +2058,8 @@ static int cli_chat_page_layout(struct nt_view *view)
 
 		if (child == page->composer) {
 			/* Share the first row of the input slot without moving the editor. */
-			button_row = slot;
-			button_row.height = nt_view_frame(page->editor).y > slot.y ? 1 : 0;
+			button_row = nt_view_frame(nt_view_child(page->composer, 0));
+			button_row.height = nt_view_frame(page->editor).y > button_row.y ? 1 : 0;
 		}
 
 		offset += height;
@@ -2219,7 +2260,10 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 	    (!nt_view_on(page->workspace, NT_VIEW_EVENT_OPEN, cli_chat_files_link, page) ||
 	     !nt_view_on_full(page->workspace, NT_VIEW_EVENT_MOUSE,
 		&(struct nt_view_listener_options){.flags = NT_VIEW_LISTEN_CAPTURE,
-			NT_VIEW_LISTENER(cli_chat_files_pointer, page)})))
+			NT_VIEW_LISTENER(cli_chat_files_pointer, page)}) ||
+	     !nt_view_on_full(page->workspace, NT_VIEW_EVENT_MOUSE,
+		&(struct nt_view_listener_options){.flags = NT_VIEW_LISTEN_CAPTURE,
+			NT_VIEW_LISTENER(cli_chat_agent_pointer, page)})))
 		nt_builder_fail(builder, NB_ERR_NOMEM);
 
 	struct nt_view *root = nt_view_add(builder, page->workspace, &cli_chat_layout_class, NULL);
@@ -2248,18 +2292,18 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 	const struct nt_view_options jobs = {.max_height = 3};
 	page->jobs = cli_report_text_add(builder, root, &jobs);
 
-	page->agents = cli_report_text_add(builder, root, &jobs);
-
 	struct nt_view *queue_title = cli_shortcut_hint_add(
 		builder, root, CLI_FEED_PENDING " Messages queued · Esc to apply now", NULL);
 	const struct nt_view_options queue = {.max_height = 4};
 	page->queue = cli_list_add(builder, root, &queue);
 	nt_view_set_focusable(page->queue, 0);
-	page->status = cli_report_text_add(builder, root,
-		&(struct nt_view_options){.height = 1, .margin = {.top = 1}});
 	page->panel_host = nt_stack_view_add(builder, root, NT_STACK_VIEW_VERTICAL, 0, NULL);
 	page->composer = cli_composer_add_borrow(builder, root, &ctx->composer,
 						 cli_output_color_enabled(ctx), &page->editor);
+	page->status = cli_report_text_add(builder, page->composer,
+		&(struct nt_view_options){.height = 1});
+	page->agents = cli_report_text_add(builder, page->composer, &jobs);
+
 	page->footer = cli_status_bar_add(builder, root, cli_output_color_enabled(ctx));
 	if (!nt_view_on(page->footer, NT_VIEW_EVENT_ACTIVATE, cli_chat_footer_action, page))
 		nt_builder_fail(builder, NB_ERR_NOMEM);

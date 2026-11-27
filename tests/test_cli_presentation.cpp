@@ -3269,7 +3269,11 @@ TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 		std::string rendered = nb_buf_cstr(&out);
 		EXPECT_NE(rendered.find("/root/worker_0"), std::string::npos);
 		EXPECT_EQ(rendered.find(instruction), std::string::npos);
-		EXPECT_NE(rendered.find("└ +1 more · /agents"), std::string::npos);
+		EXPECT_NE(rendered.find("  └ +1 more · /agents"), std::string::npos);
+		EXPECT_EQ(rendered.find("├"), std::string::npos);
+		EXPECT_EQ(rendered.find("  └ /root/worker_0"), 0u);
+		EXPECT_EQ(rendered.find("◉"), std::string::npos);
+		EXPECT_EQ(rendered.find("◯"), std::string::npos);
 		std::istringstream lines(rendered);
 		std::string line;
 		while (std::getline(lines, line))
