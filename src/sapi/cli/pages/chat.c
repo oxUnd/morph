@@ -1848,40 +1848,23 @@ static int cli_chat_page_footer(struct cli_chat_page *page, int columns)
 {
 	struct cli_application *ctx = cli_application_from_controller(&page->base);
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf session NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf snapshot NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = (nb_buf_init(&text), nb_buf_reserve(&text, 128) ? 0 : NB_ERR_NOMEM);
 	if (!rc)
-		rc = cli_composer_footer_render(ctx, columns, &text);
+		rc = cli_composer_footer_render(ctx, columns, &text, &session);
 
-	if (!rc && cli_sessions_open_count(ctx) > 1 && cli_sessions_current_id(ctx) > 0) {
-		struct session session = {0};
-		if (!runtime_session_current(ctx->runtime, &session)) {
-			char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
-				session.name, strlen(session.name),
-				MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
-			if (!safe)
-				return NB_ERR_NOMEM;
+	if (!rc && !nb_buf_printf(&snapshot, "%s\n%s", nb_buf_cstr(&session), nb_buf_cstr(&text)))
+		rc = nb_buf_status(&snapshot);
 
-			char name[128];
-			morph_terminal_copy_ellipsized_display_width(name, sizeof(name),
-				safe, 24, 0);
-			if (!nb_buf_printf(&text, " · %s [%s]", name, session.display_id))
-				rc = nb_buf_status(&text);
-		}
-
-		int other = cli_sessions_running_count(ctx) - cli_sessions_active(ctx);
-		if (!rc && other > 0 && !nb_buf_printf(&text, " · %d other session%s running",
-			other, other == 1 ? "" : "s"))
-			rc = nb_buf_status(&text);
-	}
-
-	if (rc || (page->footer_text && !strcmp(page->footer_text, nb_buf_cstr(&text))))
+	if (rc || (page->footer_text && !strcmp(page->footer_text, nb_buf_cstr(&snapshot))))
 		return rc;
 
-	char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&text));
+	char *copy NB_CLEANUP(nb_charp_cleanup) = strdup(nb_buf_cstr(&snapshot));
 	if (!copy)
 		return NB_ERR_NOMEM;
 
-	rc = cli_status_bar_set_text(page->footer, nb_buf_cstr(&text));
+	rc = cli_status_bar_set_text(page->footer, nb_buf_cstr(&text), nb_buf_cstr(&session));
 	if (!rc) {
 		free(page->footer_text);
 		page->footer_text = nb_charp_steal(&copy);

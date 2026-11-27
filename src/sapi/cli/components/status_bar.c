@@ -15,6 +15,7 @@
 struct cli_status_bar {
 	struct nt_stack_view base;
 	struct nt_view *prefix, *permission, *leading, *button, *caption, *trailing, *extra;
+	struct nt_view *session;
 	int styled;
 };
 
@@ -162,6 +163,12 @@ struct nt_view *cli_status_bar_add(struct nt_builder *builder, struct nt_view *p
 	bar->caption = nt_label_add(builder, bar->button, "MCP",
 		&(struct nt_view_options){.width = NT_FILL, .height = 1});
 	bar->trailing = nt_label_add(builder, row, "", &label);
+	struct nt_view_options session = {.height = 1};
+	if (styled)
+		session.style.foreground =
+			(struct nt_color){NT_COLOR_INDEXED, CLI_STATUS_SESSION_INDEX};
+
+	bar->session = nt_label_add(builder, row, "", &session);
 	bar->extra = nt_label_add(builder, root, "", &label);
 	if (!nt_builder_error(builder)) {
 		nt_builder_fail(builder, nt_label_set_opaque(bar->caption, 1));
@@ -171,27 +178,31 @@ struct nt_view *cli_status_bar_add(struct nt_builder *builder, struct nt_view *p
 		nt_builder_fail(builder, nt_view_set_hidden(bar->permission, 1));
 		nt_builder_fail(builder, nt_view_set_hidden(bar->button, 1));
 		nt_builder_fail(builder, nt_view_set_hidden(bar->extra, 1));
+		nt_builder_fail(builder, nt_view_set_hidden(bar->session, 1));
 		nt_builder_fail(builder,
 				nt_label_set_wrap_mode(bar->permission, NT_TEXT_WRAP_NONE));
 		nt_builder_fail(builder, nt_label_set_wrap_mode(bar->prefix, NT_TEXT_WRAP_NONE));
 		nt_builder_fail(builder, nt_label_set_wrap_mode(bar->leading, NT_TEXT_WRAP_NONE));
 		nt_builder_fail(builder, nt_label_set_wrap_mode(bar->caption, NT_TEXT_WRAP_NONE));
 		nt_builder_fail(builder, nt_label_set_wrap_mode(bar->trailing, NT_TEXT_WRAP_NONE));
+		nt_builder_fail(builder, nt_label_set_wrap_mode(bar->session, NT_TEXT_WRAP_NONE));
 	}
 
 	bar->styled = styled;
 	return nt_builder_error(builder) ? NULL : root;
 }
 
-int cli_status_bar_set_text(struct nt_view *view, const char *text)
+int cli_status_bar_set_text(struct nt_view *view, const char *text, const char *session)
 {
-	if (!view || view->type != &cli_status_bar_class || !text)
+	if (!view || view->type != &cli_status_bar_class || !text || !session)
 		return NB_ERR_INVAL;
 
 	struct cli_status_bar *bar = (struct cli_status_bar *)view;
 	char *plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
 		text, strlen(text), MORPH_TERMINAL_TEXT_MULTILINE, NULL);
-	if (!plain)
+	char *session_plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		session, strlen(session), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!plain || !session_plain)
 		return NB_ERR_NOMEM;
 
 	char *extra = strchr(plain, '\n');
@@ -278,6 +289,12 @@ int cli_status_bar_set_text(struct nt_view *view, const char *text)
 
 	if (!rc)
 		rc = nt_label_set_text(bar->trailing, tail ? tail : "");
+
+	if (!rc)
+		rc = nt_label_set_text(bar->session, session_plain);
+
+	if (!rc)
+		rc = nt_view_set_hidden(bar->session, !*session_plain);
 
 	if (!rc)
 		rc = nt_label_set_text(bar->extra, extra ? extra : "");

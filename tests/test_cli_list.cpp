@@ -131,6 +131,47 @@ TEST(CliCommandRegistryTest, EveryAliasSharesItsHandlersExecutionPolicy)
 	EXPECT_GT(commands.size(), 20u);
 }
 
+TEST(CliCommandRegistryTest, SessionRenameKeepsChineseAndAllNameArguments)
+{
+	char pattern[] = "/tmp/morph-cli-rename-XXXXXX";
+	char *directory = mkdtemp(pattern);
+	ASSERT_NE(directory, nullptr);
+	const std::string database = std::string(directory) + "/data.db";
+	struct runtime_options options{};
+	options.db_path = database.c_str();
+	options.workdir = directory;
+	options.front_name = "test";
+	struct runtime *runtime = nullptr;
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	std::unique_ptr<struct runtime, decltype(&runtime_close)> owner(runtime, runtime_close);
+	struct cli_application context{};
+	context.runtime = runtime;
+	const struct {
+		const char *command;
+		const char *name;
+	} cases[] = {
+		{"/rename 中文会话", "中文会话"},
+		{"/rename 项目 讨论 session name", "项目 讨论 session name"},
+		{"/rn 别名 中文 空格", "别名 中文 空格"},
+		{"/rename '单引号 中文 名称'", "单引号 中文 名称"},
+		{"/rn \"双引号 中文 名称\"", "双引号 中文 名称"},
+	};
+	for (const auto &test : cases) {
+		SCOPED_TRACE(test.command);
+		testing::internal::CaptureStdout();
+		const int rc = cli_command_dispatch(&context, test.command);
+		const std::string output = testing::internal::GetCapturedStdout();
+		ASSERT_EQ(rc, 0) << output;
+		struct session selected{};
+		ASSERT_EQ(runtime_session_current(runtime, &selected), 0);
+		EXPECT_STREQ(selected.name, test.name);
+	}
+
+	owner.reset();
+	std::error_code error;
+	std::filesystem::remove_all(directory, error);
+}
+
 TEST(CliMediaInputTest, RemovesLegacyMediaCommands)
 {
 

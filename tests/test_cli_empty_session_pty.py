@@ -68,6 +68,7 @@ def assert_quiet(terminal, database):
     with sqlite3.connect(database) as db:
         assert db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0] == 0
         assert db.execute('SELECT COUNT(*) FROM messages').fetchone()[0] == 0
+    assert not any('#' in row for row in terminal.screen.display if 'perm: ' in row)
 
 
 def main():

@@ -3,6 +3,7 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
+#include "sapi/cli/services/sessions.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
 #include "terminal/text.h"
@@ -109,26 +110,50 @@ static int cli_composer_footer_usage(struct cli_application *ctx, int columns, n
 	if (!rc && ctx->recap.pending)
 		rc = (nb_buf_append_cstr(usage, " · Generating recap...") ? 0 : NB_ERR_NOMEM);
 
+	int other = cli_sessions_running_count(ctx) - cli_sessions_active(ctx);
+	if (!rc && cli_sessions_open_count(ctx) > 1 && cli_sessions_current_id(ctx) > 0 &&
+	    other > 0 && !nb_buf_printf(usage, " · %d other session%s running",
+				      other, other == 1 ? "" : "s"))
+		rc = nb_buf_status(usage);
+
 	return rc;
 }
 
-static int cli_composer_footer_identity(struct cli_application *ctx, size_t remaining, nb_buf *text)
+static int cli_composer_footer_session(const struct session *session, size_t available,
+				      size_t usage_width, nb_buf *text)
 {
-	struct session session = {0};
-	(void)runtime_session_current(ctx->runtime, &session);
+	if (session->id <= 0 || !session->display_id[0])
+		return 0;
+
+	char *name NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		session->name, strlen(session->name), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!name)
+		return NB_ERR_NOMEM;
+
+	size_t full_width = 7 + strlen(session->display_id) + nb_utf8_width_cstr(name);
+	int show_name = *name && available >= usage_width &&
+		       full_width <= available - usage_width;
+	return nb_buf_printf(text, " · #%s%s%s", session->display_id,
+			     show_name ? " . " : "", show_name ? name : "")
+		? 0 : nb_buf_status(text);
+}
+
+static int cli_composer_footer_identity(struct cli_application *ctx, const struct session *session,
+				       size_t remaining, nb_buf *text)
+{
 	size_t model_width = remaining / 3;
 	if (model_width > 24)
 		model_width = 24;
 
 	int rc = cli_composer_footer_field(
 		ctx, text,
-		session.model[0] ? session.model
+		session->model[0] ? session->model
 				 : runtime_config_borrow(ctx->runtime)->models.text.model,
 		model_width, ANSI_DIM, 0);
 	if (!rc)
 		rc = (nb_buf_append_cstr(text, " · ") ? 0 : NB_ERR_NOMEM);
 
-	const char *workdir = session.workdir[0] ? session.workdir : ctx->workdir;
+	const char *workdir = session->workdir[0] ? session->workdir : ctx->workdir;
 	if (!workdir || !workdir[0])
 		workdir = runtime_workdir_borrow(ctx->runtime);
 
@@ -152,9 +177,10 @@ static int cli_composer_footer_identity(struct cli_application *ctx, size_t rema
 	return rc ? rc : (nb_buf_append_cstr(text, " · ") ? 0 : NB_ERR_NOMEM);
 }
 
-int cli_composer_footer_render(struct cli_application *ctx, int columns, nb_buf *out)
+int cli_composer_footer_render(struct cli_application *ctx, int columns, nb_buf *out,
+			      nb_buf *session_text)
 {
-	if (!ctx || !ctx->runtime || !out)
+	if (!ctx || !ctx->runtime || !out || !session_text)
 		return NB_ERR_INVAL;
 
 	if (columns < 20)
@@ -172,24 +198,40 @@ int cli_composer_footer_render(struct cli_application *ctx, int columns, nb_buf 
 	if (rc)
 		return rc;
 
-	/* The original footer reserves usage before adding optional identity fields. */
+	struct session session = {0};
+	rc = runtime_session_current(ctx->runtime, &session);
+	if (rc)
+		return rc;
+
 	size_t usage_width = nb_utf8_width_cstr(nb_buf_cstr(&usage));
-	size_t remaining = (size_t)columns - 4;
+	size_t available = (size_t)columns - 4;
+	int styled = cli_output_color_enabled(ctx);
+	/* A permission chip at the start of the row adds one leading padding cell. */
+	rc = cli_composer_footer_session(&session, available - (styled ? 1u : 0u),
+					usage_width, session_text);
+	if (rc)
+		return rc;
+
+	/* Reserve the session suffix and usage before optional identity fields. */
+	available -= nb_utf8_width_cstr(nb_buf_cstr(session_text));
+	size_t remaining = available;
 	if (remaining >= usage_width + 8) {
 		rc = cli_composer_footer_field(ctx, out, "morph", 5, ANSI_BOLD, 0);
 		if (!rc)
 			rc = (nb_buf_append_cstr(out, " · ") ? 0 : NB_ERR_NOMEM);
 	}
 
-	remaining = (size_t)columns - 4 - cli_terminal_text_width(nb_buf_cstr(out));
+	remaining = available - cli_terminal_text_width(nb_buf_cstr(out));
 	if (!rc && remaining > usage_width + 10)
-		rc = cli_composer_footer_identity(ctx, remaining - usage_width - 6, out);
+		rc = cli_composer_footer_identity(ctx, &session, remaining - usage_width - 6, out);
+
+	remaining = available - cli_terminal_text_width(nb_buf_cstr(out));
+	if (styled && nb_buf_empty(out) && remaining > 0)
+		remaining--;
 
 	if (!rc)
 		rc = cli_composer_footer_field(
-			ctx, out, nb_buf_cstr(&usage),
-			(size_t)columns - 4 - cli_terminal_text_width(nb_buf_cstr(out)),
-			ANSI_DIM, 0);
+			ctx, out, nb_buf_cstr(&usage), remaining, ANSI_DIM, 0);
 
 	(void)runtime_task_count_active(ctx->runtime, &ctx->input_status.tasks);
 	if (!rc && (ctx->input_status.tasks.running || ctx->input_status.tasks.pending)) {

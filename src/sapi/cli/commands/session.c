@@ -1,6 +1,7 @@
 #include "sapi/cli/commands/session.h"
 #include <string.h>
 #include <stdlib.h>
+#include <nb/buf.h>
 #include <nb/cleanup.h>
 #include <nb/err.h>
 #include "runtime/runtime.h"
@@ -169,12 +170,19 @@ static int cli_session_command_resume(struct cli_application *ctx, int argc, cha
 
 static int cli_session_command_rename(struct cli_application *ctx, int argc, char **argv)
 {
-	const char *new_name = cli_cmd_arg_borrow(argc, argv, 1);
-	if (!new_name) {
+	if (argc < 2) {
 		CMD_ERROR(ctx, "usage: /rename <new_name>");
 		return NB_ERR_INVAL;
 	}
 
+	nb_buf name NB_CLEANUP(nb_buf_cleanup) = {0};
+	for (int i = 1; i < argc; i++) {
+		if ((i > 1 && !nb_buf_append_char(&name, ' ')) ||
+		    !nb_buf_append_cstr(&name, argv[i]))
+			return nb_buf_status(&name);
+	}
+
+	const char *new_name = nb_buf_cstr(&name);
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	int rc;

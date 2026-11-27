@@ -6,8 +6,9 @@
 
 struct cli_application;
 
-/* Trusted SGR content using the original adaptive layout. columns is the full
+/* Trusted SGR content and a separate plain session suffix. columns is the full
  * terminal width; the component supplies left/right padding of two cells. */
-int cli_composer_footer_render(struct cli_application *, int columns, nb_buf *out);
+int cli_composer_footer_render(struct cli_application *, int columns, nb_buf *out,
+			      nb_buf *session);
 
 #endif

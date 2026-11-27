@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+from wcwidth import wcswidth
 
 from loopback_http import LoopbackHTTPServer
 from test_cli_pty import Model, Terminal
@@ -18,17 +19,50 @@ def visible(terminal):
     return '\n'.join(terminal.screen.display)
 
 
+def session_footer(terminal, directory, name, show_name=True):
+    with sqlite3.connect(directory / 'home/.morph/data.db') as db:
+        wait_for(terminal, lambda: db.execute('SELECT id FROM sessions WHERE name=?',
+                                             (name,)).fetchone() is not None)
+        display_id = db.execute('SELECT display_id FROM sessions WHERE name=?',
+                                (name,)).fetchone()[0]
+    suffix = f'#{display_id}' + (f' . {name}' if show_name else '')
+    wait_for(terminal, lambda: any('perm: ' in row and row.rstrip().endswith(suffix)
+                                  for row in terminal.screen.display))
+    y = next(i for i, row in enumerate(terminal.screen.display) if 'perm: ' in row)
+    row = terminal.screen.display[y]
+    start = wcswidth(row[:row.index(f'#{display_id}')])
+    cells = terminal.screen.buffer[y]
+    colors = [cells[x].fg for x in range(start, start + wcswidth(suffix))]
+    assert all(color == 'ff8700' for color in colors), (row, colors)
+    assert sum(f'#{display_id}' in row for row in terminal.screen.display) == 1
+
+
 def scenario(binary, port, columns):
     with tempfile.TemporaryDirectory(prefix='morph-sessions-pty-') as temp:
         directory = Path(temp)
-        terminal = Terminal(binary, directory, port, production=True, hooks_enabled=False)
+        terminal = Terminal(binary, directory, port, production=True, hooks_enabled=False,
+                            extra_env={'NO_COLOR': ''})
         releases = []
         try:
             terminal.child.setwinsize(32, columns)
             terminal.screen.resize(lines=32, columns=columns)
             terminal.wait_for_composer()
+            assert not any('#' in row for row in terminal.screen.display if 'perm: ' in row)
             terminal.send('/new Alpha\r')
             wait_for(terminal, lambda: 'created and switched to session: Alpha' in terminal.raw)
+            session_footer(terminal, directory, 'Alpha')
+            for command, name in [('/rename', '中文 讨论'), ('/rn', '项目 review')]:
+                terminal.send(f'{command} {name}\r')
+                wait_for(terminal, lambda: f'session renamed to: {name}' in visible(terminal))
+                session_footer(terminal, directory, name,
+                               show_name=name == '中文 讨论' or columns >= 80)
+            long_name = 'session-' + 'x' * 120
+            terminal.send(f'/rename {long_name}\r')
+            wait_for(terminal, lambda: 'session renamed to:' in terminal.raw)
+            session_footer(terminal, directory, long_name, show_name=False)
+            terminal.send('/rename Alpha\r')
+            wait_for(terminal, lambda: 'session renamed to: Alpha' in terminal.raw)
+            session_footer(terminal, directory, 'Alpha')
             terminal.send('WORK_ALPHA\r')
             body, alpha = terminal.request()
             releases.append(alpha)
@@ -40,6 +74,7 @@ def scenario(binary, port, columns):
             # The first model request stays open while the second session starts.
             terminal.send('/new Beta\r')
             wait_for(terminal, lambda: 'created and switched to session: Beta' in visible(terminal))
+            session_footer(terminal, directory, 'Beta', show_name=columns >= 120)
             assert 'wait for the active turn' not in visible(terminal), visible(terminal)
             terminal.send('WORK_BETA\r')
             body, beta = terminal.request()
@@ -64,6 +99,7 @@ def scenario(binary, port, columns):
 
             terminal.send('\x1b[5;5~')
             wait_for(terminal, lambda: 'DRAFT_ALPHA' in visible(terminal))
+            session_footer(terminal, directory, 'Alpha', show_name=columns >= 120)
             beta.delta = {'content': 'BETA_FINAL'}
             beta.set()
             terminal.pump(.8)

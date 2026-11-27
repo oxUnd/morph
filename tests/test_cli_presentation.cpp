@@ -372,6 +372,7 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 	options.db_path = database.c_str();
 	options.workdir = dir;
 	options.front_name = "test";
+	options.create_new_session = 1;
 	struct runtime *opened = nullptr;
 	ASSERT_EQ(runtime_open(&options, &opened), 0);
 	std::unique_ptr<struct runtime, decltype(&runtime_close)> owner(opened, runtime_close);
@@ -387,7 +388,9 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 			cli_output_set_color_enabled(&ctx, styled);
 			ctx.input_status.limit = 0;
 			nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
-			ASSERT_EQ(cli_composer_footer_render(&ctx, width, &text), 0);
+			nb_buf session_text NB_CLEANUP(nb_buf_cleanup) = {0};
+			ASSERT_EQ(cli_composer_footer_render(&ctx, width, &text, &session_text), 0);
+			EXPECT_TRUE(nb_buf_empty(&session_text));
 			EXPECT_EQ(ctx.input_status.limit, 128000);
 			const char *rendered = nb_buf_cstr(&text);
 			char *plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
@@ -419,11 +422,35 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 	ASSERT_EQ(runtime_permission_set_policy(ctx.runtime, &changed), 0);
 	ctx.turn_active = 1;
 	nb_buf snapshot NB_CLEANUP(nb_buf_cleanup) = {0};
-	ASSERT_EQ(cli_composer_footer_render(&ctx, 80, &snapshot), 0);
+	nb_buf session_text NB_CLEANUP(nb_buf_cleanup) = {0};
+	ASSERT_EQ(cli_composer_footer_render(&ctx, 80, &snapshot, &session_text), 0);
 	EXPECT_NE(std::string(nb_buf_cstr(&snapshot)).find("perm: ask"), std::string::npos);
 	EXPECT_STREQ(runtime_permission_preset_name(&ctx.input_status.permissions), "ask");
 	ASSERT_EQ(runtime_permission_get_policy(ctx.runtime, &changed), 0);
 	EXPECT_STREQ(runtime_permission_preset_name(&changed), "full");
+	struct session selected{};
+	ASSERT_EQ(runtime_session_create_and_select(ctx.runtime, "Alpha", &selected), 0);
+	const std::string hash = " · #" + std::string(selected.display_id);
+	const std::string long_name(120, 's');
+	for (const auto &name : {std::string("Alpha"), std::string(u8"session 会话"), long_name}) {
+		ASSERT_EQ(runtime_session_rename_and_update(ctx.runtime, selected.id, name.c_str()), 0);
+		for (int width : {120, 80, 60, 20}) {
+			SCOPED_TRACE(width);
+			for (int styled : {0, 1}) {
+				cli_output_set_color_enabled(&ctx, styled);
+				nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+				nb_buf suffix NB_CLEANUP(nb_buf_cleanup) = {0};
+				ASSERT_EQ(cli_composer_footer_render(&ctx, width, &text, &suffix), 0);
+				const bool full_name =
+					(name == "Alpha" && (width >= 80 || (width == 60 && !styled))) ||
+					(name == u8"session 会话" && width >= 80);
+				EXPECT_EQ(nb_buf_cstr(&suffix), full_name ? hash + " . " + name : hash);
+				EXPECT_LE(cli_terminal_text_width(nb_buf_cstr(&text)) +
+					  nb_utf8_width(nb_buf_str(&suffix)), static_cast<size_t>(width - 4));
+			}
+		}
+	}
+
 	ctx.runtime = nullptr;
 }
 

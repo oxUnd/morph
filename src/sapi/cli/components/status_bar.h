@@ -4,6 +4,6 @@
 #include <nothing/tui/view.h>
 
 struct nt_view *cli_status_bar_add(struct nt_builder *, struct nt_view *parent, int styled);
-int cli_status_bar_set_text(struct nt_view *, const char *text);
+int cli_status_bar_set_text(struct nt_view *, const char *text, const char *session);
 
 #endif

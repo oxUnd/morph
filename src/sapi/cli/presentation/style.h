@@ -51,6 +51,7 @@ static inline int cli_style_running_interval_ms(int64_t now_ms)
 #define CLI_FILE_SELECTION_BACKGROUND_INDEX 60u
 #define CLI_FLOAT_BACKGROUND_INDEX 236u
 #define CLI_STATUS_LINK_INDEX 6u
+#define CLI_STATUS_SESSION_INDEX 208u
 /* Status-bar permission chip colors. Full Access uses the accent background so
  * the elevated scope stays visible; the other presets stay muted. */
 #define CLI_STATUS_PERM_FULL_BACKGROUND_INDEX 141u
