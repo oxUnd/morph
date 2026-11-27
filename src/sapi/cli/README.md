@@ -30,6 +30,7 @@ cli/
     setup/                     startup setup page and scripted fallback
   components/                  NT views for the composer, messages, reports, lists and panels
     command                    submitted slash commands, result spacing and outer margins
+    chat_dock, activity        four-region bottom layout and bounded live status/details
     status_bar, mcp_status     native footer controls and aligned connection state rows
     shortcut_hint             native TextView spans for accent and bold shortcut keys
     sidebar_notice            shared warning labels above sidebar footer separators
@@ -68,9 +69,18 @@ has no private input loop, surface renderer or terminal-frame assembly. Text
 receipts after the page closes belong to `presentation/setup`.
 
 Interactive chat is a retained ViewController in alternate screen. Its page layout
-contains a scrolling feed, activity/jobs/queue controls and a multiline TextField
-composer. Visible activity, the composer and status bar stay anchored at the bottom;
-empty activity rows collapse together with their margins.
+contains a scrolling feed and one `components/chat_dock` with four sibling regions:
+Back to bottom, `components/activity`, an input slot, and the single-line status bar.
+The input slot switches between the input-only composer and a native panel without
+losing the draft. `components/activity` owns one primary status and bounded groups
+for agents, jobs, tasks, queued messages, and auxiliary activity. Its first row owns
+the status marker; subordinate rows use independent gray elbows aligned with the
+status text, without additional markers or nested branches. Group summaries have
+priority over detail rows in short layouts. The dock shrinks input padding before
+clipping editable text; the input slot arranges its active child to the actual
+allocated viewport so cursor scrolling remains visible in very short terminals.
+Visible activity, input and status bar stay anchored at the bottom; empty activity
+collapses. Approvals, questions and selectors keep the status bar visible.
 The conversation scrolls independently above them. The status bar uses native
 Labels and a distinct MCP Button, which opens a right-side floating card without
 changing the conversation or composer geometry.

@@ -59,8 +59,14 @@ def click_mcp(terminal):
 def assert_quiet(text, names=SERVER_NAMES):
     for name in names:
         assert name not in text, text
-    assert 'Connecting' not in text and 'Discovering capabilities' not in text, text
+    feed = '\n'.join(row for row in text.splitlines()
+                     if not row.startswith(('◉ Connecting MCP', '  └─ ')))
+    assert 'Connecting' not in feed and 'Discovering capabilities' not in feed, text
     assert 'FIXTURE_MCP_FAILURE' not in text, text
+
+
+def popup_content(row):
+    return row.rsplit('│', 2)[-2].lstrip() if row.count('│') >= 2 else row.lstrip(' │')
 
 
 def assert_status(text, name, status):
@@ -70,7 +76,7 @@ def assert_status(text, name, status):
     for label, marker in (('Connecting', '◉'), ('Disconnected', '◯'),
                           ('Ready', '●'), ('Failed', '✖')):
         if label in rows[0]:
-            assert rows[0].lstrip(' │').startswith(marker), text
+            assert popup_content(rows[0]).startswith(marker), text
     assert f'MCP {name}' not in rows[0], text
     return rows[0]
 
@@ -162,7 +168,8 @@ connect_timeout = 30
                             has_status(text, SERVER_NAMES[1], 'Connecting'))
             assert_status(live, SERVER_NAMES[0], 'Ready')
             assert_status(live, SERVER_NAMES[1], 'Connecting')
-            assert live.count('Connecting') == 1, live
+            assert sum('Connecting' in row and 'broken-fixture' in row
+                       for row in live.splitlines()) == 1, live
             terminal.send('\x1b')
             returned = wait_for(terminal, lambda text: draft_visible(text) and
                                 POPUP_TITLE not in text)
@@ -177,9 +184,9 @@ connect_timeout = 30
             details = click_mcp(terminal)
             assert_status(details, SERVER_NAMES[0], 'Ready')
             failure = assert_status(details, SERVER_NAMES[1], 'Failed')
-            assert failure.lstrip(' │').startswith('✖'), details
+            assert popup_content(failure).startswith('✖'), details
             assert 'Connecting' not in details and 'Discovering capabilities' not in details
-            assert any(row.lstrip(' │').startswith(('└ ', '├ '))
+            assert any(popup_content(row).startswith(('└ ', '├ '))
                        for row in details.splitlines()), details
             assert draft_visible(details), details
             assert composer_rows(terminal) == original_rows, details

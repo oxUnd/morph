@@ -41,6 +41,8 @@ add_library(morph-cli STATIC
 	components/selector.c
 	components/question_form.c
 	components/composer.c
+	components/activity.c
+	components/chat_dock.c
 	components/status_bar.c
 	components/shortcut_hint.c
 	components/sidebar_notice.c
@@ -162,6 +164,7 @@ add_library(morph-cli STATIC
 	presentation/terminal_text.c
 	presentation/tree.c
 	presentation/work_status.c
+	presentation/activity.c
 	presentation/share.c
 
 )

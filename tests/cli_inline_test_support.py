@@ -3,6 +3,28 @@ import re
 import time
 
 
+def conversation_rows(rows, composer):
+    """Exclude all four dock regions when reconstructing scrolling history."""
+    header = re.compile(r'^[◉◯?] (?:Working|Waiting|Retrying|Reconnecting|Running|Tasks pending|'
+                        r'Agents running|Background jobs|Other sessions|Connecting MCP|'
+                        r'Compressing|Generating recap|Naming session|Cancelling)')
+    end = composer - 2
+    cursor = composer - 1
+    while cursor >= 0 and not rows[cursor].strip():
+        cursor -= 1
+    if cursor >= 0 and (rows[cursor].startswith('  └─ ') or header.match(rows[cursor])
+                        or '↓ Back to bottom' in rows[cursor]):
+        while cursor >= 0 and (not rows[cursor].strip() or rows[cursor].startswith('  └─ ')
+                               or header.match(rows[cursor])
+                               or '↓ Back to bottom' in rows[cursor]):
+            cursor -= 1
+        end = cursor + 1
+    result = list(rows[:max(0, end)])
+    while result and not result[-1].strip():
+        result.pop()
+    return result
+
+
 def stable_rows(terminal):
     terminal.pump(.08)
     deadline = time.monotonic() + 5
@@ -31,12 +53,21 @@ def inline_panel(terminal, title, history_marker, maximum=12, command=None):
     if command:
         commands = [index for index, row in enumerate(rows) if row.rstrip() == command]
         assert commands and commands[-1] < start, diagnostic
-        assert start == commands[-1] + 2, diagnostic
+        between = rows[commands[-1] + 1:start]
+        assert between and not between[0].strip(), diagnostic
+        activity = [row for row in between if row.strip()]
+        if activity:
+            assert activity[0].startswith(('◉ ', '◯ ', '? ')), diagnostic
+            assert all(row.startswith('  └─ ') for row in activity[1:]), diagnostic
+        else:
+            assert start == commands[-1] + 2, diagnostic
     # The shared component parks at its upper edge, never below its last option.
     # Growth reserves rows beneath this anchor and may scroll history for space.
     assert terminal.screen.cursor.y == start, diagnostic
     assert terminal.screen.cursor.x == 0, diagnostic
-    end = max((index for index, row in enumerate(rows) if row.strip()), default=start)
+    end = max((index for index, row in enumerate(rows) if row.strip() and 'perm: ' not in row),
+              default=start)
+    assert 'perm: ' in rows[-1], diagnostic
     assert end - start + 1 <= maximum, diagnostic
     # Composer panels paint through the usable terminal width, including empty cells.
     for index in range(start, end + 1):
@@ -49,7 +80,7 @@ def inline_panel(terminal, title, history_marker, maximum=12, command=None):
 def restored_composer(terminal, history_marker, expected='', command=None):
     rows = stable_rows(terminal)
     diagnostic = '\n'.join(rows)
-    footers = [index for index, row in enumerate(rows) if row.lstrip().startswith('morph ·')]
+    footers = [index for index, row in enumerate(rows) if 'perm: ' in row]
     assert len(footers) == 1, diagnostic
     row = footers[0] - 2
     assert row >= 1 and rows[row].startswith(('› ', '» ')), diagnostic

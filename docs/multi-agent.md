@@ -54,8 +54,8 @@ prompt and a short wave in the input padding. The animation runs on the UI event
 loop, preserves drafts and cursor positions, and remains out of scrollback and
 structured output.
 
-Ultra turns append the agent summary to the `Working` row, including before
-delegation: `Agents: 0 running`
+Ultra turns show the agent summary below the primary activity header, including
+before delegation: `Agents: 0 running`
 means the model has not spawned an agent. Once work starts, rows show
 canonical agent paths and current activity such as `Thinking` or `Running exec`,
 with one row per active agent and a bounded `+N more` row when necessary.
@@ -92,7 +92,8 @@ and routes open/close actions. A component-only visual fixture is available with
 
 `/subagents` replaces the composer with a compact agent picker, including the
 primary thread, while retaining the main feed above it. The picker uses the
-same reusable composer panel as `/model` and `/permissions`, sizes itself to
+same reusable input-slot panel as `/model` and `/permissions`, retains the
+activity region and single-line status bar, sizes itself to
 the visible entries and leaves the main conversation in place. Select an
 agent with Up/Down and Enter, or open `/subagents /root/reader` directly.
 Selecting a child switches the entire visible feed to an alternate terminal

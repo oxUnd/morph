@@ -712,8 +712,10 @@ static int cli_approval_native_start(struct cli_application *ctx, void *data,
 							 .complete = cli_approval_native_complete,
 							 .data = pending,
 							 .release = cli_approval_pending_release});
-	if (!rc)
+	if (!rc) {
 		pending = NULL;
+		cli_chat_panel_set_interaction(ctx, CLI_CHAT_INTERACTION_APPROVAL);
+	}
 
 	return rc;
 }

@@ -57,6 +57,7 @@ if __name__ == '__main__' and '--native-worker' in sys.argv:
 import argparse
 import http.server
 from loopback_http import LoopbackHTTPServer
+from cli_inline_test_support import conversation_rows
 import os
 import queue
 import select
@@ -218,7 +219,7 @@ def collect_native_history(terminal, screen, label, draft=None):
     def conversation():
         # Native parsers retain different trailing blanks after cell updates
         # and row clears; compare the visible text when joining viewports.
-        rows = [row.rstrip() for row in screen.display[:composer - 2]]
+        rows = [row.rstrip() for row in conversation_rows(screen.display, composer)]
         # Fixed bottom controls reserve blank activity/separator rows outside
         # the scrolling feed. They cannot participate in a history overlap.
         while rows and not rows[-1].strip():
@@ -240,7 +241,8 @@ def collect_native_history(terminal, screen, label, draft=None):
         nonlocal history
         overlap = next((count for count in range(len(page), 0, -1)
                         if page[-count:] == history[:count]), 0)
-        assert overlap, 'retained history skipped its overlapping boundary'
+        assert overlap, ('retained history skipped its overlapping boundary\nPREVIOUS:\n' +
+                         '\n'.join(history[:24]) + '\nPAGE:\n' + '\n'.join(page))
         history = page[:-overlap] + history
 
     for pages in range(20):

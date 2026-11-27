@@ -70,13 +70,16 @@ class Model(http.server.BaseHTTPRequestHandler):
 def terminal_environment(directory, extra=None):
     # Each PTY owns its home and terminal capabilities, including when tests
     # run inside a terminal that supports native graphics or custom hooks.
+    # Local peers bypass proxies so transport failures reach the actual client.
     home = directory / 'home'
     home.mkdir(exist_ok=True)
     environment = {key: value for key, value in os.environ.items()
                    if key not in ('TERM_PROGRAM', 'KITTY_WINDOW_ID', 'ITERM_PROFILE',
                                   'WT_SESSION')}
     environment.update(HOME=str(home), TERM='xterm-256color',
-                       MORPH_PTY_API_KEY='local-test')
+                       MORPH_PTY_API_KEY='local-test',
+                       NO_PROXY='127.0.0.1,localhost,::1',
+                       no_proxy='127.0.0.1,localhost,::1')
     environment.update(extra or {})
     return environment
 
@@ -404,12 +407,12 @@ def main():
             terminal.send('\x05\r')
             assert 'Messages queued' in terminal.raw, terminal.raw[-3000:]
             assert 'Requirement queued' not in terminal.raw
-            queued = [state for state in terminal.queued_states if '└ 改成中新🙂' in state]
+            queued = [state for state in terminal.queued_states if '└─ 改成中新🙂' in state]
             assert queued, 'No rendered queue state was observed'
             for state in queued:
                 assert '› 改成中新🙂' not in state, 'Queued input was committed early:\n' + state
                 rows = state.splitlines()
-                queue_row = next(row for row in rows if '└ 改成中新🙂' in row)
+                queue_row = next(row for row in rows if '└─ 改成中新🙂' in row)
                 working = next(row for row in rows if 'Working ·' in row)
                 assert queue_row.index('└') == working.index('Working') == 2, state
             started = time.monotonic()
@@ -453,7 +456,7 @@ def main():
                                   ('burst one', 'burst two', 'burst three', '+1 more queued'))]
                 assert len(details) == 4 and 'burst four' not in state, state
                 for index, row in details:
-                    assert row.startswith('  └ ') and row.index('└') == working.index('Working'), state
+                    assert row.startswith('  └─ ') and row.index('└') == working.index('Working'), state
                     assert terminal.screen.buffer[index][2].fg == '8a8a8a', state
                     assert terminal.screen.buffer[index][2].bg == 'default', state
                 assert 'QUEUE_LAYOUT_DRAFT' in state, state

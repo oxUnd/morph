@@ -1,7 +1,6 @@
 """Restore persisted scrollback through slash commands and the production startup picker."""
 from loopback_http import LoopbackHTTPServer
 import json
-import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -93,7 +92,7 @@ def check_restored(terminal, label):
         assert terminal.raw.count(marker) == 1, (marker, terminal.raw[-7000:])
     assert 'HISTORY_LAST_ANSWER' in screen, screen
     assert 'INTERNAL_COMPACTION' not in terminal.raw, terminal.raw[-7000:]
-    plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', terminal.raw)
+    plain = retained_history_snapshot(terminal, 'HISTORY_LAST_ANSWER')
     assert 'Spawned /root/history-worker' in plain, plain[-7000:]
     for private in ('HISTORY_DELEGATION_PROMPT', 'HISTORY_ASSIGNMENT_SCOPE',
                     'HISTORY_FOLLOWUP_PROMPT'):

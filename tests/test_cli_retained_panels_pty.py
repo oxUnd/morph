@@ -27,11 +27,12 @@ def wait_panel(terminal, command, title):
     submitted = max(index for index, row in enumerate(rows) if row.rstrip() == command)
     assert heading >= submitted + 2, diagnostic
     assert all(not row.strip() for row in rows[submitted + 1:heading]), diagnostic
-    assert 'esc cancel' in rows[-1].lower(), diagnostic
+    assert 'esc cancel' in rows[-2].lower(), diagnostic
+    assert 'perm: ' in rows[-1], diagnostic
     assert terminal.screen.buffer[submitted][0].fg == 'af87ff', diagnostic
     assert terminal.screen.cursor.y == heading and terminal.screen.cursor.x == 0, diagnostic
     assert not any(row.startswith(('› ', '» ')) for row in rows), diagnostic
-    assert not any(row.lstrip().startswith('morph ·') for row in rows), diagnostic
+    assert sum('perm: ' in row for row in rows) == 1, diagnostic
     assert terminal.raw.count('\x1b[?1049h') == 1, terminal.raw[-3000:]
 
 

@@ -123,7 +123,7 @@ pre-response connection retries have no attempt limit; `limit` is the configured
 finite HTTP/stream retry budget. `end` clears progress on response headers,
 terminal failure or cancellation and does not itself mean success. The event
 belongs to the current turn/agent and never creates a user history message.
-Interactive clients replace the composer's activity row while reconnecting.
+Interactive clients replace the primary activity header above the input while reconnecting.
 
 `react.agent.mail` is emitted after a mailbox delivery is persisted and acknowledged.
 Its `text` contains the received transport envelopes. It is an internal coordination
@@ -285,7 +285,8 @@ carry the error status and diagnostic. [MCP emitter](../src/runtime/mcp.c)
 
 The CLI keeps connection lifecycle events out of conversation history. Its MCP
 footer summary opens a right-side floating card on click; progress and failure
-details stay in that card while the composer remains editable. Explicit MCP
+details stay in that card while the composer remains editable. A connecting
+summary appears below the primary activity header until discovery finishes. Explicit MCP
 commands print their own result or error receipts independently of these events.
 
 The core `artifact.ready` data includes `kind`, `path` and an optional `source`.

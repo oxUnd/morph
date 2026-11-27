@@ -53,74 +53,16 @@ static int cli_composer_atomic_range(void *data, const char *text, size_t cursor
 	return 0;
 }
 
-static int cli_composer_activity_height(struct cli_composer *composer, int width, int *height)
-{
-	*height = 0;
-	for (size_t i = 0; i < nt_view_child_count(&composer->base); i++) {
-		struct nt_view *child = nt_view_child(&composer->base, i);
-		if (child == composer->input || nt_view_is_hidden(child))
-			continue;
-
-		struct nt_view_size size;
-		int rc = nt_view_measure(child, width, &size);
-		if (rc)
-			return rc;
-
-		*height += size.height;
-	}
-
-	return 0;
-}
-
 static int cli_composer_measure(struct nt_view *view, int width, struct nt_view_size *size)
 {
 	struct cli_composer *composer = (struct cli_composer *)view;
-	int activity = 0;
-	int rc = cli_composer_activity_height(composer, width, &activity);
-	if (!rc)
-		rc = nt_view_measure(composer->input, width, size);
-
-	if (!rc) {
-		size->height += activity;
-		if (activity && width > size->width)
-			size->width = width;
-	}
-
-	return rc;
+	return nt_view_measure(composer->input, width, size);
 }
 
 static int cli_composer_layout(struct nt_view *view)
 {
 	struct cli_composer *composer = (struct cli_composer *)view;
-	struct nt_view_rect content = nt_view_content_rect(view);
-	struct nt_view_size editor;
-	int rc = nt_view_measure(composer->input, content.width, &editor);
-	if (rc)
-		return rc;
-
-	int available = content.height > editor.height ? content.height - editor.height : 0;
-	for (size_t i = 0; i < nt_view_child_count(view); i++) {
-		struct nt_view *child = nt_view_child(view, i);
-		if (child == composer->input || nt_view_is_hidden(child))
-			continue;
-
-		struct nt_view_size size;
-		rc = nt_view_measure(child, content.width, &size);
-		if (rc)
-			return rc;
-
-		int height = size.height < available ? size.height : available;
-		rc = nt_view_arrange(child, (struct nt_view_rect){
-			content.x, content.y, content.width, height});
-		if (rc)
-			return rc;
-
-		content.y += height;
-		content.height -= height;
-		available -= height;
-	}
-
-	return nt_view_arrange(composer->input, content);
+	return nt_view_arrange(composer->input, nt_view_content_rect(view));
 }
 
 static int cli_composer_draw_padding(struct nt_view *view, enum nt_view_edge edge,
@@ -196,12 +138,7 @@ int cli_composer_fit(struct nt_view *view, int width, int height, int preceding_
 	if (rc)
 		return rc;
 
-	int activity = 0;
-	rc = cli_composer_activity_height(composer, width, &activity);
-	if (rc)
-		return rc;
-
-	int required = editor.height + activity;
+	int required = editor.height;
 	int spacing = height > required ? height - required : 0;
 	rc = nt_view_set_margin(
 		view, (struct nt_view_insets){.top = spacing >= 3 && !preceding_separator ? 1 : 0});

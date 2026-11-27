@@ -62,8 +62,8 @@ static inline int cli_style_running_interval_ms(int64_t now_ms)
 #define CLI_STATUS_PERM_AUTO_FOREGROUND_INDEX 252u
 #define CLI_STATUS_PERM_READ_ONLY_BACKGROUND_INDEX 238u
 #define CLI_STATUS_PERM_READ_ONLY_FOREGROUND_INDEX 250u
-/* Composer detail rows align their elbow with the first letter of Working. */
-#define CLI_ACTIVITY_CHILD_PREFIX "  └ "
+/* Independent activity elbows align with the first letter of the main status. */
+#define CLI_ACTIVITY_CHILD_PREFIX "  └─ "
 #define CLI_ACTIVITY_CONNECTOR_COLOR "\033[38;5;245m"
 #define CLI_COMMAND_COLOR "\033[38;5;141m"
 #define CLI_RECAP_COLOR "\033[38;5;245m"

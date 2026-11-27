@@ -65,14 +65,17 @@ Do not assume an older installed binary supports unreleased source changes.
 - Explain the actual HTTP status and provider detail when available. A 400
   protocol/config error is not evidence of a network outage or a reason to keep retrying.
 - During main/sub-agent turns, eligible connection failures before response/output
-  reconnect indefinitely at 5, 10, 20, 40, then 60-second intervals. The composer
-  shows `Reconnecting` with a countdown; Esc cancels. HTTP 429/5xx and auxiliary
+  reconnect indefinitely at 5, 10, 20, 40, then 60-second intervals. The activity
+  region above the input shows `Reconnecting` with a countdown; Esc cancels. HTTP 429/5xx and auxiliary
   model calls retain finite retries; partial output uses finite safe continuation.
   `retry_count = 0` disables all automatic retries and stream recovery.
 
 ## History navigation
 
-Back to bottom occupies a separate normal-background row above the composer.
+Back to bottom occupies a separate normal-background row above live activity.
+The bottom dock orders its four regions as Back to bottom, activity, input, and
+a single-line status bar. Empty regions collapse. Activity grows upward while
+input and the status bar remain anchored at the bottom.
 Live and restored sub-agent mail is grouped with a successful mailbox wait when
 available: Finished waiting lists returned agent paths and elbow-line rows show
 short report previews. Ordinary messages remain updates, not completed tasks.
@@ -102,17 +105,27 @@ does not itself create a user message.
 The `Working` label has a repeating gray-to-white sweep driven by TUI animation.
 No-color output remains steady.
 
-Composer status markers share the leftmost column. Queued-message previews,
-their overflow count and a waited background job's command use flat gray `└`
-rows two columns in, aligned with the `W` in `Working`. Queue previews stay on
-one line and clip to the available width; Esc applies them at the next input
-boundary. Scheduled-task counts use a separate footer row.
+Only the first live activity row has a status marker. Its label changes for work,
+agent/background-job waits, retries/reconnection, commands, cancellation, approval,
+and questions. Agent summaries, jobs, scheduled tasks, queue previews, session
+naming, recaps and MCP connection progress follow in the same activity region.
+Every subordinate row uses an independent gray `  └─ ` elbow aligned with the
+`W` in `Working`, without status circles, a connected spine, or nested levels.
 
-Live sub-agent activity and waiting status appear inside the CLI composer.
-Multiple agents use flat gray `└` rows aligned with the `Working` text, without
-circle markers before their paths.
-Click an agent path to open its feed;
+Queue previews are single-line and bounded, with overflow counts. Short terminals
+retain summaries before details and compact summaries when needed; input padding
+shrinks before editable rows. Scheduled-task counts appear in activity and refresh
+while idle. The status bar stays one line. At extremely narrow widths, keep the
+permission preset visible before reserving space for the session hash.
+Click a live agent path to open its feed;
 `/subagents /root/name` opens the same feed by command.
+
+Esc returns to bottom first when that button is visible, then applies queued input,
+then interrupts current work/background waiting. Hints reflect this priority.
+Approvals, questions, confirmations and selectors temporarily replace the input
+region while retaining the draft and status bar. Completion restores focus.
+Completed/failed/cancelled receipts stay in history; ongoing background activity
+remains live after the main turn finishes.
 
 ## Editing the Active Config
 

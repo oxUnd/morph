@@ -10,7 +10,7 @@ import time
 
 from test_cli_pty import Model, Terminal, pexpect
 from test_cli_retained_chat_pty import wait_visible
-from test_cli_mcp_pty import assert_quiet, assert_status, click_mcp, wait_for, POPUP_TITLE
+from test_cli_mcp_pty import assert_quiet, assert_status, click_mcp, wait_for, POPUP_TITLE, popup_content
 
 
 SERVER = '''import json
@@ -49,8 +49,9 @@ def wait_failure(terminal, server_name):
         click_mcp(terminal)
     display = wait_for(terminal, lambda text: server_name in text and 'Failed' in text)
     assert_status(display, server_name, 'Failed')
-    assert 'Connecting' not in display, display
-    assert any(row.lstrip(' │').startswith(('└ ', '├ '))
+    assert not any('Connecting' in popup_content(row) for row in display.splitlines()
+                   if row.count('│') >= 2), display
+    assert any(popup_content(row).startswith(('└ ', '├ '))
                for row in display.splitlines()), display
     return display
 

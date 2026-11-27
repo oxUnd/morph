@@ -1,4 +1,4 @@
-"""Small terminals must keep editable input above the optional task footer."""
+"""Small terminals preserve input and the status bar below bounded activity."""
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -26,7 +26,7 @@ def check(terminal, height, tasks, draft, label):
                if row.startswith(('› ', '> '))]
     hints = [index for index, row in enumerate(rows) if 'Ctrl+T transcript' in row]
     footers = [index for index, row in enumerate(rows) if 'perm: ' in row]
-    task_rows = [index for index, row in enumerate(rows) if 'Tasks ' in row]
+    task_rows = [index for index, row in enumerate(rows) if row.startswith('  └─ Tasks ')]
     diagnostic = (f'{label}: cursor={terminal.screen.cursor.y},'
                   f'{terminal.screen.cursor.x}\n' +
                   '\n'.join(f'{index:03}: {row}' for index, row in enumerate(rows)))
@@ -37,11 +37,12 @@ def check(terminal, height, tasks, draft, label):
     assert prompt >= 0, diagnostic
     assert terminal.screen.cursor.y == prompt + last_row, diagnostic
     assert len(hints) == 0, diagnostic
-    assert len(footers) == int(last_row + 2 < height), diagnostic
-    assert len(task_rows) == int(tasks and last_row + 3 < height), diagnostic
+    assert len(footers) == int(last_row + 1 < height), diagnostic
+    assert len(task_rows) == int(tasks and last_row + 4 <= height), diagnostic
     if footers:
-        last_footer = task_rows[-1] if task_rows else footers[-1]
-        assert last_footer - len(terminal.screen.history.top) == height - 1, diagnostic
+        assert footers[-1] - len(terminal.screen.history.top) == height - 1, diagnostic
+    if task_rows:
+        assert task_rows[0] < prompts[0], diagnostic
     print(f'checked: {label}', flush=True)
 
 

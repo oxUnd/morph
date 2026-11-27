@@ -74,7 +74,7 @@ def scenario(binary, port, columns):
             # The first model request stays open while the second session starts.
             terminal.send('/new Beta\r')
             wait_for(terminal, lambda: 'created and switched to session: Beta' in visible(terminal))
-            session_footer(terminal, directory, 'Beta', show_name=columns >= 120)
+            session_footer(terminal, directory, 'Beta')
             assert 'wait for the active turn' not in visible(terminal), visible(terminal)
             terminal.send('WORK_BETA\r')
             body, beta = terminal.request()
@@ -99,7 +99,7 @@ def scenario(binary, port, columns):
 
             terminal.send('\x1b[5;5~')
             wait_for(terminal, lambda: 'DRAFT_ALPHA' in visible(terminal))
-            session_footer(terminal, directory, 'Alpha', show_name=columns >= 120)
+            session_footer(terminal, directory, 'Alpha')
             beta.delta = {'content': 'BETA_FINAL'}
             beta.set()
             terminal.pump(.8)

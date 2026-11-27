@@ -58,8 +58,14 @@ static int cli_work_status_text(nb_buf *out, const char *text, int columns, int 
 			: NB_ERR_NOMEM);
 }
 
-static int cli_work_status_queue_row(nb_buf *out, const char *text, int columns, int styled)
+int cli_work_status_detail(nb_buf *out, const char *text, int columns, int styled)
 {
+	if (!out || !text)
+		return NB_ERR_INVAL;
+
+	if (columns < 6)
+		return 0;
+
 	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
 		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe)
@@ -67,7 +73,7 @@ static int cli_work_status_queue_row(nb_buf *out, const char *text, int columns,
 
 	char clipped[BUFSIZ];
 	morph_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
-		(size_t)columns - 5, 0);
+		(size_t)columns - 6, 0);
 	if (out->len)
 		nb_buf_append_char(out, '\n');
 
@@ -86,7 +92,7 @@ int cli_work_status_queue(nb_buf *out, const char *const *prompts, size_t shown,
 		return nb_buf_status(out);
 
 	for (size_t i = 0; i < shown; i++) {
-		int rc = cli_work_status_queue_row(out, prompts[i], columns, styled);
+		int rc = cli_work_status_detail(out, prompts[i], columns, styled);
 		if (rc)
 			return rc;
 	}
@@ -96,14 +102,15 @@ int cli_work_status_queue(nb_buf *out, const char *const *prompts, size_t shown,
 		if (!nb_buf_printf(&summary, "+%zu more queued", total - shown))
 			return nb_buf_status(&summary);
 
-		return cli_work_status_queue_row(out, nb_buf_cstr(&summary), columns, styled);
+		return cli_work_status_detail(out, nb_buf_cstr(&summary), columns, styled);
 	}
 
 	return nb_buf_status(out);
 }
 
 int cli_work_status_running_frame(nb_buf *out, int columns, int styled, int64_t elapsed_ms,
-				  int64_t now_ms, int64_t animation_ms, const char *agent_summary)
+				  int64_t now_ms, int64_t animation_ms, const char *agent_summary,
+				  const char *escape_action)
 {
 	if (!out || columns < 1)
 		return NB_ERR_INVAL;
@@ -111,11 +118,9 @@ int cli_work_status_running_frame(nb_buf *out, int columns, int styled, int64_t 
 	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
 	int rc = cli_work_status_duration(&text, elapsed_ms);
 	int summary = agent_summary && *agent_summary;
-	if (!rc)
-		rc = (nb_buf_append_cstr(&text,
-					 summary && columns < 76 ? " · Esc" : " · Esc to interrupt")
-			      ? 0
-			      : NB_ERR_NOMEM);
+	if (!rc && escape_action && *escape_action &&
+	    !nb_buf_printf(&text, " · %s", summary && columns < 76 ? "Esc" : escape_action))
+		rc = nb_buf_status(&text);
 
 	if (!rc && summary)
 		rc = (nb_buf_printf(&text, " · %s", agent_summary) ? 0 : NB_ERR_NOMEM);
@@ -143,7 +148,24 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 			    int64_t now_ms, const char *agent_summary)
 {
 	return cli_work_status_running_frame(out, columns, styled, elapsed_ms, now_ms,
-		elapsed_ms, agent_summary);
+		elapsed_ms, agent_summary, "Esc to interrupt");
+}
+
+int cli_work_status_header(nb_buf *out, const char *label, int columns, int styled,
+	enum cli_work_status_kind kind,
+	int64_t now_ms)
+{
+	if (!out || !label)
+		return NB_ERR_INVAL;
+
+	const char *marker = kind == CLI_WORK_STATUS_QUESTION ? CLI_FEED_QUESTION
+		: kind == CLI_WORK_STATUS_PENDING ? CLI_FEED_PENDING : CLI_FEED_RUNNING;
+	const char *color = kind == CLI_WORK_STATUS_QUESTION ? CLI_FEED_QUESTION_STYLE
+		: kind == CLI_WORK_STATUS_PENDING ? ANSI_DIM : cli_style_running_color(now_ms);
+	int rc = nb_buf_printf(out, "%s%s%s ", styled ? color : "",
+		marker, styled ? ANSI_RESET : "")
+		? 0 : nb_buf_status(out);
+	return rc ? rc : cli_work_status_text(out, label, columns - 3, styled);
 }
 
 int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, int64_t elapsed_ms,
@@ -184,8 +206,8 @@ int cli_work_status_interval_ms(int64_t elapsed_ms, int64_t now_ms)
 	return (int)(interval < pulse ? interval : pulse);
 }
 
-int cli_work_status_retry(nb_buf *out, int columns, int styled, int attempt, int limit,
-			  int persistent, int waiting, int64_t remaining_ms, int64_t now_ms)
+int cli_work_status_retry_action(nb_buf *out, int columns, int styled, int attempt, int limit,
+	int persistent, int waiting, int64_t remaining_ms, int64_t now_ms, const char *escape_action)
 {
 	nb_buf row NB_CLEANUP(nb_buf_cleanup) = {0};
 	const char *label = persistent ? "Reconnecting" : "Retrying request";
@@ -203,7 +225,8 @@ int cli_work_status_retry(nb_buf *out, int columns, int styled, int attempt, int
 		rc = nb_buf_status(&row);
 	}
 
-	if (!rc && !nb_buf_append_cstr(&row, " · Esc to cancel"))
+	if (!rc && escape_action && *escape_action &&
+	    !nb_buf_printf(&row, " · %s", escape_action))
 		rc = nb_buf_status(&row);
 
 	if (rc)
@@ -211,4 +234,11 @@ int cli_work_status_retry(nb_buf *out, int columns, int styled, int attempt, int
 
 	return cli_messages_append_rendered(out, nb_buf_cstr(&row), row.len,
 		columns > 2 ? columns - 2 : 1, styled);
+}
+
+int cli_work_status_retry(nb_buf *out, int columns, int styled, int attempt, int limit,
+	int persistent, int waiting, int64_t remaining_ms, int64_t now_ms)
+{
+	return cli_work_status_retry_action(out, columns, styled, attempt, limit,
+		persistent, waiting, remaining_ms, now_ms, "Esc to cancel");
 }

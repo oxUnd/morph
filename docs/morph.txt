@@ -199,7 +199,7 @@ OpenAI-compatible text example:
 
 With a positive retry_count, main/sub-agent turns keep reconnecting after
 retryable connection failures before any response/output: 5, 10, 20, 40, then
-60 seconds between attempts, with no attempt limit. The composer shows
+60 seconds between attempts, with no attempt limit. The activity region shows
 Reconnecting, the attempt and countdown; Esc cancels promptly. Normal activity
 returns when response headers arrive. Authentication/configuration errors stop;
 transient HTTP responses (including 429/5xx) retain the finite retry_count budget
@@ -364,7 +364,8 @@ Use "morph mcp --help" or "morph skills --help" for options. Global -c and -w
 go before the command group. See |morph-skills| and |morph-mcp| for examples.
 
 When browsing older messages, Back to bottom uses its own normal-background row
-above the composer, outside the editable input and its padding. Restored sub-agent
+above the activity area, outside the editable input and its padding. It appears
+only while viewing older history and occupies one row. Restored sub-agent
 mail is grouped with its successful mailbox wait when available. Finished waiting
 lists the returned agent paths; short report previews appear on elbow-line rows.
 Ordinary messages are labeled as updates, not completion. Show details expands the
@@ -432,18 +433,37 @@ Most commands have short aliases: /q, /h, /n, /s, /rn, /del, /m,
 /cfg, /t, /ctx, /cp, /r, /mem, /perms, /x.  Use /help /command for exact
 usage.
 
-While Morph is working, additional messages appear in the queue above the work
-status. Each preview and the overflow count use a flat gray elbow-line row,
-with the elbow aligned with the W in Working, like live sub-agent rows.
-Long previews are clipped to one line. They enter the conversation feed only
-when the agent accepts them at its next input boundary. Messages left at a turn's
-completion are displayed when the next turn starts. This does not require waiting
-for the entire task to finish.
+The bottom dock has four regions in order: Back to bottom, live activity,
+input, and a single-line status bar. Empty regions collapse. Live activity grows
+up into the conversation viewport; the editable input and status bar stay at the
+bottom. Only the first activity row has a status marker. Its label reflects the
+current work: Working, Waiting for agents, Waiting for background job, Retrying,
+Reconnecting, Running command, Cancelling, or a pending interaction.
 
-The interactive footer shows running and pending scheduled task counts while
-any are active. Waiting tasks count as pending; the counts refresh while idle.
-Active tasks use a separate footer row so model and context information remain
-visible. Background results include their task ID, delivery time, and inbox ID.
+Agent and background-job summaries, scheduled-task counts, session naming,
+recap generation, MCP connection progress, and queued messages appear below the
+main status. Detail rows use independent gray "  └─ " elbows, aligned with the
+W in Working. They have no additional status circles or connected tree spine.
+Rows are bounded and clipped to one line. Short terminals keep group summaries
+before details and compact multiple summaries when needed. Input padding shrinks
+before editable text is lost.
+
+While Morph is working, additional messages appear in the activity queue. They
+enter the conversation feed only when the agent accepts them at its next input
+boundary. Messages left at a turn's completion appear when the next turn starts.
+Esc first returns to the bottom when that button is visible, otherwise applies
+queued messages at the next input boundary, otherwise interrupts the current
+work or background wait. The live hint describes the currently applicable action.
+
+Scheduled-task counts refresh while idle and appear in the activity area while
+running or pending. Waiting tasks count as pending. The status bar remains one
+line. At extremely narrow widths, the permission preset takes priority over
+the session hash so the active access mode stays visible. Background results
+include their task ID, delivery time, and inbox ID.
+Approvals, questions, confirmations and selectors temporarily replace the input
+region, preserving the draft and status bar. Closing the panel restores input
+focus. Completed, failed and cancelled receipts remain in conversation history;
+remaining background work keeps its own live status visible.
 
 Feed marks: ● assistant output or completed action, ◯ pending/unknown action,
 ◉ running action, ✖ failure/timeout, ⚠ warning, – cancelled/skipped action,
@@ -452,10 +472,8 @@ into a single preview row, with an ellipsis when more text is hidden. Ctrl+T
 opens the current turn's full reasoning and tool details, including live updates;
 Ctrl+T or Esc returns to the conversation. During a turn, the purple shortcut
 hint appears at the end of the Working row.
-Composer status markers share the leftmost column. Queued-message previews,
-live sub-agents and the command of a background job being waited on use gray
-elbow connectors two columns in, aligned with the status label. Scheduled-task
-counts remain on their own footer row.
+The first activity marker occupies the leftmost column; every subordinate row
+starts with an independent elbow two columns in and contains no status marker.
 Task bodies use the same Markdown renderer as replies. Ctrl+K opens the
 shortcut reference for the current view.
 
@@ -515,9 +533,9 @@ can usefully run in parallel when proactive delegation is enabled.
 Tab or Left/Right switches, f sends a follow-up, k interrupts, and Esc returns.
 The Working label uses a repeating gray-to-white sweep driven by TUI animation;
 no-color output remains steady.
-Live agent activity and waiting status appear inside the composer. Multiple
-agents use flat gray elbow-line rows aligned with the Working text, without
-circle markers before their paths;
+Live agent activity and waiting status appear in the activity region above the
+input. Multiple agents use independent gray elbow-line rows aligned with the
+Working text, without circle markers before their paths;
 click an agent path to open its feed.
 Children compile and test in MORPH_AGENT_SCRATCH with scoped workspace writes.
 An optional weighted token budget covers the session tree. Enable it under

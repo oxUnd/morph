@@ -69,6 +69,17 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   dispatch pages or services; they never start a second event loop. The app owns
   the loop, page presentation and terminal restoration.
 
+The chat page composes a scrolling feed above one `components/chat_dock`.
+The dock owns four sibling regions in fixed order: Back to bottom, activity,
+input, and status bar. `components/activity` owns its primary header and bounded
+summary/detail groups; activity never belongs to the composer. Only the primary
+header carries a status marker. The input slot switches between the input-only
+composer and a panel while preserving drafts. It allocates the active child's
+actual viewport rather than clipping an editor measured at its natural height.
+The status bar remains visible while a panel is mounted. Dock measurement and
+activity measurement are read-only; actual allocation and compact detail selection
+belong to layout at the arranged width.
+
 The chat page mounts inline controls using `cli_chat_panel_mount`. A panel
 builds its native views, identifies the control to focus and handles its
 selection and completion. The model and permissions pages share

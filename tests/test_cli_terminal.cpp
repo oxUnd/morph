@@ -227,7 +227,7 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	EXPECT_LT(first, second);
 	EXPECT_LT(status, queued.find("Messages queued"));
 	EXPECT_LT(queued.find("Messages queued"), first);
-	EXPECT_NE(queued.find("└ first adjustment"), std::string::npos);
+	EXPECT_NE(queued.find("└─ first adjustment"), std::string::npos);
 	EXPECT_EQ(queued.find("├"), std::string::npos);
 	EXPECT_NE(queued.find("+1 more queued"), std::string::npos);
 	EXPECT_LT(second, queued.find("third adjustment"));
@@ -377,7 +377,7 @@ TEST_F(CliTerminalTest, JobsShowCompactSummaryAndOnlyExpandTheWaitedCommand)
 		EXPECT_NE(text.find("/jobs"), std::string::npos) << text;
 		EXPECT_NE(text.find("Esc"), std::string::npos) << text;
 		EXPECT_NE(text.find("42s"), std::string::npos) << text;
-		EXPECT_NE(text.find("\n  └ cmake --build"), std::string::npos) << text;
+		EXPECT_NE(text.find("\n  └─ cmake --build"), std::string::npos) << text;
 		EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
 		for (size_t offset = 0; offset < text.size();) {
 			size_t end = text.find('\n', offset);

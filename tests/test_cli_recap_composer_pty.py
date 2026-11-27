@@ -226,7 +226,7 @@ def live_exercise(driver, server, width, manual, cycles, artifacts):
                     server.titles.get_nowait().set()
                 terminal.pump(.3)
                 one_composer(terminal, f'live metadata completed during recap {cycle}/{width}')
-                wait_until(terminal, lambda: not any('└─' in row
+                wait_until(terminal, lambda: not any('background job' in row.lower()
                            for row in terminal.screen.display), timeout=12)
                 one_composer(terminal, f'live job expired during recap {cycle}/{width}')
                 if not cycle % 2:

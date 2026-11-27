@@ -9,8 +9,9 @@ import tempfile
 import threading
 import time
 
-from test_cli_pty import Model, Terminal, http
+from test_cli_pty import Terminal, http
 from test_cli_agents_pty import tool_delta
+from test_cli_subagents_pty import FeedModel
 
 
 def wait_for(terminal, predicate):
@@ -91,7 +92,7 @@ def run_agent_export(driver, port, columns):
             wait_for(terminal, lambda: 'Finished waiting /root/reviewer' in
                      '\n'.join(terminal.screen.display))
             collapsed = '\n'.join(terminal.screen.display)
-            assert 'TEAM_REVIEW_REPORT' in collapsed and 'Message Type:' not in collapsed
+            assert 'TEAM_REVIEW_REPORT' in collapsed and 'Message Type:' not in collapsed, collapsed
             assert 'FULL_REPORT_DETAIL_ONLY' not in collapsed
             assert collapsed.count('Finished waiting') == 1
             terminal.send('RESTORED_DRAFT')
@@ -114,7 +115,7 @@ def run_agent_export(driver, port, columns):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
-    server = LoopbackHTTPServer(('127.0.0.1', 0), Model)
+    server = LoopbackHTTPServer(('127.0.0.1', 0), FeedModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     release = None

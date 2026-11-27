@@ -500,7 +500,7 @@ static int cli_question_start(struct cli_application *ctx, void *data,
 		cli_chat_panel_mount(ctx, cli_question_build, pending, cli_question_panel_complete);
 	if (!rc) {
 		pending = NULL;
-		cli_chat_panel_set_interaction(ctx, 1);
+		cli_chat_panel_set_interaction(ctx, CLI_CHAT_INTERACTION_QUESTION);
 		cli_chat_panel_set_refresh(ctx, cli_question_refresh);
 	}
 

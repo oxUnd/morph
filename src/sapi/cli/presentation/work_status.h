@@ -11,15 +11,26 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 			    int64_t now_ms, const char *agent_summary);
 /* Native animation clocks advance the sweep independently of turn duration. */
 int cli_work_status_running_frame(nb_buf *, int columns, int styled, int64_t elapsed_ms,
-	int64_t now_ms, int64_t animation_ms, const char *agent_summary);
+	int64_t now_ms, int64_t animation_ms, const char *agent_summary, const char *escape_action);
 /* Completed content excludes its component's two-cell left padding. */
 int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, int64_t elapsed_ms,
 			      time_t finished_at);
 int cli_work_status_retry(nb_buf *, int columns, int styled, int attempt, int limit,
 	int persistent, int waiting, int64_t remaining_ms, int64_t now_ms);
+int cli_work_status_retry_action(nb_buf *, int columns, int styled, int attempt, int limit,
+	int persistent, int waiting, int64_t remaining_ms, int64_t now_ms, const char *escape_action);
 int cli_work_status_interval_ms(int64_t elapsed_ms, int64_t now_ms);
 /* Single-line queue previews share the composer's bounded gray detail rows. */
 int cli_work_status_queue(nb_buf *, const char *const *prompts, size_t shown, size_t total,
 	int columns, int styled);
+int cli_work_status_detail(nb_buf *, const char *text, int columns, int styled);
+enum cli_work_status_kind {
+	CLI_WORK_STATUS_RUNNING,
+	CLI_WORK_STATUS_QUESTION,
+	CLI_WORK_STATUS_PENDING,
+};
+int cli_work_status_header(nb_buf *, const char *label, int columns, int styled,
+	enum cli_work_status_kind,
+	int64_t now_ms);
 
 #endif

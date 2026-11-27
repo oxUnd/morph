@@ -3,7 +3,6 @@
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include "sapi/cli/presentation/style.h"
-#include "sapi/cli/services/sessions.h"
 #include <nb/cleanup.h>
 #include <nb/utf8.h>
 #include "terminal/text.h"
@@ -104,25 +103,16 @@ static int cli_composer_footer_usage(struct cli_application *ctx, int columns, n
 			      ? 0
 			      : NB_ERR_NOMEM);
 
-	if (!rc && ctx->input_status.session_titles_pending > 0)
-		rc = (nb_buf_append_cstr(usage, " · Naming session...") ? 0 : NB_ERR_NOMEM);
-
-	if (!rc && ctx->recap.pending)
-		rc = (nb_buf_append_cstr(usage, " · Generating recap...") ? 0 : NB_ERR_NOMEM);
-
-	int other = cli_sessions_running_count(ctx) - cli_sessions_active(ctx);
-	if (!rc && cli_sessions_open_count(ctx) > 1 && cli_sessions_current_id(ctx) > 0 &&
-	    other > 0 && !nb_buf_printf(usage, " · %d other session%s running",
-				      other, other == 1 ? "" : "s"))
-		rc = nb_buf_status(usage);
-
 	return rc;
 }
 
 static int cli_composer_footer_session(const struct session *session, size_t available,
-				      size_t usage_width, nb_buf *text)
+				      size_t usage_width, size_t permission_width, nb_buf *text)
 {
 	if (session->id <= 0 || !session->display_id[0])
+		return 0;
+
+	if (available < permission_width + 4 + strlen(session->display_id))
 		return 0;
 
 	char *name NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
@@ -206,9 +196,16 @@ int cli_composer_footer_render(struct cli_application *ctx, int columns, nb_buf 
 	size_t usage_width = nb_utf8_width_cstr(nb_buf_cstr(&usage));
 	size_t available = (size_t)columns - 4;
 	int styled = cli_output_color_enabled(ctx);
+	nb_buf permission NB_CLEANUP(nb_buf_cleanup) = {0};
+	const char *preset = ctx->input_status.permissions_ready
+		? runtime_permission_preset_name(&ctx->input_status.permissions) : "?";
+	if (!nb_buf_printf(&permission, "perm: %s", preset))
+		return nb_buf_status(&permission);
+
+	size_t permission_width = nb_utf8_width(nb_buf_str(&permission));
 	/* A permission chip at the start of the row adds one leading padding cell. */
 	rc = cli_composer_footer_session(&session, available - (styled ? 1u : 0u),
-					usage_width, session_text);
+					usage_width, permission_width, session_text);
 	if (rc)
 		return rc;
 
@@ -231,24 +228,8 @@ int cli_composer_footer_render(struct cli_application *ctx, int columns, nb_buf 
 
 	if (!rc)
 		rc = cli_composer_footer_field(
-			ctx, out, nb_buf_cstr(&usage), remaining, ANSI_DIM, 0);
-
-	(void)runtime_task_count_active(ctx->runtime, &ctx->input_status.tasks);
-	if (!rc && (ctx->input_status.tasks.running || ctx->input_status.tasks.pending)) {
-		nb_buf tasks NB_CLEANUP(nb_buf_cleanup) = {0};
-		rc = (nb_buf_printf(&tasks, "Tasks %lld running · %lld pending",
-				    (long long)ctx->input_status.tasks.running,
-				    (long long)ctx->input_status.tasks.pending)
-			      ? 0
-			      : NB_ERR_NOMEM);
-		if (!rc)
-			rc = (nb_buf_append_char(out, '\n') ? 0 : NB_ERR_NOMEM);
-
-		if (!rc)
-			rc = cli_composer_footer_field(
-				ctx, out, nb_buf_cstr(&tasks), (size_t)columns - 4,
-				ctx->input_status.tasks.running ? ANSI_YELLOW : ANSI_DIM, 0);
-	}
+			ctx, out, nb_buf_cstr(remaining < permission_width + 3 ? &permission : &usage),
+			remaining, ANSI_DIM, 0);
 
 	return rc;
 }

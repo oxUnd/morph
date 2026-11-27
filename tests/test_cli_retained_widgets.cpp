@@ -22,6 +22,8 @@ extern "C" {
 #include "sapi/cli/components/recap.h"
 #include "sapi/cli/presentation/recap.h"
 #include "sapi/cli/components/composer.h"
+#include "sapi/cli/components/activity.h"
+#include "sapi/cli/components/chat_dock.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include <nb/utf8.h>
@@ -36,6 +38,7 @@ extern "C" {
 #include <nothing/tui/controls/text_field.h>
 #include <nothing/tui/controls/drop_down.h>
 #include <nothing/tui/controls/tab_bar.h>
+#include <nothing/tui/controls/button.h>
 #include <nothing/tui/models/text_editor.h>
 #include <nothing/tui/models/list_navigation.h>
 #include <nb/cleanup.h>
@@ -107,7 +110,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 {
       protected:
 	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed, Files, Sidebar, RichDocument,
-		Unstable } kind = Tool;
+		Unstable, Dock } kind = Tool;
 	struct cli_files_model files{};
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
@@ -116,6 +119,8 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	struct nt_view_controller *controller = nullptr;
 	struct nt_view *component = nullptr;
 	struct nt_view *editor = nullptr;
+	struct nt_view *dock_activity = nullptr, *dock_back = nullptr, *dock_input = nullptr;
+	struct nt_view *dock_footer = nullptr, *dock_panel = nullptr, *dock_composer = nullptr;
 	struct cli_application ctx{};
 	int cursor_x = -1, cursor_y = -1, columns_rendered = 0;
 	int rendered_frames = 0;
@@ -233,7 +238,25 @@ class CliRetainedWidgetsTest : public ::testing::Test
 
 			auto *root = nt_stack_view_add(builder, nullptr,
 				NT_STACK_VIEW_VERTICAL, 0, nullptr);
-			if (self->kind == Tool)
+			if (self->kind == Dock) {
+				self->component = cli_chat_dock_add(builder, root);
+				self->dock_back = nt_button_add(builder, self->component,
+					"Back to bottom", 0, nullptr);
+				self->dock_activity = cli_activity_add(builder, self->component, 1);
+				self->dock_input = cli_chat_dock_input_add(builder, self->component);
+				self->dock_panel = cli_chat_dock_input_add(builder, self->dock_input);
+				nt_label_add(builder, self->dock_panel, "APPROVAL_CHOICES", nullptr);
+				self->dock_composer = cli_composer_add_borrow(builder, self->dock_input,
+					&self->ctx.composer, 1, &self->editor);
+				self->dock_footer = nt_label_add(builder, self->component, "STATUSBAR", nullptr);
+				nt_builder_fail(builder, nt_view_set_hidden(self->dock_panel, 1));
+				const struct cli_chat_dock_content content{self->dock_back, self->dock_activity,
+						self->dock_input, self->dock_footer, self->dock_composer,
+						self->editor, self->dock_panel};
+				nt_builder_fail(builder, cli_chat_dock_set_content(self->component, &content));
+				nt_builder_fail(builder, cli_chat_dock_fit(self->component, 120, 24, 0));
+			}
+			else if (self->kind == Tool)
 				self->component = cli_tool_call_add_borrow(builder, root,
 					&self->tool, 1, self->details);
 			else if (self->kind == Files)
@@ -1392,4 +1415,86 @@ TEST_F(CliRetainedWidgetsTest, RichDocumentLinksUseTrimmedDisplayOffsets)
 		ASSERT_EQ(nt_application_step(app, 10), 0);
 
 	EXPECT_EQ(opened, "/workspace/main.c:12");
+}
+
+TEST_F(CliRetainedWidgetsTest, ChatDockKeepsFourRegionsAndCompactsActivityBeforeInput)
+{
+	kind = Dock;
+	ASSERT_EQ(cli_composer_model_init(&ctx.composer), 0);
+	Present();
+	ASSERT_EQ(cli_activity_set_header(dock_activity, "◉ Working · 12s"), 0);
+	ASSERT_EQ(cli_activity_set_group(dock_activity, CLI_ACTIVITY_AGENTS,
+		"  └─ Agents · 2 running", "  └─ /root/research  Reading\n  └─ /root/tests  Testing"), 0);
+	ASSERT_EQ(cli_activity_set_group(dock_activity, CLI_ACTIVITY_JOBS,
+		"  └─ Jobs · 1 running", "  └─ Build project"), 0);
+	ASSERT_EQ(cli_activity_set_group(dock_activity, CLI_ACTIVITY_TASKS,
+		"  └─ Tasks · 1 running", ""), 0);
+	ASSERT_EQ(cli_activity_set_group(dock_activity, CLI_ACTIVITY_QUEUE,
+		"  └─ Queue · 2 messages", "  └─ First message\n  └─ Second message"), 0);
+	ASSERT_EQ(cli_activity_set_compact(dock_activity,
+		"  └─ Agents 2 · Jobs 1 · Tasks 1 · Queue 2"), 0);
+	ASSERT_EQ(nt_text_field_set_text(editor, "PRESERVED_DRAFT"), 0);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		for (int height : {24, 8, 5, 4, 3, 24}) {
+			SCOPED_TRACE(columns);
+			SCOPED_TRACE(height);
+			ASSERT_EQ(cli_chat_dock_fit(component, columns, height, 0), 0);
+			ASSERT_EQ(nt_application_step(app, 0), 0);
+			const auto back = nt_view_frame(dock_back);
+			const auto activity = nt_view_frame(dock_activity);
+			const auto input_slot = nt_view_frame(dock_input);
+			const auto footer = nt_view_frame(dock_footer);
+			EXPECT_EQ(back.height, 1);
+			EXPECT_LE(back.y + back.height, activity.y);
+			EXPECT_LE(activity.y + activity.height, input_slot.y);
+			EXPECT_LE(input_slot.y + input_slot.height, footer.y);
+			EXPECT_EQ(footer.height, 1);
+			EXPECT_LE(footer.y + footer.height, height);
+			EXPECT_GE(nt_view_frame(editor).height, 1);
+			EXPECT_STREQ(nt_text_field_text(editor), "PRESERVED_DRAFT");
+			const auto header = nt_view_frame(cli_activity_header_borrow(dock_activity));
+			EXPECT_EQ(header.height, height >= 4 ? 1 : 0);
+		}
+	}
+
+	ASSERT_EQ(cli_activity_set_header(dock_activity, "? Waiting for approval"), 0);
+	ASSERT_EQ(nt_view_set_hidden(dock_back, 1), 0);
+	ASSERT_EQ(nt_view_set_hidden(dock_composer, 1), 0);
+	ASSERT_EQ(nt_view_set_hidden(dock_panel, 0), 0);
+	ASSERT_EQ(cli_chat_dock_fit(component, 60, 8, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_GE(nt_view_frame(dock_panel).height, 1);
+	EXPECT_EQ(nt_view_frame(dock_footer).height, 1);
+	EXPECT_STREQ(nt_text_field_text(editor), "PRESERVED_DRAFT");
+}
+
+TEST_F(CliRetainedWidgetsTest, ActivityMeasurementsAndRepeatedSnapshotsKeepPublishedFrameIdle)
+{
+	kind = Dock;
+	ASSERT_EQ(cli_composer_model_init(&ctx.composer), 0);
+	Present();
+	ASSERT_EQ(cli_activity_set_header(dock_activity, "◉ Working · 12s"), 0);
+	ASSERT_EQ(cli_activity_set_group(dock_activity, CLI_ACTIVITY_QUEUE,
+		"  └─ Messages queued · 1", "  └─ Keep this complete UTF-8 draft 中文"), 0);
+	ASSERT_EQ(cli_chat_dock_fit(component, 120, 24, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	const int baseline = rendered_frames;
+	const std::string published = frame;
+	for (int columns : {60, 80, 120}) {
+		struct nt_view_size measured{};
+		ASSERT_EQ(nt_view_measure(dock_activity, columns, &measured), 0);
+		ASSERT_EQ(nt_view_measure(component, columns, &measured), 0);
+		ASSERT_EQ(cli_activity_set_header(dock_activity, "◉ Working · 12s"), 0);
+		ASSERT_EQ(cli_activity_set_group(dock_activity, CLI_ACTIVITY_QUEUE,
+			"  └─ Messages queued · 1", "  └─ Keep this complete UTF-8 draft 中文"), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		EXPECT_EQ(rendered_frames, baseline);
+		EXPECT_EQ(frame, published);
+	}
+
+	ASSERT_EQ(cli_activity_set_header(dock_activity, ""), 0);
+	struct nt_view_size empty{};
+	ASSERT_EQ(nt_view_measure(dock_activity, 120, &empty), 0);
+	EXPECT_EQ(empty.height, 0);
 }

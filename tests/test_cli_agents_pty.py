@@ -58,10 +58,10 @@ def run(driver, port, columns):
             terminal.send('exercise collaboration\r')
             _, root = terminal.request()
             releases.append(root)
-            wait_for(terminal, lambda: any('Working' in line and 'Agents: 0 running' in line
+            wait_for(terminal, lambda: any('Agents: 0 running' in line
                                          for line in terminal.screen.display))
             working = next(line for line in terminal.screen.display if 'Working' in line)
-            assert 'Agents: 0 running' in working, '\n'.join(terminal.screen.display)
+            assert 'Agents: 0 running' in '\n'.join(terminal.screen.display), '\n'.join(terminal.screen.display)
             assert not any(line.lstrip().startswith('Agents:') for line in terminal.screen.display)
             terminal.send('SHIMMER_DRAFT')
             profiles = set()
@@ -87,13 +87,13 @@ def run(driver, port, columns):
                                 for message in body.get('messages', []) if message['role'] == 'system'))
             primary = next(release for _, release in pair if release is not child)
             wait_for(terminal, lambda: 'Agents: 1 running' in '\n'.join(terminal.screen.display))
-            wait_for(terminal, lambda: any('  └ /root/worker' in line for line in terminal.screen.display))
-            active_row = next(line for line in terminal.screen.display if '  └ /root/worker' in line)
+            wait_for(terminal, lambda: any('  └─ /root/worker' in line for line in terminal.screen.display))
+            active_row = next(line for line in terminal.screen.display if '  └─ /root/worker' in line)
             agent_row = terminal.screen.display.index(active_row)
             assert terminal.screen.buffer[agent_row][2].fg == '8a8a8a'
             assert 'CHILD_ACTIVITY_TASK' not in active_row
             working = next(line for line in terminal.screen.display if 'Working' in line)
-            assert 'Agents: 1 running' in working, '\n'.join(terminal.screen.display)
+            assert 'Agents: 1 running' in '\n'.join(terminal.screen.display), '\n'.join(terminal.screen.display)
             assert not any(line.lstrip().startswith('Agents:') for line in terminal.screen.display)
             primary.delta = tool_delta('wait_agent', {'timeout_ms': 10000}, 'wait_work')
             primary.set()
@@ -109,7 +109,7 @@ def run(driver, port, columns):
             terminal.send('CLICK_FEED_DRAFT')
             wait_for(terminal, lambda: 'CLICK_FEED_DRAFT' in '\n'.join(terminal.screen.display))
             row = next(i for i, line in enumerate(terminal.screen.display)
-                       if '  └ /root/worker' in line)
+                       if '  └─ /root/worker' in line)
             column = terminal.screen.display[row].index('/root/worker') + 1
             terminal.send(f'\x1b[<0;{column};{row + 1}M\x1b[<0;{column};{row + 1}m')
             wait_for(terminal, lambda: hasattr(terminal.screen, '_main_screen'))

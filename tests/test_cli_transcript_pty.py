@@ -1,5 +1,6 @@
 """Exercise full-screen tool details through the production TUI event loop."""
 from loopback_http import LoopbackHTTPServer
+from cli_inline_test_support import conversation_rows
 import http.server
 import json
 from pathlib import Path
@@ -154,26 +155,27 @@ def collect_retained_history(terminal, draft, final_marker='FINAL_PREVIEW'):
     rows = terminal.screen.display
     composer = next(index for index, row in enumerate(rows) if draft in row)
     cursor = (terminal.screen.cursor.x, terminal.screen.cursor.y)
-    history = rows[:composer - 2]
+    history = conversation_rows(rows, composer)
     previous = history
 
     def viewport(label):
         terminal.snapshot(label)
         assert draft in terminal.screen.display[composer], '\n'.join(terminal.screen.display)
         assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
-        return terminal.screen.display[:composer - 2]
+        return conversation_rows(terminal.screen.display, composer)
 
     def prepend(page):
         nonlocal history
         overlap = next((count for count in range(len(page), 0, -1)
                         if page[-count:] == history[:count]), 0)
-        assert overlap, 'scrolling skipped the overlapping history row'
+        assert overlap, ('scrolling skipped the overlapping history row\nPREVIOUS:\n' +
+                         '\n'.join(history[:24]) + '\nPAGE:\n' + '\n'.join(page))
         history = page[:-overlap] + history
 
     for pages in range(20):
-        # PgUp moves one viewport; one wheel-down row creates a shared boundary.
-        terminal.send('\x1b[5~\x1b[<65;1;1M')
-        page = viewport('retained history page up with one-row overlap')
+        # Keep a text overlap when Back to bottom reserves its own dock row.
+        terminal.send('\x1b[5~' + '\x1b[<65;1;1M' * 3)
+        page = viewport('retained history page up with text overlap')
         if page == previous:
             break
         prepend(page)

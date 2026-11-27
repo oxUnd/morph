@@ -83,8 +83,8 @@ model defaults. Inspect the active section instead of replacing it with generic
 values. `retry_count` accepts 0–10 and counts retries after the first request for
 transient HTTP responses and auxiliary model calls. During main/sub-agent turns,
 retryable connection failures before any response/output reconnect indefinitely
-with delays of 5, 10, 20, 40, then 60 seconds (capped). The composer shows
-`Reconnecting`, the attempt and countdown; Esc cancels promptly. A successful
+with delays of 5, 10, 20, 40, then 60 seconds (capped). The activity region above
+the input shows `Reconnecting`, the attempt and countdown; Esc cancels promptly. A successful
 response restores normal activity. Authentication/configuration failures stop;
 429/5xx keep the finite budget and honor Retry-After. Interrupted partial output
 uses the separate finite continuation budget; uncommitted tool calls are discarded.

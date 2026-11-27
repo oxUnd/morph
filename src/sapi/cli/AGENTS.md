@@ -65,15 +65,20 @@ Paths such as `components/` and `presentation/` below are relative to this direc
   `●` (green) for successful completion, `✖` (bold red) for errors/failures,
   and `?` (bold yellow) for questions/approval awaiting user input. Running
   activity may animate without changing marker width or layout. The `Working`
-  row and background-job summary start with `◉`, alternating normal/dim cyan
-  every 500 ms on the same monotonic-clock phase. Blink only transient live
+  activity header starts with `◉`, alternating normal/dim cyan every 500 ms.
+  The bottom dock owns Back to bottom, activity, input and the single-line
+  status bar as four sibling regions. Only the first activity row has a status
+  marker. Subordinate agent/job/task/queue summaries and details use independent
+  `CLI_ACTIVITY_CHILD_PREFIX` elbows aligned with the first letter of the header,
+  without additional status markers, connected spines or nested branches.
+  Keep activity outside the input-only composer. Blink only transient live
   indicators; keep completed history static and no-color/plain output steady.
   Update dots in place without erasing the composer or replaying tool output.
 - Align every top-level status marker in the same leftmost column, including
   `Working`, background summaries, tools, plans and completion receipts. Represent
   parent/child relationships with explicit `├` / `└` branches and `│` continuation
   lines where needed; indentation alone must never imply a relationship.
-  Composer activity details (queued messages and their overflow count, live
+  Activity details (queued messages and their overflow count, live
   subagents, and waited background commands) use flat gray `└` rows. Align the
   elbow with the `W` in `Working`, two columns after the top-level marker.
 - Use `–` (dim gray) for cancelled/interrupted/skipped work and `⚠` (yellow)

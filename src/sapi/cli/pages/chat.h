@@ -46,7 +46,13 @@ int cli_chat_panel_mount(struct cli_application *, cli_chat_panel_build_fn, void
 int cli_chat_panel_close(struct cli_application *, int result);
 void cli_chat_panel_set_refresh(struct cli_application *,
 				int (*refresh)(void *, const struct nt_event *));
-void cli_chat_panel_set_interaction(struct cli_application *, int interaction);
+enum cli_chat_interaction {
+	CLI_CHAT_INTERACTION_NONE,
+	CLI_CHAT_INTERACTION_CONFIRMATION,
+	CLI_CHAT_INTERACTION_APPROVAL,
+	CLI_CHAT_INTERACTION_QUESTION,
+};
+void cli_chat_panel_set_interaction(struct cli_application *, enum cli_chat_interaction);
 int cli_chat_overlay_mount(struct cli_application *, cli_chat_panel_build_fn, void *data,
 	cli_chat_panel_complete_fn complete);
 int cli_chat_overlay_close(struct cli_application *);

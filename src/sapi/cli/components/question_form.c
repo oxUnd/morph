@@ -288,7 +288,7 @@ struct nt_view *cli_question_form_add(struct nt_builder *builder, struct nt_view
 		snprintf(hint, sizeof(hint), "  Auto-continue after %d s without input%s.", timeout,
 			 preferences->recommended_count ? " using recommended choices" : "");
 	else
-		snprintf(hint, sizeof(hint), "  Waiting for your answer · Esc Cancel");
+		hint[0] = '\0';
 
 	form->hint = cli_shortcut_hint_add(builder, root, hint, NULL);
 	if (nt_builder_error(builder))

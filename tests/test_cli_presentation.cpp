@@ -14,6 +14,7 @@ extern "C" {
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/history.h"
 #include "sapi/cli/presentation/composer_footer.h"
+#include "sapi/cli/presentation/activity.h"
 #include "sapi/cli/presentation/work_status.h"
 #include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/models/transcript.h"
@@ -381,6 +382,8 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 	ctx.input_status.permissions_ready = 1;
 	ctx.input_status.tokens = 1234;
 	ctx.input_status.credits = 42;
+	ctx.input_status.tasks.running = 1;
+	ctx.input_status.tasks.pending = 2;
 	for (int width : {120, 80, 60}) {
 		SCOPED_TRACE(width);
 		for (int styled : {0, 1}) {
@@ -404,6 +407,7 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 				  std::string::npos) << output;
 			EXPECT_LE(nb_utf8_width_cstr(plain), static_cast<size_t>(width - 4));
 			EXPECT_EQ(output.find('\n'), std::string::npos);
+			EXPECT_EQ(output.find("Tasks"), std::string::npos);
 			if (width == 120)
 				EXPECT_NE(output.find("footer-model"), std::string::npos) << output;
 
@@ -444,7 +448,9 @@ TEST_F(CliPresentationTest, ComposerFooterPreservesAdaptiveOriginalFieldsAndStyl
 				const bool full_name =
 					(name == "Alpha" && (width >= 80 || (width == 60 && !styled))) ||
 					(name == u8"session 会话" && width >= 80);
-				EXPECT_EQ(nb_buf_cstr(&suffix), full_name ? hash + " . " + name : hash);
+				EXPECT_EQ(nb_buf_cstr(&suffix), width == 20 ? ""
+					: full_name ? hash + " . " + name : hash);
+				EXPECT_NE(std::string(nb_buf_cstr(&text)).find("perm: ask"), std::string::npos);
 				EXPECT_LE(cli_terminal_text_width(nb_buf_cstr(&text)) +
 					  nb_utf8_width(nb_buf_str(&suffix)), static_cast<size_t>(width - 4));
 			}
@@ -502,7 +508,7 @@ TEST(CliWorkStatusTest, QueuedMessagesKeepFlatGrayElbowsAndBoundUnicodePreviews)
 			std::string line;
 			int count = 0;
 			while (std::getline(lines, line)) {
-				EXPECT_EQ(line.find("  └ "), 0u);
+				EXPECT_EQ(line.find("  └─ "), 0u);
 				EXPECT_LT(nb_utf8_width_cstr(line.c_str()),
 					static_cast<size_t>(columns));
 				count++;
@@ -510,8 +516,8 @@ TEST(CliWorkStatusTest, QueuedMessagesKeepFlatGrayElbowsAndBoundUnicodePreviews)
 
 			EXPECT_EQ(count, 4);
 			if (columns >= 20) {
-				EXPECT_NE(std::string(plain).find("└ first line"), std::string::npos);
-				EXPECT_NE(std::string(plain).find("└ +1 more queued"), std::string::npos);
+				EXPECT_NE(std::string(plain).find("└─ first line"), std::string::npos);
+				EXPECT_NE(std::string(plain).find("└─ +1 more queued"), std::string::npos);
 			}
 		}
 	}
@@ -3347,9 +3353,9 @@ TEST(CliAgentsPresentationTest, CompactActivityBoundsRowsAndOmitsTaskPrompts)
 		std::string rendered = nb_buf_cstr(&out);
 		EXPECT_NE(rendered.find("/root/worker_0"), std::string::npos);
 		EXPECT_EQ(rendered.find(instruction), std::string::npos);
-		EXPECT_NE(rendered.find("  └ +1 more · /agents"), std::string::npos);
+		EXPECT_NE(rendered.find("  └─ +1 more · /agents"), std::string::npos);
 		EXPECT_EQ(rendered.find("├"), std::string::npos);
-		EXPECT_EQ(rendered.find("  └ /root/worker_0"), 0u);
+		EXPECT_EQ(rendered.find("  └─ /root/worker_0"), 0u);
 		EXPECT_EQ(rendered.find("◉"), std::string::npos);
 		EXPECT_EQ(rendered.find("◯"), std::string::npos);
 		std::istringstream lines(rendered);
@@ -3756,4 +3762,33 @@ TEST(CliWorkStatusTest, ReconnectPreservesCountdownAndCancellationAtAllWidths)
 	ASSERT_EQ(cli_work_status_retry(&text, 80, 0, 2, 3, 0, 0, 0, 0), 0);
 	EXPECT_NE(std::string(nb_buf_cstr(&text)).find("Retrying request · attempt 2/3 · connecting"),
 		  std::string::npos);
+}
+
+TEST(CliWorkStatusTest, AuxiliaryGroupsAndCompactSummaryHaveOnlyIndependentElbows)
+{
+	const struct cli_activity_snapshot snapshot{2, 1, 3, 1, 1, 1, 1, 2, 8};
+	for (int columns : {120, 80, 60}) {
+		for (int styled : {0, 1}) {
+			nb_buf tasks NB_CLEANUP(nb_buf_cleanup) = {};
+			nb_buf auxiliary NB_CLEANUP(nb_buf_cleanup) = {};
+			nb_buf compact NB_CLEANUP(nb_buf_cleanup) = {};
+			ASSERT_EQ(cli_activity_auxiliary_render(&snapshot, columns, styled,
+				&tasks, &auxiliary, &compact), 0);
+			EXPECT_NE(std::string(nb_buf_cstr(&tasks)).find("Tasks 1 running"), std::string::npos);
+			EXPECT_NE(std::string(nb_buf_cstr(&compact)).find("Queue 8"), std::string::npos);
+			for (const nb_buf *text : {&tasks, &auxiliary, &compact}) {
+				char *plain NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+					nb_buf_cstr(text), text->len, MORPH_TERMINAL_TEXT_MULTILINE, nullptr);
+				ASSERT_NE(plain, nullptr);
+				std::istringstream lines(plain);
+				std::string line;
+				while (std::getline(lines, line)) {
+					EXPECT_EQ(line.find("  └─ "), 0u);
+					EXPECT_LT(nb_utf8_width_cstr(line.c_str()), static_cast<size_t>(columns));
+					for (const char *marker : {"◉", "◯", "●", "✖", "?", "├", "│"})
+						EXPECT_EQ(line.find(marker), std::string::npos) << line;
+				}
+			}
+		}
+	}
 }

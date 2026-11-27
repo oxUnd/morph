@@ -8,6 +8,7 @@
 #include "sapi/cli/presentation/feed_block.h"
 #include "sapi/cli/presentation/list.h"
 #include "sapi/cli/presentation/notice.h"
+#include "sapi/cli/presentation/work_status.h"
 #include "cJSON.h"
 #include <nb/cleanup.h>
 #include <errno.h>
@@ -133,6 +134,27 @@ static int cli_jobs_job_row(nb_buf *out, const char *prefix, const char *text, c
 			      meta[0] ? padding + 2 : 0, "", meta, style[0] ? ANSI_RESET : "")
 			? 0
 			: NB_ERR_NOMEM);
+}
+
+int cli_jobs_activity_render(const struct cli_jobs *jobs, nb_buf *summary, nb_buf *details,
+	int columns, int styled)
+{
+	int count = cli_jobs_model_count(jobs);
+	if (!count)
+		return 0;
+
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	if (!nb_buf_printf(&text, "%d background job%s running · /jobs", count,
+		count == 1 ? "" : "s"))
+		return nb_buf_status(&text);
+
+	int rc = cli_work_status_detail(summary, nb_buf_cstr(&text), columns, styled);
+	const struct cli_jobs_job *waiting = cli_jobs_model_waiting(jobs);
+	if (!rc && waiting)
+		rc = cli_work_status_detail(details, cli_jobs_job_string(waiting->data, "command"),
+			columns, styled);
+
+	return rc;
 }
 
 int cli_jobs_render(const struct cli_jobs *jobs, nb_buf *out, int columns, int styled,

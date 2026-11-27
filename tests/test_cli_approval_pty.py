@@ -26,6 +26,8 @@ def closed_card(terminal):
         if first < row < last:
             assert rows[row].startswith('│ ') and rows[row].endswith(' │'), rows[row]
     assert not rows[last + 1].strip(), '\n'.join(rows)
+    assert rows[last + 2].strip() == '? Waiting for approval', '\n'.join(rows)
+    assert 'perm: ' in rows[-1], '\n'.join(rows)
     return first
 
 

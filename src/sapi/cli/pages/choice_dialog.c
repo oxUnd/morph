@@ -116,7 +116,7 @@ int cli_choice_dialog_show(struct cli_application *ctx,
 		dialog->options.choices = NULL;
 		dialog->options.question = NULL;
 		dialog = NULL;
-		cli_chat_panel_set_interaction(ctx, 1);
+		cli_chat_panel_set_interaction(ctx, CLI_CHAT_INTERACTION_CONFIRMATION);
 		cli_chat_panel_set_refresh(ctx, cli_choice_dialog_refresh);
 	}
 

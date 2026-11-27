@@ -55,7 +55,7 @@ class StableComposerStream:
             indicators = [(index, screen.marker_dim.get((index, 0)), screen.buffer[index][0].fg)
                           for index, row in enumerate(rows) if row.startswith('◉ ') and
                           any(label in row for label in ('Working ·', 'background job',
-                                                         'Waiting for job ·'))]
+                                                         'Waiting for job ·', 'Background jobs running'))]
             self.frames.append({'time': time.monotonic(), 'rows': tuple(rows),
                                 'written': set(screen.written_rows), 'indicators': indicators,
                                 'cursor': (screen.cursor.x, screen.cursor.y), 'raw': frame})
@@ -157,8 +157,8 @@ def check_collapsed(terminal):
     rows = terminal.screen.display
     for index, row in enumerate(rows):
         if 'background job' in row and '/jobs' in row and 'Waiting' not in row:
-            assert row.startswith('◉ '), '\n'.join(rows)
-            assert index + 1 == len(rows) or not rows[index + 1].startswith('  └ '), \
+            assert row.startswith('  └─ '), '\n'.join(rows)
+            assert index + 1 == len(rows) or not rows[index + 1].startswith('  └─ '), \
                 '\n'.join(rows)
 
 
@@ -166,7 +166,7 @@ def check_wait_details(terminal):
     rows = terminal.screen.display
     waiting = next(i for i, row in enumerate(rows)
                    if row.startswith('◉ Waiting for'))
-    assert rows[waiting + 1].startswith('  └ '), '\n'.join(rows)
+    assert rows[waiting + 1].startswith('  └─ '), '\n'.join(rows)
     assert rows[waiting].index('Waiting') == rows[waiting + 1].index('└') == 2
     assert terminal.screen.buffer[waiting + 1][2].fg == '8a8a8a'
 
@@ -209,8 +209,8 @@ def check_pulse(terminal, marker_count, draft=None):
         assert .35 <= current - previous <= .7, phases
     text = '\n'.join(terminal.screen.display)
     status_rows = [row for row in terminal.screen.display
-                   if 'Working ·' in row or 'background job' in row
-                   or 'Waiting for job ·' in row]
+                   if row.startswith('◉ ') and any(label in row for label in
+                       ('Working ·', 'background job', 'Waiting for job ·', 'Background jobs running'))]
     assert status_rows and all(row.startswith('◉ ') for row in status_rows), text
     if draft:
         assert draft in text, text
@@ -262,7 +262,7 @@ def main():
             releases.append(release)
             text = until(terminal, lambda text: '2 background jobs running · /jobs' in text)
             check_collapsed(terminal)
-            check_pulse(terminal, 2)
+            check_pulse(terminal, 1)
             if artifacts:
                 (artifacts / 'live.txt').write_text(text)
                 cells = [[{'text': terminal.screen.buffer[row][col].data,
