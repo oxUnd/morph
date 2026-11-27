@@ -174,8 +174,10 @@ int cli_jobs_render(const struct cli_jobs *jobs, nb_buf *out, int columns, int s
 				      styled ? cli_style_running_color(now) : NULL);
 
 	if (!rc && waiting)
-		rc = cli_jobs_job_row(out, "  └ ", cli_jobs_job_string(waiting->data, "command"),
-				      "", columns, styled ? ANSI_DIM : "", NULL);
+		rc = cli_jobs_job_row(out, CLI_ACTIVITY_CHILD_PREFIX,
+				      cli_jobs_job_string(waiting->data, "command"), "", columns,
+				      styled ? ANSI_DIM : "",
+				      styled ? CLI_ACTIVITY_CONNECTOR_COLOR : NULL);
 
 	return rc ? rc : waiting ? 2 : 1;
 }

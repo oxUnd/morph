@@ -18,5 +18,8 @@ int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, 
 int cli_work_status_retry(nb_buf *, int columns, int styled, int attempt, int limit,
 	int persistent, int waiting, int64_t remaining_ms, int64_t now_ms);
 int cli_work_status_interval_ms(int64_t elapsed_ms, int64_t now_ms);
+/* Single-line queue previews share the composer's bounded gray detail rows. */
+int cli_work_status_queue(nb_buf *, const char *const *prompts, size_t shown, size_t total,
+	int columns, int styled);
 
 #endif

@@ -433,9 +433,12 @@ Most commands have short aliases: /q, /h, /n, /s, /rn, /del, /m,
 usage.
 
 While Morph is working, additional messages appear in the queue above the work
-status. They enter the conversation feed only when the agent accepts them at its
-next input boundary. Messages left at a turn's completion are displayed when the
-next turn starts. This does not require waiting for the entire task to finish.
+status. Each preview and the overflow count use a flat gray elbow-line row,
+with the elbow aligned with the W in Working, like live sub-agent rows.
+Long previews are clipped to one line. They enter the conversation feed only
+when the agent accepts them at its next input boundary. Messages left at a turn's
+completion are displayed when the next turn starts. This does not require waiting
+for the entire task to finish.
 
 The interactive footer shows running and pending scheduled task counts while
 any are active. Waiting tasks count as pending; the counts refresh while idle.
@@ -449,6 +452,10 @@ into a single preview row, with an ellipsis when more text is hidden. Ctrl+T
 opens the current turn's full reasoning and tool details, including live updates;
 Ctrl+T or Esc returns to the conversation. During a turn, the purple shortcut
 hint appears at the end of the Working row.
+Composer status markers share the leftmost column. Queued-message previews,
+live sub-agents and the command of a background job being waited on use gray
+elbow connectors two columns in, aligned with the status label. Scheduled-task
+counts remain on their own footer row.
 Task bodies use the same Markdown renderer as replies. Ctrl+K opens the
 shortcut reference for the current view.
 

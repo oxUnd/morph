@@ -73,6 +73,9 @@ Paths such as `components/` and `presentation/` below are relative to this direc
   `Working`, background summaries, tools, plans and completion receipts. Represent
   parent/child relationships with explicit `├` / `└` branches and `│` continuation
   lines where needed; indentation alone must never imply a relationship.
+  Composer activity details (queued messages and their overflow count, live
+  subagents, and waited background commands) use flat gray `└` rows. Align the
+  elbow with the `W` in `Working`, two columns after the top-level marker.
 - Use `–` (dim gray) for cancelled/interrupted/skipped work and `⚠` (yellow)
   for warnings. `◇` is reserved for neutral system information, not outcomes.
   A plain message/section bullet may use `●` without claiming success.

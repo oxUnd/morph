@@ -102,6 +102,12 @@ does not itself create a user message.
 The `Working` label has a repeating gray-to-white sweep driven by TUI animation.
 No-color output remains steady.
 
+Composer status markers share the leftmost column. Queued-message previews,
+their overflow count and a waited background job's command use flat gray `└`
+rows two columns in, aligned with the `W` in `Working`. Queue previews stay on
+one line and clip to the available width; Esc applies them at the next input
+boundary. Scheduled-task counts use a separate footer row.
+
 Live sub-agent activity and waiting status appear inside the CLI composer.
 Multiple agents use flat gray `└` rows aligned with the `Working` text, without
 circle markers before their paths.

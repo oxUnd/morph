@@ -285,7 +285,8 @@ int cli_agents_rows(nb_buf *out, const struct agent_info *agents, int count, int
 		if (out->len)
 			(void)nb_buf_append_char(out, '\n');
 
-		cli_agents_append(out, "  └ ", 4, styled ? CLI_AGENT_CONNECTOR_COLOR : "");
+		cli_agents_append(out, CLI_ACTIVITY_CHILD_PREFIX, 4,
+			styled ? CLI_ACTIVITY_CONNECTOR_COLOR : "");
 		int name_width = columns / 2;
 		if (name_width > 28)
 			name_width = 28;
@@ -309,11 +310,12 @@ int cli_agents_rows(nb_buf *out, const struct agent_info *agents, int count, int
 			(void)nb_buf_append_char(out, '\n');
 
 		nb_buf_clear(&activity);
-		if (!nb_buf_printf(&activity, "  └ +%d more · /agents", active - shown))
+		if (!nb_buf_printf(&activity, CLI_ACTIVITY_CHILD_PREFIX "+%d more · /agents",
+				   active - shown))
 			return nb_buf_status(&activity);
 
 		cli_agents_append(out, nb_buf_cstr(&activity), columns - 1,
-				  styled ? CLI_AGENT_CONNECTOR_COLOR : "");
+				  styled ? CLI_ACTIVITY_CONNECTOR_COLOR : "");
 		shown++;
 	}
 

@@ -408,6 +408,10 @@ def main():
             assert queued, 'No rendered queue state was observed'
             for state in queued:
                 assert '› 改成中新🙂' not in state, 'Queued input was committed early:\n' + state
+                rows = state.splitlines()
+                queue_row = next(row for row in rows if '└ 改成中新🙂' in row)
+                working = next(row for row in rows if 'Working ·' in row)
+                assert queue_row.index('└') == working.index('Working') == 2, state
             started = time.monotonic()
             terminal.pump(0.4)
             assert Model.requests.empty(), 'queued input interrupted before Esc'
@@ -434,14 +438,32 @@ def main():
             release.set()
             release2.set()
             release2 = release_next
-            terminal.send('burst one\rburst two\rburst three\r')
+            terminal.send('burst one\rburst two\rburst three\rburst four\r')
             terminal.pump(0.3)
             assert Model.requests.empty(), 'burst instructions interrupted before Esc'
+            terminal.send('QUEUE_LAYOUT_DRAFT')
+            for columns in (120, 80, 60):
+                terminal.child.setwinsize(24, columns)
+                terminal.screen.resize(24, columns)
+                state = terminal.snapshot(f'{columns}: queued messages and overflow align')
+                rows = state.splitlines()
+                working = next(row for row in rows if 'Working ·' in row)
+                details = [(i, row) for i, row in enumerate(rows)
+                           if any(text in row for text in
+                                  ('burst one', 'burst two', 'burst three', '+1 more queued'))]
+                assert len(details) == 4 and 'burst four' not in state, state
+                for index, row in details:
+                    assert row.startswith('  └ ') and row.index('└') == working.index('Working'), state
+                    assert terminal.screen.buffer[index][2].fg == '8a8a8a', state
+                    assert terminal.screen.buffer[index][2].bg == 'default', state
+                assert 'QUEUE_LAYOUT_DRAFT' in state, state
+                assert not release2.is_set(), 'layout must be checked while the backend is held'
+            terminal.send('\x15')
             terminal.send('\x1b')
             burst, burst_release = terminal.request()
             releases.append(burst_release)
             users = [m['content'] for m in burst['messages'] if m['role'] == 'user']
-            assert users[-3:] == ['burst one', 'burst two', 'burst three'], users
+            assert users[-4:] == ['burst one', 'burst two', 'burst three', 'burst four'], users
             assert Model.requests.empty(), 'one Esc must drain the whole burst'
             release2.set()
             release2 = burst_release
@@ -480,7 +502,7 @@ def main():
                 assert terminal.screen.buffer[row][0].bg != '3a3a3a', completed
             assert 'Working ·' not in completed, completed
             assert completed.count('ctx ') == 1, completed
-            assert ' cr' in completed, completed
+            assert 'perm: ask' in completed, completed
             idle_start = len(terminal.published_frames)
             completed_receipt = next(row.strip() for row in completed.splitlines()
                                      if 'Worked for ' in row)

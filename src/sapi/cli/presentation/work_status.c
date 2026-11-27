@@ -58,6 +58,50 @@ static int cli_work_status_text(nb_buf *out, const char *text, int columns, int 
 			: NB_ERR_NOMEM);
 }
 
+static int cli_work_status_queue_row(nb_buf *out, const char *text, int columns, int styled)
+{
+	char *safe NB_CLEANUP(nb_charp_cleanup) = morph_terminal_sanitize_dup(
+		text, strlen(text), MORPH_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!safe)
+		return NB_ERR_NOMEM;
+
+	char clipped[BUFSIZ];
+	morph_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
+		(size_t)columns - 5, 0);
+	if (out->len)
+		nb_buf_append_char(out, '\n');
+
+	nb_buf_printf(out, "%s" CLI_ACTIVITY_CHILD_PREFIX "%s%s",
+		styled ? CLI_ACTIVITY_CONNECTOR_COLOR : "", clipped, styled ? ANSI_RESET : "");
+	return nb_buf_status(out);
+}
+
+int cli_work_status_queue(nb_buf *out, const char *const *prompts, size_t shown, size_t total,
+	int columns, int styled)
+{
+	if (!out || (shown && !prompts) || shown > total)
+		return NB_ERR_INVAL;
+
+	if (columns < 6)
+		return nb_buf_status(out);
+
+	for (size_t i = 0; i < shown; i++) {
+		int rc = cli_work_status_queue_row(out, prompts[i], columns, styled);
+		if (rc)
+			return rc;
+	}
+
+	if (total > shown) {
+		nb_buf summary NB_CLEANUP(nb_buf_cleanup) = {0};
+		if (!nb_buf_printf(&summary, "+%zu more queued", total - shown))
+			return nb_buf_status(&summary);
+
+		return cli_work_status_queue_row(out, nb_buf_cstr(&summary), columns, styled);
+	}
+
+	return nb_buf_status(out);
+}
+
 int cli_work_status_running_frame(nb_buf *out, int columns, int styled, int64_t elapsed_ms,
 				  int64_t now_ms, int64_t animation_ms, const char *agent_summary)
 {

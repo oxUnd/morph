@@ -575,7 +575,6 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	struct cli_feed *terminal;
 	const char *text;
 	char status_clipped[BUFSIZ];
-	char queue_clipped[BUFSIZ];
 	nb_buf tool_text NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf tool_body NB_CLEANUP(nb_buf_cleanup) = {0};
 	nb_buf job_text NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -795,19 +794,14 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 			fprintf(terminal->output, ANSI_DIM " (Esc to apply now)" ANSI_RESET);
 	}
 
-	for (size_t i = 0; i < queue_shown; i++) {
-		cli_feed_sanitize_line(queue_items[i]);
-		(void)nt_terminal_copy_ellipsized_display_width(
-			queue_clipped, sizeof(queue_clipped), queue_items[i],
-			(size_t)(terminal->columns - 4), 0);
-		fprintf(terminal->output, "\n  " ANSI_DIM "%s%s" ANSI_RESET,
-			i + 1 < queue_total ? "├ " : "└ ", queue_clipped);
-		free(queue_items[i]);
-	}
+	nb_buf queue_text NB_CLEANUP(nb_buf_cleanup) = {0};
+	int queue_rc = cli_work_status_queue(&queue_text, (const char *const *)queue_items,
+		queue_shown, queue_total, terminal->columns, 1);
+	if (!queue_rc && queue_text.len)
+		fprintf(terminal->output, "\n%s", nb_buf_cstr(&queue_text));
 
-	if (queue_total > queue_shown)
-		fprintf(terminal->output, "\n  " ANSI_DIM "└ +%zu more queued" ANSI_RESET,
-			queue_total - queue_shown);
+	for (size_t i = 0; i < queue_shown; i++)
+		free(queue_items[i]);
 
 	nb_buf_cleanup(&tool_text);
 	nb_buf_cleanup(&tool_body);

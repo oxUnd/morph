@@ -20,7 +20,6 @@
 #include "sapi/cli/components/composer.h"
 #include "sapi/cli/components/status_bar.h"
 #include "sapi/cli/components/workspace_sidebar.h"
-#include "sapi/cli/components/list.h"
 #include "sapi/cli/components/mcp_tree.h"
 #include "sapi/cli/pages/mcp_status.h"
 #include "sapi/cli/components/media.h"
@@ -462,7 +461,7 @@ static int cli_chat_queue_hidden(void *data, struct nt_value *value)
 {
 	struct cli_chat_page *page = data;
 	return nt_value_set_bool(value, nt_component_state_get_bool(page->modal) ||
-						!nt_list_view_count(page->queue));
+						!*nt_text_view_text(page->queue));
 }
 
 static int cli_chat_sync_bottom_button(struct cli_chat_page *page)
@@ -1832,11 +1831,11 @@ static int cli_chat_page_key(struct nt_view_controller *controller,
 	return 0;
 }
 
-static int cli_chat_update_queue(struct cli_application *ctx)
+static int cli_chat_update_queue(struct cli_application *ctx, int columns, int styled, int resized)
 {
 	struct cli_chat_page *page = ctx->chat;
 	char *prompts[3] = {0};
-	int64_t revision = page->queue_revision;
+	int64_t revision = resized ? -1 : page->queue_revision;
 	size_t total = 0;
 	int rc = ctx->sessions
 		? cli_sessions_prompts_copy_since(ctx, prompts, 3, &total, &revision)
@@ -1848,29 +1847,13 @@ static int cli_chat_update_queue(struct cli_application *ctx)
 		return rc;
 
 	size_t shown = total < 3 ? total : 3;
-	nb_buf rows[4] = {0};
-	const char *items[4] = {0};
-	for (size_t i = 0; i < shown; i++) {
-		if (!nb_buf_printf(&rows[i], "%s%s", i + 1 < total ? "├ " : "└ ", prompts[i]))
-			rc = nb_buf_status(&rows[i]);
-
-		items[i] = nb_buf_cstr(&rows[i]);
+	nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {0};
+	rc = cli_work_status_queue(&rows, (const char *const *)prompts, shown, total, columns, styled);
+	for (size_t i = 0; i < shown; i++)
 		free(prompts[i]);
-	}
-
-	if (total > shown) {
-		if (!nb_buf_printf(&rows[shown], "└ +%zu more queued", total - shown))
-			rc = nb_buf_status(&rows[shown]);
-
-		items[shown] = nb_buf_cstr(&rows[shown]);
-		shown++;
-	}
 
 	if (!rc)
-		rc = nt_list_view_set_items(page->queue, items, shown);
-
-	for (size_t i = 0; i < shown; i++)
-		nb_buf_cleanup(&rows[i]);
+		rc = cli_messages_set_rendered_view(page->queue, nb_buf_cstr(&rows), styled);
 
 	if (!rc)
 		page->queue_revision = revision;
@@ -2073,6 +2056,9 @@ static int cli_chat_update_activity(struct cli_chat_page *page, int columns, int
 	int status_changed = resized || page->agents_revision != ctx->agents.activity_revision ||
 			     page->status_ultra != ctx->composer.ultra;
 	int rc = cli_chat_update_agents(ctx, columns, styled, resized);
+	if (!rc)
+		rc = cli_chat_update_queue(ctx, columns, styled, resized);
+
 	if (!rc)
 		rc = cli_chat_update_jobs(ctx, columns, styled, resized, now);
 
@@ -2505,8 +2491,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 	struct nt_view *queue_title = cli_shortcut_hint_add(
 		builder, root, CLI_FEED_PENDING " Messages queued · Esc to apply now", NULL);
 	const struct nt_view_options queue = {.max_height = 4};
-	page->queue = cli_list_add(builder, root, &queue);
-	nt_view_set_focusable(page->queue, 0);
+	page->queue = cli_report_text_add(builder, root, &queue);
 	page->panel_host = nt_stack_view_add(builder, root, NT_STACK_VIEW_VERTICAL, 0, NULL);
 	page->composer = cli_composer_add_borrow(builder, root, &ctx->composer,
 						 cli_output_color_enabled(ctx), &page->editor);
@@ -2734,9 +2719,7 @@ static int cli_chat_page_refresh(struct cli_chat_page *page)
 		timeout = (int)(next - now);
 
 	nt_application_schedule(&ctx->base, timeout);
-	rc = cli_chat_update_queue(ctx);
-
-	return rc ? rc : cli_chat_page_error(page);
+	return cli_chat_page_error(page);
 }
 
 static int cli_chat_page_event(void *data, struct nt_application *app,

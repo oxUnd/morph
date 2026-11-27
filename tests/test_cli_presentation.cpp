@@ -479,6 +479,44 @@ TEST(CliWorkStatusTest, RunningPreservesLabelClockAndTranscriptHint)
 	EXPECT_LE(nb_utf8_width_cstr(plain), 60u);
 }
 
+TEST(CliWorkStatusTest, QueuedMessagesKeepFlatGrayElbowsAndBoundUnicodePreviews)
+{
+	std::string long_prompt;
+	for (int i = 0; i < 100; i++)
+		long_prompt += "中文🙂";
+
+	const char *prompts[] = {"first\nline\033[2J", long_prompt.c_str(), "third"};
+	for (int columns : {120, 80, 60, 20, 6}) {
+		for (int styled : {0, 1}) {
+			nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {};
+			ASSERT_EQ(cli_work_status_queue(&rows, prompts, 3, 4, columns, styled), 0);
+			std::string rendered = nb_buf_cstr(&rows);
+			char *plain NB_CLEANUP(nb_charp_cleanup) =
+				cli_terminal_text_strip_ansi_dup(rows.ptr, rows.len, nullptr);
+			ASSERT_NE(plain, nullptr);
+			EXPECT_EQ(nb_utf8_validate(nb_str_from_cstr(plain), nullptr), NB_UTF8_OK);
+			EXPECT_EQ(rendered.find("\033[2J"), std::string::npos);
+			EXPECT_EQ(rendered.find("├"), std::string::npos);
+			EXPECT_EQ(rendered.find('\033') != std::string::npos, styled != 0);
+			std::istringstream lines(plain);
+			std::string line;
+			int count = 0;
+			while (std::getline(lines, line)) {
+				EXPECT_EQ(line.find("  └ "), 0u);
+				EXPECT_LT(nb_utf8_width_cstr(line.c_str()),
+					static_cast<size_t>(columns));
+				count++;
+			}
+
+			EXPECT_EQ(count, 4);
+			if (columns >= 20) {
+				EXPECT_NE(std::string(plain).find("└ first line"), std::string::npos);
+				EXPECT_NE(std::string(plain).find("└ +1 more queued"), std::string::npos);
+			}
+		}
+	}
+}
+
 TEST(CliWorkStatusTest, CompletionPreservesIntegerDurationAndLocalTimestamp)
 {
 	struct tm finished{};

@@ -162,6 +162,15 @@ def check_collapsed(terminal):
                 '\n'.join(rows)
 
 
+def check_wait_details(terminal):
+    rows = terminal.screen.display
+    waiting = next(i for i, row in enumerate(rows)
+                   if row.startswith('◉ Waiting for'))
+    assert rows[waiting + 1].startswith('  └ '), '\n'.join(rows)
+    assert rows[waiting].index('Waiting') == rows[waiting + 1].index('└') == 2
+    assert terminal.screen.buffer[waiting + 1][2].fg == '8a8a8a'
+
+
 def check_pulse(terminal, marker_count, draft=None):
     # The fixture sends three initial preview chunks before becoming quiet.
     # Inspect animation after those legitimate content updates have settled.
@@ -299,7 +308,7 @@ def main():
             assert Model.requests.empty(), 'finite job unexpectedly accepted as completed'
             text = until(terminal, lambda text: 'Waiting for background job' in text)
             assert 'Esc to interrupt wait' in text and '/jobs' in text, text
-            assert any(row.startswith('  └ ') for row in terminal.screen.display), text
+            check_wait_details(terminal)
             assert 'Working ·' not in text, text
             assert 'Worked for' not in '\n'.join(terminal.screen.display)
             (directory / 'release-build').touch()
@@ -415,7 +424,7 @@ def main():
                     terminal.resize(30, width)
                     text = until(terminal, lambda text: 'Waiting for background job' in text
                                  and '/jobs' in text and 'Esc' in text)
-                    assert any(row.startswith('  └ ') for row in terminal.screen.display), text
+                    check_wait_details(terminal)
                     assert 'Working ·' not in text, text
                 if mode == 'cancel':
                     terminal.child.send('\x03')
