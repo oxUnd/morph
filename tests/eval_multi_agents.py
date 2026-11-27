@@ -546,7 +546,7 @@ def make_config(path, model, mode, directory, token_budget):
              'learn_from_chats_enabled=false', 'save_tasks_enabled=false',
              '[permissions]', 'access="workspace"', 'approval="never"',
              '[react]', 'max_iterations=16', 'tool_max_retries=1',
-             'disabled_tools=["config_edit","tool_create","tool_promote","tool_delete",'
+             'disabled_tools=["config_validate","tool_create","tool_promote","tool_delete",'
              '"tasks","request_permissions","memory","memory_preference"]',
              '[agents]', 'enabled=true', 'max_threads=3', 'max_depth=2',
              'multi_agent_mode=' + toml_value('proactive' if mode == 'ultra' else 'explicit'),

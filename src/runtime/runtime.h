@@ -79,7 +79,7 @@ struct runtime_options {
 	void *img_annotate_user_data;
 	int enable_exec;
 	int enable_apply_patch;
-	int enable_config_write;
+	int enable_config_validate;
 	int enable_img_annotate;
 	int enable_shell_exts;
 	int enable_multi_agent;

@@ -405,7 +405,7 @@ Workspace, task, and configuration tools include:
 	apply_patch	Patch authorized files and capture their changes in the turn checkpoint.
 	checkpoint	Inspect checkpoints and restore captured code changes.
 	memory_update	Remember, correct or forget explicit user information.
-	config_edit	Safely patch the active Morph configuration.
+	config_validate	Validate Morph configuration without modifying it.
 	memory_preference	Persist an explicit user preference.
 	tasks		Create and manage scheduled tasks and the inbox.
 	tool_create	Create or update a dynamic JavaScript tool.
@@ -776,17 +776,20 @@ Credits track estimated usage and optional warning limits:
 	/credits
 
 ==============================================================================
-CONFIG EDITS						*morph-config-edit*
+CONFIG VALIDATION				*morph-config-validate*
 
-When a user requests a configuration change, config_edit checks the active policy.
-Restricted access requires human approval. Full access permits the edit directly.
-The tool targets the active configuration (including one selected with -c). Its
-patch envelope names config.toml. A successful change preserves unrelated text,
-validates the complete TOML, backs up the original as <active-path>.bak and
-atomically replaces the file. A concurrent modification aborts the write.
+config_validate checks configuration legality without writing or applying it.
+Use no arguments to validate the active configuration (including one selected
+with -c), path to check another readable file, or content to check complete TOML.
+Do not supply path and content together. Files are read afresh, so changes made
+by editors and external tools can be validated.
 
-Restart Morph with the same config path when the result reports
-restart_required = true. An edit that makes no change does not require a restart.
+The result contains valid and, on failure, the first error with code, field path,
+line, column and message. Unavailable source locations are zero. Invalid config
+is a successful inspection with valid = false; access and I/O failures are tool
+errors. Warnings are returned separately; unknown fields retain the loader's
+compatibility behavior. Validation
+does not test credentials or network connectivity, or reload configuration.
 
 Do not put API key values into config unless the user explicitly provides
 that secret and insists. Prefer api_key_env and tell the user to export the

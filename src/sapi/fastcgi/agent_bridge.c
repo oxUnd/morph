@@ -116,7 +116,7 @@ static void bridge_runtime_options(struct fcgi_bridge *pool, struct runtime_opti
 	options->front_name = "fastcgi";
 	options->enable_exec = 1;
 	options->enable_apply_patch = 1;
-	options->enable_config_write = 1;
+	options->enable_config_validate = 1;
 	options->enable_img_annotate = 0;
 	options->enable_shell_exts = 1;
 	options->enable_multi_agent = 1;

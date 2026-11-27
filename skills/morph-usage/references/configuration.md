@@ -222,6 +222,6 @@ full contract, and check installed-version support before suggesting this option
 - HTTP 400 mentioning `reasoning_content`: inspect the adapter and thinking setup,
   then the installed version and error detail. This is a protocol failure, not a
   reason to increase retries, edit the session database, or invent missing reasoning.
-- A changed config needs a restart. `config_edit` validates the schema, backs up
-  and atomically replaces the active file, and reports `restart_required`; it does
-  not hot-reload startup settings or terminate Morph.
+- A changed config needs a restart. `config_validate` checks the active file,
+  another file selected by `path`, or complete TOML supplied as `content`. It is
+  read-only and does not hot-reload settings, write backups, or terminate Morph.

@@ -30,8 +30,8 @@ An operation can be allowed, forbidden, require review, or require a fresh human
 decision. Explicit rejection and mandatory-human requirements take precedence
 over cached grants. `never` rejects an operation that still requires review; it
 does not silently approve it. An approval never implicitly disables the sandbox.
-`config_edit` requires a human decision in restricted access; full access permits
-editing the active configuration without review, including with approval `never`.
+`config_validate` is read-only. File validation follows shared path-read policy;
+validating supplied TOML content requires no filesystem access.
 Human decisions retain the existing once/session/persistent choices. Automatic
 decisions never create session or persistent authority.
 

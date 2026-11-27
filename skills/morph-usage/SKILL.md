@@ -63,12 +63,13 @@ Do not assume an older installed binary supports unreleased source changes.
 1. Inspect the current config and prepare a minimal edit to the requested settings.
 2. Explain the target path and change. Honor authorization already given for that
    exact change; do not add a redundant conversational approval step.
-3. Use `config_edit` when available. It checks the active permission policy,
-   validates the full config, creates a backup, and writes atomically. Do not bypass
-   its approval or denial by switching to another write tool.
-4. Report the tool's actual result. A changed config requires a normal Morph restart;
-   a successful write does not mean startup state was hot-reloaded.
+3. Use an authorized file-editing tool to make the change, preserving unrelated
+   sections and comments. Honor shared write permissions and any denial.
+4. Use `config_validate` with no arguments to check the active file after editing,
+   or pass `path` for another config file. Complete TOML can be checked with
+   `content` before writing. The validator is read-only and reports legality;
+   it does not create backups, apply settings, or test network connections.
+5. Report validation errors and warnings. A changed config requires a normal Morph
+   restart; a successful check does not mean startup state was hot-reloaded.
 
-Use a raw file-editing fallback only when `config_edit` is unavailable and the
-user authorizes that fallback. Preserve unrelated sections and comments. When
-changing `extra_body_json`, merge the requested fields with the existing object.
+When changing `extra_body_json`, merge the requested fields with the existing object.

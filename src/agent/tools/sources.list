@@ -14,7 +14,7 @@ file_list.c
 file_info.c
 apply_patch.c
 checkpoint.c
-config_write.c
+config_validate.c
 skill_activate.c
 request_permissions.c
 plan.c

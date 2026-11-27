@@ -12,7 +12,7 @@
 #include "agent/tools/checkpoint.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tools/path_policy.h"
-#include "agent/tools/config_write.h"
+#include "agent/tools/config_validate.h"
 #include "agent/tools/dynamic_tools.h"
 #include "agent/tools/file_info.h"
 #include "agent/tools/file_list.h"
@@ -554,9 +554,13 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		if (rc != 0)
 			return rc;
 	}
+	if (profile->enable_config_validate) {
+		rc = config_validate_init(profile->tools, tctx, profile->config_path);
+		if (rc != 0)
+			return rc;
+	}
+
 #ifndef MORPH_NO_SHELL
-	if (profile->enable_config_write)
-		config_edit_init(profile->tools, tctx, profile->config_path);
 	if (profile->enable_exec) {
 		rc = exec_tool_init(profile->tools, tctx, &config->exec);
 		if (rc != 0)
@@ -569,9 +573,6 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		tool_set_timeout(profile->tools, "exec", config->react.tool_timeout_seconds);
 	}
 #else
-	if (profile->enable_config_write)
-		nb_log_write(profile->logger, NB_LOG_INFO,
-			     "config_edit disabled for this runtime build");
 	if (profile->enable_exec)
 		nb_log_write(profile->logger, NB_LOG_INFO, "exec disabled for this runtime build");
 #endif

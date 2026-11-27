@@ -19,7 +19,7 @@ set(TEST_SOURCES
 	test_prompt_template.cpp
 	test_config.cpp
 	test_permission.cpp
-	test_config_write.cpp
+	test_config_validate.cpp
 	test_credits.cpp
 	test_session.cpp
 	test_history_inspection.cpp

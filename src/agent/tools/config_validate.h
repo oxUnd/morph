@@ -1,5 +1,5 @@
-#ifndef CONFIG_WRITE_H
-#define CONFIG_WRITE_H
+#ifndef CONFIG_VALIDATE_H
+#define CONFIG_VALIDATE_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,7 +9,7 @@ extern "C" {
 
 struct tool_context;
 
-int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
+int config_validate_init(struct tool_registry *reg, struct tool_context *tctx,
 		     const char *config_path);
 
 #ifdef __cplusplus

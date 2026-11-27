@@ -337,7 +337,7 @@ guardrail_max_llm_checks = 8
 # Disable specific tools by name. Supported tool names:
 # credits, memory, img_gen, img_qa, img_inpaint, img_compose, img_info,
 # img_resize, img_convert, img_annotate, vid_gen, file_read, file_list,
-# file_info, config_edit, apply_patch, exec, process
+# file_info, config_validate, apply_patch, exec, process
 # This example disables apply_patch. Remove it from this array to enable the
 # Codex-style source editing tool on fronts that support it, such as the CLI.
 disabled_tools = ["apply_patch"]
