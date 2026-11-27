@@ -3698,3 +3698,24 @@ TEST(CliAgentsPresentationTest, SuccessfulToolEnvelopeCannotTurnWaitTimeoutIntoC
 	EXPECT_EQ(std::string(nb_buf_cstr(&row)).find("Finished waiting"), std::string::npos);
 	EXPECT_EQ(cli_agent_tools_wait_mailbox(&tool), 0);
 }
+
+TEST(CliWorkStatusTest, ReconnectPreservesCountdownAndCancellationAtAllWidths)
+{
+	for (int width : {120, 80, 60}) {
+		SCOPED_TRACE(width);
+		nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+		ASSERT_EQ(cli_work_status_retry(&text, width, 0, 12, 3, 1, 1, 59001, 0), 0);
+		std::string rendered = nb_buf_cstr(&text);
+		EXPECT_NE(rendered.find("Reconnecting"), std::string::npos);
+		EXPECT_NE(rendered.find("12"), std::string::npos);
+		EXPECT_NE(rendered.find("retry in 60s"), std::string::npos);
+		EXPECT_NE(rendered.find("Esc to cancel"), std::string::npos);
+		EXPECT_EQ(rendered.find('\n'), std::string::npos);
+		EXPECT_LE(nb_utf8_width_cstr(rendered.c_str()), static_cast<size_t>(width));
+	}
+
+	nb_buf text NB_CLEANUP(nb_buf_cleanup) = {0};
+	ASSERT_EQ(cli_work_status_retry(&text, 80, 0, 2, 3, 0, 0, 0, 0), 0);
+	EXPECT_NE(std::string(nb_buf_cstr(&text)).find("Retrying request · attempt 2/3 · connecting"),
+		  std::string::npos);
+}

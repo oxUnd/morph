@@ -84,7 +84,7 @@ def terminal_environment(directory, extra=None):
 class Terminal:
     def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False,
                  hooks_enabled=True, production=False, extra_config='', extra_arguments=(),
-                 memory_save_tasks=False):
+                 memory_save_tasks=False, retry_count=0):
         config = directory / 'config.toml'
         config.write_text(f'''[general]
 output_dir = "{directory}/output"
@@ -99,7 +99,7 @@ provider = "openai"
 model = "pty-test"
 api_base = "http://127.0.0.1:{port}/v1"
 api_key_env = "MORPH_PTY_API_KEY"
-retry_count = 0
+retry_count = {retry_count}
 ''' + extra_config)
         arguments = (['-c', str(config), '-w', str(directory)] if production else
                      [str(config), str(directory), str(directory / 'data.db')])

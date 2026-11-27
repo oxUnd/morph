@@ -127,7 +127,32 @@ struct model_error_info {
 	int recoverable;
 };
 
+enum model_retry_phase {
+	MODEL_RETRY_WAITING,
+	MODEL_RETRY_CONNECTING,
+	MODEL_RETRY_END,
+};
+
+struct model_retry_event {
+	enum model_retry_phase phase;
+	int attempt;
+	int limit;
+	int status;
+	unsigned int delay_ms;
+	int persistent;
+};
+
+/* Request-scoped observer; clones do not inherit callbacks or reconnect authority. */
+struct model_retry_observer {
+	void (*notify)(const struct model_retry_event *, void *data);
+	void *data;
+	int reconnect;
+};
+
+unsigned int model_connection_retry_delay_ms(int retry_index);
+
 struct model {
+	const struct model_retry_observer *retry_observer;
 	struct http_control http;
 	/* Borrowed for the model lifetime; shared only within its owning runtime. */
 	struct model_usage_sink *usage_sink;

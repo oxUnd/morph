@@ -1,4 +1,5 @@
 #include "sapi/cli/presentation/work_status.h"
+#include "sapi/cli/presentation/messages.h"
 #include <nb/err.h>
 #include "sapi/cli/presentation/style.h"
 #include <nb/cleanup.h>
@@ -137,4 +138,33 @@ int cli_work_status_interval_ms(int64_t elapsed_ms, int64_t now_ms)
 	int64_t pulse = cli_style_running_interval_ms(now_ms);
 	int64_t interval = delay < second ? delay : second;
 	return (int)(interval < pulse ? interval : pulse);
+}
+
+int cli_work_status_retry(nb_buf *out, int columns, int styled, int attempt, int limit,
+			  int persistent, int waiting, int64_t remaining_ms, int64_t now_ms)
+{
+	nb_buf row NB_CLEANUP(nb_buf_cleanup) = {0};
+	const char *label = persistent ? "Reconnecting" : "Retrying request";
+	int rc = nb_buf_printf(&row, "%s" CLI_FEED_RUNNING "%s %s · %s%d",
+		styled ? cli_style_running_color(now_ms) : "", styled ? ANSI_RESET : "",
+		label, columns < 76 ? "#" : "attempt ", attempt) ? 0 : NB_ERR_NOMEM;
+	if (!rc && !persistent && !nb_buf_printf(&row, "/%d", limit))
+		rc = nb_buf_status(&row);
+
+	if (!rc && waiting) {
+		int64_t seconds = remaining_ms > 0 ? (remaining_ms + 999) / 1000 : 0;
+		if (!nb_buf_printf(&row, " · retry in %llds", (long long)seconds))
+			rc = nb_buf_status(&row);
+	} else if (!rc && !nb_buf_append_cstr(&row, " · connecting")) {
+		rc = nb_buf_status(&row);
+	}
+
+	if (!rc && !nb_buf_append_cstr(&row, " · Esc to cancel"))
+		rc = nb_buf_status(&row);
+
+	if (rc)
+		return rc;
+
+	return cli_messages_append_rendered(out, nb_buf_cstr(&row), row.len,
+		columns > 2 ? columns - 2 : 1, styled);
 }

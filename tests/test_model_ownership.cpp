@@ -391,3 +391,22 @@ TEST(TestModelOwnership, NativeStreamBuffersSurviveGrowthAndPublication)
 		EXPECT_EQ(strncmp(response.tool_calls[i].arguments, "fragmentfragment", 16), 0);
 	}
 }
+
+static void retry_test_model_cleanup(struct model **owner)
+{
+	model_destroy(*owner);
+}
+
+TEST(TestModelOwnership, CloneDoesNotInheritRequestRetryObserver)
+{
+	struct model *source NB_CLEANUP(retry_test_model_cleanup) =
+		model_llm_create(nullptr, "test", "mock", "http://localhost/v1", "test");
+	ASSERT_NE(source, nullptr);
+	struct model_retry_observer observer = {};
+	observer.reconnect = 1;
+	source->retry_observer = &observer;
+	struct model *clone NB_CLEANUP(retry_test_model_cleanup) = model_llm_clone(source, nullptr);
+	ASSERT_NE(clone, nullptr);
+	EXPECT_EQ(clone->retry_observer, nullptr);
+	EXPECT_EQ(source->retry_observer, &observer);
+}

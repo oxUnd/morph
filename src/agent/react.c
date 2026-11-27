@@ -1473,6 +1473,36 @@ static int react_append_final_message(struct react_context *ctx)
 	return msg_list_append_take(&ctx->messages, &asst);
 }
 
+static void react_model_retry_notify(const struct model_retry_event *retry, void *data)
+{
+	struct react_context *ctx = data;
+	cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	if (!payload || !cJSON_AddNumberToObject(payload, "attempt", retry->attempt) ||
+	    !cJSON_AddNumberToObject(payload, "limit", retry->limit) ||
+	    !cJSON_AddNumberToObject(payload, "delay_ms", retry->delay_ms) ||
+	    !cJSON_AddNumberToObject(payload, "status", retry->status) ||
+	    !cJSON_AddBoolToObject(payload, "persistent", retry->persistent))
+		return;
+
+	const char *phase = retry->phase == MODEL_RETRY_WAITING ? "waiting"
+		: retry->phase == MODEL_RETRY_CONNECTING ? "connecting" : "end";
+	int rc = react_emit_event(react_events_borrow(ctx), MORPH_EVENT_REACT,
+		"react.model.retry", phase, "Model connection retry", payload);
+	if (rc)
+		nb_log_write(ctx->logger, NB_LOG_DEBUG, "Could not publish model retry progress: %d", rc);
+}
+
+struct react_model_retry_binding {
+	struct model *model;
+	const struct model_retry_observer *previous;
+};
+
+static void react_model_retry_binding_cleanup(struct react_model_retry_binding *binding)
+{
+	if (binding->model)
+		binding->model->retry_observer = binding->previous;
+}
+
 static int react_chat_once(struct react_context *ctx, struct model *llm, const char *system_prompt,
 			   struct chat_message *messages, int msg_count,
 			   struct tool_desc *active_tools, int active_tool_count,
@@ -1598,6 +1628,11 @@ static int react_chat_once(struct react_context *ctx, struct model *llm, const c
 	if (status != 0)
 		return status;
 
+	struct model_retry_observer retry_observer = {
+		.notify = react_model_retry_notify, .data = ctx, .reconnect = 1};
+	struct react_model_retry_binding retry_binding NB_CLEANUP(react_model_retry_binding_cleanup) = {
+		.model = llm, .previous = llm->retry_observer};
+	llm->retry_observer = &retry_observer;
 	llm->http.cancel_token = &ctx->cancel_token;
 	llm->http.cancel_flag = &ctx->cancelled;
 	llm->http.interrupt_check = ctx->prompt_pending_fn;
@@ -1768,7 +1803,13 @@ static int react_recover_stream(struct react_context *ctx, const struct chat_res
 	control.cancel_flag = &ctx->cancelled;
 	control.interrupt_check = ctx->prompt_pending_fn;
 	control.interrupt_user_data = ctx->action_drain_user_data;
-	int rc = http_wait_cancelable(&control, (unsigned int)delay * 1000);
+	struct model_retry_event retry = {.phase = MODEL_RETRY_WAITING,
+		.attempt = *recoveries + 1, .limit = limit, .status = status,
+		.delay_ms = (unsigned int)delay * 1000u};
+	react_model_retry_notify(&retry, ctx);
+	int rc = http_wait_cancelable(&control, retry.delay_ms);
+	retry.phase = MODEL_RETRY_END;
+	react_model_retry_notify(&retry, ctx);
 	if (rc != 0)
 		return rc;
 	struct chat_message *slots = nb_vec_push_n(messages, 2);

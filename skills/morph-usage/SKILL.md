@@ -64,6 +64,11 @@ Do not assume an older installed binary supports unreleased source changes.
   Neither thinking previews nor recaps require inventing a separate model setting.
 - Explain the actual HTTP status and provider detail when available. A 400
   protocol/config error is not evidence of a network outage or a reason to keep retrying.
+- During main/sub-agent turns, eligible connection failures before response/output
+  reconnect indefinitely at 5, 10, 20, 40, then 60-second intervals. The composer
+  shows `Reconnecting` with a countdown; Esc cancels. HTTP 429/5xx and auxiliary
+  model calls retain finite retries; partial output uses finite safe continuation.
+  `retry_count = 0` disables all automatic retries and stream recovery.
 
 ## History navigation
 

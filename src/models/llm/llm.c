@@ -93,7 +93,11 @@ static void model_set_last_error(struct model *self, const char *fmt, ...)
 	va_end(ap);
 }
 
+struct llm_retry_scope;
+static void llm_retry_resumed(struct llm_retry_scope *scope);
+
 struct llm_http_ctx {
+	struct llm_retry_scope *retry;
 	nb_sse *parser;
 	int callback_error;
 	long retry_after_seconds;
@@ -121,6 +125,9 @@ static nb_status llm_http_headers(nb_http_call *call, const nb_http_response *re
 
 	(void)call;
 	(void)err;
+	if (response->status_code >= 200 && response->status_code < 300)
+		llm_retry_resumed(ctx->retry);
+
 	if (nb_http_headers_get(response->headers, NB_STR_LIT("Retry-After"), &value) &&
 	    nb_http_retry_after(value, (int64_t)time(NULL), &seconds, NULL) == NB_OK)
 		ctx->retry_after_seconds = seconds > 86400 ? 86400 : (long)seconds;
@@ -169,6 +176,42 @@ static int llm_retry_delay_seconds(int retry_index)
 {
 	int seconds = 1 << (retry_index > 3 ? 3 : retry_index);
 	return seconds > 8 ? 8 : seconds;
+}
+
+unsigned int model_connection_retry_delay_ms(int retry_index)
+{
+	if (retry_index >= 4)
+		return 60000;
+
+	return 5000u << (retry_index > 0 ? (unsigned int)retry_index : 0u);
+}
+
+struct llm_retry_scope {
+	struct model *model;
+	struct model_retry_event event;
+	int active;
+};
+
+static void llm_retry_notify(struct llm_retry_scope *scope, enum model_retry_phase phase)
+{
+	const struct model_retry_observer *observer = scope->model->retry_observer;
+	scope->event.phase = phase;
+	if (observer && observer->notify)
+		observer->notify(&scope->event, observer->data);
+}
+
+static void llm_retry_resumed(struct llm_retry_scope *scope)
+{
+	if (scope && scope->active) {
+		llm_retry_notify(scope, MODEL_RETRY_END);
+		scope->active = 0;
+	}
+}
+
+static void llm_retry_scope_cleanup(struct llm_retry_scope *scope)
+{
+	if (scope->active)
+		llm_retry_notify(scope, MODEL_RETRY_END);
 }
 
 static void llm_record_error(struct model *self, int status, const char *raw, int started,
@@ -223,6 +266,8 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 				   void *user_data, struct llm_stream_ctx *result,
 				   char **error_detail)
 {
+	struct llm_retry_scope progress NB_CLEANUP(llm_retry_scope_cleanup) = {.model = self};
+	int connection_attempt = 0;
 	int retries = self->retry_count;
 	if (retries < 0)
 		retries = 0;
@@ -238,7 +283,11 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		return open_rc;
 	}
 
-	for (int attempt = 0;; attempt++) {
+	int attempt = 0;
+	for (;;) {
+		if (progress.active)
+			llm_retry_notify(&progress, MODEL_RETRY_CONNECTING);
+
 		struct llm_stream_ctx ctx NB_CLEANUP(llm_stream_cleanup) = {0};
 		if (stream_cb)
 			llm_stream_init_typed(&ctx, stream_cb, user_data);
@@ -248,7 +297,7 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 		ctx.logger = self->http.logger;
 		snprintf(ctx.usage.phase, sizeof(ctx.usage.phase), "%s",
 			 usage_phase ? usage_phase : "turn");
-		struct llm_http_ctx hctx NB_CLEANUP(llm_http_cleanup) = {0};
+		struct llm_http_ctx hctx NB_CLEANUP(llm_http_cleanup) = {.retry = &progress};
 		nb_sse_options parser_options = {0};
 		int status = nb_sse_new(&parser_options, &hctx.parser, NULL);
 		if (status == NB_OK)
@@ -373,21 +422,51 @@ static int llm_post_sse_with_retry(struct model *self, const char *operation,
 			llm_stream_move(result, &ctx);
 			return MORPH_ERR_CONTEXT_LIMIT;
 		}
-		if (self->error_info.retryable && attempt < retries) {
-			long delay = self->error_info.retry_after_seconds > 0
-					     ? self->error_info.retry_after_seconds
-					     : llm_retry_delay_seconds(attempt);
-			if (detail)
-				nb_log_write(self ? self->http.logger : NULL, NB_LOG_WARN,
-					     "%s: HTTP %d (%s), retry %d/%d in %lds", operation,
-					     status, detail, attempt + 1, retries, delay);
+		if (http_status > 0)
+			connection_attempt = 0;
+
+		int reconnect = self->retry_observer && self->retry_observer->reconnect && retries > 0 &&
+			self->error_info.retryable && status < 0 && http_status == 0;
+		if (reconnect || (self->error_info.retryable && attempt < retries)) {
+			long delay = llm_retry_delay_seconds(attempt);
+			if (reconnect) {
+				delay = (long)(model_connection_retry_delay_ms(connection_attempt) / 1000u);
+			} else if (self->error_info.retry_after_seconds > 0) {
+				delay = self->error_info.retry_after_seconds;
+			}
+
+			if (reconnect)
+				nb_log_write(self->http.logger, NB_LOG_WARN,
+					"%s: connection status=%d, reconnecting in %lds", operation,
+					status, delay);
 			else
-				nb_log_write(self ? self->http.logger : NULL, NB_LOG_WARN,
-					     "%s: HTTP %d, retry %d/%d in %lds", operation, status,
-					     attempt + 1, retries, delay);
+				nb_log_write(self->http.logger, NB_LOG_WARN,
+					"%s: HTTP %d, retry %d/%d in %lds", operation, status,
+					attempt + 1, retries, delay);
+
+			progress.active = 1;
+			progress.event.attempt = reconnect
+				? (connection_attempt < INT_MAX ? connection_attempt + 1 : INT_MAX)
+				: attempt + 1;
+
+			progress.event.limit = retries;
+			progress.event.status = status;
+			progress.event.delay_ms = (unsigned int)delay * 1000u;
+			progress.event.persistent = reconnect;
+			llm_retry_notify(&progress, MODEL_RETRY_WAITING);
 			int wait_rc = http_wait_cancelable(&self->http, (unsigned int)delay * 1000);
-			if (wait_rc < 0)
+			if (wait_rc < 0) {
+				llm_record_error(self, wait_rc, NULL, 0, 0);
 				return wait_rc;
+			}
+
+			if (reconnect) {
+				if (connection_attempt < INT_MAX)
+					connection_attempt++;
+			} else {
+				attempt++;
+			}
+
 			continue;
 		}
 		if (status < 0 || status >= 400)

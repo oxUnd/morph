@@ -4411,6 +4411,10 @@ TEST_F(MockServerTest, LlmStopsAfterConfiguredRetriesAndKeepsLastError) {
 	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	model->retry_count = 1;
+	struct model_retry_observer observer = {};
+	observer.reconnect = 1;
+	model->retry_observer = &observer;
+
 
 	struct chat_message msg = {
 		(char *)"user", (char *)"hello", NULL, NULL, 0,
@@ -9633,4 +9637,14 @@ TEST_F(MockServerTest, LlmRetriesTruncatedTransportBeforeOutput)
 	EXPECT_STREQ(response.content, "recovered");
 	EXPECT_EQ(srv.request_count, 2);
 	mock_server_stop(&srv);
+}
+
+TEST(ModelReconnectTest, ConnectionBackoffSaturatesWithoutOverflow)
+{
+	EXPECT_EQ(model_connection_retry_delay_ms(0), 5000u);
+	EXPECT_EQ(model_connection_retry_delay_ms(1), 10000u);
+	EXPECT_EQ(model_connection_retry_delay_ms(2), 20000u);
+	EXPECT_EQ(model_connection_retry_delay_ms(3), 40000u);
+	EXPECT_EQ(model_connection_retry_delay_ms(4), 60000u);
+	EXPECT_EQ(model_connection_retry_delay_ms(INT_MAX), 60000u);
 }

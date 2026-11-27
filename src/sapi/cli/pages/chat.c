@@ -111,8 +111,14 @@ struct cli_chat_overlay {
 	int (*refresh)(void *, const struct nt_event *);
 };
 
+struct cli_chat_retry {
+	int active, waiting, attempt, limit, persistent;
+	int64_t deadline;
+};
+
 struct cli_chat_page {
 	struct nt_view_controller base;
+	struct cli_chat_retry retry;
 	struct nt_component_state *has_messages;
 	struct nt_builder *builder;
 	struct nt_view *workspace, *primary, *files_view;
@@ -148,6 +154,7 @@ struct cli_chat_page {
 };
 
 struct cli_chat_session_state {
+	struct cli_chat_retry retry;
 	struct nt_component_state *has_messages;
 	struct nt_view *scroll, *feed, *stream_view, *output_view, *output_container;
 	struct nt_view *last_assistant, *command_group, *command_tail, *pending_agent_wait;
@@ -670,6 +677,7 @@ int cli_chat_reset(struct cli_application *ctx)
 	nb_buf_clear(&page->output);
 	nb_map_clear(page->tools);
 	page->has_messages = NULL;
+	page->retry = (struct cli_chat_retry){0};
 	page->pending_agent_wait = NULL;
 	int rc = nt_view_clear_children(page->feed);
 	if (!rc)
@@ -721,6 +729,8 @@ int cli_chat_session_save(struct cli_application *ctx, struct cli_chat_session_s
 		return rc;
 	}
 
+	state->retry = page->retry;
+	page->retry = (struct cli_chat_retry){0};
 	state->cursor = nt_text_field_cursor(page->editor);
 	state->scroll = page->scroll;
 	state->feed = page->feed;
@@ -786,6 +796,7 @@ int cli_chat_session_restore(struct cli_application *ctx, struct cli_chat_sessio
 
 	struct cli_chat_page *page = ctx->chat;
 	struct cli_chat_session_state *state = *owner;
+	page->retry = state->retry;
 	page->scroll = state->scroll;
 	page->feed = state->feed;
 	page->has_messages = state->has_messages;
@@ -1178,6 +1189,7 @@ void cli_chat_turn_begin(struct cli_application *ctx)
 
 	cli_chat_page_boundary(ctx->chat);
 	ctx->chat->agents_waiting = 0;
+	ctx->chat->retry = (struct cli_chat_retry){0};
 	ctx->chat->pending_agent_wait = NULL;
 	ctx->chat->turn_started = cli_chat_now();
 	ctx->chat->next_status_update = 0;
@@ -1190,6 +1202,7 @@ void cli_chat_turn_end(struct cli_application *ctx, int result)
 		return;
 
 	struct cli_chat_page *page = ctx->chat;
+	page->retry = (struct cli_chat_retry){0};
 	page->agents_waiting = 0;
 	cli_chat_page_boundary(page);
 	nb_buf receipt NB_CLEANUP(nb_buf_cleanup) = {0};
@@ -1337,6 +1350,13 @@ static int cli_chat_page_stream(struct cli_application *ctx, int kind, const cha
 	return rc;
 }
 
+static int cli_chat_retry_number(const cJSON *data, const char *key, int maximum)
+{
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(data, key);
+	return cJSON_IsNumber(value) && value->valuedouble >= 0 && value->valuedouble <= maximum
+		? (int)value->valuedouble : 0;
+}
+
 int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *event)
 {
 	if (!cli_chat_active(ctx) || event->type != MORPH_EVENT_REACT || !event->name)
@@ -1347,7 +1367,20 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 	const char *text =
 		cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(event->data, "text"));
 	int rc = 0;
-	if (!strcmp(name, "react.reasoning.delta")) {
+	if (!strcmp(name, "react.model.retry")) {
+		const char *phase = event->phase ? event->phase : "";
+		page->retry.active = strcmp(phase, "end") != 0;
+		page->retry.waiting = !strcmp(phase, "waiting");
+		page->retry.attempt = cli_chat_retry_number(event->data, "attempt", INT_MAX);
+		page->retry.limit = cli_chat_retry_number(event->data, "limit", 10);
+		page->retry.persistent = cJSON_IsTrue(
+			cJSON_GetObjectItemCaseSensitive(event->data, "persistent"));
+		if (page->retry.waiting)
+			page->retry.deadline = cli_chat_now() +
+				cli_chat_retry_number(event->data, "delay_ms", INT_MAX);
+
+		page->next_status_update = 0;
+	} else if (!strcmp(name, "react.reasoning.delta")) {
 		int begin = !page->stream_view || page->stream_kind != CLI_MESSAGE_REASONING;
 		rc = cli_transcript_reasoning_append(ctx, text ? text : "", text ? strlen(text) : 0,
 						     begin);
@@ -1962,7 +1995,7 @@ static int cli_chat_update_status(struct cli_application *ctx, int columns, int 
 				  int64_t now)
 {
 	struct cli_chat_page *page = ctx->chat;
-	int animate = ctx->turn_active && styled && !page->activity_text &&
+	int animate = ctx->turn_active && styled && !page->retry.active && !page->activity_text &&
 		!page->agents_waiting && !cli_jobs_model_waiting(ctx->jobs);
 	int running = nt_view_animation_running(page->status, 1);
 	if (animate && !running) {
@@ -1983,7 +2016,7 @@ static int cli_chat_update_status(struct cli_application *ctx, int columns, int 
 	if (changed)
 		page->next_status_update = 0;
 
-	if (cli_jobs_model_waiting(ctx->jobs)) {
+	if (cli_jobs_model_waiting(ctx->jobs) && !page->retry.active) {
 		page->next_status_update = 0;
 		return *nt_text_view_text(page->status) ? nt_text_view_set_text(page->status, "") : 0;
 	}
@@ -1997,7 +2030,12 @@ static int cli_chat_update_status(struct cli_application *ctx, int columns, int 
 	int64_t elapsed = now - page->turn_started;
 	int64_t next = INT64_MAX;
 	int rc;
-	if (page->activity_text) {
+	if (page->retry.active) {
+		rc = cli_work_status_retry(&text, columns, styled, page->retry.attempt,
+			page->retry.limit, page->retry.persistent, page->retry.waiting,
+			page->retry.deadline - now, now);
+		next = now + (styled ? cli_style_running_interval_ms(now) : 1000);
+	} else if (page->activity_text) {
 		rc = nb_buf_append_cstr(&text, page->activity_text) ? 0 : nb_buf_status(&text);
 	} else if (page->agents_waiting) {
 		rc = nb_buf_printf(&text, "%s" CLI_FEED_RUNNING "%s Waiting for agents",

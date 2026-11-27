@@ -64,6 +64,7 @@ react.final.delta
 react.final.retry
 react.user.steer
 react.agent.mail
+react.model.retry
 react.hook.continue
 react.context.usage
 react.compaction.begin
@@ -114,6 +115,15 @@ response and presents the hook-generated continuation prompt before the next mod
 request. Its `data.text` is the prompt, also stored as a user history item with
 `source: "hook"` and `hook_event_name: "Stop"`. The root `turn_id` stays unchanged;
 `react.final` and `react.turn.end` still identify the eventual terminal completion.
+
+`react.model.retry` reports request-scoped model retry progress, including safe
+partial-stream recovery. Its phase is `waiting`, `connecting`, or `end`; data has
+`attempt`, `limit`, `delay_ms`, `status` and boolean `persistent`. Persistent
+pre-response connection retries have no attempt limit; `limit` is the configured
+finite HTTP/stream retry budget. `end` clears progress on response headers,
+terminal failure or cancellation and does not itself mean success. The event
+belongs to the current turn/agent and never creates a user history message.
+Interactive clients replace the composer's activity row while reconnecting.
 
 `react.agent.mail` is emitted after a mailbox delivery is persisted and acknowledged.
 Its `text` contains the received transport envelopes. It is an internal coordination

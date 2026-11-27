@@ -15,6 +15,8 @@ int cli_work_status_running_frame(nb_buf *, int columns, int styled, int64_t ela
 /* Completed content excludes its component's two-cell left padding. */
 int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, int64_t elapsed_ms,
 			      time_t finished_at);
+int cli_work_status_retry(nb_buf *, int columns, int styled, int attempt, int limit,
+	int persistent, int waiting, int64_t remaining_ms, int64_t now_ms);
 int cli_work_status_interval_ms(int64_t elapsed_ms, int64_t now_ms);
 
 #endif

@@ -18,22 +18,22 @@ static int http_cancelled(const struct http_control *control)
 int http_wait_cancelable(const struct http_control *control, unsigned int milliseconds)
 {
 	const unsigned int slice_ms = 100;
-	unsigned int waited = 0;
-
-	while (waited < milliseconds) {
-		struct timespec delay;
-		unsigned int current = milliseconds - waited;
-		if (current > slice_ms)
-			current = slice_ms;
+	int64_t deadline = nb_time_monotonic_ms() + milliseconds;
+	for (;;) {
 		if (http_cancelled(control))
 			return NB_ERR_CANCELLED;
-		delay.tv_sec = current / 1000;
-		delay.tv_nsec = (long)(current % 1000) * 1000000L;
+
+		int64_t remaining = deadline - nb_time_monotonic_ms();
+		if (remaining <= 0)
+			break;
+
+		unsigned int current = remaining > slice_ms ? slice_ms : (unsigned int)remaining;
+		struct timespec delay = {.tv_sec = current / 1000,
+			.tv_nsec = (long)(current % 1000) * 1000000L};
 		while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
 			if (http_cancelled(control))
 				return NB_ERR_CANCELLED;
 		}
-		waited += current;
 	}
 	return http_cancelled(control) ? NB_ERR_CANCELLED : 0;
 }

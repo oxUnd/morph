@@ -197,6 +197,17 @@ OpenAI-compatible text example:
 	timeout_seconds = 300
 	retry_count = 3
 
+With a positive retry_count, main/sub-agent turns keep reconnecting after
+retryable connection failures before any response/output: 5, 10, 20, 40, then
+60 seconds between attempts, with no attempt limit. The composer shows
+Reconnecting, the attempt and countdown; Esc cancels promptly. Normal activity
+returns when response headers arrive. Authentication/configuration errors stop;
+transient HTTP responses (including 429/5xx) retain the finite retry_count budget
+and honor Retry-After. Partial output uses a separate finite continuation budget;
+uncommitted tool calls are discarded rather than replayed. Auxiliary model calls
+(titles, recaps, reviewers) retain finite retries. retry_count = 0 disables all
+automatic retries and stream recovery.
+
 Text and vision adapters are openai-chat-compatible, openai-responses and
 deepseek. Omitted adapters infer deepseek for provider = "deepseek" and
 openai-chat-compatible otherwise. Select adapter = "openai-responses"
