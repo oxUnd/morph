@@ -121,8 +121,11 @@ cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 Restart clangd in the editor after regenerating the database. If you use a different
 build directory, update `CompileFlags.CompilationDatabase` in `.clangd` to match.
 
-Runtime data lives in `share/morph` relative to the executable; the installed
-user manual is `share/morph/morph.txt`.
+Runtime data lives in `../share/morph` relative to the executable's directory:
+`build/bin/morph` uses `build/share/morph`, and `<prefix>/bin/morph` uses
+`<prefix>/share/morph`. The user manual is `morph.txt` in that data directory.
+The bundled `skills/morph-usage` resolves `../../morph.txt` from its own directory;
+in a source checkout, `skills/morph-usage` resolves `../../docs/morph.txt` instead.
 
 Windows x86-64 builds through Cygwin, runtime bundling, and Wine validation:
 [docs/windows-cygwin.md](docs/windows-cygwin.md).

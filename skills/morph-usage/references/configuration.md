@@ -1,7 +1,7 @@
 # Current Morph Configuration
 
 Read this for setup, model settings, thinking, recaps, process waits, host execution,
-or config changes.
+database storage, hooks, rewind, memory/context budgets, or config changes.
 The matching-version manual remains the full reference. In a source checkout,
 check `config.toml.example` and `src/config/schema.c` before proposing unfamiliar keys.
 
@@ -148,6 +148,69 @@ the selected adapter rather than copying a different provider's thinking syntax.
   Ctrl+T opens current-turn reasoning and tool details; Ctrl+T or Esc returns to
   the conversation. Do not describe the preview as discarded reasoning.
 
+## Permissions, Hooks, and Rewind
+
+Permission presets use three independent dimensions:
+
+| Preset | Access | Approval | Reviewer |
+| --- | --- | --- | --- |
+| Ask | `workspace` | `on_request` | `user` |
+| Auto | `workspace` | `on_request` | `model` |
+| Full | `full` | `never` | `user` |
+| Read Only | `read_only` | `on_request` | `user` |
+
+Use `/permissions status` to inspect the current policy and `/permissions mode`
+to select a preset. Existing authority runs directly; operations needing review
+cannot proceed with approval `never` or an unavailable approval adapter. Auto
+uses an isolated text client; optional `[model.approval]` overrides its connection.
+Legacy host/network/HITL flags do not grant authority under the shared policy.
+
+Hooks have separate definition and project-workspace trust. `/hooks` opens review;
+`/hooks check` reports effective states. Review alone never executes a command.
+Changed definitions need fresh trust. Use the exact digest-bound commands shown
+by review; do not edit the database to bypass trust. Hook scripts run as the host
+user. `[features] hooks = false` disables execution. See `*morph-hooks*` and
+`docs/hooks.md` for source discovery and review details.
+
+`/rewind` restores code, conversation, or both from a primary-turn checkpoint
+while idle. Only primary-agent `apply_patch` changes are captured for code
+restore; shell, manual and subagent writes are outside capture. External edits
+cause conflicts rather than being overwritten. The model's `checkpoint` tool
+restores code only. Rewind does not undo external side effects or billing.
+See `*morph-checkpoints*` and `docs/checkpointing.md`.
+
+## Storage and Memory Budgets
+
+SQLite is the default database. PostgreSQL requires a build with
+`-DENABLE_POSTGRESQL=ON`, then configuration such as:
+
+```toml
+[database]
+driver = "postgresql"
+url_env = "MORPH_DATABASE_URL"
+tls_mode = "verify_full"
+connect_timeout_ms = 5000
+query_timeout_ms = 30000
+```
+
+Export the connection URL before launch; do not print credentials. The database
+role needs schema migration permissions. In PostgreSQL mode, file sync omits the
+legacy primary `data.db`; use database administration tools for database backup
+and restore. See the README's PostgreSQL storage section for deployment limits.
+
+Use `[memory] max_reply_chars = 3000` for the injected memory character budget.
+`max_context_chars` is a compatibility alias. The independent defaults
+`capture_input_enabled`, `save_tasks_enabled`, and `learn_from_chats_enabled`
+are all true; do not describe disabling one as disabling the whole subsystem.
+
+Context compaction defaults to running between tool iterations as needed.
+`[context] tool_result_max_tokens = 8000` caps each retained result, including
+its truncation marker. This token budget differs from exec's output byte caps.
+`protocol_reserve_tokens = 4096` reserves framing/estimation overhead separately
+from the text model's output budget. Project guidance has a combined default
+`project_doc_max_bytes = 32768`; omitted files remain readable with `file_read`.
+Prefer narrower searches and ranged reads before increasing these budgets.
+
 ## Process Wait Budgets
 
 Configure the maximum duration of an individual `background` collection call:
@@ -175,6 +238,12 @@ This collection budget is separate from the command's execution timeout
 (`exec` argument `timeout_ms`, defaulted from `exec.default_timeout_ms`). Increasing
 the collection maximum does not extend a command's execution timeout. Changes
 require a normal Morph restart with the active config.
+
+Finite process sessions must be collected before ending a turn. `service: true`
+marks a persistent server or watcher. `notify_only: true` skips turn-end collection
+only for an explicit user request to run a task and notify them later. `/jobs`
+inspects retained processes and can request a stop. Shell tools can be disabled
+by the runtime/build or tool configuration; do not promise availability everywhere.
 
 If a `background` call fails immediately with a `wait_ms` range error, inspect its
 arguments and the installed version's advertised range. Older versions used a

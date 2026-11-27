@@ -8,9 +8,13 @@ metadata:
 # Morph Usage
 
 Ground answers in the manual shipped with the skill's version. Using the
-activated skill `dir`, try `../../morph.txt` for an installed tree or
-`../../docs/morph.txt` for a source checkout. Fall back to `docs/morph.txt`
-in the working directory. Read the relevant tagged sections, not the entire
+activated skill `dir`, resolve `../../morph.txt` for a build/install tree or
+`../../docs/morph.txt` for a source checkout. These paths are relative to that
+skill directory, not the process working directory. For example,
+`<prefix>/share/morph/skills/morph-usage` reads `<prefix>/share/morph/morph.txt`,
+while `<checkout>/skills/morph-usage` reads `<checkout>/docs/morph.txt`.
+Fall back to `docs/morph.txt` in the working directory only when the skill-relative
+manual is unavailable. Read the relevant tagged sections, not the entire
 manual. If none is readable, state that limitation rather than inventing
 commands or settings.
 
@@ -24,7 +28,8 @@ Do not assume an older installed binary supports unreleased source changes.
 ## Routing
 
 - First run and onboarding: `*morph-quickstart*`.
-- Config paths, sections, keys, and models: `*morph-config*`, `*morph-models*`.
+- Config paths, database storage, sections, keys, and models: `*morph-config*`,
+  `*morph-models*`.
 - Commands, session switching, and interactive details: `*morph-cli*`.
 - Tools and filesystem or shell permissions: `*morph-tools*`.
 - Process wait ranges and `exec.max_wait_ms`: `*morph-tools*` and
@@ -32,9 +37,11 @@ Do not assume an older installed binary supports unreleased source changes.
 - AppleScript/System Events errors or explicit host execution: `*morph-tools*`
   and [Host execution](references/configuration.md#explicit-host-execution).
 - Skills, MCP, or extensions: `*morph-skills*`, `*morph-mcp*`, `*morph-exts*`.
+- Checkpoints and rewind: `*morph-checkpoints*`.
+- Lifecycle hook configuration and trust: `*morph-hooks*`.
 - Scheduled work and delivered results: `*morph-tasks*`.
 - Context, compression, recaps, memory, or credits: `*morph-memory*`.
-- Active-config changes: `*morph-config-edit*`.
+- Config validation and active-config changes: `*morph-config-validate*`.
 - Errors: `*morph-troubleshooting*` and the relevant model/tool section.
 
 ## Answering

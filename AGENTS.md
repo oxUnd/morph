@@ -20,6 +20,22 @@
   tests does not validate a change. Resolve missing dependencies where possible;
   report any remaining validation gaps and their reasons.
 
+## Documentation Sync
+
+- Every change to user-visible behavior must check the corresponding sections
+  of [the manual](docs/morph.txt) and the bundled
+  [morph-usage skill](skills/morph-usage/SKILL.md), including its
+  [configuration reference](skills/morph-usage/references/configuration.md).
+  Update all affected content in the same change; documentation synchronization
+  is part of completion, not a follow-up task.
+- This includes added, renamed or removed tools, commands, configuration keys,
+  defaults, permissions, workflows and troubleshooting behavior. Describe the
+  implemented behavior and remove obsolete instructions and examples.
+- Keep manual tags and skill routing links consistent. When renaming or removing
+  a feature, search the manual and the entire morph-usage directory for stale
+  names, anchors and examples. Verify commands, settings and examples against
+  the current implementation and schema before claiming the docs are current.
+
 ## Architecture
 - **ReAct** `src/agent/react.c`: Thought → Action → Observation → Guardrail → Final, via OpenAI Function Calling (not text parsing).
 - **Models**: configure text chat, vision understanding, image generation and video generation independently under `[model.text]`, `[model.vision]`, `[model.image]` and `[model.video]`.

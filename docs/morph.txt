@@ -15,16 +15,18 @@ CONTENTS						*morph-contents*
 
 	*morph-quickstart*	First run
 	*morph-config*		Configuration file
-	*morph-models*		Text, image, and video models
+	*morph-models*		Text, vision, image, and video models
 	*morph-cli*		Interactive CLI commands
 	*morph-tools*		Built-in tools and permissions
+	*morph-checkpoints*	Checkpoints and rewind
+	*morph-hooks*		Lifecycle hooks
 	*morph-tasks*		Scheduled tasks and inbox
 	*morph-skills*		Skills
 	*morph-mcp*		MCP servers
 	*morph-exts*		Extensions
 	*morph-dynamic*		Dynamic JavaScript tools
 	*morph-memory*		Memory, context, and credits
-	*morph-config-edit*	Letting Morph edit config
+	*morph-config-validate*	Validating Morph configuration
 	*morph-troubleshooting*	Common problems
 
 ==============================================================================
@@ -92,7 +94,14 @@ Alternatively, copy the example config and set its provider's API key:
 Useful flags:
 
 	-c <path>	Use another config file.
-	-s <name>	Start or switch to a named session.
+	-w <path>	Use another working directory.
+	-s <name>	Select or create a named session.
+	-p <text>	Run once with plain-text progress.
+	--events json	Emit raw events as NDJSON.
+	--no-color	Disable ANSI color output.
+
+Use "morph resume [name|id]" to resume from the shell; without an argument,
+it opens the session list. Use "morph --help" for all startup options.
 
 Inside Morph, type /help to list commands and /quit to exit.
 
@@ -109,9 +118,11 @@ Create it from:
 
 Important sections:
 
-	[general]	Output directory, log path, default session.
+	[general]	Output directory, log path, default session and auto-recap.
+	[database]	Optional PostgreSQL business database connection.
 	[model.text]	Chat model used by the ReAct loop.
 	[model.vision]	Optional image understanding and OCR model.
+	[model.approval]	Optional separate model for automatic permission review.
 	[model.image]	Image generation/editing model.
 	[model.video]	Video generation model.
 	[credits]	Credit tracking and per-model prices.
@@ -119,7 +130,11 @@ Important sections:
 	[permissions]	Access boundary, approval policy and reviewer.
 	[react]		Tool loop, guardrails and tool selection.
 	[react.permissions]	Permission profile selection.
-	[context]	Context compression settings.
+	[agents]	Collaboration limits, child execution and delegation mode.
+	[features.rollout_budget]	Optional shared weighted token budget.
+	[features]	Lifecycle hooks feature switch.
+	[hooks]		Inline lifecycle hook definitions.
+	[context]	Context compression and per-tool-result token budgets.
 	[memory]	Persistent memory settings.
 	[sync]		Optional backup of the ~/.morph directory.
 	[render]	Terminal image protocol and video player arguments.
@@ -129,12 +144,36 @@ Important sections:
 	[skill]		Custom skill directory.
 	[[mcp.servers]]	MCP server definitions.
 
+Custom instructions use [prompt] mode = "append" or "replace", with
+system_prompt_file and/or system_prompt_dir. Replace substitutes the default
+behavior layer; the minimal core and runtime facts remain. With no sources,
+both modes use default behavior. Files are loaded once at initialization;
+missing/unreadable sources are errors. Restart after changing prompt files.
+Directory fragments are non-hidden regular files loaded in bytewise filename
+order after system_prompt_file.
+
 API keys should normally be referenced through api_key_env, not written
 directly into the config:
 
 	api_key_env = "OPENAI_API_KEY"
 
 Then set the environment variable before launch.
+
+SQLite is the default storage backend. Builds with ENABLE_POSTGRESQL=ON can
+select PostgreSQL for the business database:
+
+	[database]
+	driver = "postgresql"
+	url_env = "MORPH_DATABASE_URL"
+	tls_mode = "verify_full"
+	connect_timeout_ms = 5000
+	query_timeout_ms = 30000
+
+Export MORPH_DATABASE_URL before launch. The database role must be able to
+create and migrate the application schema. File sync still handles files and
+attachments, but omits the legacy data.db primary database entry in PostgreSQL
+mode; use PostgreSQL administration tools for database backups and restores.
+See README.md, "PostgreSQL storage", for build, TLS and deployment details.
 
 ==============================================================================
 MODELS							*morph-models*
@@ -157,6 +196,12 @@ OpenAI-compatible text example:
 	max_tokens = 4096
 	timeout_seconds = 300
 	retry_count = 3
+
+Text and vision adapters are openai-chat-compatible, openai-responses and
+deepseek. Omitted adapters infer deepseek for provider = "deepseek" and
+openai-chat-compatible otherwise. Select adapter = "openai-responses"
+explicitly for the Responses API, including native freeform custom tools.
+Provider labels alone do not select that API.
 
 Provider-specific text request fields can be merged with extra_body_json.
 Morph still owns model, messages, tools, stream, stream_options, and
@@ -295,13 +340,15 @@ If image or video generation fails with "not configured", check the matching
 ==============================================================================
 CLI COMMANDS						*morph-cli*
 
-Shell management commands (no chat/model initialization):
+Shell entry points:
 
+	morph resume [name|id]	Resume a session or open the session list.
 	morph mcp <add|list|get|remove|test> ...
 	morph setup [-c PATH]	Configure a new or existing installation and exit.
 	morph skills <add|list|remove|update> ...
 	morph skill ...	Alias for morph skills.
 
+MCP and skill management do not initialize a chat or model.
 Use "morph mcp --help" or "morph skills --help" for options. Global -c and -w
 go before the command group. See |morph-skills| and |morph-mcp| for examples.
 
@@ -309,19 +356,21 @@ Common interactive commands:
 
 	/help [command]	List commands or show one command.
 	/quit		Exit.
+	/sessions	List sessions and execution status.
 	/new [name]	Create a new session.
 	/resume [name|id]	Choose or resume a session.
 	/switch <name|id|^N>	Switch session.
 	/rename <name>	Rename current session.
 	/delete <name|id>	Delete a session.
-	/history [n|--all]	Show, diagnose, repair, or export history.
+	/history [n|--all|--messages|--model|--last-request|--entry N [--stored]]
+	/history --diagnose|--repair|--export path
 	/copy		Copy the last assistant answer as Markdown.
 	/jobs [id|stop id]	Inspect or stop a background process.
-	/rewind		Preview and restore a turn checkpoint.
+	/rewind [list|preview <id>|code <id>|conversation <id>|both <id>]
 	/share			Save the latest answered turn as offline HTML in ~/Downloads.
 	/model [name|normal|ultra|status]	Choose the model or collaboration mode.
-	/agents [id]	Inspect agent assignments, status and results.
-	/subagents [id]	Switch agent transcripts, follow up or interrupt.
+	/agents [/root/name]	Open the full-screen agent browser.
+	/subagents [/root/name]	Switch transcripts, follow up or interrupt.
 	/side [path]	Open conversation files in the sidebar.
 	/config		Print loaded configuration.
 	/trace [--from-db]	Show the latest ReAct trace.
@@ -334,9 +383,11 @@ Common interactive commands:
 	/memory [show|history|explain|set|unset|clear|jobs]
 	/permissions	Select a policy. Use /permissions status to inspect it.
 	/permissions mode <ask|auto|full|read_only>
+	/permissions set <access> <approval> <reviewer>
 	/permissions list	List saved grants.
 	/permissions revoke <id|program>
 	/permissions clear
+	/hooks		Review and manage lifecycle hooks.
 	/tasks [list|show|add|every|update|cancel|run]
 	/inbox [list [limit]|read <id>]
 	/sync [status|now|conflicts|restore <trash-id>|restore-db ...]
@@ -371,7 +422,8 @@ into a single preview row, with an ellipsis when more text is hidden. Ctrl+T
 opens the current turn's full reasoning and tool details, including live updates;
 Ctrl+T or Esc returns to the conversation. During a turn, the purple shortcut
 hint appears at the end of the Working row.
-Task bodies use the same Markdown renderer as replies.
+Task bodies use the same Markdown renderer as replies. Ctrl+K opens the
+shortcut reference for the current view.
 
 ==============================================================================
 TOOLS AND PERMISSIONS					*morph-tools*
@@ -420,12 +472,17 @@ Collaboration tools include:
 	read_agent	Read a paginated agent report.
 	wait_agent	Wait for messages, completion, cancellation or timeout.
 
-Ultra enables proactive delegation; the model decides which tasks can usefully
-run in parallel. /subagents opens the thread overview: Enter views an agent,
+With agents.multi_agent_mode = "auto", Ultra enables proactive delegation;
+Normal uses explicit delegation. Set multi_agent_mode = "explicit" or
+"proactive" to override that selection. agents.enabled controls availability;
+max_threads and max_depth default to 6 and 2. The model decides which tasks
+can usefully run in parallel when proactive delegation is enabled.
+/subagents opens the thread overview: Enter views an agent,
 Tab or Left/Right switches, f sends a follow-up, k interrupts, and Esc returns.
 Children compile and test in MORPH_AGENT_SCRATCH with scoped workspace writes.
 An optional weighted token budget covers the session tree. Enable it under
-[features.rollout_budget] and configure its limit and reminder thresholds. See docs/multi-agent.md for configuration and evaluation commands.
+[features.rollout_budget] and configure its limit and reminder thresholds.
+See docs/multi-agent.md for configuration and evaluation commands.
 
 Shell and process tools include:
 
@@ -434,8 +491,8 @@ Shell and process tools include:
 	request_permissions  Ask for the smallest additional filesystem access.
 
 The exec tool runs shell commands; the background tool manages the resulting
-process sessions.  Both are registered always and share one configuration
-table:
+process sessions. They are available when shell execution is enabled by the
+runtime/build, unless disabled by tool configuration, and share one table:
 
 	[exec]
 	shell = "/bin/bash"
@@ -446,6 +503,11 @@ table:
 	max_session_output = 1048576
 	kill_grace_ms = 500
 
+Finite background jobs are collected before the agent ends its turn. Use
+service = true for a persistent server or watcher. notify_only = true skips
+collection at turn end only when the user explicitly requests a task that
+should notify them later. /jobs inspects retained jobs or requests a stop.
+
 The active policy is visible in /permissions status. To select the default
 Ask policy explicitly, use:
 
@@ -453,6 +515,12 @@ Ask policy explicitly, use:
 	access = "workspace"
 	approval = "on_request"
 	reviewer = "user"
+
+The presets are Ask = workspace/on_request/user,
+Auto = workspace/on_request/model, Full = full/never/user, and
+Read Only = read_only/on_request/user. Automatic review uses an isolated text
+client; [model.approval] can override its model connection. A run without an
+available reviewer cannot approve operations that still require review.
 
 Morph parses the shell command and checks its programs, working directory and
 requested access. Workspace commands inside existing authority run directly.
@@ -504,6 +572,49 @@ Use /permissions to select another preset and /permissions list to inspect
 saved grants.
 
 ==============================================================================
+CHECKPOINTS AND REWIND				*morph-checkpoints*
+
+A persistent checkpoint is saved before each primary user prompt enters history.
+Use /rewind while idle to preview a checkpoint, then restore code, conversation,
+or both. Explicit forms are /rewind list, /rewind preview <id>,
+/rewind code <id>, /rewind conversation <id>, and /rewind both <id>.
+An active turn must finish or be cancelled first.
+
+Code capture covers primary-agent apply_patch edits, including actual results
+of partially failed patches. Shell commands, manual edits, subagent changes and
+other tools' writes are outside capture. External changes to a tracked file
+produce a conflict rather than being overwritten. Conversation-only restore
+leaves current files alone. The checkpoint model tool restores code only.
+
+Rewind does not undo external side effects or model usage. Checkpoints are
+retained up to 100 per session and 30 days; use version control and backups for
+long-term recovery. See docs/checkpointing.md for capture limits and conflicts.
+
+==============================================================================
+LIFECYCLE HOOKS					*morph-hooks*
+
+Hooks run local command handlers around supported lifecycle events. Sources
+include ~/.morph/hooks.json, hooks.json beside the selected config,
+<workdir>/.morph/hooks.json, and inline [hooks] definitions in the selected or
+project .morph/config.toml. Definitions reload between turns and during review.
+Morph does not automatically import .codex hook files.
+
+/hooks opens the review list. /hooks check reports effective states;
+/hooks review <id> inspects a definition. Project hooks also require workspace
+trust. Use the exact trust command and digest printed by review. Loading a
+configuration never grants execution authority. Changed definitions need fresh
+trust; unreviewed, changed, disabled and unsupported hooks do not execute.
+Startup can offer a batch review, also available through /hooks review-all.
+
+Hook commands execute as the host user. Trust covers the reviewed definition,
+not later changes to script contents or dependencies. To disable execution:
+
+	[features]
+	hooks = false
+
+See docs/hooks.md for supported events, JSON/TOML examples and trust commands.
+
+==============================================================================
 SCHEDULED TASKS					*morph-tasks*
 
 A task is a prompt Morph runs later, either once or on an interval.  When a
@@ -533,8 +644,9 @@ update, list, cancel, inbox, and mark_read.  Due processing stays in the
 scheduler; run_due is not available to the agent.
 
 The interactive CLI runs a lightweight background scheduler that checks due
-tasks about once per second.  Tasks and notifications live in the Morph
-SQLite database, so they survive after a session ends.
+tasks about once per second. Tasks and notifications live in the configured
+Morph database (SQLite by default, optionally PostgreSQL), so they survive
+after a session ends.
 
 ==============================================================================
 DYNAMIC TOOLS						*morph-dynamic*
@@ -589,6 +701,13 @@ Default discovery paths:
 Project skills take precedence over user skills with the same name. Bundled
 skills are discovered last. A custom user path replaces both default user
 paths, while project discovery remains enabled.
+
+Bundled resources are resolved from the executable's directory, independently
+of the working directory: build/bin/morph uses build/share/morph, and an
+installed <prefix>/bin/morph uses <prefix>/share/morph. The bundled morph-usage
+skill reads ../../morph.txt relative to its activated skill directory. A source
+checkout's skills/morph-usage reads ../../docs/morph.txt instead. Resolve these
+paths against the skill directory, not the current working directory.
 
 Custom path:
 
@@ -713,12 +832,21 @@ Extensions declare their entrypoint and permissions in manifest.toml.
 ==============================================================================
 MEMORY, CONTEXT, CREDITS				*morph-memory*
 
-Memory can store user facts, procedures, and episode summaries:
+Memory stores explicit preferences, task summaries, and evidence-backed tips:
 
 	[memory]
 	enabled = true
+	capture_input_enabled = true
+	save_tasks_enabled = true
+	learn_from_chats_enabled = true
 	max_facts = 6
-	max_context_chars = 3000
+	max_past_tasks = 4
+	max_tips = 4
+	max_reply_chars = 3000
+
+max_reply_chars budgets Unicode characters in injected preferences, summaries
+and directory previews. max_context_chars is a legacy compatibility spelling;
+use max_reply_chars in new configurations.
 
 Inspect or change it:
 
@@ -740,6 +868,20 @@ Context compression protects long sessions:
 	summarize_threshold_ratio = 0.8
 	compress_target_ratio = 0.5
 	keep_recent_rounds = 6
+	in_turn_compaction = true
+	protocol_reserve_tokens = 4096
+	tool_result_max_tokens = 8000
+	compaction_user_message_tokens = 20000
+	compaction_summary_max_tokens = 6000
+	compaction_warning_count = 3
+
+Compaction can run between tool iterations. The context budget separately
+reserves model.text.max_tokens for output and protocol_reserve_tokens for
+framing and estimation error. tool_result_max_tokens caps each retained tool
+result, including its truncation marker; it is distinct from exec output byte
+limits. Narrow searches or read retained output in ranges before raising caps.
+context.project_doc_max_bytes defaults to 32768 for combined project guidance;
+omitted files remain available through file_read.
 
 Inspect current usage:
 
@@ -788,8 +930,8 @@ The result contains valid and, on failure, the first error with code, field path
 line, column and message. Unavailable source locations are zero. Invalid config
 is a successful inspection with valid = false; access and I/O failures are tool
 errors. Warnings are returned separately; unknown fields retain the loader's
-compatibility behavior. Validation
-does not test credentials or network connectivity, or reload configuration.
+compatibility behavior. Validation does not test credentials or network
+connectivity, or reload configuration.
 
 Do not put API key values into config unless the user explicitly provides
 that secret and insists. Prefer api_key_env and tell the user to export the
