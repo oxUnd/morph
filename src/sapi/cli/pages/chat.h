@@ -25,8 +25,10 @@ int cli_chat_mcp_items(struct cli_application *, const char *kind, const char *s
 	const struct cli_mcp_tree_item *, size_t count);
 int cli_chat_command_input(struct cli_application *, const char *text);
 void cli_chat_command_end(struct cli_application *);
+int cli_chat_agent_messages(struct cli_application *, const char *text, int waited);
 int cli_chat_message(struct cli_application *, int kind, const char *text);
 int cli_chat_react_event(struct cli_application *, const struct morph_event *);
+int cli_chat_tool_group(struct cli_application *, const char *id);
 int cli_chat_tool_changed(struct cli_application *, const struct cli_transcript_tool *);
 int cli_chat_block(struct cli_application *, const struct cli_feed_block *);
 void cli_chat_activity(struct cli_application *, const char *text);

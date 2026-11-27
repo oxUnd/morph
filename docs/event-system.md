@@ -63,6 +63,7 @@ react.final
 react.final.delta
 react.final.retry
 react.user.steer
+react.agent.mail
 react.hook.continue
 react.context.usage
 react.compaction.begin
@@ -113,6 +114,11 @@ response and presents the hook-generated continuation prompt before the next mod
 request. Its `data.text` is the prompt, also stored as a user history item with
 `source: "hook"` and `hook_event_name: "Stop"`. The root `turn_id` stays unchanged;
 `react.final` and `react.turn.end` still identify the eventual terminal completion.
+
+`react.agent.mail` is emitted after a mailbox delivery is persisted and acknowledged.
+Its `text` contains the received transport envelopes. It is an internal coordination
+update, not human steering. Interactive clients group it with a successful
+mailbox wait when available and preserve the original payload in details.
 
 `react.user.steer` is emitted when a queued prompt is accepted into the current
 loop. Its `text` is the full model input; optional `display_text` preserves the

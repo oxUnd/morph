@@ -156,8 +156,11 @@ static int cli_share_step_html(const cJSON *step, nb_buf *html)
 	if (rc)
 		return rc;
 
-	nb_buf_append_cstr(html, "</span></div><details class=tool-output>"
-				 "<summary>View result</summary><pre>");
+	const char *kind = cli_share_text(step, "kind");
+	const char *summary = !strcmp(kind, "agent_message") ? "View messages"
+		: !strcmp(kind, "hook") ? "View feedback" : "View result";
+	nb_buf_printf(html, "</span></div><details class=tool-output>"
+		"<summary>%s</summary><pre>", summary);
 	rc = cli_share_escape(html, cli_share_text(step, "content"));
 	if (rc)
 		return rc;

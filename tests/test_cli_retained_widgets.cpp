@@ -908,6 +908,26 @@ TEST_F(CliRetainedWidgetsTest, AnalyticsToolsHideRunningAndCompletedRowsUntilDet
 	}
 }
 
+TEST_F(CliRetainedWidgetsTest, GroupedWaitReceiptOnlyAppearsInExplicitToolDetails)
+{
+	tool.name = const_cast<char *>("wait_agent");
+	tool.args = const_cast<char *>("{\"timeout_ms\":10000}");
+	tool.subject = const_cast<char *>("");
+	tool.shell = 0;
+	tool.result = const_cast<char *>("{\"reason\":\"mailbox\",\"timed_out\":false}");
+	Present();
+	ASSERT_EQ(cli_tool_call_set_grouped(component, 1), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_TRUE(nt_view_is_hidden(component));
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 1), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_FALSE(nt_view_is_hidden(component));
+	EXPECT_NE(frame.find("Arguments"), std::string::npos);
+	ASSERT_EQ(cli_tool_call_update(component, &tool, 1, 0), 0);
+	ASSERT_EQ(nt_application_step(app, 0), 0);
+	EXPECT_TRUE(nt_view_is_hidden(component));
+}
+
 TEST_F(CliRetainedWidgetsTest, ComposerUltraWavePaintsOnlyTruePaddingAndPreservesDraftCursor)
 {
 	kind = Composer;

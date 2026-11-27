@@ -12,6 +12,17 @@ extern "C" {
 #include <nb/vec.h>
 #include <nb/cleanup.h>
 
+enum agent_history_input_source {
+	AGENT_HISTORY_INPUT_USER,
+	AGENT_HISTORY_INPUT_AGENT,
+	AGENT_HISTORY_INPUT_HOOK,
+	AGENT_HISTORY_INPUT_CONTEXT,
+};
+
+/* Source metadata wins over strict legacy mailbox-envelope recognition. */
+enum agent_history_input_source agent_history_input_source(
+	const struct model_history_item *, const cJSON *payload);
+
 struct react_context;
 struct tokenizer;
 
@@ -38,6 +49,8 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 int agent_history_record_user(struct react_context *ctx, const char *content);
 int agent_history_record_user_steer(struct react_context *ctx,
 				    const char *content, int sequence);
+/* Mail remains model-visible user input, with distinct persisted provenance. */
+int agent_history_record_agent_mail(struct react_context *, const char *content, int sequence);
 /* Model-visible XML; raw hook feedback stays in history content and the UI. */
 char *agent_history_hook_prompt_create(const char *content, const char *hook_run_id);
 int agent_history_record_hook_prompt(struct react_context *ctx, const char *content,

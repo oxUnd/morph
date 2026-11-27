@@ -14,6 +14,8 @@
 #include "sapi/cli/commands/media.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/components/banner.h"
+#include "sapi/cli/components/empty_state.h"
+#include "sapi/cli/components/disclosure.h"
 #include "sapi/cli/components/command.h"
 #include "sapi/cli/components/composer.h"
 #include "sapi/cli/components/status_bar.h"
@@ -39,6 +41,7 @@
 #include "sapi/cli/pages/model.h"
 #include "sapi/cli/pages/turn_details.h"
 #include "sapi/cli/presentation/agents.h"
+#include "sapi/cli/presentation/agent_tools.h"
 #include "sapi/cli/presentation/composer_footer.h"
 #include "sapi/cli/presentation/feed.h"
 #include "sapi/cli/presentation/feed_block.h"
@@ -49,6 +52,7 @@
 #include "sapi/cli/presentation/presenter.h"
 #include "sapi/cli/presentation/presenter_state.h"
 #include "sapi/cli/presentation/style.h"
+#include "sapi/cli/presentation/shortcuts.h"
 #include "sapi/cli/presentation/work_status.h"
 #include "sapi/cli/services/command_job.h"
 #include "sapi/cli/services/composer.h"
@@ -109,6 +113,7 @@ struct cli_chat_overlay {
 
 struct cli_chat_page {
 	struct nt_view_controller base;
+	struct nt_component_state *has_messages;
 	struct nt_builder *builder;
 	struct nt_view *workspace, *primary, *files_view;
 	struct cli_files_model files;
@@ -123,7 +128,7 @@ struct cli_chat_page {
 	struct cli_chat_overlay *overlay;
 	int overlay_height;
 	struct nt_view *stream_view, *output_view, *queue, *jobs, *agents;
-	struct nt_view *last_assistant, *command_group, *command_tail;
+	struct nt_view *last_assistant, *command_group, *command_tail, *pending_agent_wait;
 	char *command_input;
 	int command_running;
 	char *last_assistant_text;
@@ -143,8 +148,9 @@ struct cli_chat_page {
 };
 
 struct cli_chat_session_state {
+	struct nt_component_state *has_messages;
 	struct nt_view *scroll, *feed, *stream_view, *output_view, *output_container;
-	struct nt_view *last_assistant, *command_group, *command_tail;
+	struct nt_view *last_assistant, *command_group, *command_tail, *pending_agent_wait;
 	char *last_assistant_text;
 	char *input;
 	size_t cursor;
@@ -158,6 +164,53 @@ struct cli_chat_session_state {
 };
 
 static int cli_chat_page_footer(struct cli_chat_page *page, int columns);
+
+static const struct cli_empty_state_action cli_chat_empty_actions[] = {
+	{"/help", "Explore commands and keyboard shortcuts"},
+	{"/resume", "Continue a previous conversation"},
+	{"/skills", "Browse available skills"},
+	{"/agents", "View your sub-agents"},
+};
+
+static int cli_chat_empty_activate(void *data, size_t index)
+{
+	struct cli_chat_page *page = data;
+	if (index >= sizeof(cli_chat_empty_actions) / sizeof(cli_chat_empty_actions[0]))
+		return NB_ERR_INVAL;
+
+	int rc = nt_text_field_set_text(page->editor, cli_chat_empty_actions[index].label);
+	if (!rc)
+		rc = nt_view_focus(page->editor);
+
+	return rc;
+}
+
+static int cli_chat_empty_hidden(void *data, struct nt_value *value)
+{
+	return nt_value_set_bool(value, nt_component_state_get_bool(data));
+}
+
+static int cli_chat_add_empty(struct cli_chat_page *page, int compact)
+{
+	struct cli_application *ctx = cli_application_from_controller(&page->base);
+	struct nt_view *view = cli_empty_state_add(page->builder, page->feed,
+		"Start a new task", compact ? "" : "Type a question or describe what you want to build.",
+		cli_chat_empty_actions,
+		sizeof(cli_chat_empty_actions) / sizeof(cli_chat_empty_actions[0]),
+		cli_output_color_enabled(ctx), cli_chat_empty_activate, page,
+		&(struct nt_view_options){.width = NT_FILL, .max_width = 76,
+			.margin = {.top = compact ? 0 : 1, .bottom = 1},
+			.padding = {.left = 2, .right = 2}});
+	if (!view)
+		return nt_builder_error(page->builder);
+
+	int rc = nt_view_use_state_bool(view, false, &page->has_messages);
+	if (!rc)
+		rc = nt_view_bind_compute(view, NT_PROP_HIDDEN,
+			cli_chat_empty_hidden, page->has_messages);
+
+	return rc;
+}
 
 static int64_t cli_chat_now(void)
 {
@@ -616,7 +669,12 @@ int cli_chat_reset(struct cli_application *ctx)
 	nb_buf_clear(&page->stream);
 	nb_buf_clear(&page->output);
 	nb_map_clear(page->tools);
+	page->has_messages = NULL;
+	page->pending_agent_wait = NULL;
 	int rc = nt_view_clear_children(page->feed);
+	if (!rc)
+		rc = cli_chat_add_empty(page, 0);
+
 	if (!rc)
 		rc = nt_scroll_view_follow(page->scroll, 1);
 
@@ -666,12 +724,16 @@ int cli_chat_session_save(struct cli_application *ctx, struct cli_chat_session_s
 	state->cursor = nt_text_field_cursor(page->editor);
 	state->scroll = page->scroll;
 	state->feed = page->feed;
+	state->has_messages = page->has_messages;
+	page->has_messages = NULL;
 	state->stream_view = page->stream_view;
 	state->output_view = page->output_view;
 	state->output_container = page->output_container;
 	state->last_assistant = page->last_assistant;
 	state->command_group = NULL;
 	state->command_tail = page->command_tail;
+	state->pending_agent_wait = page->pending_agent_wait;
+	page->pending_agent_wait = NULL;
 	state->last_assistant_text = page->last_assistant_text;
 	page->last_assistant_text = NULL;
 	state->tools = page->tools;
@@ -726,12 +788,14 @@ int cli_chat_session_restore(struct cli_application *ctx, struct cli_chat_sessio
 	struct cli_chat_session_state *state = *owner;
 	page->scroll = state->scroll;
 	page->feed = state->feed;
+	page->has_messages = state->has_messages;
 	page->stream_view = state->stream_view;
 	page->output_view = state->output_view;
 	page->output_container = state->output_container;
 	page->last_assistant = state->last_assistant;
 	page->command_group = state->command_group;
 	page->command_tail = state->command_tail;
+	page->pending_agent_wait = state->pending_agent_wait;
 	page->last_assistant_text = state->last_assistant_text;
 	state->last_assistant_text = NULL;
 	page->tools = state->tools;
@@ -784,6 +848,8 @@ int cli_chat_session_empty(struct cli_application *ctx)
 
 	page->feed = nt_column_add(page->builder, page->scroll, 0,
 		&(struct nt_view_options){.width = NT_FILL});
+	if (!rc)
+		rc = cli_chat_add_empty(page, 0);
 	if (!nt_view_on(page->scroll, NT_VIEW_EVENT_SCROLLED, cli_chat_feed_scrolled, page))
 		return NB_ERR_NOMEM;
 
@@ -845,12 +911,62 @@ void cli_chat_transcript_reset(struct cli_application *ctx)
 	ctx->chat->last_assistant_text = NULL;
 }
 
+int cli_chat_agent_messages(struct cli_application *ctx, const char *text, int waited)
+{
+	if (!cli_chat_active(ctx))
+		return NB_ERR_UNSUPPORTED;
+
+	struct cli_chat_page *page = ctx->chat;
+	cli_chat_page_boundary(page);
+	if (page->has_messages) {
+		int rc = nt_component_state_set_bool(page->has_messages, true);
+		if (rc)
+			return rc;
+	}
+
+	if (page->pending_agent_wait) {
+		int rc = cli_tool_call_set_grouped(page->pending_agent_wait, 1);
+		if (rc)
+			return rc;
+
+		page->pending_agent_wait = NULL;
+		waited = 1;
+	}
+
+	nb_buf paths NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf preview NB_CLEANUP(nb_buf_cleanup) = {0};
+	nb_buf heading NB_CLEANUP(nb_buf_cleanup) = {0};
+	int all_final = 0;
+	int count = cli_agent_mail_preview(text, &paths, &preview, page->columns, &all_final);
+	if (count < 0)
+		return count;
+
+	const char *title = waited && all_final && count ? "Finished waiting"
+		: all_final && count ? "Agent reports" : "Sub-agent messages";
+	if (!nb_buf_printf(&heading, "%s%s%s", title, paths.len ? " " : "", nb_buf_cstr(&paths)))
+		return nb_buf_status(&heading);
+
+	char clipped[BUFSIZ];
+	int width = page->columns > 20 ? page->columns - 20 : 1;
+	morph_terminal_copy_ellipsized_display_width(clipped, sizeof(clipped),
+		nb_buf_cstr(&heading), (size_t)width, 0);
+	cli_disclosure_add_preview(page->builder, page->feed, clipped,
+		nb_buf_cstr(&preview), text ? text : "", cli_output_color_enabled(ctx));
+	return cli_chat_page_error(page);
+}
+
 int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
 {
 	if (!cli_chat_active(ctx))
 		return 0;
 
 	struct cli_chat_page *page = ctx->chat;
+	if (page->has_messages) {
+		int rc = nt_component_state_set_bool(page->has_messages, true);
+		if (rc)
+			return rc;
+	}
+
 	if (kind != CLI_MESSAGE_REASONING) {
 		int rc = cli_chat_files_markdown(ctx, text);
 		if (rc)
@@ -1062,6 +1178,7 @@ void cli_chat_turn_begin(struct cli_application *ctx)
 
 	cli_chat_page_boundary(ctx->chat);
 	ctx->chat->agents_waiting = 0;
+	ctx->chat->pending_agent_wait = NULL;
 	ctx->chat->turn_started = cli_chat_now();
 	ctx->chat->next_status_update = 0;
 	cli_chat_activity(ctx, "");
@@ -1095,6 +1212,15 @@ void cli_chat_turn_end(struct cli_application *ctx, int result)
 	cli_chat_activity(ctx, "");
 }
 
+int cli_chat_tool_group(struct cli_application *ctx, const char *id)
+{
+	if (!cli_chat_active(ctx))
+		return NB_ERR_UNSUPPORTED;
+
+	struct nt_view *view = nb_map_get_cstr(ctx->chat->tools, id);
+	return view ? cli_tool_call_set_grouped(view, 1) : NB_ERR_NOT_FOUND;
+}
+
 int cli_chat_tool_changed(struct cli_application *ctx, const struct cli_transcript_tool *tool)
 {
 	if (!cli_chat_active(ctx))
@@ -1120,6 +1246,9 @@ int cli_chat_tool_changed(struct cli_application *ctx, const struct cli_transcri
 	} else
 		rc = cli_tool_call_update(view, tool, cli_output_color_enabled(ctx),
 					  ctx->tool_details);
+
+	if (!rc && cli_agent_tools_wait_mailbox(tool))
+		page->pending_agent_wait = view;
 
 	return rc;
 }
@@ -1172,6 +1301,12 @@ int cli_chat_block(struct cli_application *ctx, const struct cli_feed_block *blo
 static int cli_chat_page_stream(struct cli_application *ctx, int kind, const char *text, int delta)
 {
 	struct cli_chat_page *page = ctx->chat;
+	if (page->has_messages) {
+		int rc = nt_component_state_set_bool(page->has_messages, true);
+		if (rc)
+			return rc;
+	}
+
 	if (!page->stream_view || page->stream_kind != kind) {
 		cli_chat_page_boundary(page);
 		page->stream_kind = kind;
@@ -2009,7 +2144,8 @@ static int cli_chat_page_layout(struct nt_view *view)
 		remaining -= rows;
 	}
 
-	int composer_space = content.height - footer_rows - auxiliary_rows;
+	int bottom_rows = !modal && !nt_view_is_hidden(page->bottom_button) && remaining > 0;
+	int composer_space = content.height - footer_rows - auxiliary_rows - bottom_rows;
 	size_t count = nt_view_child_count(page->feed);
 	int separated = count && page->command_tail == nt_view_child(page->feed, count - 1);
 	if (modal)
@@ -2024,7 +2160,7 @@ static int cli_chat_page_layout(struct nt_view *view)
 		return rc;
 
 	int composer_rows = composer.height < composer_space ? composer.height : composer_space;
-	int controls = footer_rows + auxiliary_rows + composer_rows;
+	int controls = footer_rows + auxiliary_rows + composer_rows + bottom_rows;
 	/* The conversation fills the viewport above the fixed bottom controls. */
 	int rows = content.height > controls ? content.height - controls : 0;
 	int feed_top = 0;
@@ -2081,16 +2217,17 @@ static int cli_chat_page_layout(struct nt_view *view)
 		if (height > content.height - offset)
 			height = content.height - offset;
 
+		if (child == page->composer && bottom_rows) {
+			button_row = (struct nt_view_rect){content.x, content.y + offset,
+				content.width, bottom_rows};
+			offset += bottom_rows;
+		}
+
 		struct nt_view_rect slot = {content.x, content.y + offset, content.width, height};
 		rc = nt_view_arrange(child, slot);
 		if (rc)
 			return rc;
 
-		if (child == page->composer) {
-			/* Share the first row of the input slot without moving the editor. */
-			button_row = nt_view_frame(nt_view_child(page->composer, 0));
-			button_row.height = nt_view_frame(page->editor).y > button_row.y ? 1 : 0;
-		}
 
 		offset += height;
 	}
@@ -2225,7 +2362,7 @@ static struct nt_text_style cli_chat_bottom_style(int hovered)
 {
 	return (struct nt_text_style){
 		.foreground = {NT_COLOR_INDEXED, hovered ? 153u : 111u},
-		.background = {NT_COLOR_INDEXED, hovered ? 24u : CLI_INPUT_BACKGROUND_INDEX},
+		.background = {hovered ? NT_COLOR_INDEXED : NT_COLOR_DEFAULT, hovered ? 24u : 0u},
 	};
 }
 
@@ -2239,19 +2376,23 @@ static int cli_chat_bottom_hover(void *data, const struct nt_view_event *event)
 static void cli_chat_build_bottom_button(struct cli_chat_page *page, struct nt_builder *builder,
 					struct nt_view *root, int styled)
 {
-	/* The native button owns measurement and activation. Its caption uses the
-	 * composer's background and fills only the button's hit area. */
+	/* Reserve a separate normal-background row above the composer. */
 	page->bottom_button = nt_button_add(builder, root, CLI_CHAT_BOTTOM_LABEL, 0, NULL);
 	struct nt_view_options options = {.width = NT_FILL, .height = 1};
 	if (styled)
 		options.style = cli_chat_bottom_style(0);
 
-	struct nt_view *caption = cli_shortcut_hint_add(builder, page->bottom_button,
-					       " " CLI_CHAT_BOTTOM_LABEL " ", &options);
+	struct nt_view *caption = nt_text_view_add(builder, page->bottom_button, "", &options);
 	if (nt_builder_error(builder))
 		return;
 
-	nt_builder_fail(builder, cli_shortcut_hint_set_wrap_mode(caption, NT_TEXT_WRAP_NONE));
+	struct nt_text_span span = {.text = " " CLI_CHAT_BOTTOM_LABEL " "};
+	if (styled)
+		span.style.foreground = (struct nt_color){NT_COLOR_INDEXED, 252};
+
+	nt_builder_fail(builder, cli_shortcuts_set_spans(caption, &span, 1, styled));
+	nt_builder_fail(builder, nt_text_view_set_fill_lines(caption, 1));
+	nt_builder_fail(builder, nt_text_view_set_wrap_mode(caption, NT_TEXT_WRAP_NONE));
 	nt_builder_fail(builder, nt_view_set_selectable(caption, 0));
 	if (styled && (!nt_view_on(caption, NT_VIEW_EVENT_MOUSE_ENTER, cli_chat_bottom_hover, NULL) ||
 		       !nt_view_on(caption, NT_VIEW_EVENT_MOUSE_LEAVE, cli_chat_bottom_hover, NULL)))
@@ -2319,6 +2460,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 	page->feed = nt_column_add(builder, page->scroll, 0,
 				   &(struct nt_view_options){.width = NT_FILL});
 	cli_banner_add(builder, page->feed);
+	nt_builder_fail(builder, cli_chat_add_empty(page, 1));
 	const struct nt_view_options jobs = {.max_height = 3};
 	page->jobs = cli_report_text_add(builder, root, &jobs);
 

@@ -531,3 +531,57 @@ int agent_history_tool_content_copy(struct react_context *ctx, const char *conte
 		*truncated = was_truncated;
 	return 0;
 }
+
+/* Old mailbox deliveries used steer keys without source metadata. Require the
+ * complete transport header, not a mention of an agent inside ordinary text. */
+static int history_legacy_agent_mail(const struct model_history_item *item)
+{
+	const char *key = item->idempotency_key ? item->idempotency_key : "";
+	const char *text = item->content ? item->content : "";
+	static const char *const kinds[] = {
+		"MESSAGE", "FINAL_ANSWER", "NEW_TASK", "BUDGET_REMINDER", "FINISH_REQUEST",
+	};
+	if (strncmp(key, "turn:", 5) || !strstr(key, ":user:steer:"))
+		return 0;
+
+	if (strncmp(text, "Message Type: ", 14))
+		return 0;
+
+	text += 14;
+	int known = 0;
+	for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+		size_t length = strlen(kinds[i]);
+		if (!strncmp(text, kinds[i], length) && text[length] == '\n') {
+			text += length + 1;
+			known = 1;
+			break;
+		}
+	}
+
+	if (!known || strncmp(text, "Sender: /", 9))
+		return 0;
+
+	const char *sender_end = strchr(text, '\n');
+	if (!sender_end || strncmp(sender_end, "\nRecipient: /", 13))
+		return 0;
+
+	const char *recipient_end = strchr(sender_end + 1, '\n');
+	return recipient_end && !strncmp(recipient_end, "\nPayload:\n", 10);
+}
+
+enum agent_history_input_source agent_history_input_source(const struct model_history_item *item,
+						  const cJSON *payload)
+{
+	const char *source = cJSON_GetStringValue(
+		cJSON_GetObjectItemCaseSensitive(payload, "source"));
+	if (!source)
+		source = "";
+
+	if (!strcmp(source, "agent_mail") || (!*source && history_legacy_agent_mail(item)))
+		return AGENT_HISTORY_INPUT_AGENT;
+
+	if (!strcmp(source, "hook"))
+		return AGENT_HISTORY_INPUT_HOOK;
+
+	return !*source || !strcmp(source, "user") ? AGENT_HISTORY_INPUT_USER : AGENT_HISTORY_INPUT_CONTEXT;
+}

@@ -1711,3 +1711,39 @@ TEST_F(AgentTurnTest, AssistantRenderingPrecedesTransactionAndNullRenderKeepsOri
 		EXPECT_STREQ(last->content, fallback ? "original answer" : "rendered answer");
 	}
 }
+
+TEST_F(AgentTurnTest, MailProvenanceSurvivesCompletionAndRemainsModelVisible)
+{
+	struct agent_session_runtime runtime{};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input{};
+	input.model_input = "Review the work";
+	input.turn_id = "mail-provenance";
+	struct agent_turn turn{};
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	ASSERT_EQ(agent_history_record_agent_mail(react, "Worker report", 1), 0);
+	ASSERT_EQ(agent_history_record_user_steer(react, "User correction", 2), 0);
+	react->state = REACT_STATE_DONE;
+	react->outcome = REACT_OUTCOME_SUCCESS;
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+	int count = 0;
+	struct model_history_item *items NB_CLEANUP(agent_turn_test_history_cleanup) =
+		model_history_list(&db, sess.id, 1, &count);
+	ASSERT_NE(items, nullptr);
+	ASSERT_NE(items->next, nullptr);
+	auto *mail = items->next;
+	EXPECT_STREQ(mail->role, "user");
+	EXPECT_STREQ(mail->kind, "user_message");
+	EXPECT_STREQ(mail->content, "Worker report");
+	cJSON *metadata NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(mail->payload_json);
+	ASSERT_NE(metadata, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(metadata, "source")->valuestring, "agent_mail");
+	EXPECT_NE(cJSON_GetObjectItem(metadata, "turn_outcome"), nullptr);
+	ASSERT_NE(mail->next, nullptr);
+	cJSON *user NB_CLEANUP(cJSON_DeleteOwner) = cJSON_Parse(mail->next->payload_json);
+	ASSERT_NE(user, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(user, "source")->valuestring, "user");
+}

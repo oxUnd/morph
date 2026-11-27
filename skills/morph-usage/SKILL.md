@@ -65,7 +65,34 @@ Do not assume an older installed binary supports unreleased source changes.
 - Explain the actual HTTP status and provider detail when available. A 400
   protocol/config error is not evidence of a network outage or a reason to keep retrying.
 
+## History navigation
+
+Back to bottom occupies a separate normal-background row above the composer.
+Live and restored sub-agent mail is grouped with a successful mailbox wait when
+available: Finished waiting lists returned agent paths and elbow-line rows show
+short report previews. Ordinary messages remain updates, not completed tasks.
+Show details and Hide details toggle full envelopes. Explicit human input stays
+a user message.
+
+## Empty conversations
+
+Empty chat views show Start a new task with `/help`, `/resume`, `/skills`, and
+`/agents`. Clicking an action fills the composer without running it. The card
+hides after the first message and returns for a new empty session.
+
 ## Multi-agent CLI
+
+`/share` exports the latest answered parent turn. Only human messages appear as
+YOU; received sub-agent mail and hook feedback are labeled entries in the
+collapsed execution process. Child transcripts and forked history are not appended.
+New records have explicit provenance; old untagged steering is treated as agent
+mail only when it matches the complete mailbox transport header. An explicit
+user source always remains a human question.
+
+Session restoration context, compaction checkpoints and system-origin prompts
+are not human questions and are omitted from the export. A user-authored request
+to continue after restoring remains part of YOU. Loading a session with `/resume`
+does not itself create a user message.
 
 The `Working` label has a repeating gray-to-white sweep driven by TUI animation.
 No-color output remains steady.

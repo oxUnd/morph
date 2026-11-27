@@ -2,6 +2,7 @@
 from loopback_http import LoopbackHTTPServer
 from pathlib import Path
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -9,6 +10,7 @@ import threading
 import time
 
 from test_cli_pty import Model, Terminal, http
+from test_cli_agents_pty import tool_delta
 
 
 def wait_for(terminal, predicate):
@@ -28,6 +30,86 @@ def check_composer(terminal):
     backgrounds = [i for i in range(terminal.screen.lines)
                    if terminal.screen.buffer[i][0].bg == '3a3a3a']
     assert backgrounds == [prompts[0] - 1, prompts[0], prompts[0] + 1], backgrounds
+
+
+def run_agent_export(driver, port, columns):
+    releases = []
+    with tempfile.TemporaryDirectory(prefix='morph-share-agents-') as temp:
+        directory = Path(temp)
+        terminal = Terminal(driver, directory, port, hooks_enabled=False,
+                            extra_config='[agents]\nmulti_agent_mode="proactive"\n')
+        try:
+            terminal.child.setwinsize(24, columns)
+            terminal.screen.resize(24, columns)
+            terminal.wait_for_composer()
+            terminal.send('TEAM_EXPORT_QUESTION\r')
+            _, root = terminal.request()
+            releases.append(root)
+            root.delta = tool_delta('spawn_agent', {'task_name': 'reviewer',
+                'message': 'Review the implementation', 'fork_turns': 'none'}, 'share-agent')
+            root.set()
+            pair = [terminal.request(), terminal.request()]
+            releases.extend(release for _, release in pair)
+            child = next(release for body, release in pair
+                         if any('You are `/root/reviewer`' in message.get('content', '')
+                                for message in body.get('messages', [])
+                                if message['role'] == 'system'))
+            parent = next(release for _, release in pair if release is not child)
+            parent.delta = tool_delta('wait_agent', {'timeout_ms': 10000}, 'share-wait')
+            parent.set()
+            wait_for(terminal, lambda: 'Waiting for agents' in '\n'.join(terminal.screen.display))
+            child.delta = {'content': 'TEAM_REVIEW_REPORT <verified>\nFULL_REPORT_DETAIL_ONLY'}
+            child.set()
+            _, final = terminal.request()
+            releases.append(final)
+            final.delta = {'content': 'TEAM_INTEGRATED_ANSWER'}
+            final.set()
+            wait_for(terminal, lambda: 'TEAM_INTEGRATED_ANSWER' in '\n'.join(terminal.screen.display)
+                     and 'Working ·' not in '\n'.join(terminal.screen.display))
+            downloads = directory / 'home' / 'Downloads'
+            terminal.send('/share\r')
+            wait_for(terminal, lambda: downloads.exists() and bool(list(downloads.glob('*.html'))))
+            exported = next(downloads.glob('*.html')).read_text()
+            questions = exported.split('<h2 class=label>YOU</h2>', 1)[1].split('</section>', 1)[0]
+            assert 'TEAM_EXPORT_QUESTION' in questions
+            assert 'TEAM_REVIEW_REPORT' not in questions and 'Sender:' not in questions, questions
+            assert 'Sub-agent messages' in exported and 'View messages' in exported
+            assert 'TEAM_REVIEW_REPORT &lt;verified&gt;' in exported
+            assert 'TEAM_INTEGRATED_ANSWER' in exported
+            session_ref = re.search(r'#([0-9a-f]{8})',
+                                    '\n'.join(terminal.screen.display)).group(1)
+            terminal.send('/quit\r')
+            terminal.child.expect(__import__('pexpect').EOF, timeout=10)
+            terminal.child.close()
+            terminal = Terminal(driver, directory, port,
+                                hooks_enabled=False,
+                                extra_config='[agents]\nmulti_agent_mode="proactive"\n')
+            terminal.child.setwinsize(24, columns)
+            terminal.screen.resize(24, columns)
+            terminal.wait_for_composer()
+            terminal.send(f'/resume {session_ref}\r')
+            wait_for(terminal, lambda: 'Finished waiting /root/reviewer' in
+                     '\n'.join(terminal.screen.display))
+            collapsed = '\n'.join(terminal.screen.display)
+            assert 'TEAM_REVIEW_REPORT' in collapsed and 'Message Type:' not in collapsed
+            assert 'FULL_REPORT_DETAIL_ONLY' not in collapsed
+            assert collapsed.count('Finished waiting') == 1
+            terminal.send('RESTORED_DRAFT')
+            for label, expected in (('Show details', 'FULL_REPORT_DETAIL_ONLY'),
+                                    ('Hide details', 'Show details')):
+                rows = terminal.screen.display
+                row = next(i for i, text in enumerate(rows)
+                           if 'Finished waiting' in text and label in text)
+                column = rows[row].index('Finished waiting') + 1
+                terminal.send(f'\x1b[<0;{column};{row + 1}M\x1b[<0;{column};{row + 1}m')
+                wait_for(terminal, lambda: expected in '\n'.join(terminal.screen.display))
+                assert 'RESTORED_DRAFT' in '\n'.join(terminal.screen.display)
+            assert 'Message Type:' not in '\n'.join(terminal.screen.display)
+            print(f'PASS: delegated export and collapsed cold resume at {columns} columns')
+        finally:
+            for release in releases:
+                release.set()
+            terminal.child.close(force=True)
 
 
 def main():
@@ -90,6 +172,8 @@ def main():
                 if release:
                     release.set()
                 terminal.child.close(force=True)
+        for columns in (120, 80, 60):
+            run_agent_export(driver, server.server_port, columns)
     finally:
         server.shutdown()
         server.server_close()

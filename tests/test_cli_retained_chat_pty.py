@@ -33,7 +33,11 @@ def bottom_button(terminal, cursor):
     screen = terminal.screen
     y = next(i for i, line in enumerate(screen.display) if BOTTOM_BUTTON in line)
     x = screen.display[y].index(BOTTOM_BUTTON)
-    assert y == cursor[1] - 2, screen.display
+    assert y < cursor[1] - 1, screen.display
+    assert all(cell.bg != '3a3a3a' for cell in screen.buffer[y].values()), screen.display[y]
+    assert all(screen.buffer[y][column].bg == 'default'
+               for column in range(screen.columns)
+               if column < x - 1 or column >= x + len(BOTTOM_BUTTON) + 1), screen.display[y]
     assert x == (screen.columns - len(BOTTOM_BUTTON)) // 2, screen.display[y]
     assert (screen.cursor.x, screen.cursor.y) == cursor and not screen.cursor.hidden
     return x, y
@@ -77,7 +81,9 @@ def assert_startup(terminal, width, color):
     assert ('context 0 / 128k  ·  0 credits' if width >= 100
             else 'ctx 0 / 128k · 0 cr') in screen.display[input_row + 2], display
     hint_row = next(i for i, row in enumerate(screen.display) if 'Paste image' in row)
-    assert all(not row.strip() for row in screen.display[hint_row + 1:input_row - 1]), display
+    empty = '\n'.join(screen.display[hint_row + 1:input_row - 1])
+    assert 'Start a new task' in empty and '/resume' in empty, display
+    assert display.count('Start a new task') == 1, display
     if color:
         assert screen.buffer[1][2].bold, display
         assert screen.buffer[1][2].fg == 'af87ff', display

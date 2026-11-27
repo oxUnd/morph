@@ -12,6 +12,9 @@ struct model_history_item;
 int cli_transcript_event(struct cli_application *ctx, const struct morph_event *event);
 int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON *call,
 				const struct model_history_item *result);
+/* Preserve the call in details while its receipt is grouped with received mail. */
+int cli_transcript_restore_tool_quiet(struct cli_application *, const struct cJSON *,
+	const struct model_history_item *result);
 int cli_transcript_reasoning_append(struct cli_application *ctx, const char *text, size_t length,
 				    int begin);
 void cli_transcript_reset(struct cli_application *ctx);

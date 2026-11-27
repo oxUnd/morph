@@ -5,10 +5,15 @@
 #include <nb/cleanup.h>
 struct cli_transcript_tool;
 
+int cli_agent_tools_wait_mailbox(const struct cli_transcript_tool *tool);
 int cli_agent_tools_matches(const char *name);
 int cli_agent_tools_analytics_only(const char *name);
 int cli_agent_tools_row(const struct cli_transcript_tool *tool, nb_buf *out, int columns,
 			int styled);
 int cli_agent_tools_preview(const struct cli_transcript_tool *tool, nb_buf *out);
+
+/* Summarize received envelopes, keeping full payloads in the disclosure body. */
+int cli_agent_mail_preview(const char *text, nb_buf *paths, nb_buf *preview,
+	int columns, int *all_final);
 
 #endif

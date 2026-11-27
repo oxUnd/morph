@@ -90,8 +90,8 @@ static int cli_transcript_capture_preview(struct cli_application *ctx, size_t in
 	return rc;
 }
 
-int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON *call,
-				const struct model_history_item *result)
+static int cli_transcript_restore_tool_impl(struct cli_application *ctx, const struct cJSON *call,
+					    const struct model_history_item *result, int visible)
 {
 	size_t index;
 	int rc = cli_transcript_prepare(ctx);
@@ -104,6 +104,13 @@ int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON 
 		return rc;
 
 	const struct cli_transcript_tool *tool = nb_vec_at(&ctx->transcript->tools, index);
+	if (!visible) {
+		if (!cli_chat_active(ctx))
+			return 0;
+
+		rc = cli_chat_tool_changed(ctx, tool);
+		return rc ? rc : cli_chat_tool_group(ctx, tool->id);
+	}
 
 	if (cli_chat_active(ctx))
 		return cli_chat_tool_changed(ctx, tool);
@@ -113,6 +120,18 @@ int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON 
 		cli_transcript_render_tool_details(ctx, tool, 1);
 
 	return 0;
+}
+
+int cli_transcript_restore_tool(struct cli_application *ctx, const struct cJSON *call,
+				const struct model_history_item *result)
+{
+	return cli_transcript_restore_tool_impl(ctx, call, result, 1);
+}
+
+int cli_transcript_restore_tool_quiet(struct cli_application *ctx, const struct cJSON *call,
+				      const struct model_history_item *result)
+{
+	return cli_transcript_restore_tool_impl(ctx, call, result, 0);
 }
 
 int cli_transcript_event(struct cli_application *ctx, const struct morph_event *event)

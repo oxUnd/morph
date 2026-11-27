@@ -18,7 +18,7 @@
 
 struct cli_tool_call {
 	struct cli_report report;
-	struct nt_component_state *state, *expanded;
+	struct nt_component_state *state, *expanded, *grouped;
 	struct nt_view *count, *toggle;
 	char count_text[64];
 };
@@ -204,9 +204,11 @@ static void cli_tool_call_state_destroy(void *value, void *data)
 
 static int cli_tool_call_hidden(void *data, struct nt_value *result)
 {
-	const struct cli_tool_call_state *state = nt_component_state_get(data);
-	return nt_value_set_bool(result, !state->details && cli_agent_tools_analytics_only(
-								    state->snapshot->tool.name));
+	struct cli_tool_call *widget = data;
+	const struct cli_tool_call_state *state = nt_component_state_get(widget->state);
+	return nt_value_set_bool(result, !state->details &&
+		(nt_component_state_get_bool(widget->grouped) ||
+		 cli_agent_tools_analytics_only(state->snapshot->tool.name)));
 }
 
 static const struct nt_view_class cli_tool_call_class = {
@@ -275,8 +277,10 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 		rc = nt_view_use_state_int(view, 0, &widget->expanded);
 
 	if (!rc)
-		rc = nt_view_bind_compute(view, NT_PROP_HIDDEN, cli_tool_call_hidden,
-					  widget->state);
+		rc = nt_view_use_state_bool(view, false, &widget->grouped);
+
+	if (!rc)
+		rc = nt_view_bind_compute(view, NT_PROP_HIDDEN, cli_tool_call_hidden, widget);
 
 	if (!rc)
 		rc = nt_view_bind_compute(widget->toggle, NT_PROP_TEXT, cli_tool_call_toggle_text,
@@ -304,4 +308,12 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *builder, struct nt_v
 
 	nt_builder_fail(builder, rc);
 	return view;
+}
+
+int cli_tool_call_set_grouped(struct nt_view *view, int grouped)
+{
+	if (!view || view->type != &cli_tool_call_class)
+		return NB_ERR_INVAL;
+
+	return nt_component_state_set_bool(((struct cli_tool_call *)view)->grouped, grouped != 0);
 }

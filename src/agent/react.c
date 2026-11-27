@@ -3042,12 +3042,16 @@ static int react_collect_agent_messages(struct react_context *ctx, nb_vec *messa
 	rc = store_savepoint_begin(db, "agent_delivery");
 	if (rc != 0)
 		return rc;
-	rc = agent_history_record_user_steer(ctx, mail, ++ctx->steer_count);
+	rc = agent_history_record_agent_mail(ctx, mail, ++ctx->steer_count);
 	if (rc == 0)
 		rc = agent_control_ack(ctx->agents, ctx->agent_id,
 				       ctx->agent_depth ? 0 : ctx->tool_runtime.memory_session_id,
 				       cursor, db);
 	rc = store_savepoint_finish(db, "agent_delivery", rc);
+	if (rc == 0)
+		rc = react_emit_text_event(react_events_borrow(ctx), MORPH_EVENT_REACT,
+			"react.agent.mail", "received", "Agent messages received", mail);
+
 	return rc == 0 ? 1 : rc;
 }
 

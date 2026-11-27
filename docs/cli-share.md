@@ -7,7 +7,17 @@ path. It does not open a browser, contact a model, or upload the conversation.
 Open the file locally and take a screenshot if desired.
 
 The document includes the original question and same-turn user additions, the
-persisted tool results in execution order, and the final Markdown answer.
+persisted tool results and received sub-agent messages in execution order, and
+the final Markdown answer. Sub-agent mailbox deliveries and hook feedback are
+internal process entries, never user questions. Each has its own labeled,
+expandable entry; mailbox sender/recipient headers and report text are retained.
+Only messages received by the selected parent turn are exported: child-session
+transcripts and forked copies of earlier conversations are not appended.
+New history records carry an explicit source. Older untagged mailbox deliveries
+are recognized only by their steering-record key and complete transport header.
+Explicit user provenance always takes priority, even when a user quotes a mailbox
+header. Unmarked legacy user steering with the exact same transport envelope is
+indistinguishable from old mailbox delivery and is treated as an internal entry.
 Interrupted turns are skipped. Inactive records retained after context
 compression are included. Legacy sessions without model history can export
 their last stored question/answer pair, without reconstructed process details.
@@ -45,3 +55,13 @@ Implementation boundaries:
 - `misc/share/` owns the approved visual tokens and offline theme behavior.
 - `/share` uses the normal command dispatcher, including help, completion and
   JSON command events. Submission never becomes a chat message.
+
+Session restoration context, compaction checkpoints and system-origin prompts
+are not human questions and are omitted from the export. A user-authored request
+to continue after restoring remains part of YOU. Loading a session with `/resume`
+does not itself create a user message.
+
+The same provenance classification is used by CLI history restoration. Received
+agent mail restores as a grouped wait/report entry with agent paths and short
+report previews, rather than a user chat bubble. Show details preserves the
+original transport headers and full body; it starts collapsed.

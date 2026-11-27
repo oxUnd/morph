@@ -1,4 +1,6 @@
 #include "sapi/cli/presentation/history.h"
+#include "agent/history.h"
+#include "sapi/cli/presentation/feed_block.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/pages/chat.h"
 #include "sapi/cli/presentation/messages.h"
@@ -99,6 +101,33 @@ static void cli_history_answer(struct cli_application *ctx, const char *text)
 	cli_markdown_finish_final(ctx);
 }
 
+static int cli_history_wait_has_mail(const struct model_history_item *result)
+{
+	if (!result || !result->tool_name || strcmp(result->tool_name, "wait_agent") ||
+	    !result->next || strcmp(result->next->kind, "user_message"))
+		return 0;
+
+	cJSON *metadata NB_CLEANUP(cJSON_DeleteOwner) =
+		result->payload_json ? cJSON_Parse(result->payload_json) : NULL;
+	if (strcmp(cli_history_string(metadata, "status"), "completed"))
+		return 0;
+
+	cJSON *output NB_CLEANUP(cJSON_DeleteOwner) =
+		result->content ? cJSON_Parse(result->content) : NULL;
+	const cJSON *data = cJSON_GetObjectItemCaseSensitive(output, "data");
+	if (!cJSON_IsObject(data))
+		data = output;
+
+	if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(output, "ok")) ||
+	    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out")) ||
+	    !strcmp(cli_history_string(data, "reason"), "timeout"))
+		return 0;
+
+	cJSON *mail NB_CLEANUP(cJSON_DeleteOwner) = result->next->payload_json
+		? cJSON_Parse(result->next->payload_json) : NULL;
+	return agent_history_input_source(result->next, mail) == AGENT_HISTORY_INPUT_AGENT;
+}
+
 static int cli_history_assistant(struct cli_application *ctx, const struct model_history_item *item,
 				 const nb_map *results)
 {
@@ -121,7 +150,10 @@ static int cli_history_assistant(struct cli_application *ctx, const struct model
 		const char *id = cli_history_string(call, "tool_call_id");
 		struct model_history_item *result = nb_map_get_cstr(results, id);
 
-		rc = cli_transcript_restore_tool(ctx, call, result);
+		if (!ctx->tool_details && cli_chat_active(ctx) && cli_history_wait_has_mail(result))
+			rc = cli_transcript_restore_tool_quiet(ctx, call, result);
+		else
+			rc = cli_transcript_restore_tool(ctx, call, result);
 	}
 	cJSON_Delete(payload);
 	return rc;
@@ -132,6 +164,7 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 {
 	nb_map *results NB_CLEANUP(nb_map_cleanup) = nb_map_new_with_cap(32);
 	const char *turn = NULL;
+	const struct model_history_item *wait_result = NULL;
 	int rc = results ? 0 : NB_ERR_NOMEM;
 
 	if (rc)
@@ -149,18 +182,30 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 	}
 
 	for (const struct model_history_item *item = items; !rc && item; item = item->next) {
-		if (strcmp(item->kind, "user_message") == 0) {
-			if (!turn || !turn[0] || !item->turn_id || strcmp(turn, item->turn_id))
-				cli_transcript_reset(ctx);
+		if (!strcmp(item->kind, "tool_result"))
+			wait_result = cli_history_wait_has_mail(item) ? item : NULL;
 
-			turn = item->turn_id;
+		if (strcmp(item->kind, "user_message") == 0) {
 			cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) =
 				item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
 
-			if (strcmp(cli_history_string(payload, "source"), "hook") == 0)
+			enum agent_history_input_source source = agent_history_input_source(item, payload);
+			if (source == AGENT_HISTORY_INPUT_AGENT) {
+				if (cli_chat_active(ctx))
+					rc = cli_chat_agent_messages(ctx, item->content,
+						wait_result && wait_result->next == item);
+				else
+					rc = cli_feed_notice_write(ctx, CLI_NOTICE_SYSTEM,
+						"Sub-agent messages", item->content, NULL);
+			} else if (source == AGENT_HISTORY_INPUT_HOOK) {
 				cli_presentation_hook_prompt(ctx, item->content);
-			else
+			} else if (source == AGENT_HISTORY_INPUT_USER) {
+				if (!turn || !turn[0] || !item->turn_id || strcmp(turn, item->turn_id))
+					cli_transcript_reset(ctx);
+
+				turn = item->turn_id;
 				cli_presentation_user_input(ctx, item->content);
+			}
 		} else if (strcmp(item->kind, "assistant_message") == 0 ||
 			   strcmp(item->kind, "assistant_tool_calls") == 0) {
 			rc = cli_history_assistant(ctx, item, results);

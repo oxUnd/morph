@@ -8,6 +8,7 @@
 #include "terminal/text.h"
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 int cli_agent_tools_matches(const char *name)
 {
@@ -59,6 +60,11 @@ int cli_agent_tools_row(const struct cli_transcript_tool *tool, nb_buf *out, int
 	nb_buf path NB_CLEANUP(nb_buf_cleanup) = {0};
 	int running = cli_transcript_tool_is_running(tool);
 	int failed = !tool->interrupted && (tool->state < 0 || tool->timed_out);
+	int wait_timeout = !strcmp(tool->name, "wait_agent") &&
+		cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out"));
+	if (wait_timeout)
+		failed = 1;
+
 	const char *verb = "";
 	const char *name = "";
 	if (!strcmp(tool->name, "spawn_agent")) {
@@ -78,7 +84,8 @@ int cli_agent_tools_row(const struct cli_transcript_tool *tool, nb_buf *out, int
 				 : "Sent message to";
 		name = cli_agent_tools_string(args, "target");
 	} else if (!strcmp(tool->name, "wait_agent")) {
-		verb = failed	 ? "Agent wait failed"
+		verb = wait_timeout ? "Agent wait TIMEOUT"
+		       : failed ? "Agent wait failed"
 		       : running ? "Waiting for agents"
 				 : "Finished waiting";
 	} else if (!strcmp(tool->name, "interrupt_agent")) {
@@ -138,4 +145,85 @@ int cli_agent_tools_preview(const struct cli_transcript_tool *tool, nb_buf *out)
 	 * including restored calls. Successful lifecycle rows need no body. */
 	(void)out;
 	return 1;
+}
+
+int cli_agent_mail_preview(const char *text, nb_buf *paths, nb_buf *preview,
+			   int columns, int *all_final)
+{
+	const char *at = text ? text : "";
+	int count = 0;
+	*all_final = 1;
+	while (!strncmp(at, "Message Type: ", 14)) {
+		const char *kind = at + 14;
+		const char *kind_end = strchr(kind, '\n');
+		if (!kind_end || strncmp(kind_end, "\nSender: /", 10))
+			break;
+
+		const char *sender = kind_end + 9;
+		const char *sender_end = strchr(sender, '\n');
+		if (!sender_end || strncmp(sender_end, "\nRecipient: /", 13))
+			break;
+
+		const char *recipient_end = strchr(sender_end + 1, '\n');
+		if (!recipient_end || strncmp(recipient_end, "\nPayload:\n", 10))
+			break;
+
+		const char *body = recipient_end + 10;
+		const char *next = strstr(body, "\n\nMessage Type: ");
+		size_t sender_length = (size_t)(sender_end - sender);
+		if (sender_length > INT_MAX)
+			return NB_ERR_RANGE;
+
+		int final = kind_end - kind == 12 && !memcmp(kind, "FINAL_ANSWER", 12);
+		*all_final = *all_final && final;
+		if (count && !nb_buf_append_cstr(paths, ", "))
+			return nb_buf_status(paths);
+
+		if (!nb_buf_append(paths, sender, sender_length))
+			return nb_buf_status(paths);
+
+		const char *body_end = next ? next : body + strlen(body);
+		while (body < body_end && (*body == '\n' || *body == '\r' || *body == ' '))
+			body++;
+
+		size_t first_line = strcspn(body, "\r\n");
+		if (first_line > (size_t)(body_end - body))
+			first_line = (size_t)(body_end - body);
+
+		nb_buf line NB_CLEANUP(nb_buf_cleanup) = {0};
+		if (!nb_buf_printf(&line, "  └ %.*s · %s", (int)sender_length, sender,
+			final ? "" : "Update: ") || !nb_buf_append(&line, body, first_line))
+			return nb_buf_status(&line);
+
+		if (count && !nb_buf_append_char(preview, '\n'))
+			return nb_buf_status(preview);
+
+		cli_agent_tools_clip(preview, nb_buf_cstr(&line), columns - 2);
+		if (!nb_buf_ok(preview))
+			return nb_buf_status(preview);
+
+		count++;
+		if (!next)
+			break;
+
+		at = next + 2;
+	}
+
+	return count;
+}
+
+int cli_agent_tools_wait_mailbox(const struct cli_transcript_tool *tool)
+{
+	if (!tool || strcmp(tool->name, "wait_agent") || tool->state <= 0 ||
+	    tool->timed_out || tool->interrupted)
+		return 0;
+
+	cJSON *result NB_CLEANUP(cJSON_DeleteOwner) = tool->result ? cJSON_Parse(tool->result) : NULL;
+	const cJSON *data = cJSON_GetObjectItemCaseSensitive(result, "data");
+	if (!cJSON_IsObject(data))
+		data = result;
+
+	return !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(result, "ok")) &&
+		!strcmp(cli_agent_tools_string(data, "reason"), "mailbox") &&
+		!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out"));
 }

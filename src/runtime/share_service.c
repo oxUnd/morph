@@ -1,4 +1,5 @@
 #include "runtime/runtime.h"
+#include "agent/history.h"
 #include "runtime/runtime_internal.h"
 #include "persistence/orm/history_store.h"
 #include <nb/cleanup.h>
@@ -71,6 +72,25 @@ static int share_step(cJSON *document, const struct model_history_item *row)
 	return 0;
 }
 
+static int share_input_step(cJSON *document, const struct model_history_item *item,
+			   enum agent_history_input_source source)
+{
+	cJSON *step NB_CLEANUP(cJSON_DeleteOwner) = cJSON_CreateObject();
+	int agent = source == AGENT_HISTORY_INPUT_AGENT;
+	if (!step || !cJSON_AddStringToObject(step, "kind", agent ? "agent_message" : "hook") ||
+	    !cJSON_AddStringToObject(step, "name", agent ? "Sub-agent messages" : "Hook feedback") ||
+	    !cJSON_AddStringToObject(step, "status", "received") ||
+	    !cJSON_AddStringToObject(step, "content", share_text(item->content)) ||
+	    !cJSON_AddBoolToObject(step, "truncated", item->truncated))
+		return NB_ERR_NOMEM;
+
+	if (!cJSON_AddItemToArray(cJSON_GetObjectItemCaseSensitive(document, "steps"), step))
+		return NB_ERR_NOMEM;
+
+	step = NULL;
+	return 0;
+}
+
 static int share_turn_question(const struct model_history_item *item, void *data)
 {
 	int *found = data;
@@ -87,6 +107,11 @@ static int share_turn_question(const struct model_history_item *item, void *data
 		cJSON_Delete(payload);
 		return NB_ERR_PARSE;
 	}
+	if (agent_history_input_source(item, payload) != AGENT_HISTORY_INPUT_USER) {
+		cJSON_Delete(payload);
+		return 0;
+	}
+
 	outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
 	status = share_string(outcome, "status");
 	failed = status[0] && strcmp(status, "success") != 0 && strcmp(status, "answered") != 0;
@@ -97,9 +122,20 @@ static int share_turn_question(const struct model_history_item *item, void *data
 
 static int share_turn_item(const struct model_history_item *item, void *data)
 {
-	return strcmp(item->kind, "user_message") == 0
-		       ? share_question(data, share_text(item->content))
-		       : share_step(data, item);
+	if (strcmp(item->kind, "user_message"))
+		return share_step(data, item);
+
+	const char *metadata = share_text(item->payload_json);
+	cJSON *payload NB_CLEANUP(cJSON_DeleteOwner) = *metadata ? cJSON_Parse(metadata) : NULL;
+	if (*metadata && !cJSON_IsObject(payload))
+		return NB_ERR_PARSE;
+
+	enum agent_history_input_source source = agent_history_input_source(item, payload);
+	if (source == AGENT_HISTORY_INPUT_CONTEXT)
+		return 0;
+
+	return source == AGENT_HISTORY_INPUT_USER ? share_question(data, share_text(item->content))
+		: share_input_step(data, item, source);
 }
 
 struct share_context {

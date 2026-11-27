@@ -352,6 +352,17 @@ MCP and skill management do not initialize a chat or model.
 Use "morph mcp --help" or "morph skills --help" for options. Global -c and -w
 go before the command group. See |morph-skills| and |morph-mcp| for examples.
 
+When browsing older messages, Back to bottom uses its own normal-background row
+above the composer, outside the editable input and its padding. Restored sub-agent
+mail is grouped with its successful mailbox wait when available. Finished waiting
+lists the returned agent paths; short report previews appear on elbow-line rows.
+Ordinary messages are labeled as updates, not completion. Show details expands the
+original envelopes; Hide details collapses them. Mail is never a user bubble.
+
+Empty conversations show a Start a new task card with common commands. Clicking
+a command fills the composer; Enter runs it. The card disappears after the first
+message and returns for a new empty session.
+
 Common interactive commands:
 
 	/help [command]	List commands or show one command.
@@ -368,6 +379,11 @@ Common interactive commands:
 	/jobs [id|stop id]	Inspect or stop a background process.
 	/rewind [list|preview <id>|code <id>|conversation <id>|both <id>]
 	/share			Save the latest answered turn as offline HTML in ~/Downloads.
+				Only human input appears as YOU; received sub-agent
+				messages and hook feedback appear in the collapsed process.
+				Child transcripts, restoration context and compaction
+				checkpoints are not appended. User-written continuation
+				requests remain user input.
 	/model [name|normal|ultra|status]	Choose the model or collaboration mode.
 	/agents [/root/name]	Open the full-screen agent browser.
 	/subagents [/root/name]	Switch transcripts, follow up or interrupt.

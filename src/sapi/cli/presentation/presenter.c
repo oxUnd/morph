@@ -1801,6 +1801,17 @@ int cli_presentation_event(struct cli_application *ctx, const struct morph_event
 			return 0;
 		}
 
+		if (strcmp(ev->name, "react.agent.mail") == 0) {
+			if (cli_chat_active(ctx)) {
+				cli_presentation_flush_stream(ctx);
+				ctx->presenter->native_content_started = 0;
+				ctx->presenter->native_content_visible = 0;
+				return cli_chat_agent_messages(ctx, text, 0);
+			}
+
+			return 0;
+		}
+
 		if (strcmp(ev->name, "react.user.steer") == 0) {
 			nb_buf_clear(&ctx->presenter->native_content);
 			ctx->presenter->native_content_started = 0;

@@ -35,6 +35,8 @@ add_library(morph-cli STATIC
 	components/setup_form.c
 	components/agents_browser.c
 	components/banner.c
+	components/empty_state.c
+	components/disclosure.c
 	components/skill_tree.c
 	components/selector.c
 	components/question_form.c

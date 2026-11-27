@@ -2,6 +2,7 @@
 import http.server
 from loopback_http import LoopbackHTTPServer
 import json
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -71,6 +72,34 @@ def assert_quiet(terminal, database):
     assert not any('#' in row for row in terminal.screen.display if 'perm: ' in row)
 
 
+def wait_for(terminal, predicate):
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        terminal.pump(.05)
+        if predicate():
+            return
+    raise AssertionError('\n'.join(terminal.screen.display))
+
+
+def check_empty_actions(terminal):
+    wait_for(terminal, lambda: 'Start a new task' in '\n'.join(terminal.screen.display))
+    actions = (('/help', 'Explore commands'), ('/resume', 'Continue a previous'),
+               ('/skills', 'Browse available'), ('/agents', 'View your sub-agents'))
+    with StartupModel.lock:
+        requests = len(StartupModel.requests)
+    for command, description in actions:
+        rows = terminal.screen.display
+        row = next(i for i, text in enumerate(rows) if description in text)
+        column = rows[row].index(command) + 1
+        terminal.send(f'\x1b[<0;{column};{row + 1}M\x1b[<0;{column};{row + 1}m')
+        wait_for(terminal, lambda: any(text.startswith(('› ', '> ')) and command in text
+                                      for text in terminal.screen.display))
+        assert 'Start a new task' in '\n'.join(terminal.screen.display)
+    with StartupModel.lock:
+        assert len(StartupModel.requests) == requests, 'empty action executed a model request'
+    terminal.send('\x15')
+
+
 def main():
     binary = Path(sys.argv[1]).resolve()
     server = LoopbackHTTPServer(('127.0.0.1', 0), StartupModel)
@@ -112,6 +141,7 @@ auto_connect = true
                     assert 'src/mcp/mcp_protocol.c:' in log, log[-3000:]
                     screen = terminal.snapshot(f'empty startup at {columns} columns')
                     assert '0 / 128k' in screen, screen
+                    check_empty_actions(terminal)
                     terminal.send('unsent startup draft')
                     terminal.send('\x1b[O')
                     terminal.pump(2.2)
@@ -126,6 +156,7 @@ auto_connect = true
                         assert time.monotonic() < deadline, terminal.raw[-4000:]
                         terminal.pump(.1)
                     terminal.pump(1.2)
+                    assert 'Start a new task' not in '\n'.join(terminal.screen.display)
                     with sqlite3.connect(database) as db:
                         assert db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0] == 1
                         assert db.execute("SELECT COUNT(*) FROM messages WHERE role='user'"
@@ -139,12 +170,41 @@ auto_connect = true
                                    for body in requests for message in body.get('messages', []))
                     assert 'MORPH_RETURN:' not in terminal.raw, terminal.raw[-4000:]
                     assert not terminal.duplicate_prompts
+                    original_id = re.search(r'#([0-9a-f]{8})',
+                                            '\n'.join(terminal.screen.display)).group(1)
+                    for _ in range(2):
+                        terminal.send('/new\r')
+                        check_empty_actions(terminal)
+                        assert '\n'.join(terminal.screen.display).count('Start a new task') == 1
+                    terminal.send(f'/switch {original_id}\r')
+                    wait_for(terminal, lambda: 'EMPTY_SESSION_FIRST_TURN_OK' in
+                             '\n'.join(terminal.screen.display))
+                    assert 'Start a new task' not in '\n'.join(terminal.screen.display)
                     terminal.send('/quit\r')
                     terminal.child.expect(__import__('pexpect').EOF, timeout=10)
                     terminal.child.close()
                     assert terminal.child.exitstatus == 0
                 finally:
                     terminal.child.close(force=True)
+        with tempfile.TemporaryDirectory(prefix='morph-empty-no-color-') as temp:
+            terminal = Terminal(binary, Path(temp), server.server_port,
+                                hooks_enabled=False, production=True,
+                                extra_env={'NO_COLOR': '1'}, extra_arguments=('--no-color',))
+            try:
+                terminal.child.setwinsize(24, 60)
+                terminal.screen.resize(lines=24, columns=60)
+                terminal.wait_for_composer()
+                check_empty_actions(terminal)
+                row = next(i for i, text in enumerate(terminal.screen.display)
+                           if 'Explore commands' in text)
+                assert all(cell.fg == 'default' and cell.bg == 'default'
+                           for cell in terminal.screen.buffer[row].values())
+                terminal.send('/quit\r')
+                terminal.child.expect(__import__('pexpect').EOF, timeout=10)
+                terminal.child.close()
+                assert terminal.child.exitstatus == 0
+            finally:
+                terminal.child.close(force=True)
     finally:
         server.shutdown()
         server.server_close()

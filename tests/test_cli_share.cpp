@@ -34,7 +34,7 @@ protected:
 		RuntimeFacadeTest::TearDown();
 	}
 	void Add(const char *turn, const char *kind, const char *text,
-		 const char *payload = nullptr, bool active = true)
+		 const char *payload = nullptr, bool active = true, const char *key = nullptr)
 	{
 		struct model_history_insert item{};
 		item.session_id = current.id;
@@ -42,6 +42,7 @@ protected:
 		item.kind = kind;
 		item.content = text;
 		item.payload_json = payload;
+		item.idempotency_key = key;
 		item.tool_name = "exec";
 		item.role = strcmp(kind, "user_message") == 0 ? "user" : "assistant";
 		item.active = active;
@@ -75,6 +76,103 @@ TEST_F(ShareTest, LatestCompleteTurnIncludesSteeringAndToolsButNotReasoning)
 	EXPECT_EQ(std::string(json).find("secret"), std::string::npos);
 	free(json);
 	cJSON_Delete(document);
+}
+
+TEST_F(ShareTest, AgentMailAndHookFeedbackStayInOrderedProcessOutsideHumanQuestions)
+{
+	Add("team", "user_message", "Review the change");
+	Add("team", "tool_result", "Spawned /root/reviewer");
+	Add("team", "user_message", "Message Type: FINAL_ANSWER\nSender: /root/reviewer\n"
+		"Recipient: /root\nPayload:\n<review> complete", "{\"source\":\"agent_mail\"}");
+	Add("team", "user_message", "Keep the public API stable", "{\"source\":\"user\"}");
+	Add("team", "user_message", "Hook feedback", "{\"source\":\"hook\"}");
+	Add("team", "tool_result", "Validation complete");
+	Add("team", "assistant_message", "# Integrated answer");
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = Document();
+	ASSERT_NE(document, nullptr);
+	const cJSON *questions = cJSON_GetObjectItem(document, "questions");
+	ASSERT_EQ(cJSON_GetArraySize(questions), 2);
+	EXPECT_STREQ(cJSON_GetArrayItem(questions, 0)->valuestring, "Review the change");
+	EXPECT_STREQ(cJSON_GetArrayItem(questions, 1)->valuestring, "Keep the public API stable");
+	const cJSON *steps = cJSON_GetObjectItem(document, "steps");
+	ASSERT_EQ(cJSON_GetArraySize(steps), 4);
+	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(steps, 1), "kind")->valuestring,
+		"agent_message");
+	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(steps, 2), "kind")->valuestring,
+		"hook");
+	nb_buf html NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_share_html(document, 1793172600, &html), 0);
+	std::string rendered = nb_buf_cstr(&html);
+	auto question_end = rendered.find("</section>");
+	ASSERT_NE(question_end, std::string::npos);
+	EXPECT_EQ(rendered.substr(0, question_end).find("Sender:"), std::string::npos);
+	EXPECT_NE(rendered.find("Sub-agent messages"), std::string::npos);
+	EXPECT_NE(rendered.find("View messages"), std::string::npos);
+	EXPECT_NE(rendered.find("&lt;review&gt; complete"), std::string::npos);
+	EXPECT_NE(rendered.find("<h1>Integrated answer</h1>"), std::string::npos);
+}
+
+TEST_F(ShareTest, LegacyMailboxHeadersRequireSteerKeysAndExplicitUserSourceWins)
+{
+	const char *mail = "Message Type: FINAL_ANSWER\nSender: /root/worker\n"
+		"Recipient: /root\nPayload:\nLegacy report";
+	Add("legacy-mail", "user_message", "Main question");
+	Add("legacy-mail", "user_message", mail, nullptr, false,
+		"turn:legacy-mail:user:steer:1");
+	Add("legacy-mail", "user_message", mail, "{\"source\":\"user\"}", true,
+		"turn:legacy-mail:user:steer:2");
+	Add("legacy-mail", "user_message", mail);
+	Add("legacy-mail", "user_message", "Message Type: FINAL_ANSWER is quoted text", nullptr,
+		true, "turn:legacy-mail:user:steer:3");
+	Add("legacy-mail", "assistant_message", "Root answer");
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = Document();
+	ASSERT_NE(document, nullptr);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "questions")), 4);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "steps")), 1);
+}
+
+TEST_F(ShareTest, RestoredContextAndCompactionAreNotHumanQuestionsOrExportedPrompts)
+{
+	Add("restored", "user_message", "Original human question", nullptr, false);
+	Add("restored", "summary", "PRIVATE_COMPACTION_CHECKPOINT");
+	Add("restored", "user_message", "PRIVATE_RESUME_INSTRUCTIONS", "{\"source\":\"resume\"}");
+	Add("restored", "user_message", "PRIVATE_SYSTEM_CONTEXT", "{\"source\":\"system\"}");
+	Add("restored", "user_message", "PRIVATE_RECOVERY_CONTEXT", "{\"source\":\"recovery\"}");
+	Add("restored", "user_message", "Continue after restoring", "{\"source\":\"user\"}");
+	Add("restored", "assistant_message", "Completed restored work");
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = Document();
+	ASSERT_NE(document, nullptr);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "questions")), 2);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(document, "steps")), 0);
+	char *json NB_CLEANUP(nb_charp_cleanup) = cJSON_PrintUnformatted(document);
+	ASSERT_NE(json, nullptr);
+	EXPECT_EQ(std::string(json).find("PRIVATE_"), std::string::npos);
+	EXPECT_NE(std::string(json).find("Continue after restoring"), std::string::npos);
+}
+
+TEST_F(ShareTest, SelectingAnExistingSessionDoesNotInventAUserQuestion)
+{
+	Add("before-resume", "user_message", "Question before restoring");
+	Add("before-resume", "assistant_message", "Answer before restoring");
+	ASSERT_EQ(runtime_session_create_and_select(instance, "other-session", &current), 0);
+	ASSERT_EQ(runtime_session_select(instance, "share-test", &current, nullptr), 0);
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = Document();
+	ASSERT_NE(document, nullptr);
+	const cJSON *questions = cJSON_GetObjectItem(document, "questions");
+	ASSERT_EQ(cJSON_GetArraySize(questions), 1);
+	EXPECT_STREQ(cJSON_GetArrayItem(questions, 0)->valuestring, "Question before restoring");
+	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "Answer before restoring");
+}
+
+TEST_F(ShareTest, MailOnlyTurnCannotDisplaceAnAnsweredHumanTurn)
+{
+	Add("human", "user_message", "Original question");
+	Add("human", "assistant_message", "Original answer");
+	Add("mail-only", "user_message", "Internal update", "{\"source\":\"agent_mail\"}");
+	Add("mail-only", "assistant_message", "Internal answer");
+	cJSON *document NB_CLEANUP(cJSON_DeleteOwner) = Document();
+	ASSERT_NE(document, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(document, "answer")->valuestring, "Original answer");
 }
 
 TEST_F(ShareTest, SkipsInterruptedAnswerAndDoesNotCrossSessions)

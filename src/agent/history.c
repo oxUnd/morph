@@ -121,7 +121,8 @@ int agent_history_record_user(struct react_context *ctx, const char *content)
 	return history_store(ctx, &item);
 }
 
-int agent_history_record_user_steer(struct react_context *ctx, const char *content, int sequence)
+static int history_record_user_addition(struct react_context *ctx, const char *content,
+					 int sequence, const char *payload_json)
 {
 	char key[192];
 	struct model_history_insert item = {
@@ -138,10 +139,23 @@ int agent_history_record_user_steer(struct react_context *ctx, const char *conte
 
 	if (sequence <= 0)
 		return NB_ERR_INVAL;
+
+	item.payload_json = payload_json;
 	snprintf(key, sizeof(key), "turn:%s:user:steer:%d",
 		 ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown", sequence);
 	item.idempotency_key = key;
 	return history_store(ctx, &item);
+}
+
+int agent_history_record_user_steer(struct react_context *ctx, const char *content, int sequence)
+{
+	return history_record_user_addition(ctx, content, sequence, "{\"source\":\"user\"}");
+}
+
+int agent_history_record_agent_mail(struct react_context *ctx, const char *content, int sequence)
+{
+	return history_record_user_addition(ctx, content, sequence,
+		"{\"source\":\"agent_mail\"}");
 }
 
 static int history_xml_append(nb_buf *text, const char *value)

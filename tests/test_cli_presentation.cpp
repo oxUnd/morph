@@ -556,6 +556,46 @@ TEST_F(CliPresentationTest, RestoresInactiveHistoryAndToolsWithoutInternalRecord
 	EXPECT_EQ(ctx.turn_active, 0);
 }
 
+TEST_F(CliPresentationTest, RestoresMailboxAsInternalAndSkipsSystemContext)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.turn_active = 0;
+	struct model_history_item items[4]{};
+	char question[] = "VISIBLE_HUMAN_QUESTION";
+	char mail[] = "Message Type: FINAL_ANSWER\nSender: /root/worker\n"
+		"Recipient: /root\nPayload:\nWORKER_REPORTED_RESULT";
+	char mail_source[] = "{\"source\":\"agent_mail\"}";
+	char resume_source[] = "{\"source\":\"resume\"}";
+	char resume[] = "PRIVATE_RESUME_CONTEXT";
+	char answer[] = "VISIBLE_FINAL_ANSWER";
+	char key[] = "turn:restore:user:steer:1";
+	const char *kinds[] = {"user_message", "user_message", "user_message", "assistant_message"};
+	for (size_t i = 0; i < 4; i++) {
+		strcpy(items[i].kind, kinds[i]);
+		items[i].next = i + 1 < 4 ? &items[i + 1] : nullptr;
+	}
+
+	items[0].content = question;
+	items[1].content = mail;
+	items[1].idempotency_key = key;
+	items[2].content = resume;
+	items[2].payload_json = resume_source;
+	items[3].content = answer;
+	for (char *metadata : {static_cast<char *>(nullptr), mail_source}) {
+		items[1].payload_json = metadata;
+		testing::internal::CaptureStdout();
+		int rc = cli_history_render_session(&ctx, items, nullptr);
+		std::string output = testing::internal::GetCapturedStdout();
+		EXPECT_EQ(rc, 0);
+		EXPECT_NE(output.find("Sub-agent messages"), std::string::npos);
+		EXPECT_NE(output.find("WORKER_REPORTED_RESULT"), std::string::npos);
+		EXPECT_NE(output.find(question), std::string::npos);
+		EXPECT_NE(output.find(answer), std::string::npos);
+		EXPECT_EQ(output.find(resume), std::string::npos);
+		EXPECT_EQ(output.find("› Message Type:"), std::string::npos);
+	}
+}
+
 TEST_F(CliPresentationTest, RestoredPendingToolHasNoLiveTimerOrInventedFailure)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
@@ -3612,4 +3652,49 @@ TEST_F(CliPresentationTest, ToolStatusesUseCanonicalShapesStylesAndPlainFallback
 			}
 		}
 	}
+}
+
+TEST(CliAgentsPresentationTest, MailPreviewNamesReturnedAgentsAndKeepsFullBodiesInDetails)
+{
+	const char *mail = "Message Type: FINAL_ANSWER\nSender: /root/fast\n"
+		"Recipient: /root\nPayload:\nFAST_RESULT\nFULL_DETAIL_HIDDEN\n\n"
+		"Message Type: FINAL_ANSWER\nSender: /root/slow\n"
+		"Recipient: /root\nPayload:\nSLOW_RESULT\n\n";
+	for (int columns : {120, 80, 60}) {
+		nb_buf paths NB_CLEANUP(nb_buf_cleanup) = {};
+		nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {};
+		int all_final = 0;
+		ASSERT_EQ(cli_agent_mail_preview(mail, &paths, &rows, columns, &all_final), 2);
+		EXPECT_EQ(all_final, 1);
+		EXPECT_STREQ(nb_buf_cstr(&paths), "/root/fast, /root/slow");
+		std::string preview = nb_buf_cstr(&rows);
+		EXPECT_NE(preview.find("  └ /root/fast · FAST_RESULT"), std::string::npos);
+		EXPECT_NE(preview.find("  └ /root/slow · SLOW_RESULT"), std::string::npos);
+		EXPECT_EQ(preview.find("FULL_DETAIL_HIDDEN"), std::string::npos);
+	}
+
+	nb_buf paths NB_CLEANUP(nb_buf_cleanup) = {};
+	nb_buf rows NB_CLEANUP(nb_buf_cleanup) = {};
+	int all_final = 1;
+	ASSERT_EQ(cli_agent_mail_preview("Message Type: MESSAGE\nSender: /root/worker\n"
+		"Recipient: /root\nPayload:\nStill investigating", &paths, &rows, 80, &all_final), 1);
+	EXPECT_EQ(all_final, 0);
+	EXPECT_NE(std::string(nb_buf_cstr(&rows)).find("Update: Still investigating"),
+		std::string::npos);
+}
+
+TEST(CliAgentsPresentationTest, SuccessfulToolEnvelopeCannotTurnWaitTimeoutIntoCompletion)
+{
+	struct cli_transcript_tool tool{};
+	tool.name = const_cast<char *>("wait_agent");
+	tool.summary = const_cast<char *>("completed");
+	tool.args = const_cast<char *>("{}");
+	tool.result = const_cast<char *>("{\"ok\":true,\"data\":{\"reason\":\"timeout\","
+		"\"timed_out\":true}}");
+	tool.state = 1;
+	nb_buf row NB_CLEANUP(nb_buf_cleanup) = {};
+	ASSERT_EQ(cli_agent_tools_row(&tool, &row, 80, 0), 1);
+	EXPECT_NE(std::string(nb_buf_cstr(&row)).find("✖ Agent wait TIMEOUT"), std::string::npos);
+	EXPECT_EQ(std::string(nb_buf_cstr(&row)).find("Finished waiting"), std::string::npos);
+	EXPECT_EQ(cli_agent_tools_wait_mailbox(&tool), 0);
 }

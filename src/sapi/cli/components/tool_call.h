@@ -9,4 +9,6 @@ struct nt_view *cli_tool_call_add_borrow(struct nt_builder *, struct nt_view *pa
 int cli_tool_call_update(struct nt_view *, const struct cli_transcript_tool *, int styled,
 			 int details);
 
+int cli_tool_call_set_grouped(struct nt_view *, int grouped);
+
 #endif

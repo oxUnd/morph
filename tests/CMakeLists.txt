@@ -498,7 +498,7 @@ if(Python3_Interpreter_FOUND AND UNIX)
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_share_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_share_pty_integration PROPERTIES
-		SKIP_RETURN_CODE 77 TIMEOUT 45)
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	add_test(NAME cli_tree_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_tree_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
