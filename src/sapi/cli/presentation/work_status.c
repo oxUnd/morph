@@ -57,8 +57,8 @@ static int cli_work_status_text(nb_buf *out, const char *text, int columns, int 
 			: NB_ERR_NOMEM);
 }
 
-int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapsed_ms,
-			    int64_t now_ms, const char *agent_summary)
+int cli_work_status_running_frame(nb_buf *out, int columns, int styled, int64_t elapsed_ms,
+				  int64_t now_ms, int64_t animation_ms, const char *agent_summary)
 {
 	if (!out || columns < 1)
 		return NB_ERR_INVAL;
@@ -80,7 +80,7 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 
 	const char *hint = columns < 76 ? " · Ctrl+T" : " · Ctrl+T transcript";
 	int hint_width = columns >= 45 ? (int)nb_utf8_width_cstr(hint) : 0;
-	rc = cli_work_status_label(out, styled, elapsed_ms, now_ms);
+	rc = cli_work_status_label(out, styled, animation_ms, now_ms);
 	if (!rc)
 		rc = (nb_buf_append_cstr(out, styled ? ANSI_DIM " · " : " · ") ? 0 : NB_ERR_NOMEM);
 
@@ -92,6 +92,13 @@ int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapse
 		rc = nb_buf_append_cstr(out, hint) ? 0 : NB_ERR_NOMEM;
 
 	return rc;
+}
+
+int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapsed_ms,
+			    int64_t now_ms, const char *agent_summary)
+{
+	return cli_work_status_running_frame(out, columns, styled, elapsed_ms, now_ms,
+		elapsed_ms, agent_summary);
 }
 
 int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, int64_t elapsed_ms,

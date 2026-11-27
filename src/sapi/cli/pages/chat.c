@@ -133,7 +133,7 @@ struct cli_chat_page {
 	int64_t queue_revision;
 	uint64_t jobs_revision, agents_revision;
 	int activity_columns, activity_styled, status_ultra;
-	int64_t next_jobs_update, next_status_update;
+	int64_t next_jobs_update, next_status_update, working_animation_ms;
 	nb_map *tools;
 	nb_vec history;
 	char *draft;
@@ -1812,10 +1812,39 @@ static int cli_chat_update_jobs(struct cli_application *ctx, int columns, int st
 	return 0;
 }
 
+static int cli_chat_update_activity(struct cli_chat_page *, int, int64_t);
+
+static int cli_chat_working_animate(struct nt_view *view, double value, void *data)
+{
+	struct cli_chat_page *page = data;
+	(void)view;
+	page->working_animation_ms = 600 + (int64_t)(value * 4000.0);
+	page->next_status_update = 0;
+	return cli_chat_update_activity(page, page->activity_columns, cli_chat_now());
+}
+
 static int cli_chat_update_status(struct cli_application *ctx, int columns, int styled, int changed,
 				  int64_t now)
 {
 	struct cli_chat_page *page = ctx->chat;
+	int animate = ctx->turn_active && styled && !page->activity_text &&
+		!page->agents_waiting && !cli_jobs_model_waiting(ctx->jobs);
+	int running = nt_view_animation_running(page->status, 1);
+	if (animate && !running) {
+		page->working_animation_ms = 0;
+		int rc = nt_view_animate(page->status, 1,
+			&(struct nt_animation_options){.from = 0, .to = 1,
+				.duration_ms = 4000, .delay_ms = 600, .interval_ms = 32,
+				.repeat_count = NT_ANIMATION_REPEAT_FOREVER,
+				.update = cli_chat_working_animate, .data = page});
+		if (rc)
+			return rc;
+	} else if (!animate && running) {
+		int rc = nt_view_cancel_animation(page->status, 1, 0);
+		if (rc)
+			return rc;
+	}
+
 	if (changed)
 		page->next_status_update = 0;
 
@@ -1845,13 +1874,14 @@ static int cli_chat_update_status(struct cli_application *ctx, int columns, int 
 		if (styled)
 			next = now + cli_style_running_interval_ms(now);
 	} else {
-		rc = cli_work_status_running(&text, columns, styled, elapsed, now, agents);
-		next = now + (styled ? cli_work_status_interval_ms(elapsed, now) :
-			      1000 - elapsed % 1000);
+		rc = cli_work_status_running_frame(&text, columns, styled, elapsed, now,
+			page->working_animation_ms, agents);
+		next = now + (styled ? cli_style_running_interval_ms(now) :
+			1000 - elapsed % 1000);
 	}
 
 	if (!rc)
-		rc = cli_messages_set_rendered_shortcuts_view(page->status, nb_buf_cstr(&text), styled);
+		rc = cli_messages_set_rendered_named_keys(page->status, nb_buf_cstr(&text), styled);
 
 	if (!rc)
 		page->next_status_update = next;

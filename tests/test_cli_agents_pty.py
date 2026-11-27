@@ -63,6 +63,20 @@ def run(driver, port, columns):
             working = next(line for line in terminal.screen.display if 'Working' in line)
             assert 'Agents: 0 running' in working, '\n'.join(terminal.screen.display)
             assert not any(line.lstrip().startswith('Agents:') for line in terminal.screen.display)
+            terminal.send('SHIMMER_DRAFT')
+            profiles = set()
+            deadline = time.monotonic() + 1.8
+            while time.monotonic() < deadline:
+                rows = stable_rows(terminal)
+                row = next(i for i, text in enumerate(rows) if 'Working ·' in text)
+                column = rows[row].index('Working')
+                profiles.add(tuple(terminal.screen.buffer[row][column + offset].fg
+                                   for offset in range(len('Working'))))
+                assert 'SHIMMER_DRAFT' in '\n'.join(rows)
+            assert len(profiles) > 2, profiles
+            assert any(len(set(profile)) > 1 for profile in profiles), profiles
+            assert all(color != '00aaaa' for profile in profiles for color in profile), profiles
+            terminal.send('\x15')
             root.delta = tool_delta('spawn_agent', {'task_name': 'worker',
                 'message': 'CHILD_ACTIVITY_TASK: inspect independently', 'fork_turns': 'none'}, 'spawn_work')
             root.set()

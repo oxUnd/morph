@@ -754,7 +754,9 @@ static int cli_messages_set_styled_view(struct nt_view *view, const char *text, 
 		position += bytes_count;
 	}
 
-	rc = shortcuts == 2 ? cli_shortcuts_set_header_spans(view,
+	rc = shortcuts == 3 ? cli_shortcuts_set_named_spans(view,
+		(const struct nt_text_span *)spans.data, spans.len, styled)
+		: shortcuts == 2 ? cli_shortcuts_set_header_spans(view,
 		(const struct nt_text_span *)spans.data, spans.len, styled)
 		: shortcuts ? cli_shortcuts_set_spans(view,
 		(const struct nt_text_span *)spans.data, spans.len, styled)
@@ -792,4 +794,9 @@ int cli_messages_set_rendered_links(struct nt_view *view, const char *text, int 
 	nb_vec *links)
 {
 	return cli_messages_set_styled_view(view, text, styled, links, 1, 0);
+}
+
+int cli_messages_set_rendered_named_keys(struct nt_view *view, const char *text, int styled)
+{
+	return cli_messages_set_styled_view(view, text, styled, NULL, 1, 3);
 }

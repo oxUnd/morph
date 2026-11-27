@@ -62,7 +62,7 @@ static int cli_shortcuts_append(nb_vec *out, nb_buf *bytes, const char *text, si
 }
 
 static int cli_shortcuts_apply(struct nt_view *view, const struct nt_text_span *spans, size_t count,
-			       int styled, int first_line)
+			       int styled, int first_line, int actions)
 {
 	if (!view || (count && !spans))
 		return NB_ERR_INVAL;
@@ -106,7 +106,7 @@ static int cli_shortcuts_apply(struct nt_view *view, const struct nt_text_span *
 				continue;
 
 			struct nt_text_style style = source->style;
-			int key = cli_shortcuts_key(cursor, length, action);
+			int key = cli_shortcuts_key(cursor, length, actions && action);
 			if (key) {
 				style.attributes &= ~(unsigned)NT_STYLE_DIM;
 				style.attributes |= NT_STYLE_BOLD;
@@ -140,11 +140,17 @@ static int cli_shortcuts_apply(struct nt_view *view, const struct nt_text_span *
 int cli_shortcuts_set_spans(struct nt_view *view, const struct nt_text_span *spans, size_t count,
 			    int styled)
 {
-	return cli_shortcuts_apply(view, spans, count, styled, 0);
+	return cli_shortcuts_apply(view, spans, count, styled, 0, 1);
 }
 
 int cli_shortcuts_set_header_spans(struct nt_view *view, const struct nt_text_span *spans,
 				   size_t count, int styled)
 {
-	return cli_shortcuts_apply(view, spans, count, styled, 1);
+	return cli_shortcuts_apply(view, spans, count, styled, 1, 1);
+}
+
+int cli_shortcuts_set_named_spans(struct nt_view *view, const struct nt_text_span *spans,
+				 size_t count, int styled)
+{
+	return cli_shortcuts_apply(view, spans, count, styled, 0, 0);
 }

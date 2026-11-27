@@ -67,6 +67,9 @@ Do not assume an older installed binary supports unreleased source changes.
 
 ## Multi-agent CLI
 
+The `Working` label has a repeating gray-to-white sweep driven by TUI animation.
+No-color output remains steady.
+
 Live sub-agent activity and waiting status appear inside the CLI composer.
 Multiple agents use flat gray `└` rows aligned with the `Working` text, without
 circle markers before their paths.

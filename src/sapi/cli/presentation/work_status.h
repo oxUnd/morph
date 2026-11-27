@@ -9,6 +9,9 @@
 /* Trusted SGR text preserves the original transient and completed work rows. */
 int cli_work_status_running(nb_buf *out, int columns, int styled, int64_t elapsed_ms,
 			    int64_t now_ms, const char *agent_summary);
+/* Native animation clocks advance the sweep independently of turn duration. */
+int cli_work_status_running_frame(nb_buf *, int columns, int styled, int64_t elapsed_ms,
+	int64_t now_ms, int64_t animation_ms, const char *agent_summary);
 /* Completed content excludes its component's two-cell left padding. */
 int cli_work_status_completed(nb_buf *out, int columns, int styled, int result, int64_t elapsed_ms,
 			      time_t finished_at);

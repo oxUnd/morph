@@ -9,4 +9,8 @@ int cli_shortcuts_set_spans(struct nt_view *view, const struct nt_text_span *spa
 int cli_shortcuts_set_header_spans(struct nt_view *, const struct nt_text_span *,
 	size_t count, int styled);
 
+/* Named keys only; preserve per-character styles in status labels. */
+int cli_shortcuts_set_named_spans(struct nt_view *, const struct nt_text_span *,
+	size_t count, int styled);
+
 #endif
