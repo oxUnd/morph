@@ -3,8 +3,8 @@ import re
 import time
 
 
-def conversation_rows(rows, composer):
-    """Exclude all four dock regions when reconstructing scrolling history."""
+def conversation_rows(rows, composer, include_top=False):
+    """Join overlapping history below the possible pinned row; retain row zero at origin."""
     header = re.compile(r'^[◉◯?] (?:Working|Waiting|Retrying|Reconnecting|Running|Tasks pending|'
                         r'Agents running|Background jobs|Other sessions|Connecting MCP|'
                         r'Compressing|Generating recap|Naming session|Cancelling)')
@@ -19,7 +19,8 @@ def conversation_rows(rows, composer):
                                or '↓ Back to bottom' in rows[cursor]):
             cursor -= 1
         end = cursor + 1
-    result = list(rows[:max(0, end)])
+    start = 0 if include_top else 1
+    result = list(rows[start:max(start, end)])
     while result and not result[-1].strip():
         result.pop()
     return result

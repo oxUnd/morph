@@ -200,11 +200,16 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 			} else if (source == AGENT_HISTORY_INPUT_HOOK) {
 				cli_presentation_hook_prompt(ctx, item->content);
 			} else if (source == AGENT_HISTORY_INPUT_USER) {
-				if (!turn || !turn[0] || !item->turn_id || strcmp(turn, item->turn_id))
+				int new_turn = !turn || !turn[0] || !item->turn_id ||
+					strcmp(turn, item->turn_id);
+				if (new_turn)
 					cli_transcript_reset(ctx);
 
 				turn = item->turn_id;
-				cli_presentation_user_input(ctx, item->content);
+				if (cli_chat_active(ctx))
+					rc = cli_chat_user_input(ctx, item->content, new_turn);
+				else
+					cli_presentation_user_input(ctx, item->content);
 			}
 		} else if (strcmp(item->kind, "assistant_message") == 0 ||
 			   strcmp(item->kind, "assistant_tool_calls") == 0) {
@@ -214,9 +219,15 @@ int cli_history_render_session(struct cli_application *ctx, struct model_history
 
 	/* Older/imported sessions can contain messages without canonical model history. */
 	for (const struct message *message = messages; !rc && message; message = message->next) {
-		if (strcmp(message->role, "user") == 0)
-			cli_presentation_user_input(ctx, message->content);
-		else if (strcmp(message->role, "assistant") == 0)
+		if (strcmp(message->role, "user") == 0) {
+			int new_turn = !turn || !turn[0] || !message->turn_id ||
+				strcmp(turn, message->turn_id);
+			turn = message->turn_id;
+			if (cli_chat_active(ctx))
+				rc = cli_chat_user_input(ctx, message->content, new_turn);
+			else
+				cli_presentation_user_input(ctx, message->content);
+		} else if (strcmp(message->role, "assistant") == 0)
 			cli_history_answer(ctx, message->content);
 	}
 

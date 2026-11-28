@@ -87,12 +87,12 @@ def seed(database):
 def check_restored(terminal, label):
     terminal.wait_for_composer()
     screen = terminal.snapshot(label)
-    for marker in ('HISTORY_FIRST_QUESTION', 'HISTORY_CHECKING', 'HISTORY_TOOL_OUTPUT',
-                   'HISTORY_FIRST_ANSWER', 'HISTORY_LAST_QUESTION', 'HISTORY_LAST_ANSWER'):
-        assert terminal.raw.count(marker) == 1, (marker, terminal.raw[-7000:])
     assert 'HISTORY_LAST_ANSWER' in screen, screen
     assert 'INTERNAL_COMPACTION' not in terminal.raw, terminal.raw[-7000:]
     plain = retained_history_snapshot(terminal, 'HISTORY_LAST_ANSWER')
+    for marker in ('HISTORY_FIRST_QUESTION', 'HISTORY_CHECKING', 'HISTORY_TOOL_OUTPUT',
+                   'HISTORY_FIRST_ANSWER', 'HISTORY_LAST_QUESTION', 'HISTORY_LAST_ANSWER'):
+        assert plain.count(marker) == 1, (marker, plain)
     assert 'Spawned /root/history-worker' in plain, plain[-7000:]
     for private in ('HISTORY_DELEGATION_PROMPT', 'HISTORY_ASSIGNMENT_SCOPE',
                     'HISTORY_FOLLOWUP_PROMPT'):

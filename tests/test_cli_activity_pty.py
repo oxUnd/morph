@@ -18,6 +18,7 @@ STATUS = re.compile(r'^[◉◯?] (?:Working|Waiting for|Cancelling|Running tasks
 
 def check_rows(rows, draft, expected, back=False):
     diagnostic = '\n'.join(rows)
+    assert rows[0].rstrip() in ('› EXERCISE_DOCK', '> EXERCISE_DOCK'), diagnostic
     editor = max(i for i, row in enumerate(rows) if row.startswith(('› ' + draft, '> ' + draft)))
     footer = [i for i, row in enumerate(rows) if 'perm: ' in row]
     assert footer == [len(rows) - 1], diagnostic

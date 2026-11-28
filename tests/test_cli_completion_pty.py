@@ -50,7 +50,7 @@ def scenario(driver, server, height, width, wrapped):
             assert footer_row(terminal) == height - 1, display
             assert terminal.screen.cursor.x == cursor_column, display
             assert footer_row(terminal) - terminal.screen.cursor.y == cursor_distance, display
-            assert sum(row.startswith('› ') for row in terminal.screen.display) == 1, display
+            assert sum(row.startswith('› ') for row in terminal.screen.display[1:]) == 1, display
             # Inspect each synchronized commit, not just the settled screen.
             replay = pyte.Screen(width, height)
             replay_stream = pyte.Stream(replay)
@@ -63,7 +63,7 @@ def scenario(driver, server, height, width, wrapped):
                 footer = [index for index, row in enumerate(replay.display)
                           if 'perm: ' in row and ('ctx ' in row or 'context ' in row)]
                 assert footer == [height - 1], '\n'.join(replay.display)
-                assert sum(row.startswith('› ') for row in replay.display) == 1
+                assert sum(row.startswith('› ') for row in replay.display[1:]) == 1
             assert completed_frames, 'No completed layout commit was captured'
             # The finished layout must stay put on footer polls and the next edit.
             position = (terminal.screen.cursor.x, terminal.screen.cursor.y)

@@ -371,6 +371,20 @@ lists the returned agent paths; short report previews appear on elbow-line rows.
 Ordinary messages are labeled as updates, not completion. Show details expands the
 original envelopes; Hide details collapses them. Mail is never a user bubble.
 
+The top row pins a single-line question after the original question
+has scrolled completely above the conversation viewport. While the original is
+visible, only that message is shown and no duplicate header row is reserved.
+The pinned row keeps the original prompt arrow, with the same full-width gray
+background as a chat question, and has no separate title prefix. No-color output
+retains the arrow without adding background colors.
+Following the latest output selects the latest turn's original question. Scrolling
+into an older turn switches the summary to that turn's question, based on the
+top of the conversation viewport. Messages added during the same turn do not
+replace its original question. Long and multiline questions are shortened to one
+line. Session switching and restored history keep their own question boundaries.
+Empty conversations show no pinned question; very short terminals prioritize
+the editable input and status bar when no row remains for the summary.
+
 Empty conversations show a Start a new task card with common commands. Clicking
 a command fills the composer; Enter runs it. The card disappears after the first
 message and returns for a new empty session.

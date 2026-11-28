@@ -158,11 +158,11 @@ def collect_retained_history(terminal, draft, final_marker='FINAL_PREVIEW'):
     history = conversation_rows(rows, composer)
     previous = history
 
-    def viewport(label):
+    def viewport(label, include_top=False):
         terminal.snapshot(label)
         assert draft in terminal.screen.display[composer], '\n'.join(terminal.screen.display)
         assert (terminal.screen.cursor.x, terminal.screen.cursor.y) == cursor
-        return conversation_rows(terminal.screen.display, composer)
+        return conversation_rows(terminal.screen.display, composer, include_top)
 
     def prepend(page):
         nonlocal history
@@ -182,8 +182,8 @@ def collect_retained_history(terminal, draft, final_marker='FINAL_PREVIEW'):
         previous = page
     else:
         raise AssertionError('retained history did not reach its beginning')
-    terminal.send('\x1b[<64;1;1M')
-    first = viewport('retained history begins at the first physical row')
+    terminal.send('\x1b[<64;1;2M' * 4)
+    first = viewport('retained history begins at the first physical row', include_top=True)
     if first != previous:
         prepend(first)
     terminal.send('\x1b[6~' * (pages + 2))

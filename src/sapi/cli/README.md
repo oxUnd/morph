@@ -31,6 +31,7 @@ cli/
   components/                  NT views for the composer, messages, reports, lists and panels
     command                    submitted slash commands, result spacing and outer margins
     chat_dock, activity        four-region bottom layout and bounded live status/details
+    turn_question              pinned original question for the currently browsed turn
     status_bar, mcp_status     native footer controls and aligned connection state rows
     shortcut_hint             native TextView spans for accent and bold shortcut keys
     sidebar_notice            shared warning labels above sidebar footer separators
@@ -69,7 +70,8 @@ has no private input loop, surface renderer or terminal-frame assembly. Text
 receipts after the page closes belong to `presentation/setup`.
 
 Interactive chat is a retained ViewController in alternate screen. Its page layout
-contains a scrolling feed and one `components/chat_dock` with four sibling regions:
+contains a pinned `components/turn_question`, a scrolling feed, and one
+`components/chat_dock` with four sibling regions:
 Back to bottom, `components/activity`, an input slot, and the single-line status bar.
 The input slot switches between the input-only composer and a native panel without
 losing the draft. `components/activity` owns one primary status and bounded groups

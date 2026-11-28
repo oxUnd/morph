@@ -5,6 +5,9 @@ database storage, hooks, rewind, memory/context budgets, or config changes.
 The matching-version manual remains the full reference. In a source checkout,
 check `config.toml.example` and `src/config/schema.c` before proposing unfamiliar keys.
 
+The pinned turn-question summary is automatic in interactive chat and has no
+configuration key. It follows the latest turn or the turn being browsed in history.
+
 ## First Run
 
 Run `morph`, or `morph -c <new-config-path>`, in an interactive terminal with a

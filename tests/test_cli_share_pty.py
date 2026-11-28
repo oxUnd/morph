@@ -25,10 +25,12 @@ def wait_for(terminal, predicate):
 
 def check_composer(terminal):
     rows = terminal.screen.display
-    prompts = [i for i, row in enumerate(rows) if row.startswith('› ')]
+    # The pinned question at row zero shares the chat marker and gray fill.
+    prompts = [i for i, row in enumerate(rows) if i > 0 and row.startswith('› ')]
     assert len(prompts) == 1, '\n'.join(rows)
     assert '› /share' not in '\n'.join(rows), '\n'.join(rows)
-    backgrounds = [i for i in range(terminal.screen.lines)
+    assert prompts[0] == terminal.screen.cursor.y, '\n'.join(rows)
+    backgrounds = [i for i in range(1, terminal.screen.lines)
                    if terminal.screen.buffer[i][0].bg == '3a3a3a']
     assert backgrounds == [prompts[0] - 1, prompts[0], prompts[0] + 1], backgrounds
 

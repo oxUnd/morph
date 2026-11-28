@@ -1,6 +1,7 @@
 """Transport reconnection stays editable, scrollable and cancellable at all widths."""
 import http.server
 import json
+import re
 from pathlib import Path
 import socket
 import sys
@@ -55,6 +56,11 @@ def set_mode(server, mode):
         server.mode, server.calls = mode, 0
 
 
+def second_attempt(text):
+    return any(re.match(r'^◉ Reconnecting · (?:attempt 2|#2)(?:\s|$)', row)
+               for row in text.splitlines())
+
+
 def run_width(driver, width):
     server = LoopbackHTTPServer(('127.0.0.1', 0), ConnectionModel)
     server.daemon_threads = True
@@ -84,8 +90,7 @@ def run_width(driver, width):
             assert server.calls <= 2, server.calls
             terminal.send('\x1b')  # Leave scrollback before testing cancellation.
             until(terminal, lambda t: 'Back to bottom' not in t)
-            until(terminal, lambda t: 'Reconnecting' in t and
-                  ('attempt 2' in t or '#2' in t), 7)
+            until(terminal, second_attempt, 7)
             text = until(terminal, lambda t: 'RECOVERED_CONNECTION' in t and
                          'Reconnecting' not in t and 'Worked for' in t, 13)
             assert server.calls == 3, server.calls
@@ -93,8 +98,7 @@ def run_width(driver, width):
 
             set_mode(server, 'fail')
             terminal.send('\x15cancel connection\r')
-            until(terminal, lambda t: 'Reconnecting' in t and
-                  ('attempt 2' in t or '#2' in t), 8)
+            until(terminal, second_attempt, 8)
             terminal.send('CANCEL_DRAFT')
             started = time.monotonic()
             terminal.child.send('\x1b')

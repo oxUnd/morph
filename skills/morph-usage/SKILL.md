@@ -72,6 +72,17 @@ Do not assume an older installed binary supports unreleased source changes.
 
 ## History navigation
 
+The top row pins a one-line question only after the original question
+has scrolled completely above the viewport. If the original remains visible,
+the header collapses so the question appears once. Following output selects the
+latest turn's original question; scrolling selects the turn at the top of the
+conversation viewport. Additional input within a turn does not replace its
+question. Long or multiline questions are clipped with an ellipsis. Switching
+sessions and restoring history preserve the corresponding questions. Empty
+conversations hide the row, and very short windows keep input and footer first.
+The pinned row preserves the prompt arrow and full-width gray chat-question
+background, with no extra title prefix. No-color mode keeps the arrow without color.
+
 Back to bottom occupies a separate normal-background row above live activity.
 The bottom dock orders its four regions as Back to bottom, activity, input, and
 a single-line status bar. Empty regions collapse. Activity grows upward while

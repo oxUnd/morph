@@ -666,6 +666,11 @@ if(Python3_Interpreter_FOUND AND UNIX)
 			$<TARGET_FILE:morph>)
 	set_tests_properties(cli_activity_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 120)
+	add_test(NAME cli_turn_question_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_turn_question_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_turn_question_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 120)
 	add_test(NAME cli_empty_session_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_empty_session_pty.py
 			$<TARGET_FILE:morph>)

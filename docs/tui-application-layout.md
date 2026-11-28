@@ -69,7 +69,18 @@ Do not use generic `core.c`, `init.c` or `run.c` modules as mixed ownership buck
   dispatch pages or services; they never start a second event loop. The app owns
   the loop, page presentation and terminal restoration.
 
-The chat page composes a scrolling feed above one `components/chat_dock`.
+The chat page composes a fixed `components/turn_question` at the top, a scrolling
+feed, and one `components/chat_dock` at the bottom. The page owns a per-session
+index of borrowed user-message anchors for original turn questions. The question
+component selects the latest anchor when following output and binary-searches
+the anchor positions against the viewport top when browsing history. Same-turn
+steering messages, agent mail, hooks and slash commands do not create anchors.
+The header yields while the original question text remains visible. Visibility
+uses the viewport height before reserving a header row, so crossing a boundary
+does not cause repeated show/hide layout passes. History restoration uses
+persisted turn IDs; legacy messages without turn IDs
+start individual turns. The top row collapses in empty or space-constrained views.
+
 The dock owns four sibling regions in fixed order: Back to bottom, activity,
 input, and status bar. `components/activity` owns its primary header and bounded
 summary/detail groups; activity never belongs to the composer. Only the primary

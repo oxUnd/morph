@@ -216,10 +216,10 @@ def collect_native_history(terminal, screen, label, draft=None):
                         else row.strip() in ('>', '›')))
     cursor = (screen.cursor.x, screen.cursor.y)
 
-    def conversation():
+    def conversation(include_top=False):
         # Native parsers retain different trailing blanks after cell updates
         # and row clears; compare the visible text when joining viewports.
-        rows = [row.rstrip() for row in conversation_rows(screen.display, composer)]
+        rows = [row.rstrip() for row in conversation_rows(screen.display, composer, include_top)]
         # Fixed bottom controls reserve blank activity/separator rows outside
         # the scrolling feed. They cannot participate in a history overlap.
         while rows and not rows[-1].strip():
@@ -229,13 +229,13 @@ def collect_native_history(terminal, screen, label, draft=None):
     history = conversation()
     previous = history
 
-    def viewport(stage):
+    def viewport(stage, include_top=False):
         wait_until(terminal, lambda: 2026 << 5 not in screen.mode)
         screen.capture(label + ': ' + stage)
         assert (screen.cursor.x, screen.cursor.y) == cursor, screen.display
         assert (('DRAFT_NATIVE' in screen.display[composer]) if draft is not None
                 else screen.display[composer].strip() in ('>', '›')), screen.display
-        return conversation()
+        return conversation(include_top)
 
     def prepend(page):
         nonlocal history
@@ -256,8 +256,8 @@ def collect_native_history(terminal, screen, label, draft=None):
         previous = page
     else:
         raise AssertionError('retained history never reached its beginning')
-    terminal.send('\x1b[<64;1;1M')
-    first = viewport('first retained row')
+    terminal.send('\x1b[<64;1;2M' * 4)
+    first = viewport('first retained row', include_top=True)
     if first != previous:
         prepend(first)
     terminal.send('\x1b[6~' * (pages + 2))

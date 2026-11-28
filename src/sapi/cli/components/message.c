@@ -171,6 +171,25 @@ static const struct nt_view_class cli_message_class = {
 	.hit_test_overlay = cli_message_hit_test_overlay,
 };
 
+const char *cli_message_user_text_borrow(const struct nt_view *view)
+{
+	if (!view || view->type != &cli_message_class)
+		return NULL;
+
+	const struct cli_message *message = (const struct cli_message *)view;
+	return message->kind == CLI_MESSAGE_USER
+		? nt_component_state_get_string(message->text) : NULL;
+}
+
+int cli_message_user_is_ultra(const struct nt_view *view)
+{
+	if (!view || view->type != &cli_message_class)
+		return 0;
+
+	const struct cli_message *message = (const struct cli_message *)view;
+	return message->kind == CLI_MESSAGE_USER && nt_component_state_get_bool(message->ultra);
+}
+
 int cli_message_set_ultra(struct nt_view *view, int ultra)
 {
 	if (!view || view->type != &cli_message_class)

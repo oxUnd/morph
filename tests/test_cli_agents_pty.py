@@ -234,7 +234,8 @@ def run(driver, port, columns):
             terminal.assert_navigation('agents')
             terminal.click_navigation(0)
             wait_for(terminal, lambda: chat_visible(terminal))
-            assert sum(line.startswith('» ') for line in terminal.screen.display) == 1
+            assert sum(line.startswith('» ') for line in terminal.screen.display[1:]) == 1
+            assert terminal.screen.display[terminal.screen.cursor.y].startswith('» ')
             if columns == 120:
                 plain = subprocess.run(
                     [str(driver.with_name('morph')), '-c', str(Path(temp) / 'config.toml'),

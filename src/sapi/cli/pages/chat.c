@@ -20,6 +20,7 @@
 #include "sapi/cli/components/composer.h"
 #include "sapi/cli/components/activity.h"
 #include "sapi/cli/components/chat_dock.h"
+#include "sapi/cli/components/turn_question.h"
 #include "sapi/cli/components/status_bar.h"
 #include "sapi/cli/components/workspace_sidebar.h"
 #include "sapi/cli/components/mcp_tree.h"
@@ -131,7 +132,7 @@ struct cli_chat_page {
 	int files_open, files_focus;
 	struct nt_component_state *modal;
 	struct nt_view *scroll, *feed, *composer, *editor, *status, *footer;
-	struct nt_view *bottom_button, *dock, *activity, *input_slot;
+	struct nt_view *bottom_button, *dock, *activity, *input_slot, *question;
 	struct nt_view *panel_host, *output_container, *overlay_host;
 	struct cli_chat_panel *panel;
 	struct cli_chat_overlay *overlay;
@@ -151,7 +152,7 @@ struct cli_chat_page {
 	int activity_columns, activity_styled, status_ultra;
 	int64_t next_jobs_update, next_status_update, working_animation_ms;
 	nb_map *tools;
-	nb_vec history;
+	nb_vec history, questions;
 	char *draft;
 	size_t history_index;
 	int stream_kind, ready, columns, agents_waiting;
@@ -167,6 +168,7 @@ struct cli_chat_session_state {
 	char *input;
 	size_t cursor;
 	nb_buf stream, output;
+	nb_vec questions;
 	nb_map *tools;
 	int stream_kind, agents_waiting;
 	int64_t turn_started;
@@ -464,10 +466,20 @@ static int cli_chat_sync_bottom_button(struct cli_chat_page *page)
 	return nt_view_set_hidden(page->bottom_button, hidden);
 }
 
+static int cli_chat_sync_turn_question(struct cli_chat_page *page)
+{
+	return page->scroll ? cli_turn_question_sync(page->question,
+		(struct nt_view *const *)page->questions.data, page->questions.len, page->scroll) : 0;
+}
+
 static int cli_chat_feed_scrolled(void *data, const struct nt_view_event *event)
 {
 	struct cli_chat_page *page = data;
-	return event->target == page->scroll ? cli_chat_sync_bottom_button(page) : 0;
+	if (event->target != page->scroll)
+		return 0;
+
+	int rc = cli_chat_sync_bottom_button(page);
+	return rc ? rc : cli_chat_sync_turn_question(page);
 }
 
 static int cli_chat_bottom_activate(void *data, const struct nt_view_event *event)
@@ -673,12 +685,16 @@ int cli_chat_reset(struct cli_application *ctx)
 	page->has_messages = NULL;
 	page->retry = (struct cli_chat_retry){0};
 	page->pending_agent_wait = NULL;
+	nb_vec_clear(&page->questions);
 	int rc = nt_view_clear_children(page->feed);
 	if (!rc)
 		rc = cli_chat_add_empty(page, 0);
 
 	if (!rc)
 		rc = nt_scroll_view_follow(page->scroll, 1);
+
+	if (!rc)
+		rc = cli_chat_sync_turn_question(page);
 
 	return rc;
 }
@@ -691,6 +707,7 @@ void cli_chat_session_state_destroy(struct cli_chat_session_state *state)
 	nb_map_free(state->tools);
 	nb_buf_cleanup(&state->stream);
 	nb_buf_cleanup(&state->output);
+	nb_vec_cleanup(&state->questions);
 	cli_files_cleanup(&state->files);
 	free(state->input);
 	free(state->last_assistant_text);
@@ -711,6 +728,7 @@ int cli_chat_session_save(struct cli_application *ctx, struct cli_chat_session_s
 		return NB_ERR_NOMEM;
 
 	cli_files_init(&state->files);
+	nb_vec_init(&state->questions, sizeof(struct nt_view *));
 	state->input = strdup(nt_text_field_text(page->editor));
 	if (!state->input) {
 		cli_chat_session_state_destroy(state);
@@ -744,6 +762,7 @@ int cli_chat_session_save(struct cli_application *ctx, struct cli_chat_session_s
 	page->tools = NULL;
 	nb_buf_move(&state->stream, &page->stream);
 	nb_buf_move(&state->output, &page->output);
+	nb_vec_move(&state->questions, &page->questions);
 	state->stream_kind = page->stream_kind;
 	state->agents_waiting = page->agents_waiting;
 	state->turn_started = page->turn_started;
@@ -809,6 +828,7 @@ int cli_chat_session_restore(struct cli_application *ctx, struct cli_chat_sessio
 	state->tools = NULL;
 	nb_buf_move(&page->stream, &state->stream);
 	nb_buf_move(&page->output, &state->output);
+	nb_vec_move(&page->questions, &state->questions);
 	page->stream_kind = state->stream_kind;
 	page->agents_waiting = state->agents_waiting;
 	page->turn_started = state->turn_started;
@@ -962,7 +982,8 @@ int cli_chat_agent_messages(struct cli_application *ctx, const char *text, int w
 	return cli_chat_page_error(page);
 }
 
-int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
+static int cli_chat_message_add(struct cli_application *ctx, int kind, const char *text,
+	int new_turn)
 {
 	if (!cli_chat_active(ctx))
 		return 0;
@@ -986,12 +1007,25 @@ int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
 		page->builder, page->feed, (enum cli_message_kind)kind,
 			       text ? text : "", cli_output_color_enabled(ctx));
 	if (view && kind == CLI_MESSAGE_USER) {
+		if (new_turn && !nb_vec_push_copy(&page->questions, &view))
+			nt_builder_fail(page->builder, NB_ERR_NOMEM);
+
 		nt_builder_fail(page->builder,
 			cli_message_set_ultra(view, ctx->composer.ultra));
 		nt_builder_fail(page->builder, nt_scroll_view_follow(page->scroll, 1));
 	}
 
 	return cli_chat_page_error(page);
+}
+
+int cli_chat_message(struct cli_application *ctx, int kind, const char *text)
+{
+	return cli_chat_message_add(ctx, kind, text, 1);
+}
+
+int cli_chat_user_input(struct cli_application *ctx, const char *text, int new_turn)
+{
+	return cli_chat_message_add(ctx, CLI_MESSAGE_USER, text, new_turn);
 }
 
 struct cli_chat_media_delivery {
@@ -1414,7 +1448,7 @@ int cli_chat_react_event(struct cli_application *ctx, const struct morph_event *
 	} else if (!strcmp(name, "react.user.steer")) {
 		const char *display = cJSON_GetStringValue(
 			cJSON_GetObjectItemCaseSensitive(event->data, "display_text"));
-		rc = cli_chat_message(ctx, CLI_MESSAGE_USER, display ? display : text);
+		rc = cli_chat_user_input(ctx, display ? display : text, 0);
 	} else if (!strcmp(name, "react.agents.wait.begin") ||
 		   !strcmp(name, "react.agents.wait.end")) {
 		page->agents_waiting = !strcmp(name, "react.agents.wait.begin");
@@ -2260,7 +2294,9 @@ static int cli_chat_page_layout(struct nt_view *view)
 	if (rc)
 		return rc;
 
-	int rows = content.height > dock.height ? content.height - dock.height : 0;
+	int question_rows = cli_turn_question_is_pinned(page->question) &&
+		content.height > dock.height ? 1 : 0;
+	int rows = content.height > dock.height ? content.height - dock.height - question_rows : 0;
 	int feed_top = 0;
 	if ((page->panel && !page->panel->interaction) ||
 	    (!page->panel && !ctx->turn_active && !page->command_running && separated)) {
@@ -2282,11 +2318,19 @@ static int cli_chat_page_layout(struct nt_view *view)
 			return rc;
 	}
 
-	struct nt_view_rect feed_slot = {content.x, content.y + feed_top, content.width, rows};
-	rc = nt_view_arrange(page->scroll, feed_slot);
+	struct nt_view_rect feed_slot = {content.x, content.y + question_rows + feed_top,
+		content.width, rows};
+	rc = nt_view_arrange(page->question, (struct nt_view_rect){content.x, content.y,
+		content.width, question_rows});
+	if (!rc)
+		rc = nt_view_arrange(page->scroll, feed_slot);
+
+	if (!rc)
+		rc = cli_chat_sync_turn_question(page);
+
 	if (!rc)
 		rc = nt_view_arrange(page->dock, (struct nt_view_rect){content.x,
-			content.y + feed_top + rows, content.width, dock.height});
+			content.y + question_rows + feed_top + rows, content.width, dock.height});
 
 	int overlay_height = rows ? rows : NT_CELLS(0);
 	if (!rc && page->overlay_height != overlay_height) {
@@ -2353,6 +2397,17 @@ static const struct nt_keymap *cli_chat_keymap(const struct nt_view *view)
 static int cli_chat_capture_input(struct nt_view *view, const struct nt_event *event)
 {
 	struct cli_chat_page *page = (struct cli_chat_page *)nt_view_controller(view);
+	if (event->type == NT_EVENT_SCROLL) {
+		struct nt_view_rect question = nt_view_frame(page->question);
+		if (question.height && event->mouse.x >= question.x &&
+		    event->mouse.x < question.x + question.width && event->mouse.y >= question.y &&
+		    event->mouse.y < question.y + question.height) {
+			const struct nt_view_class *methods = nt_view_class_methods(page->scroll);
+			return methods && methods->handle_event
+				? methods->handle_event(page->scroll, event) : 0;
+		}
+	}
+
 	if (page->overlay && event->type == NT_EVENT_KEY &&
 	    event->action != NT_KEY_ACTION_RELEASE && !event->pasting &&
 	    (event->key == NT_KEY_ESCAPE || event->key == 27)) {
@@ -2509,6 +2564,7 @@ static void cli_chat_page_build(struct nt_view_controller *controller, struct nt
 			nt_builder_fail(builder, NB_ERR_NOMEM);
 	}
 
+	page->question = cli_turn_question_add(builder, root, cli_output_color_enabled(ctx));
 	page->scroll = nt_scroll_view_add(builder, root, NULL);
 	nt_builder_fail(builder, nt_view_set_focusable(page->scroll, 0));
 	nt_builder_fail(builder, nt_scroll_view_set_scrollbars(page->scroll, 0));
@@ -2840,6 +2896,7 @@ static int cli_chat_page_init(struct nt_view_controller *controller)
 	char *entry = NULL;
 	cli_files_init(&page->files);
 	nb_vec_init(&page->history, sizeof(entry));
+	nb_vec_init(&page->questions, sizeof(struct nt_view *));
 	page->tools = nb_map_new_with_cap(16);
 	return page->tools ? 0 : NB_ERR_NOMEM;
 }
@@ -2852,6 +2909,7 @@ static void cli_chat_page_deinit(struct nt_view_controller *controller)
 		free(*(char **)nb_vec_at(&page->history, i));
 
 	nb_vec_cleanup(&page->history);
+	nb_vec_cleanup(&page->questions);
 	nb_map_free(page->tools);
 	nb_buf_cleanup(&page->stream);
 	nb_buf_cleanup(&page->output);

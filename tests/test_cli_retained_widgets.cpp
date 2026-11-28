@@ -24,6 +24,7 @@ extern "C" {
 #include "sapi/cli/components/composer.h"
 #include "sapi/cli/components/activity.h"
 #include "sapi/cli/components/chat_dock.h"
+#include "sapi/cli/components/turn_question.h"
 #include "sapi/cli/application.h"
 #include "sapi/cli/presentation/output.h"
 #include <nb/utf8.h>
@@ -110,7 +111,7 @@ class CliRetainedWidgetsTest : public ::testing::Test
 {
       protected:
 	enum Kind { Tool, Notice, Plan, Composer, Recap, Feed, Files, Sidebar, RichDocument,
-		Unstable, Dock } kind = Tool;
+		Unstable, Dock, Question } kind = Tool;
 	struct cli_files_model files{};
 	int master = -1;
 	FILE *input = nullptr, *output = nullptr;
@@ -121,6 +122,8 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	struct nt_view *editor = nullptr;
 	struct nt_view *dock_activity = nullptr, *dock_back = nullptr, *dock_input = nullptr;
 	struct nt_view *dock_footer = nullptr, *dock_panel = nullptr, *dock_composer = nullptr;
+	struct nt_view *question_scroll = nullptr, *question_feed = nullptr;
+	struct nt_view *question_anchors[3]{};
 	struct cli_application ctx{};
 	int cursor_x = -1, cursor_y = -1, columns_rendered = 0;
 	int rendered_frames = 0;
@@ -195,6 +198,71 @@ class CliRetainedWidgetsTest : public ::testing::Test
 	{
 			auto *self = static_cast<CliRetainedWidgetsTest *>(owner->data);
 			self->controller = owner;
+			if (self->kind == Question) {
+				static const struct nt_view_class type = [] {
+					struct nt_view_class value{};
+					value.superclass = &nt_view_base_class;
+					value.instance_size = sizeof(struct nt_view);
+					value.layout = +[](struct nt_view *view) {
+						auto *self = static_cast<CliRetainedWidgetsTest *>(
+							nt_view_controller(view)->data);
+						const auto rect = nt_view_content_rect(view);
+						int rows = cli_turn_question_is_pinned(self->component);
+						int rc = nt_view_arrange(self->component,
+							{rect.x, rect.y, rect.width, rows});
+						if (!rc)
+							rc = nt_view_arrange(self->question_scroll,
+								{rect.x, rect.y + rows, rect.width, rect.height - rows - 1});
+
+						if (!rc)
+							rc = cli_turn_question_sync(self->component,
+								self->question_anchors, 3, self->question_scroll);
+
+						return rc ? rc : nt_view_arrange(self->editor,
+							{rect.x, rect.y + rect.height - 1, rect.width, 1});
+					};
+					return value;
+				}();
+				auto *root = nt_view_add(builder, nullptr, &type, nullptr);
+				self->component = cli_turn_question_add(builder, root, 1);
+				self->question_scroll = nt_scroll_view_add(builder, root, nullptr);
+				self->question_feed = nt_column_add(builder, self->question_scroll, 0, nullptr);
+				for (int turn = 0; turn < 3; turn++) {
+					std::string text = turn == 0 ? "FIRST_QUESTION"
+						: turn == 1 ? u8"SECOND_QUESTION 中文🙂\n"
+							"A question with several words repeated across the available terminal width. "
+							"A question with several words repeated across the available terminal width."
+						: "THIRD_QUESTION";
+					self->question_anchors[turn] = cli_message_add_borrow(builder,
+						self->question_feed, CLI_MESSAGE_USER, text.c_str(), 1);
+					if (turn == 0)
+						nt_builder_fail(builder, cli_message_set_ultra(self->question_anchors[turn], 1));
+
+					std::string answer;
+					for (int row = 0; row < (turn == 2 ? 3 : 80); row++)
+						answer += "ANSWER_ROW\n";
+
+					cli_message_add_borrow(builder, self->question_feed,
+						CLI_MESSAGE_ASSISTANT, answer.c_str(), 1);
+					if (turn == 0)
+						cli_message_add_borrow(builder, self->question_feed,
+							CLI_MESSAGE_USER, "STEERING_REQUIREMENT", 1);
+				}
+
+				self->editor = nt_text_field_add(builder, root, nullptr, nullptr);
+				nt_builder_fail(builder, nt_text_field_set_text(self->editor, "PRESERVED_DRAFT"));
+				nt_builder_fail(builder, nt_scroll_view_follow(self->question_scroll, 1));
+				if (!nt_view_on(self->question_scroll, NT_VIEW_EVENT_SCROLLED,
+					+[](void *data, const struct nt_view_event *) {
+						auto *self = static_cast<CliRetainedWidgetsTest *>(data);
+						return cli_turn_question_sync(self->component,
+							self->question_anchors, 3, self->question_scroll);
+					}, self))
+					nt_builder_fail(builder, NB_ERR_NOMEM);
+
+				return;
+			}
+
 			if (self->kind == Unstable) {
 				static const nt_view_class type = [] {
 					nt_view_class value{};
@@ -1497,4 +1565,59 @@ TEST_F(CliRetainedWidgetsTest, ActivityMeasurementsAndRepeatedSnapshotsKeepPubli
 	struct nt_view_size empty{};
 	ASSERT_EQ(nt_view_measure(dock_activity, 120, &empty), 0);
 	EXPECT_EQ(empty.height, 0);
+}
+
+TEST_F(CliRetainedWidgetsTest, PinnedQuestionTracksTurnBoundariesAndKeepsMeasurementsReadOnly)
+{
+	kind = Question;
+	Present();
+	auto *text = reinterpret_cast<struct cli_report *>(component)->text;
+	EXPECT_STREQ(nt_text_view_text(text), "› THIRD_QUESTION");
+	EXPECT_FALSE(cli_turn_question_is_pinned(component));
+	EXPECT_EQ(nt_view_frame(component).height, 0);
+	for (int columns : {120, 80, 60}) {
+		Resize(columns);
+		const int boundary = nt_view_frame(question_anchors[1]).y - nt_view_frame(question_feed).y;
+		const auto draft = nt_view_frame(editor);
+		int question_end = boundary + nt_view_frame(question_anchors[1]).height;
+		ASSERT_EQ(nt_scroll_view_set_offset(question_scroll, question_end), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		EXPECT_EQ(std::string(nt_text_view_text(text)).find(u8"› SECOND_QUESTION 中文🙂"), 0u);
+		EXPECT_EQ(std::string(nt_text_view_text(text)).find('\n'), std::string::npos);
+		EXPECT_NE(std::string(nt_text_view_text(text)).find(u8"…"), std::string::npos);
+		EXPECT_LE(nb_utf8_width_cstr(nt_text_view_text(text)), static_cast<size_t>(columns - 1));
+		ASSERT_EQ(nt_scroll_view_set_offset(question_scroll, boundary), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		EXPECT_FALSE(cli_turn_question_is_pinned(component));
+		EXPECT_EQ(nt_view_frame(component).height, 0);
+		ASSERT_EQ(nt_scroll_view_set_offset(question_scroll, question_end - 2), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		EXPECT_FALSE(cli_turn_question_is_pinned(component));
+		EXPECT_EQ(nt_view_frame(component).height, 0);
+		ASSERT_EQ(nt_scroll_view_set_offset(question_scroll, boundary - 1), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		EXPECT_STREQ(nt_text_view_text(text), "» FIRST_QUESTION");
+		EXPECT_EQ(nt_view_frame(component).y, 0);
+		EXPECT_EQ(nt_view_frame(component).height, 1);
+		EXPECT_EQ(nt_view_frame(editor).y, draft.y);
+		EXPECT_STREQ(nt_text_field_text(editor), "PRESERVED_DRAFT");
+		const int frames = rendered_frames;
+		for (int probe : {60, 80, 120}) {
+			struct nt_view_size measured{};
+			ASSERT_EQ(nt_view_measure(component, probe, &measured), 0);
+		}
+
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		EXPECT_EQ(rendered_frames, frames);
+		ASSERT_EQ(nt_scroll_view_follow(question_scroll, 1), 0);
+		ASSERT_EQ(nt_application_step(app, 0), 0);
+		EXPECT_STREQ(nt_text_view_text(text), "› THIRD_QUESTION");
+		EXPECT_FALSE(cli_turn_question_is_pinned(component));
+		EXPECT_EQ(nt_view_frame(component).height, 0);
+		const int idle_frames = rendered_frames;
+		for (int frame = 0; frame < 4; frame++)
+			ASSERT_EQ(nt_application_step(app, 0), 0);
+
+		EXPECT_EQ(rendered_frames, idle_frames);
+	}
 }
